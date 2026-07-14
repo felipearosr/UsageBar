@@ -8,6 +8,7 @@ xcuserdata/
 # Build products
 .build/
 DerivedData
+linux/codexbar-tray/src-tauri/target/
 
 # Bundles / artifacts
 # Main app bundle (any variation)

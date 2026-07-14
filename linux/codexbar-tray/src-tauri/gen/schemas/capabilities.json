@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"IPC surface for the popup window: core events, window show/hide/drag, app commands.","local":true,"windows":["popup"],"permissions":["core:default"]}}

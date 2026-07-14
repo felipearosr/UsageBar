@@ -1,0 +1,71 @@
+[
+    {
+        "version": "0.144.4",
+        "provider": "codex",
+        "source": "oauth",
+        "usage": {
+            "updatedAt": "2026-07-14T17:03:46Z",
+            "dataConfidence": "exact",
+            "identity": {
+                "accountEmail": "felipe.aros.r@gmail.com",
+                "loginMethod": "plus",
+                "providerID": "codex"
+            },
+            "primary": null,
+            "tertiary": null,
+            "secondary": {
+                "resetsAt": "2026-07-20T05:43:08Z",
+                "resetDescription": "Jul 20 at 1:43\u202fAM",
+                "usedPercent": 21,
+                "windowMinutes": 10080
+            },
+            "accountEmail": "felipe.aros.r@gmail.com",
+            "loginMethod": "plus",
+            "codexResetCredits": {
+                "updatedAt": "2026-07-14T17:03:46Z",
+                "credits": [
+                    {
+                        "granted_at": "2026-07-13T18:10:56Z",
+                        "title": "Full reset",
+                        "description": "Thanks for using Codex! You've been granted one free rate limit reset.",
+                        "id": "RateLimitResetCredit_ceca1e53b17481919735bf2bf4cef166",
+                        "expires_at": "2026-08-12T18:10:56Z",
+                        "status": "available",
+                        "reset_type": "codex_rate_limits"
+                    }
+                ],
+                "availableCount": 1
+            }
+        },
+        "account": "felipe.aros.r@gmail.com",
+        "credits": {
+            "updatedAt": "2026-07-14T17:03:46Z",
+            "events": [],
+            "remaining": 0
+        }
+    },
+    {
+        "version": "2.1.209",
+        "provider": "claude",
+        "source": "claude",
+        "usage": {
+            "secondary": {
+                "windowMinutes": 10080,
+                "usedPercent": 23,
+                "resetDescription": "ResetsJul20,11am(America/Santiago)",
+                "resetsAt": "2026-07-20T15:00:00Z"
+            },
+            "tertiary": null,
+            "updatedAt": "2026-07-14T17:04:03Z",
+            "identity": {
+                "providerID": "claude"
+            },
+            "primary": {
+                "windowMinutes": 300,
+                "usedPercent": 59,
+                "resetDescription": "Resets1:50pm(America/Santiago)",
+                "resetsAt": "2026-07-14T17:50:00Z"
+            }
+        }
+    }
+]

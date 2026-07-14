@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "IPC surface for the popup window: core events, window show/hide/drag, app commands.",
+  "windows": ["popup"],
+  "permissions": ["core:default"]
+}
