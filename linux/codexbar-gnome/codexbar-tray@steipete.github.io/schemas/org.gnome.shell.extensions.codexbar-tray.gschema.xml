@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.codexbar-tray"
+          path="/org/gnome/shell/extensions/codexbar-tray/">
+    <key name="warn-threshold" type="i">
+      <default>60</default>
+      <range min="1" max="99"/>
+      <summary>Warning threshold</summary>
+      <description>Usage percent above which bars and chips turn yellow.</description>
+    </key>
+    <key name="crit-threshold" type="i">
+      <default>85</default>
+      <range min="1" max="99"/>
+      <summary>Critical threshold</summary>
+      <description>Usage percent above which bars and chips turn red.</description>
+    </key>
+    <key name="hidden-chips" type="as">
+      <default>[]</default>
+      <summary>Providers without a panel chip</summary>
+      <description>Provider ids whose chip is hidden from the panel; their card stays in the popover.</description>
+    </key>
+    <key name="notify-enabled" type="b">
+      <default>true</default>
+      <summary>Notify on high usage</summary>
+      <description>Send a notification when a rate window crosses the notify thresholds, once per reset cycle.</description>
+    </key>
+    <key name="notify-warn-percent" type="i">
+      <default>80</default>
+      <range min="1" max="100"/>
+      <summary>First notification threshold</summary>
+    </key>
+    <key name="notify-crit-percent" type="i">
+      <default>95</default>
+      <range min="1" max="100"/>
+      <summary>Second (critical) notification threshold</summary>
+    </key>
+  </schema>
+</schemalist>

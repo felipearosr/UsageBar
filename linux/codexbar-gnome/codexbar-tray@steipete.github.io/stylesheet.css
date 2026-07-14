@@ -1,0 +1,154 @@
+/* CodexBar Tray — panel chips + popover cards. Colors follow GNOME's
+   palette (green #2ec27e, yellow #f5c211, red #ed333b, grey #9a9996). */
+
+.codexbar-panel-box {
+  spacing: 8px;
+}
+
+.codexbar-chip {
+  spacing: 4px;
+}
+
+.codexbar-chip-label {
+  font-size: 10.5pt;
+}
+
+.codexbar-dot {
+  border-radius: 4px;
+}
+
+.codexbar-menu {
+  min-width: 380px;
+}
+
+.codexbar-title {
+  font-weight: bold;
+}
+
+.codexbar-dim {
+  color: rgba(160, 160, 165, 1);
+  font-size: 9.5pt;
+}
+
+.codexbar-banner {
+  color: #f5c211;
+  font-size: 9.5pt;
+}
+
+.codexbar-tabs {
+  spacing: 6px;
+}
+
+.codexbar-tab {
+  background-color: rgba(128, 128, 128, 0.12);
+  border-radius: 10px;
+  padding: 6px 10px;
+}
+
+.codexbar-tab:hover,
+.codexbar-tab:focus {
+  background-color: rgba(128, 128, 128, 0.2);
+}
+
+.codexbar-tab:checked {
+  background-color: rgba(53, 132, 228, 0.25);
+}
+
+.codexbar-tab-content {
+  spacing: 4px;
+}
+
+.codexbar-tab-label {
+  font-size: 10pt;
+  font-weight: bold;
+}
+
+.codexbar-card {
+  background-color: rgba(128, 128, 128, 0.12);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 4px 0;
+  spacing: 4px;
+}
+
+.codexbar-card-title {
+  font-weight: bold;
+  font-size: 11.5pt;
+}
+
+.codexbar-badge {
+  background-color: rgba(53, 132, 228, 0.25);
+  color: #78b3f0;
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-left: 8px;
+  font-size: 8.5pt;
+  font-weight: bold;
+}
+
+.codexbar-badge-stale {
+  background-color: rgba(128, 128, 128, 0.25);
+  color: #9a9996;
+}
+
+.codexbar-worst {
+  font-weight: bold;
+  font-size: 12pt;
+}
+
+.codexbar-window-row {
+  margin-top: 6px;
+}
+
+.codexbar-window-label {
+  font-size: 10pt;
+  font-weight: bold;
+}
+
+.codexbar-track {
+  background-color: rgba(128, 128, 128, 0.25);
+  border-radius: 3px;
+  margin-top: 3px;
+}
+
+.codexbar-fill {
+  border-radius: 3px;
+}
+
+.codexbar-bg-ok { background-color: #2ec27e; }
+.codexbar-bg-warn { background-color: #f5c211; }
+.codexbar-bg-crit { background-color: #ed333b; }
+.codexbar-bg-stale { background-color: #9a9996; }
+
+.codexbar-fg-ok { color: #2ec27e; }
+.codexbar-fg-warn { color: #f5c211; }
+.codexbar-fg-crit { color: #ed333b; }
+.codexbar-fg-stale { color: #9a9996; }
+
+.codexbar-pace {
+  margin-top: 2px;
+}
+
+.codexbar-cost {
+  margin-top: 8px;
+}
+
+.codexbar-models {
+  margin-top: 2px;
+}
+
+.codexbar-links {
+  margin-top: 8px;
+  spacing: 12px;
+}
+
+.codexbar-link {
+  color: #78b3f0;
+  font-size: 9.5pt;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.codexbar-link:hover {
+  background-color: rgba(128, 128, 128, 0.2);
+}
