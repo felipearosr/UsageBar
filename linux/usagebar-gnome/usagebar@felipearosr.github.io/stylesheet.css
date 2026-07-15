@@ -31,6 +31,23 @@
   color: #ffffff;
 }
 
+.usagebar-refresh-btn {
+  margin-left: 8px;
+  padding: 4px;
+  border-radius: 6px;
+  color: rgba(200, 200, 206, 1);
+}
+
+.usagebar-refresh-btn:hover,
+.usagebar-refresh-btn:focus {
+  background-color: rgba(160, 160, 166, 0.2);
+  color: #ffffff;
+}
+
+.usagebar-refresh-icon {
+  icon-size: 16px;
+}
+
 .usagebar-dim {
   color: rgba(200, 200, 206, 1);
   font-size: 9.5pt;
@@ -148,6 +165,10 @@
 .usagebar-fg-warn { color: #f5c211; }
 .usagebar-fg-crit { color: #ed333b; }
 .usagebar-fg-stale { color: #9a9996; }
+
+.usagebar-window-foot {
+  margin-top: 4px;
+}
 
 .usagebar-pace {
   margin-top: 2px;

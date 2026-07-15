@@ -74,6 +74,47 @@ function statusScopeRow(settings, provider) {
     return row;
 }
 
+// One switch per usage bar the extension has seen for this provider, from the
+// `known-windows` catalog it publishes on render. Toggling off adds the bar's
+// "provider:key" to `hidden-windows`, which removes it from the popover card.
+// Empty until the popover has rendered at least once — then a hint row shows.
+function windowToggleRows(settings, provider) {
+    const known = settings.get_strv('known-windows')
+        .map(s => {
+            try {
+                return JSON.parse(s);
+            } catch {
+                return null;
+            }
+        })
+        .filter(e => e && e.p === provider);
+    if (!known.length) {
+        const hint = new Adw.ActionRow({
+            title: 'Usage bars',
+            subtitle: 'Open the popover once to list this provider’s bars here',
+        });
+        return [hint];
+    }
+    const rows = [];
+    for (const e of known) {
+        const entry = `${e.p}:${e.k}`;
+        const row = new Adw.SwitchRow({
+            title: `Show ${e.l} bar`,
+            active: !new Set(settings.get_strv('hidden-windows')).has(entry),
+        });
+        row.connect('notify::active', () => {
+            const h = new Set(settings.get_strv('hidden-windows'));
+            if (row.active)
+                h.delete(entry);
+            else
+                h.add(entry);
+            settings.set_strv('hidden-windows', [...h].sort());
+        });
+        rows.push(row);
+    }
+    return rows;
+}
+
 function spinRow(settings, key, title, subtitle) {
     const row = new Adw.SpinRow({
         title,
@@ -158,6 +199,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             const scopeRow = statusScopeRow(settings, id);
             if (scopeRow)
                 group.add(scopeRow);
+            for (const row of windowToggleRows(settings, id))
+                group.add(row);
             providers.add(group);
         }
         window.add(providers);

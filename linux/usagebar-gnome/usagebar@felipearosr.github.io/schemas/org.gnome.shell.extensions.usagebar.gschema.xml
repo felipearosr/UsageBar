@@ -19,6 +19,16 @@
       <summary>Providers without a panel chip</summary>
       <description>Provider ids whose chip is hidden from the panel; their card stays in the popover.</description>
     </key>
+    <key name="hidden-windows" type="as">
+      <default>[]</default>
+      <summary>Usage bars hidden from the popover</summary>
+      <description>Bar ids ("provider:key") whose usage bar is removed from the card.</description>
+    </key>
+    <key name="known-windows" type="as">
+      <default>[]</default>
+      <summary>Usage bars discovered at render time</summary>
+      <description>Catalog the extension publishes for the preferences window; each entry is a JSON object {"p":provider,"k":key,"l":label}.</description>
+    </key>
     <key name="notify-enabled" type="b">
       <default>true</default>
       <summary>Notify on high usage</summary>

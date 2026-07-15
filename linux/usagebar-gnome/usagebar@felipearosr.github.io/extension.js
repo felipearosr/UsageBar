@@ -86,6 +86,14 @@ function extraWindowsOf(row) {
     return (row.usage?.extraRateWindows ?? []).filter(x => x?.window);
 }
 
+// Stable per-bar identity shared by the card renderer and the prefs catalog,
+// so a "provider:key" entry in hidden-windows removes the right bar. Standard
+// slots key off their slot index; extra windows off their id (fallback title).
+function barKey(provider, {slot, extra} = {}) {
+    const key = extra ? `x:${extra.id ?? extra.title}` : `w${slot}`;
+    return `${provider}:${key}`;
+}
+
 function worstPercent(row) {
     const ps = windowsOf(row).map(({w}) => w.usedPercent);
     for (const x of extraWindowsOf(row)) {
@@ -141,17 +149,52 @@ function windowLabel(minutes, slot) {
     return `${minutes}m`;
 }
 
+// Locale table for the handful of strings this extension formats itself in the
+// usage foot (the % descriptor and the reset countdown). The pace verdict/ETA
+// lines already arrive localized from the backend, which follows the system
+// locale — mirror that here so the whole foot reads in one language. English is
+// the fallback for any locale not listed.
+function currentLang() {
+    for (const name of GLib.get_language_names()) {
+        const code = name.split(/[_.@]/)[0];
+        if (code && code !== 'C' && code !== 'POSIX')
+            return code;
+    }
+    return 'en';
+}
+
+const STRINGS = {
+    en: {
+        remaining: p => `${p}% remaining`,
+        unavailable: 'unavailable',
+        resetsIn: dur => `Resets in ${dur}`,
+        resetsNow: 'Resets now',
+        resetsDesc: desc => `Resets ${desc}`,
+        dur: {d: n => `${n}d`, h: n => `${n}h`, m: n => `${n}m`, under: 'under 1m'},
+    },
+    es: {
+        remaining: p => `${p}% restante`,
+        unavailable: 'no disponible',
+        resetsIn: dur => `Se reinicia en ${dur}`,
+        resetsNow: 'Se reinicia ahora',
+        resetsDesc: desc => `Se reinicia ${desc}`,
+        dur: {d: n => `${n} d`, h: n => `${n} h`, m: n => `${n} min`, under: 'menos de 1 min'},
+    },
+};
+
+const T = STRINGS[currentLang()] ?? STRINGS.en;
+
 function humanizeSecs(secs) {
     const d = Math.floor(secs / 86400);
     const h = Math.floor((secs % 86400) / 3600);
     const m = Math.floor((secs % 3600) / 60);
     if (d > 0)
-        return `${d}d ${h}h`;
+        return `${T.dur.d(d)} ${T.dur.h(h)}`;
     if (h > 0)
-        return `${h}h ${m}m`;
+        return `${T.dur.h(h)} ${T.dur.m(m)}`;
     if (m > 0)
-        return `${m}m`;
-    return 'under 1m';
+        return T.dur.m(m);
+    return T.dur.under;
 }
 
 function agoText(secs) {
@@ -169,10 +212,10 @@ function resetText(w) {
         const at = Date.parse(w.resetsAt);
         if (!Number.isNaN(at)) {
             const secs = (at - Date.now()) / 1000;
-            return secs <= 0 ? 'resets now' : `resets in ${humanizeSecs(secs)}`;
+            return secs <= 0 ? T.resetsNow : T.resetsIn(humanizeSecs(secs));
         }
     }
-    return w.resetDescription ? `resets ${w.resetDescription}` : '';
+    return w.resetDescription ? T.resetsDesc(w.resetDescription) : '';
 }
 
 function fmtTokens(n) {
@@ -605,7 +648,7 @@ class UsageBarIndicator extends PanelMenu.Button {
 
         this.menu.box.add_style_class_name('usagebar-menu');
 
-        // Header: title left, "updated Xs ago" right.
+        // Header: title left, "updated Xs ago" then a refresh icon button right.
         const header = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         header.add_child(new St.Label({
             text: 'UsageBar',
@@ -619,6 +662,16 @@ class UsageBarIndicator extends PanelMenu.Button {
             y_align: Clutter.ActorAlign.CENTER,
         });
         header.add_child(this._updatedLabel);
+        this._refreshButton = new St.Button({
+            style_class: 'usagebar-refresh-btn',
+            can_focus: true,
+            child: new St.Icon({
+                icon_name: 'view-refresh-symbolic',
+                style_class: 'usagebar-refresh-icon',
+            }),
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        header.add_child(this._refreshButton);
         this.menu.addMenuItem(header);
 
         // Status banner (serve problems, fetch errors).
@@ -659,8 +712,6 @@ class UsageBarIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._settingsItem = new PopupMenu.PopupMenuItem('Settings');
         this.menu.addMenuItem(this._settingsItem);
-        this._refreshItem = new PopupMenu.PopupMenuItem('Refresh now');
-        this.menu.addMenuItem(this._refreshItem);
     }
 
     _setPanelText(chips) {
@@ -734,7 +785,7 @@ export default class UsageBarExtension extends Extension {
 
         this._indicator = new Indicator();
         this._indicator._settingsItem.connect('activate', () => this.openPreferences());
-        this._indicator._refreshItem.connect('activate', () => this._fetchUsage());
+        this._indicator._refreshButton.connect('clicked', () => this._fetchUsage());
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
@@ -1000,6 +1051,8 @@ export default class UsageBarExtension extends Extension {
             ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
             : 'fetching…');
 
+        this._publishWindowCatalog();
+
         // Tabs + detail. No selection (null) means the All tab: every card
         // stacked, as before tabs existed. A selected provider that drops
         // out of the feed falls back to All.
@@ -1039,10 +1092,17 @@ export default class UsageBarExtension extends Extension {
         } else if (selectedRow) {
             detail.add_child(this._buildCard(selectedRow, {flat: true}));
         } else {
-            // All view: compact cards, no cost lines — those live on the
-            // per-provider tabs.
-            for (const row of this._rows)
-                detail.add_child(this._buildCard(row, {showCost: false}));
+            // All view: flat sections (no card chrome), one per provider,
+            // split by a thin rule; cost lines live on the per-provider tabs.
+            this._rows.forEach((row, i) => {
+                if (i > 0)
+                    detail.add_child(new St.Widget({
+                        style_class: 'usagebar-separator',
+                        height: 1,
+                        x_expand: true,
+                    }));
+                detail.add_child(this._buildCard(row, {showCost: false, flat: true, showLinks: false}));
+            });
         }
     }
 
@@ -1215,8 +1275,10 @@ export default class UsageBarExtension extends Extension {
         return wrap;
     }
 
-    // One usage metric: label + "% · resets in …" row, severity bar, pace.
-    // Handles windows with unknown percent (upstream shows "Unavailable").
+    // One usage metric: window label, severity bar, then a two-line foot —
+    // left column is "% used" over the pace verdict, right column is the reset
+    // countdown over the pace ETA (when it runs out). Values are unchanged from
+    // before; they're just relaid out. Handles unknown percent ("unavailable").
     _addWindowRow(card, label, w, stale, paceSummary) {
         const known = w.usedPercent !== null && w.usedPercent !== undefined;
         const percent = known ? Math.min(100, Math.max(0, w.usedPercent)) : 0;
@@ -1228,13 +1290,6 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-window-label',
         }));
         labels.add_child(new St.Widget({x_expand: true}));
-        const reset = resetText(w);
-        labels.add_child(new St.Label({
-            text: known
-                ? (reset ? `${Math.round(w.usedPercent)}% · ${reset}` : `${Math.round(w.usedPercent)}%`)
-                : (reset ? `unavailable · ${reset}` : 'unavailable'),
-            style_class: 'usagebar-dim',
-        }));
         card.add_child(labels);
 
         const track = new St.Widget({
@@ -1254,19 +1309,83 @@ export default class UsageBarExtension extends Extension {
         });
         card.add_child(track);
 
+        // The backend summary is "<verdict> | Expected N% used | <eta>"
+        // (older builds use " · " and omit the middle). Keep the verdict for
+        // the left column and the ETA for the right; the "expected" middle is
+        // dropped, matching the macOS layout.
+        let paceLeft = '';
+        let paceRight = '';
         if (paceSummary) {
-            const pace = new St.Label({
-                text: paceSummary.startsWith('Pace') ? paceSummary : `Pace: ${paceSummary}`,
-                style_class: 'usagebar-dim usagebar-pace',
-            });
-            pace.clutter_text.line_wrap = true;
-            card.add_child(pace);
+            const parts = paceSummary.replace(/^Pace:\s*/, '').split(/\s+[|·]\s+/);
+            paceLeft = parts[0];
+            if (parts.length > 1) {
+                const eta = parts[parts.length - 1];
+                paceRight = eta.charAt(0).toUpperCase() + eta.slice(1);
+            }
         }
+
+        const reset = resetText(w);
+        const remaining = Math.max(0, Math.min(100, Math.round(100 - w.usedPercent)));
+        const percentText = known ? T.remaining(remaining) : T.unavailable;
+
+        const foot = new St.BoxLayout({x_expand: true, style_class: 'usagebar-window-foot'});
+        const leftCol = new St.BoxLayout({vertical: true});
+        leftCol.add_child(new St.Label({
+            text: percentText,
+            style_class: 'usagebar-dim',
+        }));
+        if (paceLeft) {
+            leftCol.add_child(new St.Label({
+                text: paceLeft,
+                style_class: 'usagebar-dim usagebar-pace',
+            }));
+        }
+        foot.add_child(leftCol);
+        foot.add_child(new St.Widget({x_expand: true}));
+        const rightCol = new St.BoxLayout({vertical: true});
+        if (reset) {
+            rightCol.add_child(new St.Label({
+                text: reset,
+                style_class: 'usagebar-dim',
+                x_expand: true,
+                x_align: Clutter.ActorAlign.END,
+            }));
+        }
+        if (paceRight) {
+            rightCol.add_child(new St.Label({
+                text: paceRight,
+                style_class: 'usagebar-dim usagebar-pace',
+                x_expand: true,
+                x_align: Clutter.ActorAlign.END,
+            }));
+        }
+        foot.add_child(rightCol);
+        card.add_child(foot);
+    }
+
+    // Publish the set of bars that can currently render so the prefs window can
+    // show one hide toggle per bar without fetching usage itself. Writes only on
+    // change — set_strv with an equal value emits no 'changed', but guarding
+    // also avoids a redundant render pass.
+    _publishWindowCatalog() {
+        if (!this._settings)
+            return;
+        const catalog = [];
+        for (const row of this._rows) {
+            for (const {w, slot} of windowsOf(row))
+                catalog.push({p: row.provider, k: `w${slot}`, l: windowLabel(w.windowMinutes, slot)});
+            for (const x of extraWindowsOf(row))
+                catalog.push({p: row.provider, k: `x:${x.id ?? x.title}`, l: x.title ?? x.id});
+        }
+        const encoded = catalog.map(e => JSON.stringify(e));
+        const prev = this._settings.get_strv('known-windows');
+        if (encoded.length !== prev.length || encoded.some((v, i) => v !== prev[i]))
+            this._settings.set_strv('known-windows', encoded);
     }
 
     // flat: no card background; thin separator lines between sections
     // (usage | credits/cost | links) — used on the per-provider tabs.
-    _buildCard(row, {showCost = true, flat = false} = {}) {
+    _buildCard(row, {showCost = true, flat = false, showLinks = true} = {}) {
         const card = new St.BoxLayout({
             vertical: true,
             style_class: flat ? 'usagebar-card-flat' : 'usagebar-card',
@@ -1330,7 +1449,10 @@ export default class UsageBarExtension extends Extension {
             card.add_child(banner);
         }
 
+        const hiddenBars = new Set(this._settings?.get_strv('hidden-windows') ?? []);
         for (const {w, slot} of windowsOf(row)) {
+            if (hiddenBars.has(barKey(row.provider, {slot})))
+                continue;
             const pace = row.pace ? [row.pace.primary, row.pace.secondary][slot] : null;
             this._addWindowRow(card, windowLabel(w.windowMinutes, slot), w,
                 row.stale, pace?.summary);
@@ -1338,8 +1460,11 @@ export default class UsageBarExtension extends Extension {
 
         // Extra named limits (per-model bars like Fable, Daily Routines) —
         // rendered like the standard windows, as in the macOS card.
-        for (const x of extraWindowsOf(row))
+        for (const x of extraWindowsOf(row)) {
+            if (hiddenBars.has(barKey(row.provider, {extra: x})))
+                continue;
             this._addWindowRow(card, x.title ?? x.id, x.window, row.stale, null);
+        }
 
         const report = showCost
             ? (this._costs ?? []).find(c => c.provider === row.provider)
@@ -1398,8 +1523,8 @@ export default class UsageBarExtension extends Extension {
             card.add_child(hintLabel);
         }
 
-        const urls = URLS[row.provider];
-        // Status strip only on the detail tabs, like cost — All stays compact.
+        const urls = showLinks ? URLS[row.provider] : null;
+        // Status strip and links only on the detail tabs — All stays compact.
         const statusStrip = showCost ? this._buildStatusStrip(row.provider) : null;
         if (flat && (urls || statusStrip))
             addSeparator();
