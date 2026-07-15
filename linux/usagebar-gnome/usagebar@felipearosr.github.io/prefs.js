@@ -47,6 +47,33 @@ function enabledProviders() {
     }
 }
 
+// Status-strip scopes per provider: which slice of the public status page
+// the popover's incident-history strip tracks. Codex entries are
+// status.openai.com component groups; Claude entries are status.claude.com
+// component name prefixes. 'Everything' = the whole page.
+const STATUS_SCOPES = {
+    codex: ['Codex', 'APIs', 'ChatGPT', 'Everything'],
+    claude: ['Claude Code', 'Claude API', 'claude.ai', 'Claude Console', 'Everything'],
+};
+
+function statusScopeRow(settings, provider) {
+    const key = `${provider}-status-scope`;
+    const scopes = STATUS_SCOPES[provider];
+    if (!scopes || !settings.settings_schema.has_key(key))
+        return null;
+    const row = new Adw.ComboRow({
+        title: 'Status strip tracks',
+        subtitle: 'Which part of the status page colors the history bars',
+        model: Gtk.StringList.new(scopes),
+    });
+    const current = settings.get_string(key);
+    row.selected = Math.max(0, scopes.indexOf(current));
+    row.connect('notify::selected', () => {
+        settings.set_string(key, scopes[row.selected]);
+    });
+    return row;
+}
+
 function spinRow(settings, key, title, subtitle) {
     const row = new Adw.SpinRow({
         title,
@@ -128,6 +155,9 @@ export default class UsageBarPreferences extends ExtensionPreferences {
                 settings.set_strv('hidden-chips', [...h].sort());
             });
             group.add(chipRow);
+            const scopeRow = statusScopeRow(settings, id);
+            if (scopeRow)
+                group.add(scopeRow);
             providers.add(group);
         }
         window.add(providers);

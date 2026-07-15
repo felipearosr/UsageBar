@@ -34,5 +34,15 @@
       <range min="1" max="100"/>
       <summary>Second (critical) notification threshold</summary>
     </key>
+    <key name="codex-status-scope" type="s">
+      <default>'Codex'</default>
+      <summary>Codex status strip scope</summary>
+      <description>Which status.openai.com component group the status strip tracks ('Everything' for the whole page).</description>
+    </key>
+    <key name="claude-status-scope" type="s">
+      <default>'Claude Code'</default>
+      <summary>Claude status strip scope</summary>
+      <description>Which status.claude.com component the status strip tracks ('Everything' for the whole page).</description>
+    </key>
   </schema>
 </schemalist>

@@ -50,19 +50,18 @@ const URLS = {
         status: 'https://status.openai.com/',
         // status.openai.com aggregates ChatGPT/Sora/Ads incidents and its
         // statuspage-compat API strips component tags — to match the page's
-        // "Codex" group bars, pull the incident.io native feed and keep only
-        // impact windows on Codex components.
+        // per-component bars, pull the incident.io native feed and keep only
+        // impact windows inside the scope chosen in Settings (a component
+        // group name, default "Codex").
         statusFeed: {
             kind: 'incidentio',
             base: 'https://status.openai.com/proxy/status.openai.com',
-            component: name => /codex/i.test(name) ||
-                ['CLI', 'VS Code extension'].includes(name),
         },
     },
     claude: {
         dashboard: 'https://claude.ai/settings/usage',
         status: 'https://status.claude.com/',
-        // Claude-only page: every incident is about the product family.
+        // Scope here is a component name prefix, default "Claude Code".
         statusFeed: {kind: 'statuspage', base: 'https://status.claude.com'},
     },
 };
@@ -277,9 +276,16 @@ function feedCoverage(incidents, dateOf) {
 
 // Classic Atlassian Statuspage /api/v2/incidents.json: one interval per
 // incident, spanning its whole lifetime, ranked by page-level impact.
-function statuspageIntervals(incidents) {
+// scope: keep only incidents tagged with a component whose name starts
+// with it (case-insensitive) — 'Claude API' matches
+// 'Claude API (api.anthropic.com)'. 'Everything' keeps all.
+function statuspageIntervals(incidents, scope) {
     const now = Date.now();
+    const inScope = inc => !scope || scope === 'Everything' ||
+        (inc.components ?? []).some(c =>
+            (c.name ?? '').toLowerCase().startsWith(scope.toLowerCase()));
     const intervals = (incidents ?? [])
+        .filter(inScope)
         .map(inc => ({
             rank: STATUSPAGE_IMPACT_RANK[inc.impact] ?? 0,
             name: inc.name ?? 'incident',
@@ -292,6 +298,29 @@ function statuspageIntervals(incidents) {
         intervals,
         covered: feedCoverage(incidents, inc => Date.parse(inc.created_at)),
     };
+}
+
+// Resolve an incident.io scope to component ids: the members of the
+// structure group named like it, plus any component whose own name
+// contains it (catches "Codex in ChatGPT Desktop" living in the ChatGPT
+// group). 'Everything' — or a scope matching nothing — is all components.
+function incidentIoScopeIds(summary, scope) {
+    const all = (summary?.components ?? []).map(c => c.id);
+    if (!scope || scope === 'Everything')
+        return new Set(all);
+    const lower = scope.toLowerCase();
+    const ids = new Set();
+    for (const item of summary?.structure?.items ?? []) {
+        if ((item.group?.name ?? '').toLowerCase() === lower) {
+            for (const c of item.group.components ?? [])
+                ids.add(c.component_id);
+        }
+    }
+    for (const c of summary?.components ?? []) {
+        if ((c.name ?? '').toLowerCase().includes(lower))
+            ids.add(c.id);
+    }
+    return ids.size ? ids : new Set(all);
 }
 
 // incident.io native feed (<base>/incidents): one interval per
@@ -652,8 +681,12 @@ export default class UsageBarExtension extends Extension {
             THRESHOLDS.crit = this._settings.get_int('crit-threshold');
         };
         applyThresholds();
-        this._settingsChangedId = this._settings.connect('changed', () => {
+        this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
             applyThresholds();
+            if (key.endsWith('-status-scope') && this._status) {
+                this._status = {}; // drop the cache so the new scope refetches
+                this._fetchStatus();
+            }
             this._render();
         });
 
@@ -852,6 +885,16 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
+    // Which slice of the provider's status page the strip tracks (set in
+    // prefs; 'Everything' = whole page). Guarded: not every provider id in
+    // the feed has a matching settings key.
+    _statusScope(provider) {
+        const key = `${provider}-status-scope`;
+        return this._settings?.settings_schema.has_key(key)
+            ? this._settings.get_string(key)
+            : 'Everything';
+    }
+
     // Incident history for the status strips, straight from each provider's
     // public status page (the serve API doesn't carry status — see the
     // TODO(upstream) above URLS). Everything here is best-effort.
@@ -863,24 +906,23 @@ export default class UsageBarExtension extends Extension {
             const cached = this._status[provider];
             if (cached && (Date.now() - cached.fetchedAt) / 1000 < STATUS_TTL_SECS)
                 continue;
+            const scope = this._statusScope(provider);
             const done = result => {
                 if (!this._indicator || !this._status || !result)
                     return;
-                this._status[provider] = {...result, fetchedAt: Date.now()};
+                this._status[provider] = {...result, scope, fetchedAt: Date.now()};
                 this._render();
             };
             if (feed.kind === 'statuspage') {
                 this._fetchJSON(`${feed.base}/api/v2/incidents.json`, (data, error) =>
-                    done(error ? null : statuspageIntervals(data.incidents)));
+                    done(error ? null : statuspageIntervals(data.incidents, scope)));
             } else {
-                // incident.io: the component name→id map lives in the
+                // incident.io: the component/group structure lives in the
                 // summary document, the impact windows in /incidents.
                 this._fetchJSON(feed.base, (summary, error) => {
                     if (error || !this._indicator)
                         return;
-                    const ids = new Set((summary.summary?.components ?? [])
-                        .filter(c => feed.component(c.name ?? ''))
-                        .map(c => c.id));
+                    const ids = incidentIoScopeIds(summary.summary, scope);
                     this._fetchJSON(`${feed.base}/incidents`, (data, err2) =>
                         done(err2 ? null : incidentIoIntervals(data.incidents, ids)));
                 });
@@ -1081,8 +1123,9 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-status-wrap',
         });
         const head = new St.BoxLayout({x_expand: true});
+        const scoped = cached.scope && cached.scope !== 'Everything';
         head.add_child(new St.Label({
-            text: `Status — last ${STATUS_DAYS} days`,
+            text: `${scoped ? `${cached.scope} status` : 'Status'} — last ${STATUS_DAYS} days`,
             style_class: 'usagebar-window-label',
         }));
         head.add_child(new St.Widget({x_expand: true}));
