@@ -31,7 +31,7 @@ const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
 const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
 const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
-const STATUS_DAYS = 60;        // history strip length, like statuspage.io
+const STATUS_DAYS = 45;        // history strip length, like statuspage.io
 const STATUS_BAR_HEIGHT = 14;
 const BAR_WIDTH = 320;
 const MINI_BAR_WIDTH = 26;
@@ -1180,9 +1180,11 @@ export default class UsageBarExtension extends Extension {
 
         const strip = new St.BoxLayout({x_expand: true, style_class: 'usagebar-status-strip'});
         const bars = statusDays(cached.intervals, STATUS_DAYS, cached.covered).map(day => {
+            // Small natural width: the request must fit the popover even
+            // before the allocation-follow below grows bars to fill it.
             const bar = new St.Widget({
                 style_class: `usagebar-status-day usagebar-bg-${day.sev}`,
-                width: 6,
+                width: 2,
                 height: STATUS_BAR_HEIGHT,
                 reactive: true,
                 track_hover: true,
