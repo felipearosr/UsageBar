@@ -48,10 +48,22 @@ const URLS = {
     codex: {
         dashboard: 'https://chatgpt.com/codex/settings/usage',
         status: 'https://status.openai.com/',
+        // status.openai.com aggregates ChatGPT/Sora/Ads incidents and its
+        // statuspage-compat API strips component tags — to match the page's
+        // "Codex" group bars, pull the incident.io native feed and keep only
+        // impact windows on Codex components.
+        statusFeed: {
+            kind: 'incidentio',
+            base: 'https://status.openai.com/proxy/status.openai.com',
+            component: name => /codex/i.test(name) ||
+                ['CLI', 'VS Code extension'].includes(name),
+        },
     },
     claude: {
         dashboard: 'https://claude.ai/settings/usage',
         status: 'https://status.claude.com/',
+        // Claude-only page: every incident is about the product family.
+        statusFeed: {kind: 'statuspage', base: 'https://status.claude.com'},
     },
 };
 
@@ -243,46 +255,90 @@ function chartTooltipText(point) {
     return bits.length ? `${day} · ${bits.join(' · ')}` : `${day} · no usage`;
 }
 
-// ---------- provider status (statuspage.io incident feeds) ----------
+// ---------- provider status (public status-page incident feeds) ----------
 
-// impact → severity class: none/maintenance ignored, minor → yellow,
-// major/critical → red (matching the usage-bar palette).
-const IMPACT_RANK = {minor: 1, major: 2, critical: 3};
+// Both feeds normalize to impact intervals {rank, name, start, end,
+// ongoing}: rank 1 → yellow, 2/3 → red (matching the usage-bar palette),
+// plus `covered` — the feed is a bounded page, so when it looks truncated,
+// days wholly before its oldest entry are unknown, not a clean green.
 const IMPACT_SEV = ['ok', 'warn', 'crit', 'crit'];
+const STATUSPAGE_IMPACT_RANK = {minor: 1, major: 2, critical: 3};
+const INCIDENTIO_STATUS_RANK = {
+    degraded_performance: 1,
+    partial_outage: 2,
+    full_outage: 3,
+};
 
-// One entry per local day, oldest first: worst incident impact overlapping
-// that day. The feed is a bounded page (≈25–50 incidents), so when it looks
-// truncated, days wholly before its oldest entry are 'stale' (no data), not
-// a clean green.
-function statusDays(incidents, numDays) {
-    const now = new Date();
-    const parsed = (incidents ?? [])
+function feedCoverage(incidents, dateOf) {
+    const starts = (incidents ?? []).map(dateOf).filter(t => !Number.isNaN(t));
+    return (incidents ?? []).length >= 20 && starts.length
+        ? Math.min(...starts) : 0;
+}
+
+// Classic Atlassian Statuspage /api/v2/incidents.json: one interval per
+// incident, spanning its whole lifetime, ranked by page-level impact.
+function statuspageIntervals(incidents) {
+    const now = Date.now();
+    const intervals = (incidents ?? [])
         .map(inc => ({
-            rank: IMPACT_RANK[inc.impact] ?? 0,
+            rank: STATUSPAGE_IMPACT_RANK[inc.impact] ?? 0,
             name: inc.name ?? 'incident',
             start: Date.parse(inc.started_at ?? inc.created_at),
-            end: inc.resolved_at ? Date.parse(inc.resolved_at) : now.getTime(),
+            end: inc.resolved_at ? Date.parse(inc.resolved_at) : now,
             ongoing: !inc.resolved_at,
         }))
         .filter(inc => !Number.isNaN(inc.start) && inc.rank > 0);
-    const starts = (incidents ?? [])
-        .map(inc => Date.parse(inc.created_at))
-        .filter(t => !Number.isNaN(t));
-    const covered = (incidents ?? []).length >= 20 && starts.length
-        ? Math.min(...starts) : 0;
+    return {
+        intervals,
+        covered: feedCoverage(incidents, inc => Date.parse(inc.created_at)),
+    };
+}
+
+// incident.io native feed (<base>/incidents): one interval per
+// component_impact window on a matching component — the same data the
+// page's per-component uptime bars are drawn from.
+function incidentIoIntervals(incidents, componentIds) {
+    const now = Date.now();
+    const intervals = [];
+    for (const inc of incidents ?? []) {
+        for (const imp of inc.component_impacts ?? []) {
+            if (!componentIds.has(imp.component_id))
+                continue;
+            const rank = INCIDENTIO_STATUS_RANK[imp.status] ?? 0;
+            const start = Date.parse(imp.start_at);
+            if (!rank || Number.isNaN(start))
+                continue;
+            intervals.push({
+                rank,
+                name: inc.name ?? 'incident',
+                start,
+                end: imp.end_at ? Date.parse(imp.end_at) : now,
+                ongoing: !imp.end_at,
+            });
+        }
+    }
+    return {
+        intervals,
+        covered: feedCoverage(incidents, inc => Date.parse(inc.published_at)),
+    };
+}
+
+// One entry per local day, oldest first: worst impact overlapping that day.
+function statusDays(intervals, numDays, covered) {
+    const now = new Date();
     const days = [];
     for (let i = numDays - 1; i >= 0; i--) {
         const dayStart = new Date(now.getFullYear(), now.getMonth(),
             now.getDate() - i).getTime();
         const dayEnd = dayStart + 86400000;
-        const hits = parsed.filter(inc => inc.start < dayEnd && inc.end >= dayStart);
-        const worst = hits.reduce((m, inc) => Math.max(m, inc.rank), 0);
+        const hits = intervals.filter(iv => iv.start < dayEnd && iv.end >= dayStart);
+        const worst = hits.reduce((m, iv) => Math.max(m, iv.rank), 0);
         days.push({
             date: new Date(dayStart + 43200000)
                 .toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
             sev: worst > 0 ? IMPACT_SEV[worst] : (dayEnd <= covered ? 'stale' : 'ok'),
-            names: hits.filter(h => h.rank === worst).map(h => h.name),
-            count: hits.length,
+            names: [...new Set(hits.filter(h => h.rank === worst).map(h => h.name))],
+            count: new Set(hits.map(h => h.name)).size,
             ongoing: hits.some(h => h.ongoing),
         });
     }
@@ -301,12 +357,12 @@ function statusTooltipText(day) {
     return `${day.date} · ${name}${more}${day.ongoing ? ' · ongoing' : ''}`;
 }
 
-// Right-hand summary over the strip, from unresolved incidents in the feed.
-function currentStatus(incidents) {
+// Right-hand summary over the strip, from still-open impact intervals.
+function currentStatus(intervals) {
     let worst = 0;
-    for (const inc of incidents ?? []) {
-        if (!inc.resolved_at)
-            worst = Math.max(worst, IMPACT_RANK[inc.impact] ?? 0);
+    for (const iv of intervals ?? []) {
+        if (iv.ongoing)
+            worst = Math.max(worst, iv.rank);
     }
     return [
         {text: 'Operational', sev: 'ok'},
@@ -797,23 +853,38 @@ export default class UsageBarExtension extends Extension {
     }
 
     // Incident history for the status strips, straight from each provider's
-    // public statuspage (the serve API doesn't carry status — see the
-    // TODO(upstream) above URLS).
+    // public status page (the serve API doesn't carry status — see the
+    // TODO(upstream) above URLS). Everything here is best-effort.
     _fetchStatus() {
         for (const [provider, urls] of Object.entries(URLS)) {
+            const feed = urls.statusFeed;
+            if (!feed)
+                continue;
             const cached = this._status[provider];
             if (cached && (Date.now() - cached.fetchedAt) / 1000 < STATUS_TTL_SECS)
                 continue;
-            const url = `${urls.status.replace(/\/+$/, '')}/api/v2/incidents.json`;
-            this._fetchJSON(url, (data, error) => {
-                if (!this._indicator || error || !this._status)
-                    return; // status is best-effort
-                this._status[provider] = {
-                    incidents: data.incidents ?? [],
-                    fetchedAt: Date.now(),
-                };
+            const done = result => {
+                if (!this._indicator || !this._status || !result)
+                    return;
+                this._status[provider] = {...result, fetchedAt: Date.now()};
                 this._render();
-            });
+            };
+            if (feed.kind === 'statuspage') {
+                this._fetchJSON(`${feed.base}/api/v2/incidents.json`, (data, error) =>
+                    done(error ? null : statuspageIntervals(data.incidents)));
+            } else {
+                // incident.io: the component name→id map lives in the
+                // summary document, the impact windows in /incidents.
+                this._fetchJSON(feed.base, (summary, error) => {
+                    if (error || !this._indicator)
+                        return;
+                    const ids = new Set((summary.summary?.components ?? [])
+                        .filter(c => feed.component(c.name ?? ''))
+                        .map(c => c.id));
+                    this._fetchJSON(`${feed.base}/incidents`, (data, err2) =>
+                        done(err2 ? null : incidentIoIntervals(data.incidents, ids)));
+                });
+            }
         }
     }
 
@@ -1015,7 +1086,7 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-window-label',
         }));
         head.add_child(new St.Widget({x_expand: true}));
-        const now = currentStatus(cached.incidents);
+        const now = currentStatus(cached.intervals);
         head.add_child(new St.Label({
             text: now.text,
             style_class: `usagebar-status-now usagebar-fg-${now.sev}`,
@@ -1023,7 +1094,7 @@ export default class UsageBarExtension extends Extension {
         wrap.add_child(head);
 
         const strip = new St.BoxLayout({x_expand: true, style_class: 'usagebar-status-strip'});
-        const bars = statusDays(cached.incidents, STATUS_DAYS).map(day => {
+        const bars = statusDays(cached.intervals, STATUS_DAYS, cached.covered).map(day => {
             const bar = new St.Widget({
                 style_class: `usagebar-status-day usagebar-bg-${day.sev}`,
                 width: 6,
