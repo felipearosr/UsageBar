@@ -274,30 +274,69 @@ function feedCoverage(incidents, dateOf) {
         ? Math.min(...starts) : 0;
 }
 
-// Classic Atlassian Statuspage /api/v2/incidents.json: one interval per
-// incident, spanning its whole lifetime, ranked by page-level impact.
-// scope: keep only incidents tagged with a component whose name starts
-// with it (case-insensitive) — 'Claude API' matches
-// 'Claude API (api.anthropic.com)'. 'Everything' keeps all.
+// Classic Atlassian Statuspage /api/v2/incidents.json.
+//
+// 'Everything': one interval per incident, spanning its whole lifetime,
+// ranked by page-level impact — the page's overall incident history.
+//
+// Component scope (name prefix, case-insensitive — 'Claude API' matches
+// 'Claude API (api.anthropic.com)'): reconstruct that component's outage
+// windows from the per-update status transitions, exactly what the page's
+// per-component uptime bars show. Like those bars, degraded_performance
+// does NOT color a day (an incident can sit at "degraded" for weeks —
+// e.g. a model-access notice — while the page stays green); only
+// partial_outage (yellow) and major_outage (red) count.
+const STATUSPAGE_COMPONENT_RANK = {partial_outage: 2, major_outage: 3};
+
 function statuspageIntervals(incidents, scope) {
     const now = Date.now();
-    const inScope = inc => !scope || scope === 'Everything' ||
-        (inc.components ?? []).some(c =>
-            (c.name ?? '').toLowerCase().startsWith(scope.toLowerCase()));
-    const intervals = (incidents ?? [])
-        .filter(inScope)
-        .map(inc => ({
-            rank: STATUSPAGE_IMPACT_RANK[inc.impact] ?? 0,
-            name: inc.name ?? 'incident',
-            start: Date.parse(inc.started_at ?? inc.created_at),
-            end: inc.resolved_at ? Date.parse(inc.resolved_at) : now,
-            ongoing: !inc.resolved_at,
-        }))
-        .filter(inc => !Number.isNaN(inc.start) && inc.rank > 0);
-    return {
-        intervals,
-        covered: feedCoverage(incidents, inc => Date.parse(inc.created_at)),
-    };
+    const covered = feedCoverage(incidents, inc => Date.parse(inc.created_at));
+    if (!scope || scope === 'Everything') {
+        return {
+            covered,
+            intervals: (incidents ?? [])
+                .map(inc => ({
+                    rank: STATUSPAGE_IMPACT_RANK[inc.impact] ?? 0,
+                    name: inc.name ?? 'incident',
+                    start: Date.parse(inc.started_at ?? inc.created_at),
+                    end: inc.resolved_at ? Date.parse(inc.resolved_at) : now,
+                    ongoing: !inc.resolved_at,
+                }))
+                .filter(inc => !Number.isNaN(inc.start) && inc.rank > 0),
+        };
+    }
+    const lower = scope.toLowerCase();
+    const intervals = [];
+    for (const inc of incidents ?? []) {
+        const updates = [...(inc.incident_updates ?? [])]
+            .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+        let open = null; // {rank, start}
+        for (const u of updates) {
+            const ac = (u.affected_components ?? []).find(c =>
+                (c.name ?? '').toLowerCase().startsWith(lower));
+            if (!ac)
+                continue;
+            const t = Date.parse(u.created_at);
+            if (Number.isNaN(t))
+                continue;
+            const rank = STATUSPAGE_COMPONENT_RANK[ac.new_status] ?? 0;
+            if (open && rank !== open.rank) {
+                intervals.push({...open, name: inc.name ?? 'incident',
+                    end: t, ongoing: false});
+                open = null;
+            }
+            if (rank && !open)
+                open = {rank, start: t};
+        }
+        if (open) {
+            // Never transitioned back in the feed: closed at resolution,
+            // or genuinely still open.
+            intervals.push({...open, name: inc.name ?? 'incident',
+                end: inc.resolved_at ? Date.parse(inc.resolved_at) : now,
+                ongoing: !inc.resolved_at});
+        }
+    }
+    return {intervals, covered};
 }
 
 // Resolve an incident.io scope to component ids: the members of the
