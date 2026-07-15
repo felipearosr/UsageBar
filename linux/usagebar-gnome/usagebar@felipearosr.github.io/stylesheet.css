@@ -199,6 +199,24 @@
   background-color: rgba(160, 160, 166, 0.22);
 }
 
+.usagebar-status-wrap {
+  margin-top: 10px;
+}
+
+.usagebar-status-strip {
+  spacing: 2px;
+  margin-top: 4px;
+}
+
+.usagebar-status-day {
+  border-radius: 2px;
+}
+
+.usagebar-status-now {
+  font-size: 9.5pt;
+  font-weight: bold;
+}
+
 .usagebar-tooltip {
   background-color: rgba(28, 28, 32, 0.96);
   color: #eeeeec;

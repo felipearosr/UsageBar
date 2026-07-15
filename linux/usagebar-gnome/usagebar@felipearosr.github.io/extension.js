@@ -4,7 +4,8 @@
 // popover with a tab strip ("All" + one tab per provider, each with a mini
 // usage bar) above the detail area: all cards stacked on the All tab, a
 // single card per provider tab — rate-window progress bars, reset
-// countdowns, pace, cost (Today / 30 days, top models) and links.
+// countdowns, pace, cost (Today / 30 days, top models), a statuspage-style
+// incident-history strip and links.
 //
 // Self-contained backend: supervises `codexbar serve` on a free loopback
 // port (like the Tauri tray in ../codexbar-tray) and polls GET /usage and
@@ -29,6 +30,9 @@ const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
 const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
+const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
+const STATUS_DAYS = 30;        // history strip length, like statuspage.io
+const STATUS_BAR_HEIGHT = 14;
 const BAR_WIDTH = 320;
 const MINI_BAR_WIDTH = 26;
 const KPI_COL_WIDTH = 180; // left column of the 2x2 cost grid
@@ -237,6 +241,79 @@ function chartTooltipText(point) {
         point.tokens !== null ? `${fmtTokens(point.tokens)} tokens` : null,
     ].filter(Boolean);
     return bits.length ? `${day} · ${bits.join(' · ')}` : `${day} · no usage`;
+}
+
+// ---------- provider status (statuspage.io incident feeds) ----------
+
+// impact → severity class: none/maintenance ignored, minor → yellow,
+// major/critical → red (matching the usage-bar palette).
+const IMPACT_RANK = {minor: 1, major: 2, critical: 3};
+const IMPACT_SEV = ['ok', 'warn', 'crit', 'crit'];
+
+// One entry per local day, oldest first: worst incident impact overlapping
+// that day. The feed is a bounded page (≈25–50 incidents), so when it looks
+// truncated, days wholly before its oldest entry are 'stale' (no data), not
+// a clean green.
+function statusDays(incidents, numDays) {
+    const now = new Date();
+    const parsed = (incidents ?? [])
+        .map(inc => ({
+            rank: IMPACT_RANK[inc.impact] ?? 0,
+            name: inc.name ?? 'incident',
+            start: Date.parse(inc.started_at ?? inc.created_at),
+            end: inc.resolved_at ? Date.parse(inc.resolved_at) : now.getTime(),
+            ongoing: !inc.resolved_at,
+        }))
+        .filter(inc => !Number.isNaN(inc.start) && inc.rank > 0);
+    const starts = (incidents ?? [])
+        .map(inc => Date.parse(inc.created_at))
+        .filter(t => !Number.isNaN(t));
+    const covered = (incidents ?? []).length >= 20 && starts.length
+        ? Math.min(...starts) : 0;
+    const days = [];
+    for (let i = numDays - 1; i >= 0; i--) {
+        const dayStart = new Date(now.getFullYear(), now.getMonth(),
+            now.getDate() - i).getTime();
+        const dayEnd = dayStart + 86400000;
+        const hits = parsed.filter(inc => inc.start < dayEnd && inc.end >= dayStart);
+        const worst = hits.reduce((m, inc) => Math.max(m, inc.rank), 0);
+        days.push({
+            date: new Date(dayStart + 43200000)
+                .toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
+            sev: worst > 0 ? IMPACT_SEV[worst] : (dayEnd <= covered ? 'stale' : 'ok'),
+            names: hits.filter(h => h.rank === worst).map(h => h.name),
+            count: hits.length,
+            ongoing: hits.some(h => h.ongoing),
+        });
+    }
+    return days;
+}
+
+function statusTooltipText(day) {
+    if (day.sev === 'stale')
+        return `${day.date} · no incident data`;
+    if (!day.count)
+        return `${day.date} · operational`;
+    let name = day.names[0] ?? 'incident';
+    if (name.length > 48)
+        name = `${name.slice(0, 47)}…`;
+    const more = day.count > 1 ? ` (+${day.count - 1} more)` : '';
+    return `${day.date} · ${name}${more}${day.ongoing ? ' · ongoing' : ''}`;
+}
+
+// Right-hand summary over the strip, from unresolved incidents in the feed.
+function currentStatus(incidents) {
+    let worst = 0;
+    for (const inc of incidents ?? []) {
+        if (!inc.resolved_at)
+            worst = Math.max(worst, IMPACT_RANK[inc.impact] ?? 0);
+    }
+    return [
+        {text: 'Operational', sev: 'ok'},
+        {text: 'Minor incident', sev: 'warn'},
+        {text: 'Major incident', sev: 'crit'},
+        {text: 'Critical incident', sev: 'crit'},
+    ][worst];
 }
 
 // Codex limit-reset credits (usage.codexResetCredits, oauth source only):
@@ -506,6 +583,7 @@ export default class UsageBarExtension extends Extension {
         this._notified = new Map();
         this._costs = null;
         this._costFetchedAt = 0;
+        this._status = {};
         this._lastFetchAt = 0;
         this._fetchId = 0;
         this._tickId = 0;
@@ -531,6 +609,7 @@ export default class UsageBarExtension extends Extension {
                 this._selectedProvider = null; // default to the All tab each open
                 this._fetchUsage();
                 this._fetchCost();
+                this._fetchStatus();
                 this._render();
             }
         });
@@ -586,6 +665,7 @@ export default class UsageBarExtension extends Extension {
         this._rows = [];
         this._notified = null;
         this._costs = null;
+        this._status = null;
     }
 
     // ----- data -----
@@ -610,13 +690,8 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    _get(path, cb) {
-        const port = this._supervisor?.port;
-        if (!port) {
-            cb(null, new Error('serve not running'));
-            return;
-        }
-        const msg = Soup.Message.new('GET', `http://127.0.0.1:${port}${path}`);
+    _fetchJSON(url, cb) {
+        const msg = Soup.Message.new('GET', url);
         this._session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
             (session, res) => {
                 try {
@@ -628,6 +703,15 @@ export default class UsageBarExtension extends Extension {
                     cb(null, e);
                 }
             });
+    }
+
+    _get(path, cb) {
+        const port = this._supervisor?.port;
+        if (!port) {
+            cb(null, new Error('serve not running'));
+            return;
+        }
+        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb);
     }
 
     _scheduleFetch(secs) {
@@ -710,6 +794,27 @@ export default class UsageBarExtension extends Extension {
             this._costFetchedAt = Date.now();
             this._render();
         });
+    }
+
+    // Incident history for the status strips, straight from each provider's
+    // public statuspage (the serve API doesn't carry status — see the
+    // TODO(upstream) above URLS).
+    _fetchStatus() {
+        for (const [provider, urls] of Object.entries(URLS)) {
+            const cached = this._status[provider];
+            if (cached && (Date.now() - cached.fetchedAt) / 1000 < STATUS_TTL_SECS)
+                continue;
+            const url = `${urls.status.replace(/\/+$/, '')}/api/v2/incidents.json`;
+            this._fetchJSON(url, (data, error) => {
+                if (!this._indicator || error || !this._status)
+                    return; // status is best-effort
+                this._status[provider] = {
+                    incidents: data.incidents ?? [],
+                    fetchedAt: Date.now(),
+                };
+                this._render();
+            });
+        }
     }
 
     // ----- rendering -----
@@ -850,7 +955,7 @@ export default class UsageBarExtension extends Extension {
             slot._bar = bar;
             slot.connect('notify::hover', () => {
                 if (slot.hover)
-                    this._showChartTooltip(slot, point);
+                    this._showTooltip(slot, chartTooltipText(point));
                 else
                     this._indicator?._tooltip?.hide();
             });
@@ -874,11 +979,11 @@ export default class UsageBarExtension extends Extension {
         return wrap;
     }
 
-    _showChartTooltip(anchor, point) {
+    _showTooltip(anchor, text) {
         const tip = this._indicator?._tooltip;
         if (!tip)
             return;
-        tip.text = chartTooltipText(point);
+        tip.text = text;
         // The open menu is a later addition to uiGroup — restack or the
         // tooltip renders behind it.
         Main.uiGroup.set_child_above_sibling(tip, null);
@@ -889,6 +994,64 @@ export default class UsageBarExtension extends Extension {
         let x = Math.round(ax + anchor.get_width() / 2 - tw / 2);
         x = Math.max(monitor.x + 4, Math.min(x, monitor.x + monitor.width - tw - 4));
         tip.set_position(x, Math.round(ay - th - 6));
+    }
+
+    // Statuspage-style history strip: one same-height bar per day, colored
+    // by that day's worst incident impact (green clean, yellow minor, red
+    // major/critical, grey before the feed's coverage), hover tooltip with
+    // the incident name. Null until the feed has been fetched.
+    _buildStatusStrip(provider) {
+        const cached = this._status?.[provider];
+        if (!cached)
+            return null;
+        const wrap = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: 'usagebar-status-wrap',
+        });
+        const head = new St.BoxLayout({x_expand: true});
+        head.add_child(new St.Label({
+            text: `Status — last ${STATUS_DAYS} days`,
+            style_class: 'usagebar-window-label',
+        }));
+        head.add_child(new St.Widget({x_expand: true}));
+        const now = currentStatus(cached.incidents);
+        head.add_child(new St.Label({
+            text: now.text,
+            style_class: `usagebar-status-now usagebar-fg-${now.sev}`,
+        }));
+        wrap.add_child(head);
+
+        const strip = new St.BoxLayout({x_expand: true, style_class: 'usagebar-status-strip'});
+        const bars = statusDays(cached.incidents, STATUS_DAYS).map(day => {
+            const bar = new St.Widget({
+                style_class: `usagebar-status-day usagebar-bg-${day.sev}`,
+                width: 6,
+                height: STATUS_BAR_HEIGHT,
+                reactive: true,
+                track_hover: true,
+            });
+            bar.connect('notify::hover', () => {
+                if (bar.hover)
+                    this._showTooltip(bar, statusTooltipText(day));
+                else
+                    this._indicator?._tooltip?.hide();
+            });
+            strip.add_child(bar);
+            return bar;
+        });
+        // Fill the card width: same allocation-follow as the trend chart
+        // (the 2px gaps come from the strip's CSS spacing).
+        strip.connect('notify::allocation', () => {
+            const w = strip.allocation.get_width();
+            if (w <= 0)
+                return;
+            const bw = Math.max(2, Math.floor((w - 2 * (bars.length - 1)) / bars.length));
+            for (const bar of bars)
+                bar.set_width(bw);
+        });
+        wrap.add_child(strip);
+        return wrap;
     }
 
     // One usage metric: label + "% · resets in …" row, severity bar, pace.
@@ -1075,8 +1238,12 @@ export default class UsageBarExtension extends Extension {
         }
 
         const urls = URLS[row.provider];
-        if (flat && urls)
+        // Status strip only on the detail tabs, like cost — All stays compact.
+        const statusStrip = showCost ? this._buildStatusStrip(row.provider) : null;
+        if (flat && (urls || statusStrip))
             addSeparator();
+        if (statusStrip)
+            card.add_child(statusStrip);
         if (urls) {
             const links = new St.BoxLayout({style_class: 'usagebar-links'});
             for (const [label, url] of [['Dashboard', urls.dashboard], ['Status', urls.status]]) {
