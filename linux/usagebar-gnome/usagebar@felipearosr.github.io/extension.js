@@ -32,7 +32,7 @@ const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
 const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
 const STATUS_DAYS = 45;        // history strip length, like statuspage.io
-const STATUS_BAR_HEIGHT = 14;
+const STATUS_BAR_HEIGHT = 18;
 const BAR_WIDTH = 320;
 const MINI_BAR_WIDTH = 26;
 const KPI_COL_WIDTH = 180; // left column of the 2x2 cost grid
@@ -1199,14 +1199,17 @@ export default class UsageBarExtension extends Extension {
             return bar;
         });
         // Fill the card width: same allocation-follow as the trend chart
-        // (the 2px gaps come from the strip's CSS spacing).
+        // (the 2px gaps come from the strip's CSS spacing). Flooring the
+        // width would leave a gap on the right, so spread the remainder
+        // over the leading bars (+1px each — imperceptible).
         strip.connect('notify::allocation', () => {
             const w = strip.allocation.get_width();
             if (w <= 0)
                 return;
-            const bw = Math.max(2, Math.floor((w - 2 * (bars.length - 1)) / bars.length));
-            for (const bar of bars)
-                bar.set_width(bw);
+            const avail = w - 2 * (bars.length - 1);
+            const bw = Math.max(2, Math.floor(avail / bars.length));
+            const rem = Math.max(0, avail - bw * bars.length);
+            bars.forEach((bar, i) => bar.set_width(bw + (i < rem ? 1 : 0)));
         });
         wrap.add_child(strip);
         return wrap;
