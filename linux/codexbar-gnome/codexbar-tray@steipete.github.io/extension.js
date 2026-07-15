@@ -695,8 +695,10 @@ export default class CodexBarExtension extends Extension {
         } else if (selectedRow) {
             detail.add_child(this._buildCard(selectedRow));
         } else {
+            // All view: compact cards, no cost lines — those live on the
+            // per-provider tabs.
             for (const row of this._rows)
-                detail.add_child(this._buildCard(row));
+                detail.add_child(this._buildCard(row, {showCost: false}));
         }
     }
 
@@ -772,7 +774,7 @@ export default class CodexBarExtension extends Extension {
         }
     }
 
-    _buildCard(row) {
+    _buildCard(row, {showCost = true} = {}) {
         const card = new St.BoxLayout({vertical: true, style_class: 'codexbar-card', x_expand: true});
         const worst = worstPercent(row);
         const grey = row.stale || (row.error && worst === null);
@@ -838,7 +840,9 @@ export default class CodexBarExtension extends Extension {
         for (const x of extraWindowsOf(row))
             this._addWindowRow(card, x.title ?? x.id, x.window, row.stale, null);
 
-        const report = (this._costs ?? []).find(c => c.provider === row.provider);
+        const report = showCost
+            ? (this._costs ?? []).find(c => c.provider === row.provider)
+            : null;
         const cost = costLine(report);
         if (cost) {
             card.add_child(new St.Label({

@@ -65,9 +65,11 @@ CodexBar popover:
    (kill leftovers after: they leak when the nested shell is SIGKILLed —
    GJS has no PDEATHSIG; the user's real session also owns one, don't kill it).
 4. Visual check without logout: same command from a terminal inside the
-   session with `--nested` instead of `--headless` (keep DCONF_PROFILE,
-   drop the `kill %1` and click around in the window). Panel chip, popover,
-   tabs are all interactable there.
+   session with `--devkit` instead of `--headless` (GNOME 49 removed
+   `--nested`; the viewer lives in `/usr/libexec/mutter-devkit` from the
+   `mutter-devel` package — without it the shell runs but NO window
+   appears). Keep DCONF_PROFILE, drop the `kill %1`, click around in the
+   window. Panel chip, popover, tabs are all interactable there.
 5. The REAL session only loads new code at login (Wayland shell can't
    restart in place; GJS caches ESM imports, so disable/enable re-runs old
    code) — batch changes, verify nested/headless, then log out/in ONCE.
@@ -90,6 +92,11 @@ CodexBar popover:
   breakdowns); exact keys `sessionCostUSD`, `last30DaysCostUSD`,
   `last30DaysTokens`. Fixtures: `linux/codexbar-tray/fixtures/{usage_live,cost}.json`.
 - Claude rate-limits → error rows are NORMAL; stale handling covers it.
+- The codexbar CLI is hand-installed at ~/.local/bin/CodexBarCLI (+
+  `codexbar` symlink) from upstream's GitHub release tarballs
+  (CodexBarCLI-vX-linux-x86_64.tar.gz) — brew's Linux formula lags (was
+  0.37.2, which silently DROPS the `limits` array = no Fable bar, no
+  "Max 5x" plan). Upgrade = download new tarball, `install` over it.
 - Per-model extra bars (Fable weekly, Daily Routines) arrive as
   `usage.extraRateWindows[] = {id, title, window}` ONLY from the oauth/web
   sources; the claude CLI source strips them. The config
