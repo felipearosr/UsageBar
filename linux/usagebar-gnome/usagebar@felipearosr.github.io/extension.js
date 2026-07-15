@@ -391,19 +391,22 @@ function incidentIoIntervals(incidents, componentIds) {
     };
 }
 
-// One entry per local day, oldest first: worst impact overlapping that day.
+// One entry per day, oldest first: worst impact overlapping that day.
+// Days are UTC, not local: the status pages bucket their uptime bars by
+// UTC day, and matching them bar-for-bar is the whole point (a 03:28 UTC
+// outage must land on the same day here as there).
 function statusDays(intervals, numDays, covered) {
     const now = new Date();
     const days = [];
     for (let i = numDays - 1; i >= 0; i--) {
-        const dayStart = new Date(now.getFullYear(), now.getMonth(),
-            now.getDate() - i).getTime();
+        const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(),
+            now.getUTCDate() - i);
         const dayEnd = dayStart + 86400000;
         const hits = intervals.filter(iv => iv.start < dayEnd && iv.end >= dayStart);
         const worst = hits.reduce((m, iv) => Math.max(m, iv.rank), 0);
         days.push({
-            date: new Date(dayStart + 43200000)
-                .toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
+            date: new Date(dayStart).toLocaleDateString('en-US',
+                {month: 'short', day: 'numeric', timeZone: 'UTC'}),
             sev: worst > 0 ? IMPACT_SEV[worst] : (dayEnd <= covered ? 'stale' : 'ok'),
             names: [...new Set(hits.filter(h => h.rank === worst).map(h => h.name))],
             count: new Set(hits.map(h => h.name)).size,
