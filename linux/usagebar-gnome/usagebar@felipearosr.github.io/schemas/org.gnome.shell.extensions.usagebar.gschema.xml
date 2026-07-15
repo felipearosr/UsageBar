@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
-  <schema id="org.gnome.shell.extensions.codexbar-tray"
-          path="/org/gnome/shell/extensions/codexbar-tray/">
+  <schema id="org.gnome.shell.extensions.usagebar"
+          path="/org/gnome/shell/extensions/usagebar/">
     <key name="warn-threshold" type="i">
       <default>60</default>
       <range min="1" max="99"/>

@@ -1,10 +1,10 @@
-# Task: CodexBar GNOME extension — tabbed popover
+# Task: UsageBar GNOME extension — tabbed popover
 
 ## Context (all verified 2026-07-14 on Fedora 43, GNOME 49.8 Wayland — don't re-derive)
 
 Working dir: `/home/faros/projects/CodexBar`. The primary Linux surface is the
 **GNOME Shell extension** at
-`linux/codexbar-gnome/codexbar-tray@steipete.github.io/` (extension.js +
+`linux/usagebar-gnome/usagebar@felipearosr.github.io/` (extension.js +
 stylesheet.css + metadata.json), symlinked into
 `~/.local/share/gnome-shell/extensions/`, currently **ACTIVE in the user's
 session and confirmed working end-to-end** (panel chips render, popover opens,
@@ -55,9 +55,9 @@ CodexBar popover:
    ```
    printf 'user-db:codexbar_test\n' > /tmp/codexbar-dconf-profile
    DCONF_PROFILE=/tmp/codexbar-dconf-profile dbus-run-session -- sh -c '
-     gsettings set org.gnome.shell enabled-extensions "[\"codexbar-tray@steipete.github.io\"]"
+     gsettings set org.gnome.shell enabled-extensions "[\"usagebar@felipearosr.github.io\"]"
      gnome-shell --headless --virtual-monitor 800x600 & sleep 12
-     gnome-extensions info codexbar-tray@steipete.github.io; kill %1'
+     gnome-extensions info usagebar@felipearosr.github.io; kill %1'
    ```
    The db name MUST be underscore_only ("codexbar-test" with a hyphen makes
    an invalid D-Bus writer path — gsettings hangs forever). Watch stderr/log
@@ -76,7 +76,7 @@ CodexBar popover:
 5. The REAL session only loads new code at login (Wayland shell can't
    restart in place; GJS caches ESM imports, so disable/enable re-runs old
    code) — batch changes, verify nested/headless, then log out/in ONCE.
-   `gnome-extensions info codexbar-tray@steipete.github.io` + journalctl
+   `gnome-extensions info usagebar@felipearosr.github.io` + journalctl
    (`journalctl --user -b -g codexbar`) confirm health from the shell.
    NEVER run the old un-isolated loop (gsettings set against the real
    dconf): besides clobbering enabled-extensions, a second dconf writer on
@@ -88,7 +88,7 @@ CodexBar popover:
 - GNOME 49, GJS ESM imports (`gi://St`, `resource:///org/gnome/shell/ui/*`).
 - St widths are px (BAR_WIDTH=320, mini bars were 26px in tabs planning);
   set fill size with set_size(), heights via constructor props, colors via
-  stylesheet classes `codexbar-bg-{ok,warn,crit,stale}` / `codexbar-fg-*`.
+  stylesheet classes `usagebar-bg-{ok,warn,crit,stale}` / `usagebar-fg-*`.
 - Rebuild UI by `destroy_all_children()` on containers; ALL timeouts/sources
   removed and actors destroyed in disable() (e.g.o. review rule).
 - Cost JSON: dollars under key `totalCost` (daily/totals), `cost` (model

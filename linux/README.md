@@ -1,4 +1,4 @@
-# CodexBar for Linux
+# UsageBar
 
 **Every AI coding limit you're about to hit, one glance away — in the GNOME top bar.**
 
@@ -12,7 +12,7 @@ GNOME-native first.
 ## Why
 
 You're deep in a Claude Code or Codex session and the only warning you get
-before a rate limit is the rate limit. CodexBar for Linux puts the numbers
+before a rate limit is the rate limit. UsageBar puts the numbers
 where your eyes already are:
 
 - **Live chips in the top bar** — one per provider, worst-window percent with
@@ -45,7 +45,7 @@ killed on disable). No daemons to babysit, nothing listening beyond
 
 | | |
 |---|---|
-| [`codexbar-gnome/`](codexbar-gnome/) | **GNOME Shell extension** — the primary surface. Pure GJS (St/Clutter), GNOME 49 & 50, Wayland. Everything above lives here. |
+| [`usagebar-gnome/`](usagebar-gnome/) | **GNOME Shell extension** — the primary surface. Pure GJS (St/Clutter), GNOME 49 & 50, Wayland. Everything above lives here. |
 | [`codexbar-tray/`](codexbar-tray/) | **Tauri tray app** — fallback for non-GNOME desktops (KDE, XFCE, …). Tray icon, text usage menu, popup window. Rust core, 15 tests. |
 
 Both talk to the same [codexbar CLI](https://github.com/steipete/CodexBar)
@@ -64,9 +64,9 @@ version:
    lags and silently drops the per-model limit data).
 2. Enable your providers and pin Claude to the OAuth source in
    `~/.config/codexbar/config.json` (`"source": "oauth"`).
-3. Symlink `codexbar-gnome/codexbar-tray@steipete.github.io` into
+3. Symlink `usagebar-gnome/usagebar@felipearosr.github.io` into
    `~/.local/share/gnome-shell/extensions/`, run
-   `gnome-extensions enable codexbar-tray@steipete.github.io`, log out/in.
+   `gnome-extensions enable usagebar@felipearosr.github.io`, log out/in.
 
 Verified on Fedora 43 / GNOME 49 and Fedora 44 / GNOME 50, both Wayland.
 

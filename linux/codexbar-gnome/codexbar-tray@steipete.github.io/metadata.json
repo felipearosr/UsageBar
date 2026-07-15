@@ -1,9 +1,0 @@
-{
-  "uuid": "codexbar-tray@steipete.github.io",
-  "name": "CodexBar Tray",
-  "description": "AI coding-provider usage limits in the GNOME panel: anchored popover with per-window progress bars, reset countdowns, pace and cost, backed by the codexbar CLI (supervised `codexbar serve`).",
-  "url": "https://github.com/steipete/CodexBar",
-  "shell-version": ["49", "50"],
-  "settings-schema": "org.gnome.shell.extensions.codexbar-tray",
-  "version": 1
-}

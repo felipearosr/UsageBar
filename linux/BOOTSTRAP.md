@@ -1,7 +1,7 @@
-# CodexBar Linux — new machine bootstrap (Fedora)
+# UsageBar — new machine bootstrap (Fedora)
 
-Prompt for Claude Code on a fresh Fedora box. Goal: get the CodexBar GNOME
-Shell extension (private fork `felipearosr/CodexBar`, branch `linux-port`)
+Prompt for Claude Code on a fresh Fedora box. Goal: get the UsageBar GNOME
+Shell extension (private fork `felipearosr/UsageBar`, branch `linux-port`)
 installed, verified headless, and testable in a nested GNOME window.
 Verified on Fedora 43 / GNOME 49 and Fedora 44 / GNOME 50, both Wayland.
 Full gotcha list lives in `linux/codexbar-tray/NEXT_PHASE.md` — read it
@@ -33,10 +33,10 @@ Also sign in where needed:
 ## Step 2 — clone the fork
 
 ```
-gh repo clone felipearosr/CodexBar && cd CodexBar && git checkout linux-port
+gh repo clone felipearosr/UsageBar && cd UsageBar && git checkout linux-port
 ```
 
-Remote layout on the main dev box: `origin` = felipearosr/CodexBar
+Remote layout on the main dev box: `origin` = felipearosr/UsageBar
 (private), `upstream` = steipete/CodexBar. Add upstream if syncing:
 `git remote add upstream https://github.com/steipete/CodexBar`.
 
@@ -88,9 +88,9 @@ normal, the extension's stale handling covers it.)
 
 ```
 mkdir -p ~/.local/share/gnome-shell/extensions
-ln -s "$(pwd)/linux/codexbar-gnome/codexbar-tray@steipete.github.io" \
+ln -s "$(pwd)/linux/usagebar-gnome/usagebar@felipearosr.github.io" \
       ~/.local/share/gnome-shell/extensions/
-glib-compile-schemas "$(pwd)/linux/codexbar-gnome/codexbar-tray@steipete.github.io/schemas/"
+glib-compile-schemas "$(pwd)/linux/usagebar-gnome/usagebar@felipearosr.github.io/schemas/"
 ```
 
 Symlink means edits in the repo apply on next shell start — no reinstall.
@@ -105,9 +105,9 @@ loads fine (49 and 50 are known-good).
 ```
 printf 'user-db:codexbar_test\n' > /tmp/codexbar-dconf-profile
 DCONF_PROFILE=/tmp/codexbar-dconf-profile dbus-run-session -- sh -c '
-  gsettings set org.gnome.shell enabled-extensions "[\"codexbar-tray@steipete.github.io\"]"
+  gsettings set org.gnome.shell enabled-extensions "[\"usagebar@felipearosr.github.io\"]"
   gnome-shell --headless --virtual-monitor 800x600 & sleep 12
-  gnome-extensions info codexbar-tray@steipete.github.io; kill %1'
+  gnome-extensions info usagebar@felipearosr.github.io; kill %1'
 ```
 
 Pass = `State: ACTIVE` and no `JS ERROR` in the output. Three traps:
@@ -125,7 +125,7 @@ Pass = `State: ACTIVE` and no `JS ERROR` in the output. Three traps:
 
 ```
 DCONF_PROFILE=/tmp/codexbar-dconf-profile dbus-run-session -- sh -c '
-  gsettings set org.gnome.shell enabled-extensions "[\"codexbar-tray@steipete.github.io\"]"
+  gsettings set org.gnome.shell enabled-extensions "[\"usagebar@felipearosr.github.io\"]"
   exec gnome-shell --devkit'
 ```
 
@@ -134,7 +134,7 @@ Run from a terminal inside the graphical session. GNOME 49 removed
 (step 1: `mutter-devkit` on F44+, `mutter-devel` on F43). Do NOT add
 `--virtual-monitor` here (that's for `--headless`, which has no monitor):
 the devkit provides its own, and an extra virtual one gives the nested
-shell two screens with the panel often on the invisible primary. A window with a full GNOME panel appears — click the CodexBar
+shell two screens with the panel often on the invisible primary. A window with a full GNOME panel appears — click the UsageBar
 chip and check: tab strip (All | Codex | Claude) with mini usage bars,
 All view = stacked compact cards (no cost lines), provider tabs = full
 card with plan badge ("Max 5x"), extra bars ("Fable only", "Daily
@@ -145,10 +145,10 @@ leaked serve child.
 ## Step 8 — enable for real
 
 ```
-gnome-extensions enable codexbar-tray@steipete.github.io
+gnome-extensions enable usagebar@felipearosr.github.io
 ```
 
 Then log out/in (Wayland shell only loads extension code at login;
 disable/enable re-runs old cached code). Health check afterwards:
-`gnome-extensions info codexbar-tray@steipete.github.io` and
+`gnome-extensions info usagebar@felipearosr.github.io` and
 `journalctl --user -b -g codexbar`.

@@ -1,23 +1,23 @@
 /* CodexBar Tray — panel chips + popover cards. Colors follow GNOME's
    palette (green #2ec27e, yellow #f5c211, red #ed333b, grey #9a9996). */
 
-.codexbar-panel-box {
+.usagebar-panel-box {
   spacing: 8px;
 }
 
-.codexbar-chip {
+.usagebar-chip {
   spacing: 4px;
 }
 
-.codexbar-chip-label {
+.usagebar-chip-label {
   font-size: 10.5pt;
 }
 
-.codexbar-dot {
+.usagebar-dot {
   border-radius: 4px;
 }
 
-.codexbar-menu {
+.usagebar-menu {
   /* Fixed: long one-line labels (error banners, pace summaries) must wrap,
      not widen the popover. */
   width: 420px;
@@ -26,52 +26,52 @@
 /* The popover rows are reactive:false menu items, which GNOME dims with
    the insensitive text color — pin explicit colors so nothing inherits it. */
 
-.codexbar-title {
+.usagebar-title {
   font-weight: bold;
   color: #ffffff;
 }
 
-.codexbar-dim {
+.usagebar-dim {
   color: rgba(200, 200, 206, 1);
   font-size: 9.5pt;
 }
 
-.codexbar-banner {
+.usagebar-banner {
   color: #f5c211;
   font-size: 9.5pt;
 }
 
-.codexbar-tabs {
+.usagebar-tabs {
   spacing: 6px;
 }
 
-.codexbar-tab {
+.usagebar-tab {
   /* Resting tabs are unmarked — background only on hover/focus/checked. */
   background-color: transparent;
   border-radius: 10px;
   padding: 6px 10px;
 }
 
-.codexbar-tab:hover,
-.codexbar-tab:focus {
+.usagebar-tab:hover,
+.usagebar-tab:focus {
   background-color: rgba(128, 128, 128, 0.2);
 }
 
-.codexbar-tab:checked {
+.usagebar-tab:checked {
   background-color: rgba(53, 132, 228, 0.25);
 }
 
-.codexbar-tab-content {
+.usagebar-tab-content {
   spacing: 4px;
 }
 
-.codexbar-tab-label {
+.usagebar-tab-label {
   font-size: 10pt;
   font-weight: bold;
   color: #eeeeec;
 }
 
-.codexbar-card {
+.usagebar-card {
   background-color: rgba(128, 128, 128, 0.12);
   border-radius: 12px;
   padding: 12px 14px;
@@ -80,26 +80,26 @@
 }
 
 /* Per-provider tabs: same content, no card chrome — sections are split by
-   .codexbar-separator rules instead. */
-.codexbar-card-flat {
+   .usagebar-separator rules instead. */
+.usagebar-card-flat {
   padding: 4px 2px;
   margin: 4px 0;
   spacing: 4px;
 }
 
-.codexbar-separator {
+.usagebar-separator {
   background-color: rgba(160, 160, 166, 0.25);
   margin-top: 12px;
   margin-bottom: 4px;
 }
 
-.codexbar-card-title {
+.usagebar-card-title {
   font-weight: bold;
   font-size: 11.5pt;
   color: #ffffff;
 }
 
-.codexbar-badge {
+.usagebar-badge {
   background-color: rgba(53, 132, 228, 0.25);
   color: #78b3f0;
   border-radius: 10px;
@@ -109,97 +109,97 @@
   font-weight: bold;
 }
 
-.codexbar-badge-stale {
+.usagebar-badge-stale {
   background-color: rgba(128, 128, 128, 0.25);
   color: #9a9996;
 }
 
-.codexbar-worst {
+.usagebar-worst {
   font-weight: bold;
   font-size: 12pt;
 }
 
-.codexbar-window-row {
+.usagebar-window-row {
   margin-top: 6px;
 }
 
-.codexbar-window-label {
+.usagebar-window-label {
   font-size: 10pt;
   font-weight: bold;
   color: #eeeeec;
 }
 
-.codexbar-track {
+.usagebar-track {
   background-color: rgba(160, 160, 166, 0.3);
   border-radius: 3px;
   margin-top: 3px;
 }
 
-.codexbar-fill {
+.usagebar-fill {
   border-radius: 3px;
 }
 
-.codexbar-bg-ok { background-color: #2ec27e; }
-.codexbar-bg-warn { background-color: #f5c211; }
-.codexbar-bg-crit { background-color: #ed333b; }
-.codexbar-bg-stale { background-color: #9a9996; }
+.usagebar-bg-ok { background-color: #2ec27e; }
+.usagebar-bg-warn { background-color: #f5c211; }
+.usagebar-bg-crit { background-color: #ed333b; }
+.usagebar-bg-stale { background-color: #9a9996; }
 
-.codexbar-fg-ok { color: #2ec27e; }
-.codexbar-fg-warn { color: #f5c211; }
-.codexbar-fg-crit { color: #ed333b; }
-.codexbar-fg-stale { color: #9a9996; }
+.usagebar-fg-ok { color: #2ec27e; }
+.usagebar-fg-warn { color: #f5c211; }
+.usagebar-fg-crit { color: #ed333b; }
+.usagebar-fg-stale { color: #9a9996; }
 
-.codexbar-pace {
+.usagebar-pace {
   margin-top: 2px;
 }
 
-.codexbar-credits {
+.usagebar-credits {
   margin-top: 10px;
 }
 
-.codexbar-credits-count {
+.usagebar-credits-count {
   font-size: 10pt;
   font-weight: bold;
   color: #eeeeec;
 }
 
-.codexbar-kpi-row {
+.usagebar-kpi-row {
   margin-top: 10px;
   spacing: 12px;
 }
 
-.codexbar-kpi-value {
+.usagebar-kpi-value {
   font-size: 11.5pt;
   font-weight: bold;
   color: #ffffff;
 }
 
-.codexbar-models {
+.usagebar-models {
   margin-top: 2px;
 }
 
-.codexbar-chart-wrap {
+.usagebar-chart-wrap {
   margin-top: 12px;
 }
 
-.codexbar-chart {
+.usagebar-chart {
   spacing: 2px;
 }
 
-.codexbar-chart-bar {
+.usagebar-chart-bar {
   border-radius: 2px 2px 0 0; /* flat bottom — bars sit on the baseline */
   background-color: #4d9aa8; /* teal, like the macOS codex trend */
 }
 
-.codexbar-chart-bar-claude {
+.usagebar-chart-bar-claude {
   background-color: #d97757; /* Anthropic coral */
 }
 
-.codexbar-chart-baseline {
+.usagebar-chart-baseline {
   background-color: rgba(160, 160, 166, 0.22);
 }
 
-.codexbar-tooltip {
+.usagebar-tooltip {
   background-color: rgba(28, 28, 32, 0.96);
   color: #eeeeec;
   border: 1px solid rgba(160, 160, 166, 0.3);
@@ -208,23 +208,23 @@
   font-size: 9pt;
 }
 
-.codexbar-hint {
+.usagebar-hint {
   font-size: 8.5pt;
   margin-top: 2px;
 }
 
-.codexbar-links {
+.usagebar-links {
   margin-top: 8px;
   spacing: 12px;
 }
 
-.codexbar-link {
+.usagebar-link {
   color: #78b3f0;
   font-size: 9.5pt;
   padding: 2px 6px;
   border-radius: 6px;
 }
 
-.codexbar-link:hover {
+.usagebar-link:hover {
   background-color: rgba(128, 128, 128, 0.2);
 }

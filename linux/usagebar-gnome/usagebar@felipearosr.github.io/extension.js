@@ -1,4 +1,4 @@
-// CodexBar Tray — GNOME Shell extension.
+// UsageBar — GNOME Shell extension (Linux port of CodexBar).
 //
 // Panel chips (one per provider, worst-window percent) opening an anchored
 // popover with a tab strip ("All" + one tab per provider, each with a mini
@@ -391,27 +391,27 @@ class ServeSupervisor {
 // ---------- indicator ----------
 
 const Indicator = GObject.registerClass(
-class CodexBarIndicator extends PanelMenu.Button {
+class UsageBarIndicator extends PanelMenu.Button {
     _init() {
-        super._init(0.5, 'CodexBar', false);
+        super._init(0.5, 'UsageBar', false);
 
-        this._chipBox = new St.BoxLayout({style_class: 'codexbar-panel-box'});
+        this._chipBox = new St.BoxLayout({style_class: 'usagebar-panel-box'});
         this.add_child(this._chipBox);
         this._setPanelText([]);
 
-        this.menu.box.add_style_class_name('codexbar-menu');
+        this.menu.box.add_style_class_name('usagebar-menu');
 
         // Header: title left, "updated Xs ago" right.
         const header = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         header.add_child(new St.Label({
-            text: 'CodexBar',
-            style_class: 'codexbar-title',
+            text: 'UsageBar',
+            style_class: 'usagebar-title',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
         }));
         this._updatedLabel = new St.Label({
             text: '',
-            style_class: 'codexbar-dim',
+            style_class: 'usagebar-dim',
             y_align: Clutter.ActorAlign.CENTER,
         });
         header.add_child(this._updatedLabel);
@@ -419,7 +419,7 @@ class CodexBarIndicator extends PanelMenu.Button {
 
         // Status banner (serve problems, fetch errors).
         this._statusItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        this._statusLabel = new St.Label({style_class: 'codexbar-banner', x_expand: true});
+        this._statusLabel = new St.Label({style_class: 'usagebar-banner', x_expand: true});
         this._statusLabel.clutter_text.line_wrap = true;
         this._statusItem.add_child(this._statusLabel);
         this._statusItem.visible = false;
@@ -428,7 +428,7 @@ class CodexBarIndicator extends PanelMenu.Button {
         // Tab strip (one tab per provider) above a single detail card;
         // both rebuilt on every render.
         this._tabsItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        this._tabsBox = new St.BoxLayout({style_class: 'codexbar-tabs', x_expand: true});
+        this._tabsBox = new St.BoxLayout({style_class: 'usagebar-tabs', x_expand: true});
         this._tabsItem.add_child(this._tabsBox);
         this._tabsItem.visible = false;
         this.menu.addMenuItem(this._tabsItem);
@@ -441,7 +441,7 @@ class CodexBarIndicator extends PanelMenu.Button {
         // Floating tooltip for chart-bar hover. Lives in the shell's UI
         // group so it can escape the menu; hidden with the menu and
         // destroyed with the indicator.
-        this._tooltip = new St.Label({style_class: 'codexbar-tooltip', visible: false});
+        this._tooltip = new St.Label({style_class: 'usagebar-tooltip', visible: false});
         Main.uiGroup.add_child(this._tooltip);
         this.menu.connect('open-state-changed', (_menu, open) => {
             if (!open)
@@ -463,23 +463,23 @@ class CodexBarIndicator extends PanelMenu.Button {
         this._chipBox.destroy_all_children();
         if (!chips.length) {
             this._chipBox.add_child(new St.Label({
-                text: 'CB',
-                style_class: 'codexbar-chip-label',
+                text: 'UB',
+                style_class: 'usagebar-chip-label',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
             return;
         }
         for (const chip of chips) {
-            const box = new St.BoxLayout({style_class: 'codexbar-chip'});
+            const box = new St.BoxLayout({style_class: 'usagebar-chip'});
             box.add_child(new St.Widget({
-                style_class: `codexbar-dot codexbar-bg-${chip.sev}`,
+                style_class: `usagebar-dot usagebar-bg-${chip.sev}`,
                 width: 8,
                 height: 8,
                 y_align: Clutter.ActorAlign.CENTER,
             }));
             box.add_child(new St.Label({
                 text: chip.text,
-                style_class: 'codexbar-chip-label',
+                style_class: 'usagebar-chip-label',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
             this._chipBox.add_child(box);
@@ -498,7 +498,7 @@ class CodexBarIndicator extends PanelMenu.Button {
 
 // ---------- extension ----------
 
-export default class CodexBarExtension extends Extension {
+export default class UsageBarExtension extends Extension {
     enable() {
         this._rows = [];
         this._names = {};
@@ -538,8 +538,8 @@ export default class CodexBarExtension extends Extension {
 
         const binary = findBinary();
         if (!binary) {
-            this._indicator.setStatus('codexbar CLI not found — install it ' +
-                '(brew install steipete/tap/codexbar) or set $CODEXBAR_BIN');
+            this._indicator.setStatus('codexbar CLI not found — install it from ' +
+                'github.com/steipete/CodexBar releases or set $CODEXBAR_BIN');
             this._render();
             return;
         }
@@ -774,7 +774,7 @@ export default class CodexBarExtension extends Extension {
         if (!this._rows.length) {
             detail.add_child(new St.Label({
                 text: 'No usage data yet.',
-                style_class: 'codexbar-dim',
+                style_class: 'usagebar-dim',
             }));
         } else if (selectedRow) {
             detail.add_child(this._buildCard(selectedRow, {flat: true}));
@@ -787,21 +787,21 @@ export default class CodexBarExtension extends Extension {
     }
 
     _makeTab(label, worst, grey, active, onClick) {
-        const content = new St.BoxLayout({vertical: true, style_class: 'codexbar-tab-content'});
+        const content = new St.BoxLayout({vertical: true, style_class: 'usagebar-tab-content'});
         content.add_child(new St.Label({
             text: label,
-            style_class: 'codexbar-tab-label',
+            style_class: 'usagebar-tab-label',
             x_align: Clutter.ActorAlign.CENTER,
         }));
         const percent = Math.min(100, Math.max(0, worst ?? 0));
         const track = new St.Widget({
-            style_class: 'codexbar-track',
+            style_class: 'usagebar-track',
             width: MINI_BAR_WIDTH,
             height: 4,
             x_expand: true,
         });
         const fill = new St.Widget({
-            style_class: `codexbar-fill codexbar-bg-${severity(percent, grey)}`,
+            style_class: `usagebar-fill usagebar-bg-${severity(percent, grey)}`,
         });
         fill.set_size(Math.max(2, Math.round(MINI_BAR_WIDTH * percent / 100)), 4);
         track.add_child(fill);
@@ -815,7 +815,7 @@ export default class CodexBarExtension extends Extension {
         content.add_child(track);
 
         const btn = new St.Button({
-            style_class: 'codexbar-tab',
+            style_class: 'usagebar-tab',
             child: content,
             x_expand: true,
         });
@@ -829,15 +829,15 @@ export default class CodexBarExtension extends Extension {
     // bars bottom-aligned over a 1px baseline, height and opacity scaled
     // linearly to the max value.
     _buildTrendChart(points, provider) {
-        const wrap = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'codexbar-chart-wrap'});
-        const chart = new St.BoxLayout({x_expand: true, height: CHART_HEIGHT, style_class: 'codexbar-chart'});
+        const wrap = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-chart-wrap'});
+        const chart = new St.BoxLayout({x_expand: true, height: CHART_HEIGHT, style_class: 'usagebar-chart'});
         const max = Math.max(...points.map(p => p.value), 0);
         // Each day is a full-height reactive slot (so short bars are easy
         // to hover) holding the bottom-aligned bar.
         const slots = points.map(point => {
             const ratio = max > 0 && point.value > 0 ? Math.min(point.value / max, 1) : 0;
             const bar = new St.Widget({
-                style_class: `codexbar-chart-bar codexbar-chart-bar-${provider}`,
+                style_class: `usagebar-chart-bar usagebar-chart-bar-${provider}`,
             });
             bar.set_opacity(Math.round(255 * (0.42 + 0.58 * Math.max(0.18, ratio))));
             bar.set_size(4, ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1);
@@ -870,7 +870,7 @@ export default class CodexBarExtension extends Extension {
             }
         });
         wrap.add_child(chart);
-        wrap.add_child(new St.Widget({style_class: 'codexbar-chart-baseline', height: 1, x_expand: true}));
+        wrap.add_child(new St.Widget({style_class: 'usagebar-chart-baseline', height: 1, x_expand: true}));
         return wrap;
     }
 
@@ -898,10 +898,10 @@ export default class CodexBarExtension extends Extension {
         const percent = known ? Math.min(100, Math.max(0, w.usedPercent)) : 0;
         const sev = severity(percent, stale || !known);
 
-        const labels = new St.BoxLayout({x_expand: true, style_class: 'codexbar-window-row'});
+        const labels = new St.BoxLayout({x_expand: true, style_class: 'usagebar-window-row'});
         labels.add_child(new St.Label({
             text: label,
-            style_class: 'codexbar-window-label',
+            style_class: 'usagebar-window-label',
         }));
         labels.add_child(new St.Widget({x_expand: true}));
         const reset = resetText(w);
@@ -909,16 +909,16 @@ export default class CodexBarExtension extends Extension {
             text: known
                 ? (reset ? `${Math.round(w.usedPercent)}% · ${reset}` : `${Math.round(w.usedPercent)}%`)
                 : (reset ? `unavailable · ${reset}` : 'unavailable'),
-            style_class: 'codexbar-dim',
+            style_class: 'usagebar-dim',
         }));
         card.add_child(labels);
 
         const track = new St.Widget({
-            style_class: 'codexbar-track',
+            style_class: 'usagebar-track',
             width: BAR_WIDTH,
             height: 6,
         });
-        const fill = new St.Widget({style_class: `codexbar-fill codexbar-bg-${sev}`});
+        const fill = new St.Widget({style_class: `usagebar-fill usagebar-bg-${sev}`});
         fill.set_size(Math.max(3, Math.round(BAR_WIDTH * percent / 100)), 6);
         track.add_child(fill);
         // The box layout stretches the track past BAR_WIDTH; size the fill
@@ -933,7 +933,7 @@ export default class CodexBarExtension extends Extension {
         if (paceSummary) {
             const pace = new St.Label({
                 text: paceSummary.startsWith('Pace') ? paceSummary : `Pace: ${paceSummary}`,
-                style_class: 'codexbar-dim codexbar-pace',
+                style_class: 'usagebar-dim usagebar-pace',
             });
             pace.clutter_text.line_wrap = true;
             card.add_child(pace);
@@ -945,11 +945,11 @@ export default class CodexBarExtension extends Extension {
     _buildCard(row, {showCost = true, flat = false} = {}) {
         const card = new St.BoxLayout({
             vertical: true,
-            style_class: flat ? 'codexbar-card-flat' : 'codexbar-card',
+            style_class: flat ? 'usagebar-card-flat' : 'usagebar-card',
             x_expand: true,
         });
         const addSeparator = () => card.add_child(new St.Widget({
-            style_class: 'codexbar-separator',
+            style_class: 'usagebar-separator',
             height: 1,
             x_expand: true,
         }));
@@ -960,7 +960,7 @@ export default class CodexBarExtension extends Extension {
         const head = new St.BoxLayout({x_expand: true});
         head.add_child(new St.Label({
             text: this._displayName(row.provider),
-            style_class: 'codexbar-card-title',
+            style_class: 'usagebar-card-title',
             y_align: Clutter.ActorAlign.CENTER,
         }));
         let plan = row.usage?.loginMethod ?? row.usage?.identity?.loginMethod;
@@ -973,14 +973,14 @@ export default class CodexBarExtension extends Extension {
                 plan = plan.slice(name.length + 1);
             head.add_child(new St.Label({
                 text: plan,
-                style_class: 'codexbar-badge',
+                style_class: 'usagebar-badge',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
         if (row.stale) {
             head.add_child(new St.Label({
                 text: 'stale',
-                style_class: 'codexbar-badge codexbar-badge-stale',
+                style_class: 'usagebar-badge usagebar-badge-stale',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
@@ -988,7 +988,7 @@ export default class CodexBarExtension extends Extension {
         if (worst !== null) {
             head.add_child(new St.Label({
                 text: `${Math.round(worst)}%`,
-                style_class: `codexbar-worst codexbar-fg-${severity(worst, grey)}`,
+                style_class: `usagebar-worst usagebar-fg-${severity(worst, grey)}`,
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
@@ -999,7 +999,7 @@ export default class CodexBarExtension extends Extension {
             const suffix = row.stale ? ' — showing last known data' : '';
             const banner = new St.Label({
                 text: `⚠ ${msg}${suffix}`,
-                style_class: 'codexbar-banner',
+                style_class: 'usagebar-banner',
                 x_expand: true,
             });
             banner.clutter_text.line_wrap = true;
@@ -1029,18 +1029,18 @@ export default class CodexBarExtension extends Extension {
         if (flat && (credits || kpis || models))
             addSeparator();
         if (credits) {
-            const head = new St.BoxLayout({x_expand: true, style_class: 'codexbar-credits'});
-            head.add_child(new St.Label({text: 'Limit Reset Credits', style_class: 'codexbar-window-label'}));
+            const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-credits'});
+            head.add_child(new St.Label({text: 'Limit Reset Credits', style_class: 'usagebar-window-label'}));
             head.add_child(new St.Widget({x_expand: true}));
-            head.add_child(new St.Label({text: credits.text, style_class: 'codexbar-credits-count'}));
+            head.add_child(new St.Label({text: credits.text, style_class: 'usagebar-credits-count'}));
             card.add_child(head);
             if (credits.expiryLine)
-                card.add_child(new St.Label({text: credits.expiryLine, style_class: 'codexbar-dim'}));
+                card.add_child(new St.Label({text: credits.expiryLine, style_class: 'usagebar-dim'}));
         }
 
         if (kpis) {
             for (let i = 0; i < kpis.length; i += 2) {
-                const kpiRow = new St.BoxLayout({x_expand: true, style_class: 'codexbar-kpi-row'});
+                const kpiRow = new St.BoxLayout({x_expand: true, style_class: 'usagebar-kpi-row'});
                 kpis.slice(i, i + 2).forEach((kpi, col) => {
                     // Fixed-width left column so the right column lines up
                     // across rows (natural widths differ per label).
@@ -1048,8 +1048,8 @@ export default class CodexBarExtension extends Extension {
                         vertical: true,
                         ...(col === 0 ? {width: KPI_COL_WIDTH} : {x_expand: true}),
                     });
-                    cell.add_child(new St.Label({text: kpi.title, style_class: 'codexbar-dim'}));
-                    cell.add_child(new St.Label({text: kpi.value, style_class: 'codexbar-kpi-value'}));
+                    cell.add_child(new St.Label({text: kpi.title, style_class: 'usagebar-dim'}));
+                    cell.add_child(new St.Label({text: kpi.value, style_class: 'usagebar-kpi-value'}));
                     kpiRow.add_child(cell);
                 });
                 card.add_child(kpiRow);
@@ -1062,13 +1062,13 @@ export default class CodexBarExtension extends Extension {
         if (models) {
             card.add_child(new St.Label({
                 text: models,
-                style_class: 'codexbar-dim codexbar-models',
+                style_class: 'usagebar-dim usagebar-models',
             }));
         }
         if (report && COST_HINTS[row.provider]) {
             const hintLabel = new St.Label({
                 text: COST_HINTS[row.provider],
-                style_class: 'codexbar-dim codexbar-hint',
+                style_class: 'usagebar-dim usagebar-hint',
             });
             hintLabel.clutter_text.line_wrap = true;
             card.add_child(hintLabel);
@@ -1078,11 +1078,11 @@ export default class CodexBarExtension extends Extension {
         if (flat && urls)
             addSeparator();
         if (urls) {
-            const links = new St.BoxLayout({style_class: 'codexbar-links'});
+            const links = new St.BoxLayout({style_class: 'usagebar-links'});
             for (const [label, url] of [['Dashboard', urls.dashboard], ['Status', urls.status]]) {
                 const btn = new St.Button({
                     label,
-                    style_class: 'codexbar-link',
+                    style_class: 'usagebar-link',
                     y_align: Clutter.ActorAlign.CENTER,
                 });
                 btn.connect('clicked', () => {

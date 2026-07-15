@@ -1,4 +1,4 @@
-// CodexBar Tray — extension preferences (opened from the popover's
+// UsageBar — extension preferences (opened from the popover's
 // Settings item or `gnome-extensions prefs`). Mirrors the macOS app's
 // Preferences shape: General / Notifications / per-provider sections.
 
@@ -62,7 +62,7 @@ function spinRow(settings, key, title, subtitle) {
     return row;
 }
 
-export default class CodexBarPreferences extends ExtensionPreferences {
+export default class UsageBarPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
 
