@@ -284,9 +284,9 @@ function feedCoverage(incidents, dateOf) {
 // windows from the per-update status transitions, exactly what the page's
 // per-component uptime bars show. Like those bars, degraded_performance
 // does NOT color a day (an incident can sit at "degraded" for weeks —
-// e.g. a model-access notice — while the page stays green); only
-// partial_outage (yellow) and major_outage (red) count.
-const STATUSPAGE_COMPONENT_RANK = {partial_outage: 2, major_outage: 3};
+// e.g. a model-access notice — while the page stays green),
+// partial_outage colors it yellow and major_outage red.
+const STATUSPAGE_COMPONENT_RANK = {partial_outage: 1, major_outage: 3};
 
 function statuspageIntervals(incidents, scope) {
     const now = Date.now();
