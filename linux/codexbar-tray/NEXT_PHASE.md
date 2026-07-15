@@ -69,8 +69,10 @@ CodexBar popover:
    `--nested`; the viewer lives in `/usr/libexec/mutter-devkit` — from the
    `mutter-devel` package on Fedora 43, the separate `mutter-devkit`
    package on Fedora 44 / mutter 50 — without it the shell runs but NO
-   window appears). Keep DCONF_PROFILE, drop the `kill %1`, click around in the
-   window. Panel chip, popover, tabs are all interactable there.
+   window appears). Keep DCONF_PROFILE, drop the `kill %1` AND drop
+   `--virtual-monitor` (devkit brings its own monitor; adding a virtual
+   one makes a second, often-primary invisible screen), click around in
+   the window. Panel chip, popover, tabs are all interactable there.
 5. The REAL session only loads new code at login (Wayland shell can't
    restart in place; GJS caches ESM imports, so disable/enable re-runs old
    code) — batch changes, verify nested/headless, then log out/in ONCE.

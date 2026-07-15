@@ -31,6 +31,12 @@ const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
 const BAR_WIDTH = 320;
 const MINI_BAR_WIDTH = 26;
+const KPI_COL_WIDTH = 180; // left column of the 2x2 cost grid
+const CHART_HEIGHT = 44; // daily cost/token trend bars
+const COST_HINTS = {
+    codex: 'Estimated from local Codex logs for the selected account.',
+    claude: 'Estimated from local logs · may differ from your bill',
+};
 
 // TODO(upstream): expose these in `codexbar config providers --format json`
 // (they exist per-provider in CodexBarCore's ProviderDescriptors).
@@ -167,29 +173,93 @@ function fmtTokens(n) {
 }
 
 function fmtUSD(v) {
-    return v === null || v === undefined ? null : `$${v.toFixed(2)}`;
+    return v === null || v === undefined
+        ? null
+        : `$${v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
 }
 
-function costLine(report) {
+// Cost as a 2x2 label-over-value grid, like the macOS inline dashboard:
+// Today | Last Nd Cost / Last Nd tokens | Latest tokens. Values the report
+// doesn't carry render as "—", as on macOS (codex has no pricing, and a
+// fresh install has no history yet).
+function costKpis(report) {
     if (!report)
         return null;
-    const parts = [];
     const today = new Date().toLocaleDateString('en-CA'); // local YYYY-MM-DD
-    const entry = (report.daily ?? []).find(d => d.date === today);
-    if (entry) {
-        // Dollar values arrive under the upstream key "totalCost".
-        const bits = [fmtUSD(entry.totalCost), fmtTokens(entry.totalTokens)]
-            .filter(Boolean);
-        if (bits.length)
-            parts.push(`Today ${bits.join(' · ')}`);
-    }
+    const daily = report.daily ?? [];
+    // Dollar values arrive under the upstream key "totalCost".
+    const entry = daily.find(d => d.date === today);
+    const latest = daily.length ? daily[daily.length - 1] : null;
     const totals = report.totals ?? {};
-    const usd = report.last30DaysCostUSD ?? totals.totalCost;
-    const toks = report.last30DaysTokens ?? totals.totalTokens;
-    const bits30 = [fmtUSD(usd), fmtTokens(toks)].filter(Boolean);
-    if (bits30.length)
-        parts.push(`${report.historyDays ?? 30}d ${bits30.join(' · ')}`);
-    return parts.length ? parts.join('   ·   ') : null;
+    const days = report.historyDays ?? 30;
+    const kpis = [
+        {title: 'Today', value: fmtUSD(entry?.totalCost) ?? '—'},
+        {title: `Last ${days} days Cost`, value: fmtUSD(report.last30DaysCostUSD ?? totals.totalCost) ?? '—'},
+        {title: `Last ${days} days tokens`, value: fmtTokens(report.last30DaysTokens ?? totals.totalTokens) ?? '—'},
+        {title: 'Latest tokens', value: fmtTokens(latest?.totalTokens) ?? '—'},
+    ];
+    return kpis;
+}
+
+// Daily trend values for the mini bar chart (port of the macOS inline
+// dashboard): a continuous series of the last historyDays days ending
+// today — days without usage are zero (1px stub) so the rightmost bar is
+// always today. Dollars when the report is priced, tokens otherwise.
+// Null when there is no history at all.
+function chartPoints(report) {
+    const daily = report?.daily ?? [];
+    if (!daily.length)
+        return null;
+    const byDate = new Map(daily.map(d => [d.date, d]));
+    const useCost = daily.some(d => typeof d.totalCost === 'number');
+    const days = report.historyDays ?? 30;
+    const now = new Date();
+    const points = [];
+    for (let i = days - 1; i >= 0; i--) {
+        const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+            .toLocaleDateString('en-CA'); // local YYYY-MM-DD
+        const entry = byDate.get(day);
+        points.push({
+            value: entry ? ((useCost ? entry.totalCost : entry.totalTokens) ?? 0) : 0,
+            date: day,
+            cost: entry?.totalCost ?? null,
+            tokens: entry?.totalTokens ?? null,
+        });
+    }
+    return points;
+}
+
+function chartTooltipText(point) {
+    const day = new Date(`${point.date}T12:00:00`)
+        .toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+    const bits = [
+        fmtUSD(point.cost),
+        point.tokens !== null ? `${fmtTokens(point.tokens)} tokens` : null,
+    ].filter(Boolean);
+    return bits.length ? `${day} · ${bits.join(' · ')}` : `${day} · no usage`;
+}
+
+// Codex limit-reset credits (usage.codexResetCredits, oauth source only):
+// "N reset(s) available" + countdown to the nearest expiry. Null when the
+// provider has none available.
+function creditsInfo(row) {
+    const rc = row.usage?.codexResetCredits;
+    if (!rc)
+        return null;
+    const avail = (rc.credits ?? []).filter(c => c.status === 'available');
+    const count = rc.availableCount ?? avail.length;
+    if (!count)
+        return null;
+    const expiries = avail.map(c => Date.parse(c.expires_at)).filter(t => !Number.isNaN(t));
+    let expiryLine = null;
+    if (expiries.length) {
+        const secs = (Math.min(...expiries) - Date.now()) / 1000;
+        expiryLine = secs <= 0 ? 'Next expires now' : `Next expires in ${humanizeSecs(secs)}`;
+    }
+    return {
+        text: count === 1 ? '1 reset available' : `${count} resets available`,
+        expiryLine,
+    };
 }
 
 // Top models by summed cost across the report's daily entries, e.g.
@@ -367,6 +437,20 @@ class CodexBarIndicator extends PanelMenu.Button {
         this._detailBox = new St.BoxLayout({vertical: true, x_expand: true});
         detailItem.add_child(this._detailBox);
         this.menu.addMenuItem(detailItem);
+
+        // Floating tooltip for chart-bar hover. Lives in the shell's UI
+        // group so it can escape the menu; hidden with the menu and
+        // destroyed with the indicator.
+        this._tooltip = new St.Label({style_class: 'codexbar-tooltip', visible: false});
+        Main.uiGroup.add_child(this._tooltip);
+        this.menu.connect('open-state-changed', (_menu, open) => {
+            if (!open)
+                this._tooltip?.hide();
+        });
+        this.connect('destroy', () => {
+            this._tooltip?.destroy();
+            this._tooltip = null;
+        });
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._settingsItem = new PopupMenu.PopupMenuItem('Settings');
@@ -693,7 +777,7 @@ export default class CodexBarExtension extends Extension {
                 style_class: 'codexbar-dim',
             }));
         } else if (selectedRow) {
-            detail.add_child(this._buildCard(selectedRow));
+            detail.add_child(this._buildCard(selectedRow, {flat: true}));
         } else {
             // All view: compact cards, no cost lines — those live on the
             // per-provider tabs.
@@ -713,14 +797,21 @@ export default class CodexBarExtension extends Extension {
         const track = new St.Widget({
             style_class: 'codexbar-track',
             width: MINI_BAR_WIDTH,
-            height: 3,
-            x_align: Clutter.ActorAlign.CENTER,
+            height: 4,
+            x_expand: true,
         });
         const fill = new St.Widget({
             style_class: `codexbar-fill codexbar-bg-${severity(percent, grey)}`,
         });
-        fill.set_size(Math.max(2, Math.round(MINI_BAR_WIDTH * percent / 100)), 3);
+        fill.set_size(Math.max(2, Math.round(MINI_BAR_WIDTH * percent / 100)), 4);
         track.add_child(fill);
+        // Same allocation-follow as the card bars: the tab stretches the
+        // track, so a fixed-basis fill would read short.
+        track.connect('notify::allocation', () => {
+            const w = track.allocation.get_width();
+            if (w > 0)
+                fill.set_size(Math.max(2, Math.round(w * percent / 100)), 4);
+        });
         content.add_child(track);
 
         const btn = new St.Button({
@@ -732,6 +823,72 @@ export default class CodexBarExtension extends Extension {
             btn.add_style_pseudo_class('checked');
         btn.connect('clicked', onClick);
         return btn;
+    }
+
+    // Mini daily-trend bar chart (port of the macOS MiniUsageBars): equal
+    // bars bottom-aligned over a 1px baseline, height and opacity scaled
+    // linearly to the max value.
+    _buildTrendChart(points, provider) {
+        const wrap = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'codexbar-chart-wrap'});
+        const chart = new St.BoxLayout({x_expand: true, height: CHART_HEIGHT, style_class: 'codexbar-chart'});
+        const max = Math.max(...points.map(p => p.value), 0);
+        // Each day is a full-height reactive slot (so short bars are easy
+        // to hover) holding the bottom-aligned bar.
+        const slots = points.map(point => {
+            const ratio = max > 0 && point.value > 0 ? Math.min(point.value / max, 1) : 0;
+            const bar = new St.Widget({
+                style_class: `codexbar-chart-bar codexbar-chart-bar-${provider}`,
+            });
+            bar.set_opacity(Math.round(255 * (0.42 + 0.58 * Math.max(0.18, ratio))));
+            bar.set_size(4, ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1);
+            // Vertical box with an expanding spacer: keeps the bar pinned
+            // to the baseline (St.Bin centers its child).
+            const slot = new St.BoxLayout({vertical: true, reactive: true, track_hover: true});
+            slot.add_child(new St.Widget({y_expand: true}));
+            slot.add_child(bar);
+            slot._ratio = ratio;
+            slot._bar = bar;
+            slot.connect('notify::hover', () => {
+                if (slot.hover)
+                    this._showChartTooltip(slot, point);
+                else
+                    this._indicator?._tooltip?.hide();
+            });
+            chart.add_child(slot);
+            return slot;
+        });
+        chart.connect('notify::allocation', () => {
+            const w = chart.allocation.get_width();
+            if (w <= 0)
+                return;
+            const n = slots.length;
+            const bw = Math.min(12, Math.max(2, Math.floor((w - 2 * (n - 1)) / n)));
+            for (const slot of slots) {
+                slot.set_width(bw);
+                const h = slot._ratio > 0 ? Math.max(3, Math.round(slot._ratio * CHART_HEIGHT)) : 1;
+                slot._bar.set_size(bw, h);
+            }
+        });
+        wrap.add_child(chart);
+        wrap.add_child(new St.Widget({style_class: 'codexbar-chart-baseline', height: 1, x_expand: true}));
+        return wrap;
+    }
+
+    _showChartTooltip(anchor, point) {
+        const tip = this._indicator?._tooltip;
+        if (!tip)
+            return;
+        tip.text = chartTooltipText(point);
+        // The open menu is a later addition to uiGroup — restack or the
+        // tooltip renders behind it.
+        Main.uiGroup.set_child_above_sibling(tip, null);
+        tip.show();
+        const [ax, ay] = anchor.get_transformed_position();
+        const [tw, th] = tip.get_size();
+        const monitor = Main.layoutManager.currentMonitor;
+        let x = Math.round(ax + anchor.get_width() / 2 - tw / 2);
+        x = Math.max(monitor.x + 4, Math.min(x, monitor.x + monitor.width - tw - 4));
+        tip.set_position(x, Math.round(ay - th - 6));
     }
 
     // One usage metric: label + "% · resets in …" row, severity bar, pace.
@@ -764,18 +921,38 @@ export default class CodexBarExtension extends Extension {
         const fill = new St.Widget({style_class: `codexbar-fill codexbar-bg-${sev}`});
         fill.set_size(Math.max(3, Math.round(BAR_WIDTH * percent / 100)), 6);
         track.add_child(fill);
+        // The box layout stretches the track past BAR_WIDTH; size the fill
+        // against the real allocation or the percentage reads short.
+        track.connect('notify::allocation', () => {
+            const w = track.allocation.get_width();
+            if (w > 0)
+                fill.set_size(Math.max(3, Math.round(w * percent / 100)), 6);
+        });
         card.add_child(track);
 
         if (paceSummary) {
-            card.add_child(new St.Label({
+            const pace = new St.Label({
                 text: paceSummary.startsWith('Pace') ? paceSummary : `Pace: ${paceSummary}`,
                 style_class: 'codexbar-dim codexbar-pace',
-            }));
+            });
+            pace.clutter_text.line_wrap = true;
+            card.add_child(pace);
         }
     }
 
-    _buildCard(row, {showCost = true} = {}) {
-        const card = new St.BoxLayout({vertical: true, style_class: 'codexbar-card', x_expand: true});
+    // flat: no card background; thin separator lines between sections
+    // (usage | credits/cost | links) — used on the per-provider tabs.
+    _buildCard(row, {showCost = true, flat = false} = {}) {
+        const card = new St.BoxLayout({
+            vertical: true,
+            style_class: flat ? 'codexbar-card-flat' : 'codexbar-card',
+            x_expand: true,
+        });
+        const addSeparator = () => card.add_child(new St.Widget({
+            style_class: 'codexbar-separator',
+            height: 1,
+            x_expand: true,
+        }));
         const worst = worstPercent(row);
         const grey = row.stale || (row.error && worst === null);
 
@@ -843,22 +1020,63 @@ export default class CodexBarExtension extends Extension {
         const report = showCost
             ? (this._costs ?? []).find(c => c.provider === row.provider)
             : null;
-        const cost = costLine(report);
-        if (cost) {
-            card.add_child(new St.Label({
-                text: cost,
-                style_class: 'codexbar-dim codexbar-cost',
-            }));
-        }
+
+        // Limit Reset Credits header (codex): count right-aligned, nearest
+        // expiry below — matches the macOS card. Full card only, like cost.
+        const credits = showCost ? creditsInfo(row) : null;
+        const kpis = costKpis(report);
         const models = topModelsLine(report);
+        if (flat && (credits || kpis || models))
+            addSeparator();
+        if (credits) {
+            const head = new St.BoxLayout({x_expand: true, style_class: 'codexbar-credits'});
+            head.add_child(new St.Label({text: 'Limit Reset Credits', style_class: 'codexbar-window-label'}));
+            head.add_child(new St.Widget({x_expand: true}));
+            head.add_child(new St.Label({text: credits.text, style_class: 'codexbar-credits-count'}));
+            card.add_child(head);
+            if (credits.expiryLine)
+                card.add_child(new St.Label({text: credits.expiryLine, style_class: 'codexbar-dim'}));
+        }
+
+        if (kpis) {
+            for (let i = 0; i < kpis.length; i += 2) {
+                const kpiRow = new St.BoxLayout({x_expand: true, style_class: 'codexbar-kpi-row'});
+                kpis.slice(i, i + 2).forEach((kpi, col) => {
+                    // Fixed-width left column so the right column lines up
+                    // across rows (natural widths differ per label).
+                    const cell = new St.BoxLayout({
+                        vertical: true,
+                        ...(col === 0 ? {width: KPI_COL_WIDTH} : {x_expand: true}),
+                    });
+                    cell.add_child(new St.Label({text: kpi.title, style_class: 'codexbar-dim'}));
+                    cell.add_child(new St.Label({text: kpi.value, style_class: 'codexbar-kpi-value'}));
+                    kpiRow.add_child(cell);
+                });
+                card.add_child(kpiRow);
+            }
+        }
+        const trend = chartPoints(report);
+        if (trend)
+            card.add_child(this._buildTrendChart(trend, row.provider));
+
         if (models) {
             card.add_child(new St.Label({
                 text: models,
                 style_class: 'codexbar-dim codexbar-models',
             }));
         }
+        if (report && COST_HINTS[row.provider]) {
+            const hintLabel = new St.Label({
+                text: COST_HINTS[row.provider],
+                style_class: 'codexbar-dim codexbar-hint',
+            });
+            hintLabel.clutter_text.line_wrap = true;
+            card.add_child(hintLabel);
+        }
 
         const urls = URLS[row.provider];
+        if (flat && urls)
+            addSeparator();
         if (urls) {
             const links = new St.BoxLayout({style_class: 'codexbar-links'});
             for (const [label, url] of [['Dashboard', urls.dashboard], ['Status', urls.status]]) {

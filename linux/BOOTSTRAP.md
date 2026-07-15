@@ -126,12 +126,15 @@ Pass = `State: ACTIVE` and no `JS ERROR` in the output. Three traps:
 ```
 DCONF_PROFILE=/tmp/codexbar-dconf-profile dbus-run-session -- sh -c '
   gsettings set org.gnome.shell enabled-extensions "[\"codexbar-tray@steipete.github.io\"]"
-  exec gnome-shell --devkit --virtual-monitor 1280x800'
+  exec gnome-shell --devkit'
 ```
 
 Run from a terminal inside the graphical session. GNOME 49 removed
 `--nested`; `--devkit` is the replacement and needs the devkit viewer
-(step 1: `mutter-devkit` on F44+, `mutter-devel` on F43). A window with a full GNOME panel appears — click the CodexBar
+(step 1: `mutter-devkit` on F44+, `mutter-devel` on F43). Do NOT add
+`--virtual-monitor` here (that's for `--headless`, which has no monitor):
+the devkit provides its own, and an extra virtual one gives the nested
+shell two screens with the panel often on the invisible primary. A window with a full GNOME panel appears — click the CodexBar
 chip and check: tab strip (All | Codex | Claude) with mini usage bars,
 All view = stacked compact cards (no cost lines), provider tabs = full
 card with plan badge ("Max 5x"), extra bars ("Fable only", "Daily
