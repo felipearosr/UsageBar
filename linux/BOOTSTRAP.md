@@ -3,19 +3,23 @@
 Prompt for Claude Code on a fresh Fedora box. Goal: get the CodexBar GNOME
 Shell extension (private fork `felipearosr/CodexBar`, branch `linux-port`)
 installed, verified headless, and testable in a nested GNOME window.
-Verified on Fedora 43, GNOME 49 Wayland. Full gotcha list lives in
-`linux/codexbar-tray/NEXT_PHASE.md` — read it after cloning (step 2).
+Verified on Fedora 43 / GNOME 49 and Fedora 44 / GNOME 50, both Wayland.
+Full gotcha list lives in `linux/codexbar-tray/NEXT_PHASE.md` — read it
+after cloning (step 2).
 
 ## Step 1 — install packages
 
 ```
-sudo dnf install -y git gh nodejs mutter-devel
+sudo dnf install -y git gh nodejs mutter-devkit
 ```
 
 - `nodejs` — only for `node --check` syntax checks.
-- `mutter-devel` — ships `/usr/libexec/mutter-devkit`, the viewer for the
+- `mutter-devkit` — ships `/usr/libexec/mutter-devkit`, the viewer for the
   nested GNOME instance in step 7. Without it `gnome-shell --devkit` runs
-  but shows NO window.
+  but shows NO window. On Fedora 43 / mutter 49 the viewer lived in
+  `mutter-devel`; on Fedora 44 / mutter 50 it is this separate package
+  (`mutter-devel` no longer contains it — check
+  `ls /usr/libexec/mutter-devkit` after installing).
 - `glib2` (schema compiler) and `python3` ship with Workstation.
 
 Also sign in where needed:
@@ -56,6 +60,10 @@ ln -sf CodexBarCLI ~/.local/bin/codexbar
 codexbar --version   # a libcurl "no version information" warning is normal
 ```
 
+If a brew codexbar is already on the machine, `brew uninstall codexbar` —
+linuxbrew precedes `~/.local/bin` in PATH, so a stale brew binary silently
+shadows the one installed above (`which -a codexbar` to check).
+
 ## Step 4 — codexbar config
 
 ```
@@ -87,6 +95,11 @@ glib-compile-schemas "$(pwd)/linux/codexbar-gnome/codexbar-tray@steipete.github.
 
 Symlink means edits in the repo apply on next shell start — no reinstall.
 
+Check `gnome-shell --version` against `"shell-version"` in the
+extension's `metadata.json` — if the running major (e.g. 50) isn't
+listed, the shell rejects the extension as out-of-date. Add it and it
+loads fine (49 and 50 are known-good).
+
 ## Step 6 — verify headless (no logout, real dconf never touched)
 
 ```
@@ -117,8 +130,8 @@ DCONF_PROFILE=/tmp/codexbar-dconf-profile dbus-run-session -- sh -c '
 ```
 
 Run from a terminal inside the graphical session. GNOME 49 removed
-`--nested`; `--devkit` is the replacement and needs `mutter-devel`
-(step 1). A window with a full GNOME panel appears — click the CodexBar
+`--nested`; `--devkit` is the replacement and needs the devkit viewer
+(step 1: `mutter-devkit` on F44+, `mutter-devel` on F43). A window with a full GNOME panel appears — click the CodexBar
 chip and check: tab strip (All | Codex | Claude) with mini usage bars,
 All view = stacked compact cards (no cost lines), provider tabs = full
 card with plan badge ("Max 5x"), extra bars ("Fable only", "Daily
