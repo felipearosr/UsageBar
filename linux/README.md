@@ -28,11 +28,22 @@ where your eyes already are:
 - **A real cost dashboard** — Today / 30-day spend and tokens as a KPI grid,
   a daily trend bar chart with hover tooltips, top models by 30-day cost
   ("fable-5 $157.5 · opus-4-8 $77.6"), and Codex credits.
-- **Quota notifications** — a desktop notification when any window crosses
-  80%, one escalation at 95%, and then silence until the window actually
-  resets. Never nags twice.
-- **Settings, GNOME-style** — severity thresholds, notification thresholds,
-  and per-provider chip visibility in a native libadwaita preferences window.
+- **Every provider the CLI knows** — all ~60 upstream providers (Cursor,
+  Gemini, Copilot, OpenRouter, …) can be switched on from Settings; chips,
+  tabs, dashboards, status strips and brand colors come from metadata
+  generated out of upstream's provider descriptors. Providers whose only
+  data source is macOS-specific (browser cookies, Keychain) show an error
+  row instead of numbers — everything token- or CLI-auth-based works.
+- **Quota notifications** — desktop notifications at your chosen thresholds
+  (separate lists for session and weekly windows), optional pace warnings
+  when the projection says a window won't last to its reset, optional sound,
+  per-provider muting — and silence until the window actually resets.
+  Never nags twice.
+- **Settings, GNOME-style** — a native libadwaita preferences window:
+  provider enable/disable, panel chip style (percent / name / dot, merged
+  single-chip mode, reset countdown when exhausted), used-vs-remaining and
+  absolute-vs-relative reset times, severity and notification thresholds,
+  refresh interval, per-provider chip/bar visibility and status-page scope.
 - **Graceful when providers aren't** — rate-limited fetches keep showing the
   last good data, greyed and banner-marked, instead of a blank card.
 
@@ -62,8 +73,9 @@ version:
    [GitHub releases](https://github.com/steipete/CodexBar/releases)
    (`CodexBarCLI-v*-linux-x86_64.tar.gz`, ≥ 0.43.0 — the brew Linux formula
    lags and silently drops the per-model limit data).
-2. Enable your providers and pin Claude to the OAuth source in
-   `~/.config/codexbar/config.json` (`"source": "oauth"`).
+2. Pin Claude to the OAuth source in `~/.config/codexbar/config.json`
+   (`"source": "oauth"`). Providers can be enabled from the extension's
+   Settings → Providers page afterwards (or `codexbar config enable`).
 3. Symlink `usagebar-gnome/usagebar@felipearosr.github.io` into
    `~/.local/share/gnome-shell/extensions/`, run
    `gnome-extensions enable usagebar@felipearosr.github.io`, log out/in.

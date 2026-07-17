@@ -2,6 +2,8 @@
 <schemalist>
   <schema id="org.gnome.shell.extensions.usagebar"
           path="/org/gnome/shell/extensions/usagebar/">
+
+    <!-- Severity / display -->
     <key name="warn-threshold" type="i">
       <default>60</default>
       <range min="1" max="99"/>
@@ -14,6 +16,38 @@
       <summary>Critical threshold</summary>
       <description>Usage percent above which bars and chips turn red.</description>
     </key>
+    <key name="chip-display-mode" type="s">
+      <choices>
+        <choice value="percent"/>
+        <choice value="name-percent"/>
+        <choice value="dot"/>
+      </choices>
+      <default>'percent'</default>
+      <summary>Panel chip display mode</summary>
+      <description>What each panel chip shows: worst percent, provider name plus percent, or just the severity dot.</description>
+    </key>
+    <key name="merge-chips" type="b">
+      <default>false</default>
+      <summary>Merge panel chips</summary>
+      <description>Show a single chip with the worst window across all providers instead of one chip per provider.</description>
+    </key>
+    <key name="show-reset-when-exhausted" type="b">
+      <default>false</default>
+      <summary>Show reset countdown when exhausted</summary>
+      <description>When a provider's worst window is at 100%, the chip shows the time until reset instead of the percent.</description>
+    </key>
+    <key name="bars-show-used" type="b">
+      <default>false</default>
+      <summary>Bars label shows used percent</summary>
+      <description>Usage bar foot shows "N% used"; off shows "N% remaining".</description>
+    </key>
+    <key name="absolute-reset-times" type="b">
+      <default>false</default>
+      <summary>Absolute reset times</summary>
+      <description>Show reset moments as wall-clock times ("Resets 18:30") instead of countdowns ("Resets in 3h 12m").</description>
+    </key>
+
+    <!-- Per-provider visibility -->
     <key name="hidden-chips" type="as">
       <default>[]</default>
       <summary>Providers without a panel chip</summary>
@@ -29,30 +63,71 @@
       <summary>Usage bars discovered at render time</summary>
       <description>Catalog the extension publishes for the preferences window; each entry is a JSON object {"p":provider,"k":key,"l":label}.</description>
     </key>
+    <key name="status-scopes" type="as">
+      <default>[]</default>
+      <summary>Status strip scopes</summary>
+      <description>"provider:scope" entries choosing which slice of the provider's status page the incident strip tracks; absent providers track their curated default from providermeta.js, or 'Everything'.</description>
+    </key>
+
+    <!-- Notifications -->
     <key name="notify-enabled" type="b">
       <default>true</default>
       <summary>Notify on high usage</summary>
-      <description>Send a notification when a rate window crosses the notify thresholds, once per reset cycle.</description>
+      <description>Send a notification when a rate window crosses a notify threshold, once per threshold per reset cycle.</description>
     </key>
-    <key name="notify-warn-percent" type="i">
-      <default>80</default>
-      <range min="1" max="100"/>
-      <summary>First notification threshold</summary>
+    <key name="notify-session-thresholds" type="ai">
+      <default>[80, 95]</default>
+      <summary>Session window notification thresholds</summary>
+      <description>Percents at which short (session) windows notify, each once per reset cycle.</description>
     </key>
-    <key name="notify-crit-percent" type="i">
-      <default>95</default>
-      <range min="1" max="100"/>
-      <summary>Second (critical) notification threshold</summary>
+    <key name="notify-weekly-thresholds" type="ai">
+      <default>[80, 95]</default>
+      <summary>Weekly window notification thresholds</summary>
+      <description>Percents at which long (weekly/monthly) windows notify, each once per reset cycle.</description>
     </key>
-    <key name="codex-status-scope" type="s">
-      <default>'Codex'</default>
-      <summary>Codex status strip scope</summary>
-      <description>Which status.openai.com component group the status strip tracks ('Everything' for the whole page).</description>
+    <key name="notify-pace-enabled" type="b">
+      <default>false</default>
+      <summary>Predictive pace warnings</summary>
+      <description>Notify when the pace projection says a window will hit 100% before it resets, once per reset cycle.</description>
     </key>
-    <key name="claude-status-scope" type="s">
-      <default>'Claude Code'</default>
-      <summary>Claude status strip scope</summary>
-      <description>Which status.claude.com component the status strip tracks ('Everything' for the whole page).</description>
+    <key name="notify-sound" type="b">
+      <default>false</default>
+      <summary>Notification sound</summary>
+      <description>Play the system alert sound with quota notifications.</description>
+    </key>
+    <key name="notify-muted-providers" type="as">
+      <default>[]</default>
+      <summary>Providers with notifications muted</summary>
+      <description>Provider ids that never produce quota or pace notifications.</description>
+    </key>
+
+    <!-- Refresh & behavior -->
+    <key name="refresh-interval-secs" type="i">
+      <default>300</default>
+      <range min="60" max="3600"/>
+      <summary>Backend refresh interval</summary>
+      <description>Seconds between codexbar serve's upstream fetches; changing it restarts the supervised serve child.</description>
+    </key>
+    <key name="refresh-on-open" type="b">
+      <default>true</default>
+      <summary>Refresh when the popover opens</summary>
+    </key>
+    <key name="status-checks-enabled" type="b">
+      <default>true</default>
+      <summary>Poll provider status pages</summary>
+      <description>Fetch public status-page incident feeds for the history strips; off hides the strips entirely.</description>
+    </key>
+    <key name="sort-alphabetical" type="b">
+      <default>false</default>
+      <summary>Sort providers alphabetically</summary>
+      <description>Order chips and tabs by display name instead of the CLI config order.</description>
+    </key>
+
+    <!-- Credits & extras -->
+    <key name="show-credits-extras" type="b">
+      <default>true</default>
+      <summary>Show credits and extra usage</summary>
+      <description>Show limit-reset credits and named extra rate windows (per-model and feature limits) on provider cards.</description>
     </key>
   </schema>
 </schemalist>

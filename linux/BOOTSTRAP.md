@@ -71,6 +71,12 @@ codexbar config enable --provider codex
 codexbar config enable --provider claude
 ```
 
+(Once the extension is running, any of the CLI's ~60 providers can also be
+enabled from Settings → Providers — it writes through the same
+`codexbar config enable/disable`. Providers whose only source is
+macOS-specific — browser cookies, Keychain — will show an error row on
+Linux; token/CLI-auth providers work.)
+
 Then in `~/.config/codexbar/config.json`, set the claude entry to
 `"source": "oauth"` — REQUIRED: the default/cli source strips
 `extraRateWindows` (per-model bars like "Fable only") and `loginMethod`

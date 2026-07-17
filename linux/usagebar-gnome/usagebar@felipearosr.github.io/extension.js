@@ -24,7 +24,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-const REFRESH_INTERVAL_SECS = 300; // serve's upstream cadence (Claude rate-limits pollers)
+import {PROVIDER_META} from './providermeta.js';
+import {defaultScope, scopeMap} from './statusscopes.js';
+
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
@@ -42,31 +44,43 @@ const COST_HINTS = {
     claude: 'Estimated from local logs · may differ from your bill',
 };
 
-// TODO(upstream): expose these in `codexbar config providers --format json`
-// (they exist per-provider in CodexBarCore's ProviderDescriptors).
-const URLS = {
-    codex: {
-        dashboard: 'https://chatgpt.com/codex/settings/usage',
-        status: 'https://status.openai.com/',
-        // status.openai.com aggregates ChatGPT/Sora/Ads incidents and its
-        // statuspage-compat API strips component tags — to match the page's
-        // per-component bars, pull the incident.io native feed and keep only
-        // impact windows inside the scope chosen in Settings (a component
-        // group name, default "Codex").
-        statusFeed: {
-            kind: 'incidentio',
-            base: 'https://status.openai.com/proxy/status.openai.com',
-        },
-    },
-    claude: {
-        dashboard: 'https://claude.ai/settings/usage',
-        status: 'https://status.claude.com/',
-        // Scope here is a component name prefix, default "Claude Code".
-        statusFeed: {kind: 'statuspage', base: 'https://status.claude.com'},
-    },
-};
+// Per-provider dashboard/status URLs, status feeds and branding come from
+// providermeta.js, generated out of CodexBarCore's ProviderDescriptors
+// (regenerate with linux/usagebar-gnome/tools/gen-provider-meta.py until
+// upstream's `config providers --format json` carries them).
+//
+// The dashboard link prefers the subscription page when the row reports a
+// plan (loginMethod) — e.g. claude.ai usage for Max plans vs the API
+// console for key users, matching the macOS app.
+function providerLinks(row) {
+    const meta = PROVIDER_META[row.provider];
+    if (!meta)
+        return null;
+    const dashboard = (planOf(row) && meta.subscriptionDashboard) || meta.dashboard;
+    const status = meta.statusPage ?? meta.statusLink;
+    return dashboard || status ? {dashboard, status} : null;
+}
 
 // ---------- payload helpers (ported from codexbar-tray dist/app.js) ----------
+
+// The row's plan ("claude max", "plus", …) — the payload carries
+// loginMethod either on usage or under usage.identity, source-dependent.
+function planOf(row) {
+    return row.usage?.loginMethod ?? row.usage?.identity?.loginMethod;
+}
+
+// Pace projection for a standard window slot (extras carry no pace).
+function paceOf(row, slot) {
+    return row.pace ? [row.pace.primary, row.pace.secondary][slot] : null;
+}
+
+// Seconds until the window resets, or null without a parseable resetsAt.
+function resetSecs(w) {
+    if (!w?.resetsAt)
+        return null;
+    const at = Date.parse(w.resetsAt);
+    return Number.isNaN(at) ? null : (at - Date.now()) / 1000;
+}
 
 function windowsOf(row) {
     const u = row.usage;
@@ -94,13 +108,19 @@ function barKey(provider, {slot, extra} = {}) {
     return `${provider}:${key}`;
 }
 
+// The row's most-used window (standard slots and extras alike), or null.
+// windowsOf already drops unknown percents; extras need the same filter.
+function worstWindow(row) {
+    const wins = [
+        ...windowsOf(row).map(({w}) => w),
+        ...extraWindowsOf(row).map(x => x.window)
+            .filter(w => w.usedPercent !== null && w.usedPercent !== undefined),
+    ];
+    return wins.reduce((a, b) => !a || b.usedPercent > a.usedPercent ? b : a, null);
+}
+
 function worstPercent(row) {
-    const ps = windowsOf(row).map(({w}) => w.usedPercent);
-    for (const x of extraWindowsOf(row)) {
-        if (x.window.usedPercent !== null && x.window.usedPercent !== undefined)
-            ps.push(x.window.usedPercent);
-    }
-    return ps.length ? Math.max(...ps) : null;
+    return worstWindow(row)?.usedPercent ?? null;
 }
 
 // Serve replaces a failing provider's row with a bare error row; carry the
@@ -131,6 +151,16 @@ function severity(percent, grey) {
     if (percent > THRESHOLDS.warn)
         return 'warn';
     return 'ok';
+}
+
+// Notification bucket shared with windowLabel's ladder: a window spanning a
+// day or more (windowLabel's "N-day"/"Weekly"/"Monthly" range) uses the
+// weekly thresholds; without a duration in the payload, fall back to the
+// reset horizon.
+function isLongWindow(w) {
+    if (w.windowMinutes !== null && w.windowMinutes !== undefined)
+        return w.windowMinutes >= 1440;
+    return (resetSecs(w) ?? 0) > 86400;
 }
 
 function windowLabel(minutes, slot) {
@@ -166,17 +196,21 @@ function currentLang() {
 const STRINGS = {
     en: {
         remaining: p => `${p}% remaining`,
+        used: p => `${p}% used`,
         unavailable: 'unavailable',
         resetsIn: dur => `Resets in ${dur}`,
         resetsNow: 'Resets now',
+        resetsAt: t => `Resets ${t}`,
         resetsDesc: desc => `Resets ${desc}`,
         dur: {d: n => `${n}d`, h: n => `${n}h`, m: n => `${n}m`, under: 'under 1m'},
     },
     es: {
         remaining: p => `${p}% restante`,
+        used: p => `${p}% usado`,
         unavailable: 'no disponible',
         resetsIn: dur => `Se reinicia en ${dur}`,
         resetsNow: 'Se reinicia ahora',
+        resetsAt: t => `Se reinicia ${t}`,
         resetsDesc: desc => `Se reinicia ${desc}`,
         dur: {d: n => `${n} d`, h: n => `${n} h`, m: n => `${n} min`, under: 'menos de 1 min'},
     },
@@ -207,13 +241,33 @@ function agoText(secs) {
     return `${Math.floor(secs / 3600)}h ago`;
 }
 
+// Mutable display preferences, refreshed from GSettings on every settings
+// change (same pattern as THRESHOLDS) so render paths never hit GSettings.
+const DISPLAY = {
+    absoluteResets: false,
+    barsShowUsed: false,
+    sortAlphabetical: false,
+    mergeChips: false,
+    resetWhenExhausted: false,
+    chipMode: 'percent',
+    showExtras: true,
+    hiddenChips: new Set(),
+    hiddenWindows: new Set(),
+};
+
 function resetText(w) {
-    if (w.resetsAt) {
-        const at = Date.parse(w.resetsAt);
-        if (!Number.isNaN(at)) {
-            const secs = (at - Date.now()) / 1000;
-            return secs <= 0 ? T.resetsNow : T.resetsIn(humanizeSecs(secs));
+    const secs = resetSecs(w);
+    if (secs !== null) {
+        if (secs <= 0)
+            return T.resetsNow;
+        if (DISPLAY.absoluteResets) {
+            const when = new Date(Date.parse(w.resetsAt));
+            const opts = {hour: '2-digit', minute: '2-digit'};
+            if (secs >= 86400)
+                opts.weekday = 'short';
+            return T.resetsAt(when.toLocaleString([], opts));
         }
+        return T.resetsIn(humanizeSecs(secs));
     }
     return w.resetDescription ? T.resetsDesc(w.resetDescription) : '';
 }
@@ -556,14 +610,23 @@ function freePort() {
 }
 
 class ServeSupervisor {
-    constructor(binary, onState) {
+    constructor(binary, interval, onState) {
         this._binary = binary;
+        this._interval = interval;
         this._onState = onState; // (portOrNull, statusMessage)
         this._enabled = false;
         this._proc = null;
         this._restartId = 0;
         this._backoff = 2;
         this.port = 0;
+    }
+
+    // Serve only reads --refresh-interval at startup — bounce the child to
+    // apply a new one (the exit handler is inert while _enabled is false).
+    restart(interval) {
+        this._interval = interval;
+        this.stop();
+        this.start();
     }
 
     start() {
@@ -583,7 +646,7 @@ class ServeSupervisor {
                 [
                     this._binary, 'serve',
                     '--port', String(this.port),
-                    '--refresh-interval', String(REFRESH_INTERVAL_SECS),
+                    '--refresh-interval', String(this._interval),
                     '--request-timeout', String(REQUEST_TIMEOUT_SECS),
                 ],
                 Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
@@ -732,11 +795,13 @@ class UsageBarIndicator extends PanelMenu.Button {
                 height: 8,
                 y_align: Clutter.ActorAlign.CENTER,
             }));
-            box.add_child(new St.Label({
-                text: chip.text,
-                style_class: 'usagebar-chip-label',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
+            if (chip.text) {
+                box.add_child(new St.Label({
+                    text: chip.text,
+                    style_class: 'usagebar-chip-label',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            }
             this._chipBox.add_child(box);
         }
     }
@@ -769,18 +834,64 @@ export default class UsageBarExtension extends Extension {
         this._cancellable = new Gio.Cancellable();
 
         this._settings = this.getSettings();
-        const applyThresholds = () => {
+        const applySettings = () => {
             THRESHOLDS.warn = this._settings.get_int('warn-threshold');
             THRESHOLDS.crit = this._settings.get_int('crit-threshold');
+            DISPLAY.absoluteResets = this._settings.get_boolean('absolute-reset-times');
+            DISPLAY.barsShowUsed = this._settings.get_boolean('bars-show-used');
+            DISPLAY.sortAlphabetical = this._settings.get_boolean('sort-alphabetical');
+            DISPLAY.mergeChips = this._settings.get_boolean('merge-chips');
+            DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
+            DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
+            DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
+            DISPLAY.hiddenChips = new Set(this._settings.get_strv('hidden-chips'));
+            DISPLAY.hiddenWindows = new Set(this._settings.get_strv('hidden-windows'));
         };
-        applyThresholds();
+        applySettings();
+        this._statusScopes = scopeMap(this._settings);
+        // Keys whose change alters what's on screen; the rest (notify-*,
+        // refresh knobs, the extension's own known-windows writes) skip the
+        // full popover rebuild.
+        const DISPLAY_KEYS = new Set([
+            'warn-threshold', 'crit-threshold', 'absolute-reset-times',
+            'bars-show-used', 'sort-alphabetical', 'merge-chips',
+            'show-reset-when-exhausted', 'chip-display-mode',
+            'show-credits-extras', 'hidden-chips', 'hidden-windows',
+            'status-scopes', 'status-checks-enabled',
+        ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
-            applyThresholds();
-            if (key.endsWith('-status-scope') && this._status) {
-                this._status = {}; // drop the cache so the new scope refetches
+            applySettings();
+            if (key === 'status-scopes' && this._status) {
+                // Drop only rescoped providers' caches so they refetch.
+                const next = scopeMap(this._settings);
+                for (const p of new Set([...next.keys(), ...this._statusScopes.keys()])) {
+                    if (next.get(p) !== this._statusScopes.get(p))
+                        delete this._status[p];
+                }
+                this._statusScopes = next;
                 this._fetchStatus();
             }
-            this._render();
+            if (key === 'status-checks-enabled') {
+                if (this._settings.get_boolean(key))
+                    this._fetchStatus();
+                else
+                    this._status = {}; // strips hide via the empty cache
+            }
+            if (key === 'refresh-interval-secs') {
+                // The prefs spin row writes on every click — coalesce before
+                // bouncing the serve child.
+                if (this._restartDebounceId)
+                    GLib.source_remove(this._restartDebounceId);
+                this._restartDebounceId = GLib.timeout_add_seconds(
+                    GLib.PRIORITY_DEFAULT, 2, () => {
+                        this._restartDebounceId = 0;
+                        this._supervisor?.restart(
+                            this._settings.get_int('refresh-interval-secs'));
+                        return GLib.SOURCE_REMOVE;
+                    });
+            }
+            if (DISPLAY_KEYS.has(key))
+                this._render();
         });
 
         this._indicator = new Indicator();
@@ -789,7 +900,8 @@ export default class UsageBarExtension extends Extension {
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
-                this._fetchUsage();
+                if (this._settings.get_boolean('refresh-on-open'))
+                    this._fetchUsage();
                 this._fetchCost();
                 this._fetchStatus();
                 this._render();
@@ -804,14 +916,39 @@ export default class UsageBarExtension extends Extension {
             this._render();
             return;
         }
+        this._binary = binary;
         this._loadDisplayNames(binary);
 
-        this._supervisor = new ServeSupervisor(binary, (port, status) => {
-            if (status)
-                this._indicator.setStatus(status);
-            if (port)
-                this._scheduleFetch(2);
-        });
+        // Refetch when the CLI config changes — prefs toggles, terminal
+        // `codexbar config enable`, hand edits alike. Serve re-reads the
+        // config per request, so a fresh fetch is all it takes; display
+        // names may be new too. Debounced: writers fire several events.
+        try {
+            this._configMonitor = Gio.File.new_for_path(GLib.build_filenamev(
+                [GLib.get_user_config_dir(), 'codexbar', 'config.json']))
+                .monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, null);
+            this._configMonitor.connect('changed', () => {
+                if (this._configDebounceId)
+                    GLib.source_remove(this._configDebounceId);
+                this._configDebounceId = GLib.timeout_add_seconds(
+                    GLib.PRIORITY_DEFAULT, 1, () => {
+                        this._configDebounceId = 0;
+                        this._loadDisplayNames(this._binary);
+                        this._fetchUsage();
+                        return GLib.SOURCE_REMOVE;
+                    });
+            });
+        } catch {
+            // no monitor — the regular poll still picks changes up
+        }
+
+        this._supervisor = new ServeSupervisor(binary,
+            this._settings.get_int('refresh-interval-secs'), (port, status) => {
+                if (status)
+                    this._indicator.setStatus(status);
+                if (port)
+                    this._scheduleFetch(2);
+            });
         this._supervisor.start();
 
         // Countdown/"updated ago" ticker while the menu is open.
@@ -836,6 +973,16 @@ export default class UsageBarExtension extends Extension {
             GLib.source_remove(this._tickId);
             this._tickId = 0;
         }
+        if (this._restartDebounceId) {
+            GLib.source_remove(this._restartDebounceId);
+            this._restartDebounceId = 0;
+        }
+        if (this._configDebounceId) {
+            GLib.source_remove(this._configDebounceId);
+            this._configDebounceId = 0;
+        }
+        this._configMonitor?.cancel();
+        this._configMonitor = null;
         this._cancellable?.cancel();
         this._cancellable = null;
         this._session?.abort();
@@ -928,39 +1075,68 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
-    // Quota warnings: one notification per window per reset cycle when it
-    // crosses notify-warn-percent, plus one escalation past
-    // notify-crit-percent. Cycle identity is provider+window+resetsAt, so a
-    // reset (new resetsAt) re-arms; keys absent from the payload are pruned.
+    _notify(title, body) {
+        Main.notify(title, body);
+        if (this._settings.get_boolean('notify-sound')) {
+            global.display.get_sound_player()
+                .play_from_theme('dialog-warning', 'UsageBar quota alert', null);
+        }
+    }
+
+    // Quota warnings: one notification per crossed threshold per window per
+    // reset cycle — session (short) and weekly (long) windows have their own
+    // threshold lists, like the macOS app. Cycle identity is
+    // provider+window+resetsAt, so a reset (new resetsAt) re-arms; keys
+    // absent from the payload are pruned. The per-cycle memo stores the
+    // highest threshold already announced (Infinity once fully escalated is
+    // unnecessary — a higher crossing just compares numerically).
+    //
+    // Pace warnings ride the same cycle: when the backend projection says
+    // the window won't last to reset (pace.willLastToReset === false),
+    // notify once per cycle, tracked under a ":pace" memo key.
     _maybeNotify() {
         if (!this._settings.get_boolean('notify-enabled'))
             return;
-        const warnAt = this._settings.get_int('notify-warn-percent');
-        const critAt = this._settings.get_int('notify-crit-percent');
+        const muted = new Set(this._settings.get_strv('notify-muted-providers'));
+        const sessionAt = this._settings.get_value('notify-session-thresholds').deepUnpack();
+        const weeklyAt = this._settings.get_value('notify-weekly-thresholds').deepUnpack();
+        const paceEnabled = this._settings.get_boolean('notify-pace-enabled');
         const seen = new Map();
         for (const row of this._rows) {
-            if (row.stale)
+            if (row.stale || muted.has(row.provider))
                 continue;
             const name = this._displayName(row.provider);
             const wins = [
                 ...windowsOf(row).map(({w, slot}) =>
-                    ({w, label: windowLabel(w.windowMinutes, slot)})),
+                    ({w, label: windowLabel(w.windowMinutes, slot),
+                        pace: paceOf(row, slot)})),
                 ...extraWindowsOf(row)
                     .filter(x => x.window.usedPercent !== null &&
                         x.window.usedPercent !== undefined)
-                    .map(x => ({w: x.window, label: x.title ?? x.id})),
+                    .map(x => ({w: x.window, label: x.title ?? x.id, pace: null})),
             ];
-            for (const {w, label} of wins) {
-                const key = `${row.provider}:${label}:${w.resetsAt ?? ''}`;
-                const prev = this._notified.get(key);
-                seen.set(key, prev);
-                const level = w.usedPercent >= critAt ? 'crit'
-                    : w.usedPercent >= warnAt ? 'warn' : null;
-                if (!level || prev === 'crit' || prev === level)
-                    continue;
-                Main.notify(`${name} ${label} at ${Math.round(w.usedPercent)}%`,
-                    resetText(w) || 'usage limit approaching');
-                seen.set(key, level);
+            for (const {w, label, pace} of wins) {
+                const cycle = `${row.provider}:${label}:${w.resetsAt ?? ''}`;
+                const crossed = (isLongWindow(w) ? weeklyAt : sessionAt)
+                    .filter(t => w.usedPercent >= t);
+                const prev = this._notified.get(cycle);
+                seen.set(cycle, prev);
+                if (crossed.length) {
+                    const highest = Math.max(...crossed);
+                    if (prev === undefined || highest > prev) {
+                        this._notify(`${name} ${label} at ${Math.round(w.usedPercent)}%`,
+                            resetText(w) || 'usage limit approaching');
+                        seen.set(cycle, highest);
+                    }
+                }
+                const paceKey = `${cycle}:pace`;
+                const pacePrev = this._notified.get(paceKey);
+                seen.set(paceKey, pacePrev);
+                if (paceEnabled && pace?.willLastToReset === false && !pacePrev) {
+                    this._notify(`${name} ${label} won't last to reset`,
+                        pace.summary ?? 'current pace exceeds the window');
+                    seen.set(paceKey, true);
+                }
             }
         }
         this._notified = seen;
@@ -978,28 +1154,22 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
-    // Which slice of the provider's status page the strip tracks (set in
-    // prefs; 'Everything' = whole page). Guarded: not every provider id in
-    // the feed has a matching settings key.
-    _statusScope(provider) {
-        const key = `${provider}-status-scope`;
-        return this._settings?.settings_schema.has_key(key)
-            ? this._settings.get_string(key)
-            : 'Everything';
-    }
-
     // Incident history for the status strips, straight from each provider's
-    // public status page (the serve API doesn't carry status — see the
-    // TODO(upstream) above URLS). Everything here is best-effort.
+    // public status page (the serve API doesn't carry status). Only enabled
+    // providers (rows in the feed) are polled. Everything is best-effort.
     _fetchStatus() {
-        for (const [provider, urls] of Object.entries(URLS)) {
-            const feed = urls.statusFeed;
+        if (!this._settings?.get_boolean('status-checks-enabled'))
+            return;
+        const scopes = scopeMap(this._settings);
+        for (const row of this._rows) {
+            const provider = row.provider;
+            const feed = PROVIDER_META[provider]?.statusFeed;
             if (!feed)
                 continue;
             const cached = this._status[provider];
             if (cached && (Date.now() - cached.fetchedAt) / 1000 < STATUS_TTL_SECS)
                 continue;
-            const scope = this._statusScope(provider);
+            const scope = scopes.get(provider) ?? defaultScope(provider);
             const done = result => {
                 if (!this._indicator || !this._status || !result)
                     return;
@@ -1026,26 +1196,54 @@ export default class UsageBarExtension extends Extension {
     // ----- rendering -----
 
     _displayName(provider) {
-        return this._names[provider] ??
+        return this._names[provider] ?? PROVIDER_META[provider]?.name ??
             provider.charAt(0).toUpperCase() + provider.slice(1);
+    }
+
+    // Rows in display order (chips and tabs share it).
+    _sortedRows() {
+        const rows = [...this._rows];
+        if (DISPLAY.sortAlphabetical) {
+            rows.sort((a, b) => this._displayName(a.provider)
+                .localeCompare(this._displayName(b.provider)));
+        }
+        return rows;
+    }
+
+    // One panel chip for a row, honoring the display mode ('percent',
+    // 'name-percent', 'dot') and the exhausted-shows-reset option.
+    _chipFor(row) {
+        const w = worstWindow(row);
+        const worst = w?.usedPercent ?? null;
+        const grey = row.stale || (row.error && worst === null);
+        let text = '';
+        if (DISPLAY.chipMode !== 'dot') {
+            let value = worst === null ? '—' : `${Math.round(worst)}%`;
+            if (worst !== null && worst >= 100 && DISPLAY.resetWhenExhausted) {
+                const secs = resetSecs(w);
+                if (secs > 0)
+                    value = humanizeSecs(secs);
+            }
+            text = DISPLAY.chipMode === 'name-percent'
+                ? `${this._displayName(row.provider)} ${value}` : value;
+        }
+        return {text, sev: severity(worst ?? 0, grey)};
     }
 
     _render() {
         if (!this._indicator)
             return;
 
-        // Panel chips (minus providers hidden in prefs).
-        const hiddenChips = new Set(this._settings?.get_strv('hidden-chips') ?? []);
-        this._indicator._setPanelText(this._rows
-            .filter(row => !hiddenChips.has(row.provider))
-            .map(row => {
-                const worst = worstPercent(row);
-                const grey = row.stale || (row.error && worst === null);
-                return {
-                    text: worst === null ? '—' : `${Math.round(worst)}%`,
-                    sev: severity(worst ?? 0, grey),
-                };
-            }));
+        const rows = this._sortedRows();
+
+        // Panel chips (minus providers hidden in prefs). Merged mode shows a
+        // single chip for the provider with the highest worst-window percent.
+        let chipRows = rows.filter(row => !DISPLAY.hiddenChips.has(row.provider));
+        if (DISPLAY.mergeChips && chipRows.length > 1) {
+            chipRows = [chipRows.reduce((best, row) =>
+                (worstPercent(row) ?? -1) > (worstPercent(best) ?? -1) ? row : best)];
+        }
+        this._indicator._setPanelText(chipRows.map(row => this._chipFor(row)));
 
         this._indicator.setUpdated(this._lastFetchAt
             ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
@@ -1056,14 +1254,14 @@ export default class UsageBarExtension extends Extension {
         // Tabs + detail. No selection (null) means the All tab: every card
         // stacked, as before tabs existed. A selected provider that drops
         // out of the feed falls back to All.
-        const selectedRow = this._rows.find(r => r.provider === this._selectedProvider) ?? null;
+        const selectedRow = rows.find(r => r.provider === this._selectedProvider) ?? null;
 
         const tabs = this._indicator._tabsBox;
         tabs.destroy_all_children();
-        this._indicator._tabsItem.visible = this._rows.length > 1;
-        if (this._rows.length > 1) {
-            const worsts = this._rows.map(worstPercent).filter(p => p !== null);
-            const allGrey = this._rows.every(r =>
+        this._indicator._tabsItem.visible = rows.length > 1;
+        if (rows.length > 1) {
+            const worsts = rows.map(worstPercent).filter(p => p !== null);
+            const allGrey = rows.every(r =>
                 r.stale || r.error || worstPercent(r) === null);
             tabs.add_child(this._makeTab('All',
                 worsts.length ? Math.max(...worsts) : null, allGrey,
@@ -1071,7 +1269,7 @@ export default class UsageBarExtension extends Extension {
                     this._selectedProvider = null;
                     this._render();
                 }));
-            for (const row of this._rows) {
+            for (const row of rows) {
                 const worst = worstPercent(row);
                 tabs.add_child(this._makeTab(this._displayName(row.provider),
                     worst, row.stale || row.error || worst === null,
@@ -1084,7 +1282,7 @@ export default class UsageBarExtension extends Extension {
 
         const detail = this._indicator._detailBox;
         detail.destroy_all_children();
-        if (!this._rows.length) {
+        if (!rows.length) {
             detail.add_child(new St.Label({
                 text: 'No usage data yet.',
                 style_class: 'usagebar-dim',
@@ -1094,7 +1292,7 @@ export default class UsageBarExtension extends Extension {
         } else {
             // All view: flat sections (no card chrome), one per provider,
             // split by a thin rule; cost lines live on the per-provider tabs.
-            this._rows.forEach((row, i) => {
+            rows.forEach((row, i) => {
                 if (i > 0)
                     detail.add_child(new St.Widget({
                         style_class: 'usagebar-separator',
@@ -1154,11 +1352,12 @@ export default class UsageBarExtension extends Extension {
         const max = Math.max(...points.map(p => p.value), 0);
         // Each day is a full-height reactive slot (so short bars are easy
         // to hover) holding the bottom-aligned bar.
+        const brand = PROVIDER_META[provider]?.color;
         const slots = points.map(point => {
             const ratio = max > 0 && point.value > 0 ? Math.min(point.value / max, 1) : 0;
-            const bar = new St.Widget({
-                style_class: `usagebar-chart-bar usagebar-chart-bar-${provider}`,
-            });
+            const bar = new St.Widget({style_class: 'usagebar-chart-bar'});
+            if (brand)
+                bar.set_style(`background-color: ${brand};`);
             bar.set_opacity(Math.round(255 * (0.42 + 0.58 * Math.max(0.18, ratio))));
             bar.set_size(4, ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1);
             // Vertical box with an expanding spacer: keeps the bar pinned
@@ -1216,6 +1415,7 @@ export default class UsageBarExtension extends Extension {
     // major/critical, grey before the feed's coverage), hover tooltip with
     // the incident name. Null until the feed has been fetched.
     _buildStatusStrip(provider) {
+        // No settings gate here: disabling status checks empties the cache.
         const cached = this._status?.[provider];
         if (!cached)
             return null;
@@ -1325,8 +1525,9 @@ export default class UsageBarExtension extends Extension {
         }
 
         const reset = resetText(w);
-        const remaining = Math.max(0, Math.min(100, Math.round(100 - w.usedPercent)));
-        const percentText = known ? T.remaining(remaining) : T.unavailable;
+        const used = Math.max(0, Math.min(100, Math.round(w.usedPercent)));
+        const percentText = !known ? T.unavailable
+            : DISPLAY.barsShowUsed ? T.used(used) : T.remaining(100 - used);
 
         const foot = new St.BoxLayout({x_expand: true, style_class: 'usagebar-window-foot'});
         const leftCol = new St.BoxLayout({vertical: true});
@@ -1406,7 +1607,7 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-card-title',
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        let plan = row.usage?.loginMethod ?? row.usage?.identity?.loginMethod;
+        let plan = planOf(row);
         if (plan) {
             plan = plan.charAt(0).toUpperCase() + plan.slice(1);
             // Drop a leading provider name ("Claude Max" → "Max"): the card
@@ -1449,21 +1650,22 @@ export default class UsageBarExtension extends Extension {
             card.add_child(banner);
         }
 
-        const hiddenBars = new Set(this._settings?.get_strv('hidden-windows') ?? []);
         for (const {w, slot} of windowsOf(row)) {
-            if (hiddenBars.has(barKey(row.provider, {slot})))
+            if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
                 continue;
-            const pace = row.pace ? [row.pace.primary, row.pace.secondary][slot] : null;
             this._addWindowRow(card, windowLabel(w.windowMinutes, slot), w,
-                row.stale, pace?.summary);
+                row.stale, paceOf(row, slot)?.summary);
         }
 
         // Extra named limits (per-model bars like Fable, Daily Routines) —
-        // rendered like the standard windows, as in the macOS card.
-        for (const x of extraWindowsOf(row)) {
-            if (hiddenBars.has(barKey(row.provider, {extra: x})))
-                continue;
-            this._addWindowRow(card, x.title ?? x.id, x.window, row.stale, null);
+        // rendered like the standard windows, as in the macOS card. The
+        // show-credits-extras setting hides them together with credits.
+        if (DISPLAY.showExtras) {
+            for (const x of extraWindowsOf(row)) {
+                if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
+                    continue;
+                this._addWindowRow(card, x.title ?? x.id, x.window, row.stale, null);
+            }
         }
 
         const report = showCost
@@ -1472,7 +1674,7 @@ export default class UsageBarExtension extends Extension {
 
         // Limit Reset Credits header (codex): count right-aligned, nearest
         // expiry below — matches the macOS card. Full card only, like cost.
-        const credits = showCost ? creditsInfo(row) : null;
+        const credits = showCost && DISPLAY.showExtras ? creditsInfo(row) : null;
         const kpis = costKpis(report);
         const models = topModelsLine(report);
         if (flat && (credits || kpis || models))
@@ -1485,6 +1687,20 @@ export default class UsageBarExtension extends Extension {
             card.add_child(head);
             if (credits.expiryLine)
                 card.add_child(new St.Label({text: credits.expiryLine, style_class: 'usagebar-dim'}));
+        }
+
+        // Generic credits balance (row.credits.remaining — Cursor on-demand
+        // budget and the like), distinct from codex's reset credits above.
+        const balance = showCost && DISPLAY.showExtras ? row.credits?.remaining : null;
+        if (balance !== null && balance !== undefined) {
+            const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-credits'});
+            head.add_child(new St.Label({text: 'Credits', style_class: 'usagebar-window-label'}));
+            head.add_child(new St.Widget({x_expand: true}));
+            head.add_child(new St.Label({
+                text: fmtUSD(balance) ?? String(balance),
+                style_class: 'usagebar-credits-count',
+            }));
+            card.add_child(head);
         }
 
         if (kpis) {
@@ -1523,7 +1739,7 @@ export default class UsageBarExtension extends Extension {
             card.add_child(hintLabel);
         }
 
-        const urls = showLinks ? URLS[row.provider] : null;
+        const urls = showLinks ? providerLinks(row) : null;
         // Status strip and links only on the detail tabs — All stays compact.
         const statusStrip = showCost ? this._buildStatusStrip(row.provider) : null;
         if (flat && (urls || statusStrip))
@@ -1533,6 +1749,8 @@ export default class UsageBarExtension extends Extension {
         if (urls) {
             const links = new St.BoxLayout({style_class: 'usagebar-links'});
             for (const [label, url] of [['Dashboard', urls.dashboard], ['Status', urls.status]]) {
+                if (!url)
+                    continue;
                 const btn = new St.Button({
                     label,
                     style_class: 'usagebar-link',

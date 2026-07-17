@@ -209,11 +209,9 @@
 
 .usagebar-chart-bar {
   border-radius: 2px 2px 0 0; /* flat bottom — bars sit on the baseline */
-  background-color: #4d9aa8; /* teal, like the macOS codex trend */
-}
-
-.usagebar-chart-bar-claude {
-  background-color: #d97757; /* Anthropic coral */
+  /* fallback; the extension overrides with the provider's brand color
+     from providermeta.js */
+  background-color: #4d9aa8;
 }
 
 .usagebar-chart-baseline {
