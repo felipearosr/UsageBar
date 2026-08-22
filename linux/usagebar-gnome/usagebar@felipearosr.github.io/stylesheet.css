@@ -101,30 +101,16 @@
   icon-size: 14px;
 }
 
-.usagebar-next-btn {
+.usagebar-action-btn {
   width: 20px;
   height: 20px;
   padding: 2px;
   border-radius: 4px;
 }
 
-.usagebar-dots-btn {
-  width: 20px;
-  height: 20px;
-  padding: 2px;
-  border-radius: 4px;
-}
-
-.usagebar-compact-row:hover .usagebar-next-btn,
-.usagebar-compact-row:hover .usagebar-dots-btn,
-.usagebar-compact-row:focus .usagebar-next-btn,
-.usagebar-compact-row:focus .usagebar-dots-btn {
+.usagebar-compact-row:hover .usagebar-action-btn,
+.usagebar-compact-row:focus .usagebar-action-btn {
   background-color: rgba(160, 160, 166, 0.2);
-  color: #ffffff;
-}
-
-.usagebar-dots-btn.usagebar-btn-active {
-  background-color: rgba(53, 132, 228, 0.35);
   color: #ffffff;
 }
 
@@ -142,36 +128,8 @@
   spacing: 10px;
 }
 
-.usagebar-options-panel {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(160, 160, 166, 0.2);
-  spacing: 8px;
-}
-
-.usagebar-option-btn {
-  padding: 4px 10px;
-  border-radius: 6px;
-  background-color: rgba(128, 128, 128, 0.2);
-}
-
-.usagebar-option-btn:hover,
-.usagebar-option-btn:focus {
-  background-color: rgba(160, 160, 166, 0.35);
-  color: #ffffff;
-}
-
-.usagebar-option-btn-content {
-  spacing: 6px;
-}
-
-.usagebar-option-label {
-  font-size: 9pt;
-  color: #eeeeec;
-}
-
 .usagebar-btn-disabled {
-  opacity: 0.35;
+  opacity: 0.25;
 }
 
 .usagebar-card {

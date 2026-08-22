@@ -1105,7 +1105,6 @@ export default class UsageBarExtension extends Extension {
         this._rows = [];
         this._names = {};
         this._selectedProvider = null;
-        this._optionsProvider = null;
         this._notified = new Map();
         this._costs = null;
         this._costFetchedAt = 0;
@@ -1185,7 +1184,6 @@ export default class UsageBarExtension extends Extension {
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
-                this._optionsProvider = null;
                 if (this._settings.get_boolean('refresh-on-open'))
                     this._fetchUsage();
                 this._fetchCost();
@@ -2342,42 +2340,63 @@ export default class UsageBarExtension extends Extension {
         contentBtn.set_child(contentBox);
         mainRow.add_child(contentBtn);
 
-        // Actions: 3 dots button + right chevron arrow button
+        // Actions: [Up] [Down] [Next]
         const actionsBox = new St.BoxLayout({
             style_class: 'usagebar-compact-actions',
             y_align: Clutter.ActorAlign.CENTER,
         });
 
-        const dotsBtn = new St.Button({
-            style_class: this._optionsProvider === row.provider
-                ? 'usagebar-btn usagebar-dots-btn usagebar-btn-active'
-                : 'usagebar-btn usagebar-dots-btn',
-            can_focus: true,
-            reactive: true,
-            child: new St.Icon({
-                icon_name: 'view-more-symbolic',
-                icon_size: 11,
-                style_class: 'usagebar-btn-icon',
-            }),
+        const upBtn = new St.Button({
+            style_class: index > 0
+                ? 'usagebar-btn usagebar-action-btn'
+                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled',
+            can_focus: index > 0,
+            reactive: index > 0,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        dotsBtn.connect('clicked', () => {
-            this._optionsProvider = (this._optionsProvider === row.provider) ? null : row.provider;
-            this._render();
+        upBtn.add_child(new St.Icon({
+            icon_name: 'go-up-symbolic',
+            icon_size: 11,
+            style_class: 'usagebar-btn-icon',
+        }));
+        if (index > 0) {
+            upBtn.connect('clicked', () => {
+                this._moveProvider(row.provider, -1);
+            });
+        }
+        actionsBox.add_child(upBtn);
+
+        const downBtn = new St.Button({
+            style_class: index < totalCount - 1
+                ? 'usagebar-btn usagebar-action-btn'
+                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled',
+            can_focus: index < totalCount - 1,
+            reactive: index < totalCount - 1,
+            y_align: Clutter.ActorAlign.CENTER,
         });
-        actionsBox.add_child(dotsBtn);
+        downBtn.add_child(new St.Icon({
+            icon_name: 'go-down-symbolic',
+            icon_size: 11,
+            style_class: 'usagebar-btn-icon',
+        }));
+        if (index < totalCount - 1) {
+            downBtn.connect('clicked', () => {
+                this._moveProvider(row.provider, 1);
+            });
+        }
+        actionsBox.add_child(downBtn);
 
         const nextBtn = new St.Button({
-            style_class: 'usagebar-btn usagebar-next-btn',
+            style_class: 'usagebar-btn usagebar-action-btn usagebar-next-btn',
             can_focus: true,
             reactive: true,
-            child: new St.Icon({
-                icon_name: 'go-next-symbolic',
-                icon_size: 11,
-                style_class: 'usagebar-btn-icon',
-            }),
             y_align: Clutter.ActorAlign.CENTER,
         });
+        nextBtn.add_child(new St.Icon({
+            icon_name: 'go-next-symbolic',
+            icon_size: 11,
+            style_class: 'usagebar-btn-icon',
+        }));
         nextBtn.connect('clicked', () => {
             this._selectedProvider = row.provider;
             this._render();
@@ -2386,73 +2405,6 @@ export default class UsageBarExtension extends Extension {
 
         mainRow.add_child(actionsBox);
         rowBox.add_child(mainRow);
-
-        // Options dropdown panel (Move Up / Move Down)
-        if (this._optionsProvider === row.provider) {
-            const optionsPanel = new St.BoxLayout({
-                style_class: 'usagebar-options-panel',
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-
-            const upContent = new St.BoxLayout({
-                style_class: 'usagebar-option-btn-content',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            upContent.add_child(new St.Icon({
-                icon_name: 'go-up-symbolic',
-                icon_size: 12,
-                style_class: 'usagebar-btn-icon',
-            }));
-            upContent.add_child(new St.Label({
-                text: 'Move Up',
-                style_class: 'usagebar-option-label',
-            }));
-
-            const upBtn = new St.Button({
-                style_class: index > 0 ? 'usagebar-btn usagebar-option-btn' : 'usagebar-btn usagebar-option-btn usagebar-btn-disabled',
-                can_focus: index > 0,
-                reactive: index > 0,
-                child: upContent,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (index > 0) {
-                upBtn.connect('clicked', () => {
-                    this._moveProvider(row.provider, -1);
-                });
-            }
-            optionsPanel.add_child(upBtn);
-
-            const downContent = new St.BoxLayout({
-                style_class: 'usagebar-option-btn-content',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            downContent.add_child(new St.Icon({
-                icon_name: 'go-down-symbolic',
-                icon_size: 12,
-                style_class: 'usagebar-btn-icon',
-            }));
-            downContent.add_child(new St.Label({
-                text: 'Move Down',
-                style_class: 'usagebar-option-label',
-            }));
-
-            const downBtn = new St.Button({
-                style_class: index < totalCount - 1 ? 'usagebar-btn usagebar-option-btn' : 'usagebar-btn usagebar-option-btn usagebar-btn-disabled',
-                can_focus: index < totalCount - 1,
-                reactive: index < totalCount - 1,
-                child: downContent,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (index < totalCount - 1) {
-                downBtn.connect('clicked', () => {
-                    this._moveProvider(row.provider, 1);
-                });
-            }
-            optionsPanel.add_child(downBtn);
-
-            rowBox.add_child(optionsPanel);
-        }
 
         return rowBox;
     }
