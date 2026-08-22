@@ -36,7 +36,6 @@ const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
 const STATUS_DAYS = 45;        // history strip length, like statuspage.io
 const STATUS_BAR_HEIGHT = 18;
 const BAR_WIDTH = 320;
-const MINI_BAR_WIDTH = 26;
 const KPI_COL_WIDTH = 180; // left column of the 2x2 cost grid
 const CHART_HEIGHT = 44; // daily cost/token trend bars
 const COST_HINTS = {
@@ -110,6 +109,16 @@ function barKey(provider, {slot, extra} = {}) {
 
 function compactWindowLabel(label) {
     const lower = (label || '').toLowerCase();
+    if (lower.startsWith('gemini') && (lower.includes('5-hour') || lower.includes('5 hour') || lower.includes('5h') || lower.includes('session')))
+        return '5h';
+    if (lower.startsWith('gemini') && (lower.includes('weekly') || lower.includes('week') || lower.includes('7-day') || lower.includes('7d') || lower === 'wk'))
+        return 'wk';
+    if ((lower.includes('claude') || lower.includes('gpt') || lower.includes('3p')) && (lower.includes('5-hour') || lower.includes('5 hour') || lower.includes('5h') || lower.includes('session')))
+        return '5h';
+    if ((lower.includes('claude') || lower.includes('gpt') || lower.includes('3p')) && (lower.includes('weekly') || lower.includes('week') || lower.includes('7-day') || lower.includes('7d') || lower === 'wk'))
+        return 'wk';
+    if (lower.startsWith('gemini'))
+        return 'Gemini';
     if (lower.includes('5-hour') || lower.includes('5 hour') || lower.includes('5h') || lower.includes('session'))
         return '5h';
     if (lower.includes('2-hour') || lower.includes('2 hour') || lower.includes('2h'))
@@ -128,13 +137,33 @@ function compactWindowLabel(label) {
         return 'bal';
     if (lower.includes('credits') || lower.includes('credit'))
         return 'cr';
+    if (lower.includes('sonnet'))
+        return 'Sonnet';
+    if (lower.includes('opus'))
+        return 'Opus';
+    if (lower.includes('haiku'))
+        return 'Haiku';
+    if (lower.includes('gpt-oss') || lower.includes('gpt'))
+        return 'GPT';
+    if (lower.includes('3.7 flash'))
+        return '3.7 Fl';
+    if (lower.includes('3.6 flash'))
+        return '3.6 Fl';
+    if (lower.includes('3.5 flash'))
+        return '3.5 Fl';
+    if (lower.includes('3.1 pro'))
+        return '3.1 Pro';
+    if (lower.includes('flash'))
+        return 'Flash';
+    if (lower.includes('pro'))
+        return 'Pro';
     const trimmed = (label || '').trim();
-    if (trimmed.length <= 7)
+    if (trimmed.length <= 8)
         return trimmed;
     const firstWord = trimmed.split(' ')[0];
-    if (firstWord.length <= 7)
+    if (firstWord.length <= 8)
         return firstWord;
-    return trimmed.slice(0, 6);
+    return trimmed.slice(0, 7);
 }
 
 // The row's most-used window (standard slots and extras alike), or null.
@@ -167,6 +196,150 @@ function mergeStale(previous, fresh) {
         }
     }
     return fresh;
+}
+
+// Enrich Antigravity rows with the 4 core quota summary bars from the local agy server
+function enrichAntigravityModels(rows) {
+    const agRow = rows.find(r => r.provider === 'antigravity');
+    if (!agRow || !agRow.usage)
+        return rows;
+
+    try {
+        const ports = [];
+
+        // Method 1: ss -tlnp for agy / language_server processes
+        try {
+            const proc = Gio.Subprocess.new(
+                ['ss', '-tlnp'],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+            );
+            const [, out] = proc.communicate_utf8(null, null);
+            for (const line of (out || '').split('\n')) {
+                if (/agy|language_server|antigravity/i.test(line)) {
+                    const m = line.match(/127\.0\.0\.1:(\d+)/);
+                    if (m) {
+                        const p = parseInt(m[1], 10);
+                        if (p > 1024) ports.push(p);
+                    }
+                }
+            }
+        } catch {
+            // fallback
+        }
+
+        // Method 2: pgrep agy/language_server + lsof
+        if (ports.length === 0) {
+            try {
+                const proc = Gio.Subprocess.new(
+                    ['pgrep', '-f', 'agy|language_server|antigravity'],
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+                );
+                const [, out] = proc.communicate_utf8(null, null);
+                const pids = (out || '').trim().split('\n').map(s => s.trim()).filter(Boolean);
+                if (pids.length > 0) {
+                    const lproc = Gio.Subprocess.new(
+                        ['lsof', '-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', pids.join(',')],
+                        Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+                    );
+                    const [, lout] = lproc.communicate_utf8(null, null);
+                    for (const line of (lout || '').split('\n')) {
+                        const m = line.match(/:(\d+)\s+\(LISTEN\)/);
+                        if (m) ports.push(parseInt(m[1], 10));
+                    }
+                }
+            } catch {
+                // fallback
+            }
+        }
+
+        const uniquePorts = [...new Set(ports)];
+        for (const port of uniquePorts) {
+            let handled = false;
+            for (const scheme of ['https', 'http']) {
+                try {
+                    // Try RetrieveUserQuotaSummary first for the 4 core quota summary bars
+                    const qProc = Gio.Subprocess.new(
+                        ['curl', '-k', '-s', '--connect-timeout', '0.5', '--max-time', '1', '--http1.1', '-X', 'POST',
+                         `${scheme}://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`,
+                         '-H', 'Content-Type: application/json', '-d', '{"forceRefresh": true}'],
+                        Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+                    );
+                    const [, qOut] = qProc.communicate_utf8(null, null);
+                    if (qOut && qOut.startsWith('{')) {
+                        const qData = JSON.parse(qOut);
+                        const groups = qData.response?.groups || [];
+                        if (groups.length > 0) {
+                            const extras = [];
+                            for (const group of groups) {
+                                const isGemini = /gemini/i.test(group.displayName || '');
+                                const groupPrefix = isGemini ? 'Gemini' : 'Claude/GPT';
+                                for (const bucket of (group.buckets || [])) {
+                                    const isWeekly = bucket.window === 'weekly' || /weekly/i.test(bucket.displayName || '');
+                                    const timeLabel = isWeekly ? 'weekly' : '5-hour';
+                                    const title = `${groupPrefix} ${timeLabel}`;
+                                    const id = `antigravity-quota-summary-${isGemini ? 'gemini' : '3p'}-${isWeekly ? 'weekly' : '5h'}`;
+                                    const frac = bucket.remainingFraction;
+                                    const used = (frac !== null && frac !== undefined)
+                                        ? Math.max(0, Math.min(100, Math.round((1 - frac) * 100 * 100) / 100))
+                                        : 0;
+                                    extras.push({
+                                        id,
+                                        title,
+                                        window: {
+                                            usedPercent: used,
+                                            resetsAt: bucket.resetTime,
+                                            windowMinutes: isWeekly ? 10080 : 300,
+                                            resetDescription: bucket.description,
+                                        },
+                                    });
+                                }
+                            }
+                            if (extras.length > 0) {
+                                // Sort: Gemini 5-hour, Gemini weekly, Claude/GPT 5-hour, Claude/GPT weekly
+                                extras.sort((a, b) => {
+                                    const aGem = a.id.includes('gemini') ? 0 : 1;
+                                    const bGem = b.id.includes('gemini') ? 0 : 1;
+                                    if (aGem !== bGem) return aGem - bGem;
+                                    const a5h = a.id.includes('5h') ? 0 : 1;
+                                    const b5h = b.id.includes('5h') ? 0 : 1;
+                                    return a5h - b5h;
+                                });
+
+                                agRow.usage.extraRateWindows = extras;
+                                agRow.usage.primary = null;
+                                agRow.usage.secondary = null;
+
+                                // Also try to get userTier from GetUserStatus
+                                try {
+                                    const uProc = Gio.Subprocess.new(
+                                        ['curl', '-k', '-s', '--connect-timeout', '0.5', '--max-time', '1', '--http1.1', '-X', 'POST',
+                                         `${scheme}://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus`,
+                                         '-H', 'Content-Type: application/json', '-d', '{}'],
+                                        Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE
+                                    );
+                                    const [, uOut] = uProc.communicate_utf8(null, null);
+                                    if (uOut && uOut.startsWith('{')) {
+                                        const uData = JSON.parse(uOut);
+                                        if (uData.userStatus?.userTier?.name)
+                                            agRow.usage.loginMethod = uData.userStatus.userTier.name;
+                                    }
+                                } catch {}
+
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+                } catch {
+                    // try next scheme
+                }
+            }
+            if (handled) break;
+        }
+    } catch {
+        // keep existing
+    }
+    return rows;
 }
 
 // Mutable so enable() can overwrite from GSettings (prefs.js edits them).
@@ -276,10 +449,12 @@ const DISPLAY = {
     absoluteResets: false,
     barsShowUsed: false,
     sortAlphabetical: false,
+    providerOrder: [],
     mergeChips: false,
     resetWhenExhausted: false,
-    chipMode: 'percent',
+    chipMode: 'ring',
     showExtras: true,
+    antigravityOverviewGemini: true,
     hiddenChips: new Set(),
     hiddenWindows: new Set(),
 };
@@ -731,8 +906,9 @@ class ServeSupervisor {
 
 const Indicator = GObject.registerClass(
 class UsageBarIndicator extends PanelMenu.Button {
-    _init() {
+    _init(dir) {
         super._init(0.5, 'UsageBar', false);
+        this._dir = dir;
 
         this._chipBox = new St.BoxLayout({style_class: 'usagebar-panel-box'});
         this.add_child(this._chipBox);
@@ -755,14 +931,15 @@ class UsageBarIndicator extends PanelMenu.Button {
         });
         header.add_child(this._updatedLabel);
         this._refreshButton = new St.Button({
-            style_class: 'usagebar-refresh-btn',
+            style_class: 'usagebar-btn usagebar-refresh-btn',
             can_focus: true,
-            child: new St.Icon({
-                icon_name: 'view-refresh-symbolic',
-                style_class: 'usagebar-refresh-icon',
-            }),
+            reactive: true,
             y_align: Clutter.ActorAlign.CENTER,
         });
+        this._refreshButton.add_child(new St.Icon({
+            icon_name: 'view-refresh-symbolic',
+            style_class: 'usagebar-btn-icon',
+        }));
         header.add_child(this._refreshButton);
         this.menu.addMenuItem(header);
 
@@ -773,14 +950,6 @@ class UsageBarIndicator extends PanelMenu.Button {
         this._statusItem.add_child(this._statusLabel);
         this._statusItem.visible = false;
         this.menu.addMenuItem(this._statusItem);
-
-        // Tab strip (one tab per provider) above a single detail card;
-        // both rebuilt on every render.
-        this._tabsItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        this._tabsBox = new St.BoxLayout({style_class: 'usagebar-tabs', x_expand: true});
-        this._tabsItem.add_child(this._tabsBox);
-        this._tabsItem.visible = false;
-        this.menu.addMenuItem(this._tabsItem);
 
         const detailItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         this._detailBox = new St.BoxLayout({vertical: true, x_expand: true});
@@ -818,12 +987,96 @@ class UsageBarIndicator extends PanelMenu.Button {
         }
         for (const chip of chips) {
             const box = new St.BoxLayout({style_class: 'usagebar-chip'});
-            box.add_child(new St.Widget({
-                style_class: `usagebar-dot usagebar-bg-${chip.sev}`,
-                width: 8,
-                height: 8,
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
+
+            if (chip.mode === 'dot') {
+                box.add_child(new St.Widget({
+                    style_class: `usagebar-dot usagebar-bg-${chip.sev}`,
+                    width: 8,
+                    height: 8,
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            } else {
+                // 1. Provider Brand Icon (pure white)
+                let iconAdded = false;
+                if (this._dir && chip.provider) {
+                    const iconFile = this._dir.get_child('icons').get_child(`ProviderIcon-${chip.provider}.svg`);
+                    if (iconFile.query_exists(null)) {
+                        const gicon = new Gio.FileIcon({file: iconFile});
+                        box.add_child(new St.Icon({
+                            gicon,
+                            icon_size: 14,
+                            style_class: 'usagebar-chip-icon',
+                            y_align: Clutter.ActorAlign.CENTER,
+                        }));
+                        iconAdded = true;
+                    }
+                }
+                if (!iconAdded) {
+                    box.add_child(new St.Icon({
+                        icon_name: 'application-x-executable-symbolic',
+                        icon_size: 14,
+                        style_class: 'usagebar-chip-icon',
+                        y_align: Clutter.ActorAlign.CENTER,
+                    }));
+                }
+
+                // 2. Circular Progress Ring (if not percent-only mode)
+                if (chip.mode !== 'percent') {
+                    const ring = new St.DrawingArea({
+                        style_class: 'usagebar-chip-ring',
+                        width: 14,
+                        height: 14,
+                        y_align: Clutter.ActorAlign.CENTER,
+                    });
+                    const percent = chip.percent;
+                    const sev = chip.sev;
+                    ring.connect('repaint', area => {
+                        const cr = area.get_context();
+                        const [w, h] = area.get_surface_size();
+                        if (w <= 0 || h <= 0) {
+                            cr.$dispose();
+                            return;
+                        }
+                        const xc = w / 2;
+                        const yc = h / 2;
+                        const lineWidth = 2.0;
+                        const radius = Math.max(1, Math.min(w, h) / 2 - lineWidth / 2 - 0.5);
+
+                        // Background track
+                        cr.arc(xc, yc, radius, 0, 2 * Math.PI);
+                        cr.setSourceRGBA(1.0, 1.0, 1.0, 0.22);
+                        cr.setLineWidth(lineWidth);
+                        cr.stroke();
+
+                        // Progress arc
+                        if (percent > 0) {
+                            const startAngle = -Math.PI / 2;
+                            const progressFrac = Math.min(1.0, Math.max(0.0, percent / 100.0));
+                            const endAngle = startAngle + progressFrac * 2 * Math.PI;
+
+                            cr.arc(xc, yc, radius, startAngle, endAngle);
+
+                            let r = 0.18, g = 0.76, b = 0.49; // ok (#2ec27e)
+                            if (sev === 'crit') {
+                                r = 0.93; g = 0.20; b = 0.23; // crit (#ed333b)
+                            } else if (sev === 'warn') {
+                                r = 0.96; g = 0.76; b = 0.07; // warn (#f5c211)
+                            } else if (sev === 'stale') {
+                                r = 0.60; g = 0.60; b = 0.59; // stale (#9a9996)
+                            }
+
+                            cr.setSourceRGBA(r, g, b, 1.0);
+                            cr.setLineWidth(lineWidth);
+                            cr.setLineCap(1); // CAIRO_LINE_CAP_ROUND
+                            cr.stroke();
+                        }
+                        cr.$dispose();
+                    });
+                    box.add_child(ring);
+                }
+            }
+
+            // 3. Percentage or name label (if enabled and present)
             if (chip.text) {
                 box.add_child(new St.Label({
                     text: chip.text,
@@ -852,6 +1105,7 @@ export default class UsageBarExtension extends Extension {
         this._rows = [];
         this._names = {};
         this._selectedProvider = null;
+        this._optionsProvider = null;
         this._notified = new Map();
         this._costs = null;
         this._costFetchedAt = 0;
@@ -869,10 +1123,12 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.absoluteResets = this._settings.get_boolean('absolute-reset-times');
             DISPLAY.barsShowUsed = this._settings.get_boolean('bars-show-used');
             DISPLAY.sortAlphabetical = this._settings.get_boolean('sort-alphabetical');
+            DISPLAY.providerOrder = this._settings.get_strv('provider-order');
             DISPLAY.mergeChips = this._settings.get_boolean('merge-chips');
             DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
             DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
             DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
+            DISPLAY.antigravityOverviewGemini = this._settings.get_boolean('antigravity-overview-gemini');
             DISPLAY.hiddenChips = new Set(this._settings.get_strv('hidden-chips'));
             DISPLAY.hiddenWindows = new Set(this._settings.get_strv('hidden-windows'));
         };
@@ -883,9 +1139,9 @@ export default class UsageBarExtension extends Extension {
         // full popover rebuild.
         const DISPLAY_KEYS = new Set([
             'warn-threshold', 'crit-threshold', 'absolute-reset-times',
-            'bars-show-used', 'sort-alphabetical', 'merge-chips',
+            'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
             'show-reset-when-exhausted', 'chip-display-mode',
-            'show-credits-extras', 'hidden-chips', 'hidden-windows',
+            'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'status-scopes', 'status-checks-enabled',
         ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
@@ -923,12 +1179,13 @@ export default class UsageBarExtension extends Extension {
                 this._render();
         });
 
-        this._indicator = new Indicator();
+        this._indicator = new Indicator(this.dir);
         this._indicator._settingsItem.connect('activate', () => this.openPreferences());
         this._indicator._refreshButton.connect('clicked', () => this._fetchUsage());
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
+                this._optionsProvider = null;
                 if (this._settings.get_boolean('refresh-on-open'))
                     this._fetchUsage();
                 this._fetchCost();
@@ -1094,7 +1351,7 @@ export default class UsageBarExtension extends Extension {
                 this._indicator.setStatus(`usage fetch failed: ${error.message}`);
                 this._scheduleFetch(FETCH_RETRY_SECS);
             } else {
-                this._rows = mergeStale(this._rows, rows);
+                this._rows = enrichAntigravityModels(mergeStale(this._rows, rows));
                 this._lastFetchAt = Date.now();
                 this._indicator.setStatus('');
                 this._scheduleFetch(FETCH_OK_SECS);
@@ -1229,34 +1486,53 @@ export default class UsageBarExtension extends Extension {
             provider.charAt(0).toUpperCase() + provider.slice(1);
     }
 
-    // Rows in display order (chips and tabs share it).
+    // Rows in display order (chips and popover share it).
     _sortedRows() {
         const rows = [...this._rows];
         if (DISPLAY.sortAlphabetical) {
             rows.sort((a, b) => this._displayName(a.provider)
                 .localeCompare(this._displayName(b.provider)));
+            return rows;
+        }
+        if (DISPLAY.providerOrder && DISPLAY.providerOrder.length > 0) {
+            const orderMap = new Map(DISPLAY.providerOrder.map((p, i) => [p, i]));
+            rows.sort((a, b) => {
+                const posA = orderMap.has(a.provider) ? orderMap.get(a.provider) : 9999;
+                const posB = orderMap.has(b.provider) ? orderMap.get(b.provider) : 9999;
+                if (posA !== posB)
+                    return posA - posB;
+                return 0;
+            });
         }
         return rows;
     }
 
-    // One panel chip for a row, honoring the display mode ('percent',
-    // 'name-percent', 'dot') and the exhausted-shows-reset option.
+    // One panel chip for a row, honoring the display mode ('ring',
+    // 'ring-percent', 'percent', 'name-percent', 'dot') and the exhausted-shows-reset option.
     _chipFor(row) {
         const w = worstWindow(row);
         const worst = w?.usedPercent ?? null;
         const grey = row.stale || (row.error && worst === null);
+        const mode = DISPLAY.chipMode;
         let text = '';
-        if (DISPLAY.chipMode !== 'dot') {
+        if (mode === 'ring-percent' || mode === 'percent' || mode === 'name-percent') {
             let value = worst === null ? '—' : `${Math.round(worst)}%`;
             if (worst !== null && worst >= 100 && DISPLAY.resetWhenExhausted) {
                 const secs = resetSecs(w);
                 if (secs > 0)
                     value = humanizeSecs(secs);
             }
-            text = DISPLAY.chipMode === 'name-percent'
+            text = mode === 'name-percent'
                 ? `${this._displayName(row.provider)} ${value}` : value;
         }
-        return {text, sev: severity(worst ?? 0, grey)};
+        return {
+            provider: row.provider,
+            percent: worst ?? 0,
+            hasUsage: worst !== null,
+            text,
+            sev: severity(worst ?? 0, grey),
+            mode,
+        };
     }
 
     _render() {
@@ -1280,34 +1556,10 @@ export default class UsageBarExtension extends Extension {
 
         this._publishWindowCatalog();
 
-        // Tabs + detail. No selection (null) means the All tab: every card
-        // stacked, as before tabs existed. A selected provider that drops
-        // out of the feed falls back to All.
+        // Selection determines view: null means the All / overview view
+        // (compact cards with chevron arrow). Selecting a provider shows
+        // that provider's full detail view with a back button.
         const selectedRow = rows.find(r => r.provider === this._selectedProvider) ?? null;
-
-        const tabs = this._indicator._tabsBox;
-        tabs.destroy_all_children();
-        this._indicator._tabsItem.visible = rows.length > 1;
-        if (rows.length > 1) {
-            const worsts = rows.map(worstPercent).filter(p => p !== null);
-            const allGrey = rows.every(r =>
-                r.stale || r.error || worstPercent(r) === null);
-            tabs.add_child(this._makeTab('All',
-                worsts.length ? Math.max(...worsts) : null, allGrey,
-                selectedRow === null, () => {
-                    this._selectedProvider = null;
-                    this._render();
-                }));
-            for (const row of rows) {
-                const worst = worstPercent(row);
-                tabs.add_child(this._makeTab(this._displayName(row.provider),
-                    worst, row.stale || row.error || worst === null,
-                    row === selectedRow, () => {
-                        this._selectedProvider = row.provider;
-                        this._render();
-                    }));
-            }
-        }
 
         const detail = this._indicator._detailBox;
         detail.destroy_all_children();
@@ -1317,10 +1569,10 @@ export default class UsageBarExtension extends Extension {
                 style_class: 'usagebar-dim',
             }));
         } else if (selectedRow) {
-            detail.add_child(this._buildCard(selectedRow, {flat: true}));
+            detail.add_child(this._buildCard(selectedRow, {flat: true, showBackButton: true}));
         } else {
             // All view: compact cards, one per provider, with brand icon,
-            // reset countdown, chevron navigation to detail tab, and inline mini bars.
+            // reset countdown, chevron navigation to detail view, and inline mini bars.
             rows.forEach((row, i) => {
                 if (i > 0)
                     detail.add_child(new St.Widget({
@@ -1328,48 +1580,34 @@ export default class UsageBarExtension extends Extension {
                         height: 1,
                         x_expand: true,
                     }));
-                detail.add_child(this._buildCompactRow(row));
+                detail.add_child(this._buildCompactRow(row, i, rows.length));
             });
         }
     }
 
-    _makeTab(label, worst, grey, active, onClick) {
-        const content = new St.BoxLayout({vertical: true, style_class: 'usagebar-tab-content'});
-        content.add_child(new St.Label({
-            text: label,
-            style_class: 'usagebar-tab-label',
-            x_align: Clutter.ActorAlign.CENTER,
-        }));
-        const percent = Math.min(100, Math.max(0, worst ?? 0));
-        const track = new St.Widget({
-            style_class: 'usagebar-track',
-            width: MINI_BAR_WIDTH,
-            height: 4,
-            x_expand: true,
-        });
-        const fill = new St.Widget({
-            style_class: `usagebar-fill usagebar-bg-${severity(percent, grey)}`,
-        });
-        fill.set_size(Math.max(2, Math.round(MINI_BAR_WIDTH * percent / 100)), 4);
-        track.add_child(fill);
-        // Same allocation-follow as the card bars: the tab stretches the
-        // track, so a fixed-basis fill would read short.
-        track.connect('notify::allocation', () => {
-            const w = track.allocation.get_width();
-            if (w > 0)
-                fill.set_size(Math.max(2, Math.round(w * percent / 100)), 4);
-        });
-        content.add_child(track);
+    _moveProvider(provider, direction) {
+        const rows = this._sortedRows();
+        const currentOrder = rows.map(r => r.provider);
+        const idx = currentOrder.indexOf(provider);
+        if (idx < 0)
+            return;
+        const targetIdx = idx + direction;
+        if (targetIdx < 0 || targetIdx >= currentOrder.length)
+            return;
 
-        const btn = new St.Button({
-            style_class: 'usagebar-tab',
-            child: content,
-            x_expand: true,
-        });
-        if (active)
-            btn.add_style_pseudo_class('checked');
-        btn.connect('clicked', onClick);
-        return btn;
+        const temp = currentOrder[idx];
+        currentOrder[idx] = currentOrder[targetIdx];
+        currentOrder[targetIdx] = temp;
+
+        DISPLAY.providerOrder = currentOrder;
+        if (this._settings) {
+            this._settings.set_strv('provider-order', currentOrder);
+            if (DISPLAY.sortAlphabetical) {
+                DISPLAY.sortAlphabetical = false;
+                this._settings.set_boolean('sort-alphabetical', false);
+            }
+        }
+        this._render();
     }
 
     // Mini daily-trend bar chart (port of the macOS MiniUsageBars): equal
@@ -1615,7 +1853,7 @@ export default class UsageBarExtension extends Extension {
 
     // flat: no card background; thin separator lines between sections
     // (usage | credits/cost | links) — used on the per-provider tabs.
-    _buildCard(row, {showCost = true, flat = false, showLinks = true} = {}) {
+    _buildCard(row, {showCost = true, flat = false, showLinks = true, showBackButton = false} = {}) {
         const card = new St.BoxLayout({
             vertical: true,
             style_class: flat ? 'usagebar-card-flat' : 'usagebar-card',
@@ -1629,8 +1867,57 @@ export default class UsageBarExtension extends Extension {
         const worst = worstPercent(row);
         const grey = row.stale || (row.error && worst === null);
 
-        // Head: name + badges left, worst% right.
-        const head = new St.BoxLayout({x_expand: true});
+        // Head: [back button] + [brand icon] + name + badges left, worst% right.
+        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-detail-head'});
+        if (showBackButton) {
+            const backBtn = new St.Button({
+                style_class: 'usagebar-btn usagebar-back-btn',
+                can_focus: true,
+                reactive: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            backBtn.add_child(new St.Icon({
+                icon_name: 'go-previous-symbolic',
+                icon_size: 14,
+                style_class: 'usagebar-btn-icon',
+            }));
+            backBtn.connect('clicked', () => {
+                this._selectedProvider = null;
+                this._render();
+            });
+            head.add_child(backBtn);
+        }
+
+        const iconWrap = new St.Bin({
+            style_class: 'usagebar-compact-icon-wrap',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const meta = PROVIDER_META[row.provider];
+        const iconFile = this.dir.get_child('icons').get_child(`ProviderIcon-${row.provider}.svg`);
+        let iconActor;
+        if (iconFile.query_exists(null)) {
+            const gicon = new Gio.FileIcon({file: iconFile});
+            iconActor = new St.Icon({
+                gicon,
+                icon_size: 20,
+                style_class: 'usagebar-compact-icon',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (meta?.color)
+                iconActor.set_style(`color: ${meta.color};`);
+        } else {
+            iconActor = new St.Icon({
+                icon_name: 'application-x-executable-symbolic',
+                icon_size: 20,
+                style_class: 'usagebar-compact-icon',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (meta?.color)
+                iconActor.set_style(`color: ${meta.color};`);
+        }
+        iconWrap.set_child(iconActor);
+        head.add_child(iconWrap);
+
         head.add_child(new St.Label({
             text: this._displayName(row.provider),
             style_class: 'usagebar-card-title',
@@ -1686,10 +1973,12 @@ export default class UsageBarExtension extends Extension {
                 row.stale, paceOf(row, slot)?.summary);
         }
 
-        // Extra named limits (per-model bars like Fable, Daily Routines) —
+        // Extra named limits (per-model bars like Fable, Daily Routines, Codex Spark, Antigravity models) —
         // rendered like the standard windows, as in the macOS card. The
-        // show-credits-extras setting hides them together with credits.
-        if (DISPLAY.showExtras) {
+        // show-credits-extras setting hides optional extras, but
+        // provider-core extra quotas (like Antigravity, Codex Spark 5h, Claude Fable) are always shown.
+        const showExtras = DISPLAY.showExtras || row.provider === 'antigravity' || row.provider === 'codex' || row.provider === 'claude';
+        if (showExtras) {
             for (const x of extraWindowsOf(row)) {
                 if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
                     continue;
@@ -1797,30 +2086,42 @@ export default class UsageBarExtension extends Extension {
         return card;
     }
 
-    _buildCompactRow(row) {
-        const btn = new St.Button({
+    _buildCompactRow(row, index, totalCount) {
+        const rowBox = new St.BoxLayout({
+            vertical: true,
             style_class: 'usagebar-compact-row',
             x_expand: true,
-            reactive: true,
-            can_focus: true,
-        });
-        btn.connect('clicked', () => {
-            this._selectedProvider = row.provider;
-            this._render();
         });
 
-        const root = new St.BoxLayout({
+        const mainRow = new St.BoxLayout({
             style_class: 'usagebar-compact-inner',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
         });
 
-        // 1. Brand icon inside circular badge
+        // 1. Clickable content area: brand icon + body (title, subtitle, metrics)
+        const contentBtn = new St.Button({
+            style_class: 'usagebar-compact-content-btn',
+            x_expand: true,
+            reactive: true,
+            can_focus: true,
+        });
+        contentBtn.connect('clicked', () => {
+            this._selectedProvider = row.provider;
+            this._render();
+        });
+
+        const contentBox = new St.BoxLayout({
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            style_class: 'usagebar-compact-content-box',
+        });
+
+        // Brand icon
         const iconWrap = new St.Bin({
             style_class: 'usagebar-compact-icon-wrap',
             y_align: Clutter.ActorAlign.CENTER,
         });
-
         const meta = PROVIDER_META[row.provider];
         const iconFile = this.dir.get_child('icons').get_child(`ProviderIcon-${row.provider}.svg`);
         let iconActor;
@@ -1828,31 +2129,32 @@ export default class UsageBarExtension extends Extension {
             const gicon = new Gio.FileIcon({file: iconFile});
             iconActor = new St.Icon({
                 gicon,
-                icon_size: 16,
+                icon_size: 20,
                 style_class: 'usagebar-compact-icon',
+                y_align: Clutter.ActorAlign.CENTER,
             });
             if (meta?.color)
                 iconActor.set_style(`color: ${meta.color};`);
         } else {
             iconActor = new St.Icon({
                 icon_name: 'application-x-executable-symbolic',
-                icon_size: 16,
+                icon_size: 20,
                 style_class: 'usagebar-compact-icon',
+                y_align: Clutter.ActorAlign.CENTER,
             });
             if (meta?.color)
                 iconActor.set_style(`color: ${meta.color};`);
         }
         iconWrap.set_child(iconActor);
-        root.add_child(iconWrap);
+        contentBox.add_child(iconWrap);
 
-        // 2. Main content: Top line (Title + Reset + Chevron), Bottom line (Metrics)
+        // Body: Top line (Title + Subtitle), Bottom line (Metrics)
         const body = new St.BoxLayout({
             vertical: true,
             style_class: 'usagebar-compact-body',
             x_expand: true,
         });
 
-        // Top line
         const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-compact-head'});
         head.add_child(new St.Label({
             text: this._displayName(row.provider),
@@ -1872,7 +2174,6 @@ export default class UsageBarExtension extends Extension {
                 }
             }
         }
-
         if (subtitle) {
             head.add_child(new St.Label({
                 text: subtitle,
@@ -1880,14 +2181,6 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
-
-        head.add_child(new St.Widget({x_expand: true}));
-        head.add_child(new St.Icon({
-            icon_name: 'go-next-symbolic',
-            icon_size: 12,
-            style_class: 'usagebar-dim usagebar-compact-chevron',
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
         body.add_child(head);
 
         // Bottom line: metrics
@@ -1905,8 +2198,56 @@ export default class UsageBarExtension extends Extension {
                 w,
             });
         }
-        if (DISPLAY.showExtras) {
-            for (const x of extraWindowsOf(row)) {
+
+        const extras = extraWindowsOf(row);
+        if (row.provider === 'antigravity') {
+            // Antigravity in All view: user switch selects Gemini (default) vs Claude/GPT models
+            const useGemini = DISPLAY.antigravityOverviewGemini !== false;
+            for (const x of extras) {
+                if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
+                    continue;
+                const isGemini = x.id.includes('gemini');
+                if ((useGemini && isGemini) || (!useGemini && !isGemini)) {
+                    items.push({
+                        label: compactWindowLabel(x.title ?? x.id),
+                        w: x.window,
+                    });
+                }
+            }
+        } else if (row.provider === 'codex') {
+            // Codex in All view: ensure 5h session bar is present (from Spark 5h if primary is null)
+            const has5h = items.some(it => it.label === '5h');
+            for (const x of extras) {
+                if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
+                    continue;
+                const label = compactWindowLabel(x.title ?? x.id);
+                if (!has5h && label === '5h') {
+                    items.unshift({
+                        label,
+                        w: x.window,
+                    });
+                } else if (DISPLAY.showExtras) {
+                    items.push({
+                        label,
+                        w: x.window,
+                    });
+                }
+            }
+        } else if (row.provider === 'claude') {
+            // Claude in All view: include Fable only window alongside 5h and wk
+            for (const x of extras) {
+                if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
+                    continue;
+                const label = compactWindowLabel(x.title ?? x.id);
+                if (label === 'Fable' || DISPLAY.showExtras) {
+                    items.push({
+                        label,
+                        w: x.window,
+                    });
+                }
+            }
+        } else if (DISPLAY.showExtras) {
+            for (const x of extras) {
                 if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
                     continue;
                 items.push({
@@ -1916,8 +2257,29 @@ export default class UsageBarExtension extends Extension {
             }
         }
 
-        if (items.length > 0) {
+        let displayItems = [];
+        const seenLabels = new Set();
+        for (const item of items) {
+            if (!seenLabels.has(item.label)) {
+                seenLabels.add(item.label);
+                displayItems.push(item);
+                if (displayItems.length >= 4)
+                    break;
+            }
+        }
+        if (displayItems.length < 4) {
             for (const item of items) {
+                if (!displayItems.includes(item)) {
+                    displayItems.push(item);
+                    if (displayItems.length >= 4)
+                        break;
+                }
+            }
+        }
+        const extraCount = items.length - displayItems.length;
+
+        if (displayItems.length > 0) {
+            for (const item of displayItems) {
                 const metricItem = new St.BoxLayout({
                     style_class: 'usagebar-compact-metric-item',
                     y_align: Clutter.ActorAlign.CENTER,
@@ -1932,32 +2294,41 @@ export default class UsageBarExtension extends Extension {
                 const known = item.w.usedPercent !== null && item.w.usedPercent !== undefined;
                 const used = known ? Math.max(0, Math.min(100, Math.round(item.w.usedPercent))) : 0;
                 const dispPercent = DISPLAY.barsShowUsed ? used : (100 - used);
-                const isWarning = used >= 80;
+                const sev = severity(used, row.stale || !known);
 
+                const COMPACT_TRACK_WIDTH = 24;
                 const track = new St.Widget({
                     style_class: 'usagebar-track usagebar-compact-track',
-                    width: 32,
+                    width: COMPACT_TRACK_WIDTH,
                     height: 4,
                     y_align: Clutter.ActorAlign.CENTER,
                 });
                 const fill = new St.Widget({
-                    style_class: isWarning ? 'usagebar-fill usagebar-bg-critical' : 'usagebar-fill usagebar-bg-grey',
+                    style_class: `usagebar-fill usagebar-bg-${sev}`,
                     y_align: Clutter.ActorAlign.CENTER,
                 });
-                fill.set_size(Math.max(2, Math.round(32 * used / 100)), 4);
+                const fillWidth = (known && used > 0)
+                    ? Math.max(2, Math.round(COMPACT_TRACK_WIDTH * used / 100))
+                    : 0;
+                fill.set_size(fillWidth, 4);
                 track.add_child(fill);
                 metricItem.add_child(track);
 
                 const percentLabel = new St.Label({
-                    text: `${dispPercent}%`,
-                    style_class: isWarning
-                        ? 'usagebar-worst usagebar-fg-critical usagebar-compact-metric-val'
-                        : (dispPercent === 0 ? 'usagebar-dim usagebar-compact-metric-val' : 'usagebar-compact-metric-val'),
+                    text: known ? `${dispPercent}%` : T.unavailable,
+                    style_class: `usagebar-compact-metric-val usagebar-fg-${sev}`,
                     y_align: Clutter.ActorAlign.CENTER,
                 });
                 metricItem.add_child(percentLabel);
 
                 metricsBox.add_child(metricItem);
+            }
+            if (extraCount > 0) {
+                metricsBox.add_child(new St.Label({
+                    text: `+${extraCount}`,
+                    style_class: 'usagebar-dim usagebar-compact-metric-label',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
             }
         } else if (row.error) {
             metricsBox.add_child(new St.Label({
@@ -1967,8 +2338,122 @@ export default class UsageBarExtension extends Extension {
         }
 
         body.add_child(metricsBox);
-        root.add_child(body);
-        btn.set_child(root);
-        return btn;
+        contentBox.add_child(body);
+        contentBtn.set_child(contentBox);
+        mainRow.add_child(contentBtn);
+
+        // Actions: 3 dots button + right chevron arrow button
+        const actionsBox = new St.BoxLayout({
+            style_class: 'usagebar-compact-actions',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        const dotsBtn = new St.Button({
+            style_class: this._optionsProvider === row.provider
+                ? 'usagebar-btn usagebar-dots-btn usagebar-btn-active'
+                : 'usagebar-btn usagebar-dots-btn',
+            can_focus: true,
+            reactive: true,
+            child: new St.Icon({
+                icon_name: 'view-more-symbolic',
+                icon_size: 11,
+                style_class: 'usagebar-btn-icon',
+            }),
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        dotsBtn.connect('clicked', () => {
+            this._optionsProvider = (this._optionsProvider === row.provider) ? null : row.provider;
+            this._render();
+        });
+        actionsBox.add_child(dotsBtn);
+
+        const nextBtn = new St.Button({
+            style_class: 'usagebar-btn usagebar-next-btn',
+            can_focus: true,
+            reactive: true,
+            child: new St.Icon({
+                icon_name: 'go-next-symbolic',
+                icon_size: 11,
+                style_class: 'usagebar-btn-icon',
+            }),
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        nextBtn.connect('clicked', () => {
+            this._selectedProvider = row.provider;
+            this._render();
+        });
+        actionsBox.add_child(nextBtn);
+
+        mainRow.add_child(actionsBox);
+        rowBox.add_child(mainRow);
+
+        // Options dropdown panel (Move Up / Move Down)
+        if (this._optionsProvider === row.provider) {
+            const optionsPanel = new St.BoxLayout({
+                style_class: 'usagebar-options-panel',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+
+            const upContent = new St.BoxLayout({
+                style_class: 'usagebar-option-btn-content',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            upContent.add_child(new St.Icon({
+                icon_name: 'go-up-symbolic',
+                icon_size: 12,
+                style_class: 'usagebar-btn-icon',
+            }));
+            upContent.add_child(new St.Label({
+                text: 'Move Up',
+                style_class: 'usagebar-option-label',
+            }));
+
+            const upBtn = new St.Button({
+                style_class: index > 0 ? 'usagebar-btn usagebar-option-btn' : 'usagebar-btn usagebar-option-btn usagebar-btn-disabled',
+                can_focus: index > 0,
+                reactive: index > 0,
+                child: upContent,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (index > 0) {
+                upBtn.connect('clicked', () => {
+                    this._moveProvider(row.provider, -1);
+                });
+            }
+            optionsPanel.add_child(upBtn);
+
+            const downContent = new St.BoxLayout({
+                style_class: 'usagebar-option-btn-content',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            downContent.add_child(new St.Icon({
+                icon_name: 'go-down-symbolic',
+                icon_size: 12,
+                style_class: 'usagebar-btn-icon',
+            }));
+            downContent.add_child(new St.Label({
+                text: 'Move Down',
+                style_class: 'usagebar-option-label',
+            }));
+
+            const downBtn = new St.Button({
+                style_class: index < totalCount - 1 ? 'usagebar-btn usagebar-option-btn' : 'usagebar-btn usagebar-option-btn usagebar-btn-disabled',
+                can_focus: index < totalCount - 1,
+                reactive: index < totalCount - 1,
+                child: downContent,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (index < totalCount - 1) {
+                downBtn.connect('clicked', () => {
+                    this._moveProvider(row.provider, 1);
+                });
+            }
+            optionsPanel.add_child(downBtn);
+
+            rowBox.add_child(optionsPanel);
+        }
+
+        return rowBox;
     }
 }

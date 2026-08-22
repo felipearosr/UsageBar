@@ -277,7 +277,7 @@ export const PROVIDER_META = {
     "opencodego": {
         "name": "OpenCode Go",
         "dashboard": "https://opencode.ai",
-        "color": "#3b82f6"
+        "color": "#ffffff"
     },
     "openrouter": {
         "name": "OpenRouter",

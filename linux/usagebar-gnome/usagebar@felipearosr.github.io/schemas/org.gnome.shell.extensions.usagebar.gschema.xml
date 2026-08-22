@@ -18,13 +18,15 @@
     </key>
     <key name="chip-display-mode" type="s">
       <choices>
+        <choice value="ring"/>
+        <choice value="ring-percent"/>
         <choice value="percent"/>
         <choice value="name-percent"/>
         <choice value="dot"/>
       </choices>
-      <default>'percent'</default>
+      <default>'ring'</default>
       <summary>Panel chip display mode</summary>
-      <description>What each panel chip shows: worst percent, provider name plus percent, or just the severity dot.</description>
+      <description>What each panel chip shows: icon and progress ring, icon with ring and percent, icon with percent, name with ring and percent, or severity dot only.</description>
     </key>
     <key name="merge-chips" type="b">
       <default>false</default>
@@ -128,6 +130,20 @@
       <default>true</default>
       <summary>Show credits and extra usage</summary>
       <description>Show limit-reset credits and named extra rate windows (per-model and feature limits) on provider cards.</description>
+    </key>
+
+    <!-- Custom provider order -->
+    <key name="provider-order" type="as">
+      <default>[]</default>
+      <summary>Custom provider display order</summary>
+      <description>Explicit list of provider IDs defining the display order in the popover and panel.</description>
+    </key>
+
+    <!-- Antigravity overview preference -->
+    <key name="antigravity-overview-gemini" type="b">
+      <default>true</default>
+      <summary>Show Gemini models in Antigravity overview</summary>
+      <description>Show Gemini 5h and weekly limits in the All view for Antigravity; off shows Claude and GPT limits instead.</description>
     </key>
   </schema>
 </schemalist>

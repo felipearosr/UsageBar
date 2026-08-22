@@ -181,9 +181,15 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         });
         const modeRow = new Adw.ComboRow({
             title: 'Chip shows',
-            model: Gtk.StringList.new(['Worst percent', 'Name and percent', 'Severity dot only']),
+            model: Gtk.StringList.new([
+                'Icon and progress ring',
+                'Icon, ring, and percent',
+                'Icon and percent',
+                'Name, ring, and percent',
+                'Severity dot only',
+            ]),
         });
-        const MODES = ['percent', 'name-percent', 'dot'];
+        const MODES = ['ring', 'ring-percent', 'percent', 'name-percent', 'dot'];
         modeRow.selected = Math.max(0, MODES.indexOf(settings.get_string('chip-display-mode')));
         modeRow.connect('notify::selected', () => {
             settings.set_string('chip-display-mode', MODES[modeRow.selected]);
@@ -300,6 +306,11 @@ export default class UsageBarPreferences extends ExtensionPreferences {
                 title: 'Notifications',
                 subtitle: 'Quota and pace warnings from this provider',
             }));
+            if (id === 'antigravity') {
+                group.add(switchRow(settings, 'antigravity-overview-gemini',
+                    'Overview: Gemini models',
+                    'Show Gemini 5h & weekly in All view (off shows Claude & GPT)'));
+            }
             const scopeRow = statusScopeRow(settings, id);
             if (scopeRow)
                 group.add(scopeRow);

@@ -6,11 +6,22 @@
 }
 
 .usagebar-chip {
-  spacing: 4px;
+  spacing: 5px;
+}
+
+.usagebar-chip-icon {
+  color: #ffffff;
+  icon-size: 14px;
+}
+
+.usagebar-chip-ring {
+  width: 14px;
+  height: 14px;
 }
 
 .usagebar-chip-label {
   font-size: 10.5pt;
+  margin-left: 1px;
 }
 
 .usagebar-dot {
@@ -20,7 +31,7 @@
 .usagebar-menu {
   /* Fixed: long one-line labels (error banners, pace summaries) must wrap,
      not widen the popover. */
-  width: 420px;
+  width: 440px;
 }
 
 /* The popover rows are reactive:false menu items, which GNOME dims with
@@ -31,21 +42,37 @@
   color: #ffffff;
 }
 
-.usagebar-refresh-btn {
-  margin-left: 8px;
-  padding: 4px;
+.usagebar-btn {
+  background-color: transparent;
   border-radius: 6px;
   color: rgba(200, 200, 206, 1);
+  padding: 4px;
 }
 
-.usagebar-refresh-btn:hover,
-.usagebar-refresh-btn:focus {
+.usagebar-btn:hover,
+.usagebar-btn:focus {
   background-color: rgba(160, 160, 166, 0.2);
   color: #ffffff;
 }
 
+.usagebar-btn:active {
+  background-color: rgba(160, 160, 166, 0.35);
+  color: #ffffff;
+}
+
+.usagebar-btn-icon {
+  icon-size: 14px;
+}
+
+.usagebar-refresh-btn {
+  margin-left: 8px;
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+}
+
 .usagebar-refresh-icon {
-  icon-size: 16px;
+  icon-size: 14px;
 }
 
 .usagebar-dim {
@@ -58,34 +85,93 @@
   font-size: 9.5pt;
 }
 
-.usagebar-tabs {
-  spacing: 6px;
+.usagebar-detail-head {
+  spacing: 8px;
+  margin-bottom: 6px;
 }
 
-.usagebar-tab {
-  /* Resting tabs are unmarked — background only on hover/focus/checked. */
+.usagebar-back-btn {
+  margin-right: 4px;
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+}
+
+.usagebar-back-icon {
+  icon-size: 14px;
+}
+
+.usagebar-next-btn {
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 4px;
+}
+
+.usagebar-dots-btn {
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 4px;
+}
+
+.usagebar-compact-row:hover .usagebar-next-btn,
+.usagebar-compact-row:hover .usagebar-dots-btn,
+.usagebar-compact-row:focus .usagebar-next-btn,
+.usagebar-compact-row:focus .usagebar-dots-btn {
+  background-color: rgba(160, 160, 166, 0.2);
+  color: #ffffff;
+}
+
+.usagebar-dots-btn.usagebar-btn-active {
+  background-color: rgba(53, 132, 228, 0.35);
+  color: #ffffff;
+}
+
+.usagebar-compact-actions {
+  spacing: 2px;
+}
+
+.usagebar-compact-content-btn {
   background-color: transparent;
-  border-radius: 10px;
-  padding: 6px 10px;
+  border-radius: 8px;
+  padding: 0;
 }
 
-.usagebar-tab:hover,
-.usagebar-tab:focus {
+.usagebar-compact-content-box {
+  spacing: 10px;
+}
+
+.usagebar-options-panel {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(160, 160, 166, 0.2);
+  spacing: 8px;
+}
+
+.usagebar-option-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
   background-color: rgba(128, 128, 128, 0.2);
 }
 
-.usagebar-tab:checked {
-  background-color: rgba(53, 132, 228, 0.25);
+.usagebar-option-btn:hover,
+.usagebar-option-btn:focus {
+  background-color: rgba(160, 160, 166, 0.35);
+  color: #ffffff;
 }
 
-.usagebar-tab-content {
-  spacing: 4px;
+.usagebar-option-btn-content {
+  spacing: 6px;
 }
 
-.usagebar-tab-label {
-  font-size: 10pt;
-  font-weight: bold;
+.usagebar-option-label {
+  font-size: 9pt;
   color: #eeeeec;
+}
+
+.usagebar-btn-disabled {
+  opacity: 0.35;
 }
 
 .usagebar-card {
@@ -124,19 +210,19 @@
 }
 
 .usagebar-compact-inner {
-  spacing: 12px;
+  spacing: 8px;
 }
 
 .usagebar-compact-icon-wrap {
-  width: 28px;
-  height: 28px;
-  border-radius: 14px;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
   background-color: rgba(128, 128, 128, 0.18);
-  padding: 6px;
+  padding: 3px;
 }
 
 .usagebar-compact-icon {
-  icon-size: 16px;
+  icon-size: 20px;
 }
 
 .usagebar-compact-body {
@@ -162,24 +248,24 @@
 }
 
 .usagebar-compact-metrics {
-  spacing: 12px;
+  spacing: 8px;
 }
 
 .usagebar-compact-metric-item {
-  spacing: 5px;
+  spacing: 3px;
 }
 
 .usagebar-compact-metric-label {
-  font-size: 9pt;
+  font-size: 8.5pt;
 }
 
 .usagebar-compact-track {
   border-radius: 2px;
+  margin-top: 0;
 }
 
 .usagebar-compact-metric-val {
-  font-size: 9pt;
-  font-weight: 500;
+  font-size: 8.5pt;
 }
 
 .usagebar-card-title {
@@ -230,13 +316,13 @@
 
 .usagebar-bg-ok { background-color: #2ec27e; }
 .usagebar-bg-warn { background-color: #f5c211; }
-.usagebar-bg-crit { background-color: #ed333b; }
-.usagebar-bg-stale { background-color: #9a9996; }
+.usagebar-bg-crit, .usagebar-bg-critical { background-color: #ed333b; }
+.usagebar-bg-stale, .usagebar-bg-grey { background-color: #9a9996; }
 
 .usagebar-fg-ok { color: #2ec27e; }
 .usagebar-fg-warn { color: #f5c211; }
-.usagebar-fg-crit { color: #ed333b; }
-.usagebar-fg-stale { color: #9a9996; }
+.usagebar-fg-crit, .usagebar-fg-critical { color: #ed333b; }
+.usagebar-fg-stale, .usagebar-fg-grey { color: #9a9996; }
 
 .usagebar-window-foot {
   margin-top: 4px;
@@ -330,10 +416,13 @@
 .usagebar-link {
   color: #78b3f0;
   font-size: 9.5pt;
-  padding: 2px 6px;
+  padding: 4px 10px;
   border-radius: 6px;
+  background-color: transparent;
 }
 
-.usagebar-link:hover {
-  background-color: rgba(128, 128, 128, 0.2);
+.usagebar-link:hover,
+.usagebar-link:focus {
+  background-color: rgba(53, 132, 228, 0.25);
+  color: #9cc6f5;
 }
