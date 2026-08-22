@@ -576,6 +576,9 @@ extension StatusItemController {
                     section: "overview",
                     additional: [UsageMenuCardView.Model.heightFingerprintField("storage", storageText)]),
                 submenu: submenu,
+                showsSubmenuIndicator: true,
+                submenuIndicatorAlignment: .trailing,
+                submenuIndicatorTopPadding: 0,
                 containsInteractiveControls: row.model.subtitleStyle == .error || row.model.usesLiveSubtitle,
                 usesGPUSelection: true,
                 onClick: { [weak self, weak interactionMenu] in

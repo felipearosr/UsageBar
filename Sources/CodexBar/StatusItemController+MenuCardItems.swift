@@ -30,6 +30,7 @@ extension StatusItemController {
         heightCacheScope: String? = nil,
         heightCacheFingerprint: String? = nil,
         submenu: NSMenu? = nil,
+        showsSubmenuIndicator: Bool? = nil,
         submenuIndicatorAlignment: Alignment = .topTrailing,
         submenuIndicatorTopPadding: CGFloat = 8,
         containsInteractiveControls: Bool = false,
@@ -37,6 +38,7 @@ extension StatusItemController {
         onClick: (() -> Void)? = nil) -> NSMenuItem
     {
         let allowsMenuHighlight = submenu != nil || onClick != nil
+        let effectiveShowsSubmenuIndicator = showsSubmenuIndicator ?? (submenu != nil)
         if !self.menuCardRenderingEnabledForController {
             let item = NSMenuItem()
             item.isEnabled = allowsMenuHighlight
@@ -56,7 +58,7 @@ extension StatusItemController {
             let interactiveRegionStore = MenuCardInteractiveRegionStore()
             let wrapped = MenuCardSectionContainerView(
                 highlightState: MenuCardHighlightState(),
-                showsSubmenuIndicator: submenu != nil,
+                showsSubmenuIndicator: effectiveShowsSubmenuIndicator,
                 submenuIndicatorAlignment: submenuIndicatorAlignment,
                 submenuIndicatorTopPadding: submenuIndicatorTopPadding,
                 refreshMonitor: self.menuCardRefreshMonitor,
@@ -93,7 +95,7 @@ extension StatusItemController {
         {
             let wrapped = MenuCardSectionContainerView(
                 highlightState: recycled.highlightState,
-                showsSubmenuIndicator: submenu != nil,
+                showsSubmenuIndicator: effectiveShowsSubmenuIndicator,
                 submenuIndicatorAlignment: submenuIndicatorAlignment,
                 submenuIndicatorTopPadding: submenuIndicatorTopPadding,
                 refreshMonitor: self.menuCardRefreshMonitor,
@@ -112,7 +114,7 @@ extension StatusItemController {
             let interactiveRegionStore = MenuCardInteractiveRegionStore()
             let wrapped = MenuCardSectionContainerView(
                 highlightState: highlightState,
-                showsSubmenuIndicator: submenu != nil,
+                showsSubmenuIndicator: effectiveShowsSubmenuIndicator,
                 submenuIndicatorAlignment: submenuIndicatorAlignment,
                 submenuIndicatorTopPadding: submenuIndicatorTopPadding,
                 refreshMonitor: self.menuCardRefreshMonitor,

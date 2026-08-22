@@ -108,6 +108,35 @@ function barKey(provider, {slot, extra} = {}) {
     return `${provider}:${key}`;
 }
 
+function compactWindowLabel(label) {
+    const lower = (label || '').toLowerCase();
+    if (lower.includes('5-hour') || lower.includes('5 hour') || lower.includes('5h') || lower.includes('session'))
+        return '5h';
+    if (lower.includes('2-hour') || lower.includes('2 hour') || lower.includes('2h'))
+        return '2h';
+    if (lower.includes('hourly') || lower.includes('1-hour') || lower.includes('1 hour') || lower.includes('1h'))
+        return '1h';
+    if (lower.includes('weekly') || lower.includes('week') || lower.includes('7-day') || lower.includes('7d') || lower === 'wk')
+        return 'wk';
+    if (lower.includes('monthly') || lower.includes('month') || lower.includes('30-day') || lower.includes('30d'))
+        return '30d';
+    if (lower.includes('code review'))
+        return 'Review';
+    if (lower.includes('requests') || lower.includes('request'))
+        return 'req';
+    if (lower.includes('balance'))
+        return 'bal';
+    if (lower.includes('credits') || lower.includes('credit'))
+        return 'cr';
+    const trimmed = (label || '').trim();
+    if (trimmed.length <= 7)
+        return trimmed;
+    const firstWord = trimmed.split(' ')[0];
+    if (firstWord.length <= 7)
+        return firstWord;
+    return trimmed.slice(0, 6);
+}
+
 // The row's most-used window (standard slots and extras alike), or null.
 // windowsOf already drops unknown percents; extras need the same filter.
 function worstWindow(row) {
@@ -1290,8 +1319,8 @@ export default class UsageBarExtension extends Extension {
         } else if (selectedRow) {
             detail.add_child(this._buildCard(selectedRow, {flat: true}));
         } else {
-            // All view: flat sections (no card chrome), one per provider,
-            // split by a thin rule; cost lines live on the per-provider tabs.
+            // All view: compact cards, one per provider, with brand icon,
+            // reset countdown, chevron navigation to detail tab, and inline mini bars.
             rows.forEach((row, i) => {
                 if (i > 0)
                     detail.add_child(new St.Widget({
@@ -1299,7 +1328,7 @@ export default class UsageBarExtension extends Extension {
                         height: 1,
                         x_expand: true,
                     }));
-                detail.add_child(this._buildCard(row, {showCost: false, flat: true, showLinks: false}));
+                detail.add_child(this._buildCompactRow(row));
             });
         }
     }
@@ -1766,5 +1795,180 @@ export default class UsageBarExtension extends Extension {
         }
 
         return card;
+    }
+
+    _buildCompactRow(row) {
+        const btn = new St.Button({
+            style_class: 'usagebar-compact-row',
+            x_expand: true,
+            reactive: true,
+            can_focus: true,
+        });
+        btn.connect('clicked', () => {
+            this._selectedProvider = row.provider;
+            this._render();
+        });
+
+        const root = new St.BoxLayout({
+            style_class: 'usagebar-compact-inner',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        // 1. Brand icon inside circular badge
+        const iconWrap = new St.Bin({
+            style_class: 'usagebar-compact-icon-wrap',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        const meta = PROVIDER_META[row.provider];
+        const iconFile = this.dir.get_child('icons').get_child(`ProviderIcon-${row.provider}.svg`);
+        let iconActor;
+        if (iconFile.query_exists(null)) {
+            const gicon = new Gio.FileIcon({file: iconFile});
+            iconActor = new St.Icon({
+                gicon,
+                icon_size: 16,
+                style_class: 'usagebar-compact-icon',
+            });
+            if (meta?.color)
+                iconActor.set_style(`color: ${meta.color};`);
+        } else {
+            iconActor = new St.Icon({
+                icon_name: 'application-x-executable-symbolic',
+                icon_size: 16,
+                style_class: 'usagebar-compact-icon',
+            });
+            if (meta?.color)
+                iconActor.set_style(`color: ${meta.color};`);
+        }
+        iconWrap.set_child(iconActor);
+        root.add_child(iconWrap);
+
+        // 2. Main content: Top line (Title + Reset + Chevron), Bottom line (Metrics)
+        const body = new St.BoxLayout({
+            vertical: true,
+            style_class: 'usagebar-compact-body',
+            x_expand: true,
+        });
+
+        // Top line
+        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-compact-head'});
+        head.add_child(new St.Label({
+            text: this._displayName(row.provider),
+            style_class: 'usagebar-compact-title',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+
+        let subtitle = '';
+        if (row.error) {
+            subtitle = row.error.message ?? 'fetch failed';
+        } else {
+            for (const {w} of windowsOf(row)) {
+                const rt = resetText(w);
+                if (rt) {
+                    subtitle = rt;
+                    break;
+                }
+            }
+        }
+
+        if (subtitle) {
+            head.add_child(new St.Label({
+                text: subtitle,
+                style_class: row.error ? 'usagebar-banner usagebar-compact-subtitle' : 'usagebar-dim usagebar-compact-subtitle',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+
+        head.add_child(new St.Widget({x_expand: true}));
+        head.add_child(new St.Icon({
+            icon_name: 'go-next-symbolic',
+            icon_size: 12,
+            style_class: 'usagebar-dim usagebar-compact-chevron',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        body.add_child(head);
+
+        // Bottom line: metrics
+        const metricsBox = new St.BoxLayout({
+            style_class: 'usagebar-compact-metrics',
+            x_expand: true,
+        });
+
+        const items = [];
+        for (const {w, slot} of windowsOf(row)) {
+            if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
+                continue;
+            items.push({
+                label: compactWindowLabel(windowLabel(w.windowMinutes, slot)),
+                w,
+            });
+        }
+        if (DISPLAY.showExtras) {
+            for (const x of extraWindowsOf(row)) {
+                if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
+                    continue;
+                items.push({
+                    label: compactWindowLabel(x.title ?? x.id),
+                    w: x.window,
+                });
+            }
+        }
+
+        if (items.length > 0) {
+            for (const item of items) {
+                const metricItem = new St.BoxLayout({
+                    style_class: 'usagebar-compact-metric-item',
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+
+                metricItem.add_child(new St.Label({
+                    text: item.label,
+                    style_class: 'usagebar-dim usagebar-compact-metric-label',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+
+                const known = item.w.usedPercent !== null && item.w.usedPercent !== undefined;
+                const used = known ? Math.max(0, Math.min(100, Math.round(item.w.usedPercent))) : 0;
+                const dispPercent = DISPLAY.barsShowUsed ? used : (100 - used);
+                const isWarning = used >= 80;
+
+                const track = new St.Widget({
+                    style_class: 'usagebar-track usagebar-compact-track',
+                    width: 32,
+                    height: 4,
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+                const fill = new St.Widget({
+                    style_class: isWarning ? 'usagebar-fill usagebar-bg-critical' : 'usagebar-fill usagebar-bg-grey',
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+                fill.set_size(Math.max(2, Math.round(32 * used / 100)), 4);
+                track.add_child(fill);
+                metricItem.add_child(track);
+
+                const percentLabel = new St.Label({
+                    text: `${dispPercent}%`,
+                    style_class: isWarning
+                        ? 'usagebar-worst usagebar-fg-critical usagebar-compact-metric-val'
+                        : (dispPercent === 0 ? 'usagebar-dim usagebar-compact-metric-val' : 'usagebar-compact-metric-val'),
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+                metricItem.add_child(percentLabel);
+
+                metricsBox.add_child(metricItem);
+            }
+        } else if (row.error) {
+            metricsBox.add_child(new St.Label({
+                text: 'Unavailable',
+                style_class: 'usagebar-dim',
+            }));
+        }
+
+        body.add_child(metricsBox);
+        root.add_child(body);
+        btn.set_child(root);
+        return btn;
     }
 }
