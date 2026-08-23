@@ -69,4 +69,60 @@ struct OverviewMenuCardRowViewTests {
         #expect(view.width == 320)
         #expect(view.model.provider == .claude)
     }
+
+    @Test
+    func `overviewMetrics filters out daily routines for claude`() throws {
+        let now = Date()
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 10,
+                windowMinutes: 300,
+                resetsAt: now.addingTimeInterval(3600),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 20,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(7200),
+                resetDescription: nil),
+            tertiary: RateWindow(
+                usedPercent: 30,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(7800),
+                resetDescription: nil),
+            extraRateWindows: [
+                NamedRateWindow(
+                    id: "claude-routines",
+                    title: "Daily Routines",
+                    window: RateWindow(
+                        usedPercent: 5,
+                        windowMinutes: 10080,
+                        resetsAt: now.addingTimeInterval(8200),
+                        resetDescription: nil)),
+            ],
+            updatedAt: now)
+        let metadata = try #require(ProviderDefaults.metadata[.claude])
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .claude,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: nil,
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: true,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        let overviewMetrics = OverviewMenuCardRowView.overviewMetrics(for: model)
+        #expect(overviewMetrics.map(\.title) == ["Session", "Weekly", "Sonnet"])
+        #expect(!overviewMetrics.contains(where: { $0.id == "claude-routines" }))
+    }
 }

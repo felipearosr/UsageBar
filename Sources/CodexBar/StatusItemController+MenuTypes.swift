@@ -85,11 +85,26 @@ struct OverviewMenuCardRowView: View {
         }
     }
 
+    static func overviewMetrics(for model: UsageMenuCardView.Model) -> [UsageMenuCardView.Model.Metric] {
+        model.metrics.filter { metric in
+            if model.provider == .claude {
+                if metric.id == "claude-routines" || metric.title.localizedCaseInsensitiveContains("routine") {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
+    private var overviewMetrics: [UsageMenuCardView.Model.Metric] {
+        Self.overviewMetrics(for: self.model)
+    }
+
     private var metricsLine: some View {
         Group {
-            if !self.model.metrics.isEmpty {
+            if !self.overviewMetrics.isEmpty {
                 HStack(spacing: 12) {
-                    ForEach(self.model.metrics.prefix(4), id: \.id) { metric in
+                    ForEach(self.overviewMetrics.prefix(4), id: \.id) { metric in
                         CompactMetricItemView(metric: metric, isHighlighted: self.isHighlighted)
                     }
                 }
@@ -122,7 +137,7 @@ struct OverviewMenuCardRowView: View {
     }
 
     private var primaryResetText: String? {
-        if let reset = self.model.metrics.first(where: {
+        if let reset = self.overviewMetrics.first(where: {
             guard let text = $0.resetText?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
             return !text.isEmpty
         })?.resetText {

@@ -2232,9 +2232,14 @@ export default class UsageBarExtension extends Extension {
                 }
             }
         } else if (row.provider === 'claude') {
-            // Claude in All view: include Fable only window alongside 5h and wk
+            // Claude in All view: include Fable only window alongside 5h, wk, and Sonnet; never Daily Routines
             for (const x of extras) {
                 if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
+                    continue;
+                const isRoutine = x.id === 'claude-routines' ||
+                    (x.id && x.id.includes('routine')) ||
+                    (x.title && x.title.toLowerCase().includes('routine'));
+                if (isRoutine)
                     continue;
                 const label = compactWindowLabel(x.title ?? x.id);
                 if (label === 'Fable' || DISPLAY.showExtras) {
