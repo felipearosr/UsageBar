@@ -670,6 +670,11 @@ extension CodexBarCLI {
             // Claude's cross-platform planner skips its unavailable web step and falls back to the CLI.
             return false
         }
+        if provider == .opencode {
+            if sourceMode == .auto || settings?.opencode?.cookieSource == .manual {
+                return false
+            }
+        }
         if provider == .opencodego {
             if sourceMode == .auto || settings?.opencodego?.cookieSource == .manual {
                 return false

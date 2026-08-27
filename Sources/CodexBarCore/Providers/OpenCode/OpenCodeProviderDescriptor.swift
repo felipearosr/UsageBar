@@ -32,10 +32,40 @@ public enum OpenCodeProviderDescriptor {
                 noDataMessage: { "OpenCode cost summary is not supported." }),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .web],
-                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [OpenCodeUsageFetchStrategy()] })),
+                pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
             cli: ProviderCLIConfig(
                 name: "opencode",
                 versionDetector: nil))
+    }
+
+    private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
+        if context.sourceMode == .web {
+            return [OpenCodeUsageFetchStrategy()]
+        }
+        return [
+            OpenCodeUsageFetchStrategy(),
+            OpenCodeLocalUsageFetchStrategy(),
+        ]
+    }
+}
+
+struct OpenCodeLocalUsageFetchStrategy: ProviderFetchStrategy {
+    let id: String = "opencode.local"
+    let kind: ProviderFetchKind = .localProbe
+
+    func isAvailable(_: ProviderFetchContext) async -> Bool {
+        true
+    }
+
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        let snapshot = try OpenCodeLocalUsageReader().fetch()
+        return self.makeResult(
+            usage: snapshot.toUsageSnapshot(),
+            sourceLabel: "local")
+    }
+
+    func shouldFallback(on error: Error, context _: ProviderFetchContext) -> Bool {
+        error is OpenCodeLocalUsageError
     }
 }
 
@@ -78,8 +108,16 @@ struct OpenCodeUsageFetchStrategy: ProviderFetchStrategy {
         }
     }
 
-    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        false
+    func shouldFallback(on error: Error, context: ProviderFetchContext) -> Bool {
+        guard context.sourceMode == .auto else { return false }
+        return switch error {
+        case OpenCodeSettingsError.missingCookie,
+             OpenCodeSettingsError.invalidCookie,
+             OpenCodeUsageError.invalidCredentials:
+            true
+        default:
+            false
+        }
     }
 
     private static func resolveCookieHeader(context: ProviderFetchContext, allowCached: Bool) throws -> String {

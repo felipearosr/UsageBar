@@ -9,6 +9,9 @@ read_when:
 
 ## Data sources
 - Browser cookies from `opencode.ai`.
+- OpenCode local history from `~/.local/share/opencode/opencode.db` on macOS and Linux, reading
+  `providerID = "opencode"` assistant costs. Used as the fallback source in Auto mode when no browser
+  cookies are available (for example on Linux, where browser-cookie import is macOS-only).
 - OpenCode Go local history from `~/.local/share/opencode/opencode.db` on macOS and Linux.
 - `POST https://opencode.ai/_server` with server function IDs:
   - `workspaces` (`def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f`)
@@ -30,3 +33,7 @@ read_when:
 - Cached cookies: Keychain cache `com.steipete.codexbar.cache` (account `cookie.opencode`, source + timestamp). Browser
   import only runs when the cached cookie fails.
 - OpenCode Go auto mode tries web usage first, then derives quota windows from local `opencode-go` assistant costs.
+- OpenCode auto mode tries web usage first, then derives rolling (5-hour) and weekly windows from local `opencode`
+  assistant costs. The local reader uses OpenCode Go's documented dollar caps ($12/5h, $30/week) as the rolling and
+  weekly limits; the original OpenCode plan's caps are not published, so revisit these constants if the web source
+  reports different windows.

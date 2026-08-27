@@ -2,6 +2,9 @@
 
 ## 0.43.1 — Unreleased
 
+### Fixed
+- OpenCode: fall back to local usage history in Auto mode when browser cookies are unavailable, so the provider reports usage on Linux instead of the macOS-only web error.
+
 ## 0.43.0 — 2026-07-14
 
 ### Added

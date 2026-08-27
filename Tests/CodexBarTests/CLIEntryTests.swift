@@ -413,14 +413,7 @@ final class CLIEntryTests: XCTestCase {
                 qoder: .init(
                     cookieSource: .auto,
                     manualCookieHeader: nil))))
-        XCTAssertTrue(CodexBarCLI.sourceModeRequiresWebSupport(
-            .auto,
-            provider: .opencode,
-            settings: ProviderSettingsSnapshot.make(
-                opencode: .init(
-                    cookieSource: .manual,
-                    manualCookieHeader: "auth=manual",
-                    workspaceID: nil))))
+        self.assertOpenCodeSourceMode()
         XCTAssertFalse(CodexBarCLI.sourceModeRequiresWebSupport(
             .auto,
             provider: .ollama,
@@ -455,6 +448,41 @@ final class CLIEntryTests: XCTestCase {
             .auto,
             provider: .mimo,
             environment: ["MIMO_LOCAL_USAGE_PATH": directory.appendingPathComponent("missing.json").path]))
+    }
+
+    private func assertOpenCodeSourceMode() {
+        XCTAssertFalse(CodexBarCLI.sourceModeRequiresWebSupport(
+            .auto,
+            provider: .opencode,
+            settings: ProviderSettingsSnapshot.make(
+                opencode: .init(
+                    cookieSource: .manual,
+                    manualCookieHeader: "auth=manual",
+                    workspaceID: nil))))
+        XCTAssertFalse(CodexBarCLI.sourceModeRequiresWebSupport(
+            .web,
+            provider: .opencode,
+            settings: ProviderSettingsSnapshot.make(
+                opencode: .init(
+                    cookieSource: .manual,
+                    manualCookieHeader: "auth=manual",
+                    workspaceID: nil))))
+        XCTAssertFalse(CodexBarCLI.sourceModeRequiresWebSupport(
+            .auto,
+            provider: .opencode,
+            settings: ProviderSettingsSnapshot.make(
+                opencode: .init(
+                    cookieSource: .auto,
+                    manualCookieHeader: nil,
+                    workspaceID: nil))))
+        XCTAssertTrue(CodexBarCLI.sourceModeRequiresWebSupport(
+            .web,
+            provider: .opencode,
+            settings: ProviderSettingsSnapshot.make(
+                opencode: .init(
+                    cookieSource: .auto,
+                    manualCookieHeader: nil,
+                    workspaceID: nil))))
     }
 
     private func assertKimiCodeCredentialSourceMode(in directory: URL) throws {
