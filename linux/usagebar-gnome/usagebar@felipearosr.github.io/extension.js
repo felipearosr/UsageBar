@@ -540,19 +540,57 @@ function chartPoints(report) {
             date: day,
             cost: entry?.totalCost ?? null,
             tokens: entry?.totalTokens ?? null,
+            // Per-model slices of the day in the chart's metric — the stacked
+            // bar segments and the colored legend below the chart both read
+            // these.
+            models: entry ? (entry.modelBreakdowns ?? [])
+                .map(m => [m.modelName, useCost ? m.cost : (m.totalTokens ?? 0)])
+                .filter(([name, v]) => name && typeof v === 'number' && v > 0)
+                .sort((a, b) => b[1] - a[1])
+            : [],
         });
     }
     return points;
 }
 
+// Per-model colors for the stacked chart: the biggest model keeps the
+// provider's brand color, the rest walk a fixed distinguishable palette.
+const MODEL_PALETTE = [
+    '#3584e4', // blue
+    '#2ec27e', // green
+    '#f5c211', // yellow
+    '#9141ac', // purple
+    '#e66100', // orange
+    '#ed333b', // red
+    '#62a0ea', // light blue
+    '#33d17a', // light green
+    '#f8e45c', // light yellow
+    '#c061cb', // light purple
+];
+
+function modelColorsFromPoints(points, brand) {
+    const totals = new Map();
+    for (const p of points) {
+        for (const [name, v] of p.models)
+            totals.set(name, (totals.get(name) ?? 0) + v);
+    }
+    const sorted = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+    const colors = new Map();
+    sorted.forEach(([name], i) => {
+        colors.set(name,
+            i === 0 && brand ? brand : MODEL_PALETTE[(i - 1) % MODEL_PALETTE.length]);
+    });
+    return colors;
+}
+
 function chartTooltipText(point) {
     const day = new Date(`${point.date}T12:00:00`)
         .toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
-    const bits = [
-        fmtUSD(point.cost),
-        point.tokens !== null ? `${fmtTokens(point.tokens)} tokens` : null,
-    ].filter(Boolean);
-    return bits.length ? `${day} · ${bits.join(' · ')}` : `${day} · no usage`;
+    if (!point.models.length)
+        return `${day} · no usage`;
+    const lines = point.models.map(([name, v]) =>
+        `${name.replace(/^claude-/, '')} ${point.cost !== null ? (fmtUSD(v) ?? '$0.00') : fmtTokens(v)}`);
+    return [day, ...lines].join('\n');
 }
 
 // ---------- provider status (public status-page incident feeds) ----------
@@ -767,25 +805,38 @@ function creditsInfo(row) {
     };
 }
 
-// Top models by summed cost across the report's daily entries, e.g.
-// "fable-5 $157.5 · opus-4-8 $77.6". Breakdown dollars arrive under the
-// upstream key "cost" (unlike daily totals' "totalCost") and are absent for
-// providers without pricing (codex) — return null and show nothing then.
-function topModelsLine(report) {
-    const byModel = new Map();
-    for (const day of report?.daily ?? []) {
-        for (const m of day.modelBreakdowns ?? []) {
-            if (typeof m.cost !== 'number' || !m.modelName)
-                continue;
-            byModel.set(m.modelName, (byModel.get(m.modelName) ?? 0) + m.cost);
-        }
+// Colored legend under the chart: one dot + summed metric per model,
+// largest first — every model, not just the top two (the old
+// "opus-5 $398.6 · fable-5 $24.3" text line). Colors match the stacked
+// bar segments above it. Null when no day carries a model breakdown.
+function buildModelLegend(points, colors) {
+    const totals = new Map();
+    for (const p of points) {
+        for (const [name, v] of p.models)
+            totals.set(name, (totals.get(name) ?? 0) + v);
     }
-    const top = [...byModel.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2);
-    if (!top.length)
+    if (!totals.size)
         return null;
-    return top
-        .map(([name, usd]) => `${name.replace(/^claude-/, '')} $${usd.toFixed(1)}`)
-        .join(' · ');
+    const useCost = points.some(p => p.cost !== null);
+    const legend = new St.BoxLayout({style_class: 'usagebar-models'});
+    for (const [name, total] of [...totals.entries()].sort((a, b) => b[1] - a[1])) {
+        const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
+        entry.add_child(new St.Widget({
+            style: `width: 8px; height: 8px; border-radius: 4px;` +
+                `background-color: ${colors.get(name) ?? '#9a9996'};`,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        const value = useCost
+            ? (fmtUSD(total) ?? `$${total.toFixed(1)}`)
+            : `${fmtTokens(total)} tok`;
+        entry.add_child(new St.Label({
+            text: `${name.replace(/^claude-/, '')} ${value}`,
+            style_class: 'usagebar-dim',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        legend.add_child(entry);
+    }
+    return legend;
 }
 
 // ---------- serve supervisor ----------
@@ -1180,7 +1231,7 @@ export default class UsageBarExtension extends Extension {
 
         this._indicator = new Indicator(this.dir);
         this._indicator._settingsItem.connect('activate', () => this.openPreferences());
-        this._indicator._refreshButton.connect('clicked', () => this._fetchUsage());
+        this._indicator._refreshButton.connect('clicked', () => this._fetchUsage(true));
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
@@ -1337,11 +1388,14 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
-    _fetchUsage() {
+    _fetchUsage(force) {
         if (this._fetchInFlight)
             return;
         this._fetchInFlight = true;
-        this._get('/usage', (rows, error) => {
+        // force asks serve to bypass its response cache (?fresh=1) so the
+        // refresh button fetches live data even inside the cache TTL; older
+        // CLIs without the flag just answer from cache as before.
+        this._get(force ? '/usage?fresh=1' : '/usage', (rows, error) => {
             this._fetchInFlight = false;
             if (!this._indicator)
                 return; // disabled while in flight
@@ -1610,28 +1664,52 @@ export default class UsageBarExtension extends Extension {
 
     // Mini daily-trend bar chart (port of the macOS MiniUsageBars): equal
     // bars bottom-aligned over a 1px baseline, height and opacity scaled
-    // linearly to the max value.
-    _buildTrendChart(points, provider) {
+    // linearly to the max value. When the report carries per-model
+    // breakdowns, each bar is a stack of model-colored segments (largest
+    // slice at the bottom); providers without pricing fall back to one
+    // plain brand-colored bar.
+    _buildTrendChart(points, brand, colors) {
         const wrap = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-chart-wrap'});
         const chart = new St.BoxLayout({x_expand: true, height: CHART_HEIGHT, style_class: 'usagebar-chart'});
         const max = Math.max(...points.map(p => p.value), 0);
         // Each day is a full-height reactive slot (so short bars are easy
-        // to hover) holding the bottom-aligned bar.
-        const brand = PROVIDER_META[provider]?.color;
+        // to hover) holding the bottom-aligned stack.
         const slots = points.map(point => {
             const ratio = max > 0 && point.value > 0 ? Math.min(point.value / max, 1) : 0;
-            const bar = new St.Widget({style_class: 'usagebar-chart-bar'});
-            if (brand)
-                bar.set_style(`background-color: ${brand};`);
-            bar.set_opacity(Math.round(255 * (0.42 + 0.58 * Math.max(0.18, ratio))));
-            bar.set_size(4, ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1);
-            // Vertical box with an expanding spacer: keeps the bar pinned
-            // to the baseline (St.Bin centers its child).
+            const barH = ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1;
+            const stack = new St.BoxLayout({vertical: true});
+            const segs = [];
+            if (!point.models.length) {
+                const bar = new St.Widget({style_class: 'usagebar-chart-bar'});
+                if (brand)
+                    bar.set_style(`background-color: ${brand};`);
+                stack.add_child(bar);
+                segs.push({widget: bar, h: barH});
+            } else {
+                // Children pack top-down, so walk the sorted slices in
+                // reverse — smallest on top, largest resting on the baseline.
+                // Cumulative rounding keeps the stack exactly barH tall.
+                const sum = point.models.reduce((a, [, v]) => a + v, 0);
+                let cumFrac = 0;
+                let prevPx = 0;
+                for (const [name, v] of [...point.models].reverse()) {
+                    cumFrac += sum > 0 ? v / sum : 0;
+                    const px = Math.round(cumFrac * barH);
+                    const h = Math.max(1, px - prevPx);
+                    prevPx = px;
+                    const seg = new St.Widget({style_class: 'usagebar-chart-bar'});
+                    seg.set_style(`background-color: ${colors.get(name) ?? brand ?? '#9a9996'};`);
+                    stack.add_child(seg);
+                    segs.push({widget: seg, h});
+                }
+            }
+            const opacity = Math.round(255 * (0.42 + 0.58 * Math.max(0.18, ratio)));
+            for (const s of segs)
+                s.widget.set_opacity(opacity);
             const slot = new St.BoxLayout({vertical: true, reactive: true, track_hover: true});
             slot.add_child(new St.Widget({y_expand: true}));
-            slot.add_child(bar);
-            slot._ratio = ratio;
-            slot._bar = bar;
+            slot.add_child(stack);
+            slot._segs = segs;
             slot.connect('notify::hover', () => {
                 if (slot.hover)
                     this._showTooltip(slot, chartTooltipText(point));
@@ -1649,8 +1727,8 @@ export default class UsageBarExtension extends Extension {
             const bw = Math.min(12, Math.max(2, Math.floor((w - 2 * (n - 1)) / n)));
             for (const slot of slots) {
                 slot.set_width(bw);
-                const h = slot._ratio > 0 ? Math.max(3, Math.round(slot._ratio * CHART_HEIGHT)) : 1;
-                slot._bar.set_size(bw, h);
+                for (const s of slot._segs)
+                    s.widget.set_size(bw, s.h);
             }
         });
         wrap.add_child(chart);
@@ -1992,8 +2070,11 @@ export default class UsageBarExtension extends Extension {
         // expiry below — matches the macOS card. Full card only, like cost.
         const credits = showCost && DISPLAY.showExtras ? creditsInfo(row) : null;
         const kpis = costKpis(report);
-        const models = topModelsLine(report);
-        if (flat && (credits || kpis || models))
+        const brand = PROVIDER_META[row.provider]?.color;
+        const trend = chartPoints(report);
+        const colors = trend ? modelColorsFromPoints(trend, brand) : new Map();
+        const legend = trend ? buildModelLegend(trend, colors) : null;
+        if (flat && (credits || kpis || legend))
             addSeparator();
         if (credits) {
             const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-credits'});
@@ -2036,16 +2117,11 @@ export default class UsageBarExtension extends Extension {
                 card.add_child(kpiRow);
             }
         }
-        const trend = chartPoints(report);
         if (trend)
-            card.add_child(this._buildTrendChart(trend, row.provider));
+            card.add_child(this._buildTrendChart(trend, brand, colors));
 
-        if (models) {
-            card.add_child(new St.Label({
-                text: models,
-                style_class: 'usagebar-dim usagebar-models',
-            }));
-        }
+        if (legend)
+            card.add_child(legend);
         if (report && COST_HINTS[row.provider]) {
             const hintLabel = new St.Label({
                 text: COST_HINTS[row.provider],

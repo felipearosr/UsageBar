@@ -46,3 +46,4 @@
 - Keep provider data siloed: when rendering usage or account info for a provider (Claude vs Codex), never display identity/plan fields sourced from a different provider.***
 - Claude CLI status line is custom + user-configurable; never rely on it for usage parsing.
 - Cookie imports: default Chrome-only when possible to avoid other browser prompts; override via browser list when needed.
+- Linux GNOME extension (linux/usagebar-gnome): when done with any change, open the dev kit via `./linux/run-dev.sh` (backgrounded) and verify no extension JS errors in its log; the nested `gnome-shell --devkit` window loads the repo-symlinked extension live.
