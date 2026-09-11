@@ -79,9 +79,7 @@ function statusScopeRow(settings, provider) {
 // notify-muted-providers): being in the list means hidden/muted, so the
 // switch shows ON when the member is absent.
 function strvMemberRow(settings, key, member, {title, subtitle = ''}) {
-    const row = new Adw.SwitchRow({
-        title,
-        subtitle,
+    const row = plainSwitchRow(title, subtitle, {  // titles embed CLI labels
         active: !new Set(settings.get_strv(key)).has(member),
     });
     row.connect('notify::active', () => {
@@ -135,8 +133,18 @@ function spinRow(settings, key, title, subtitle, {lower = 1, upper = 100, step =
     return row;
 }
 
+// Plain-text row: use_markup must be off before title/subtitle are set —
+// passed together to the constructor, the text can be parsed as markup
+// first ("Gemini 5h & weekly" renders blank).
+function plainSwitchRow(title, subtitle = '', props = {}) {
+    const row = new Adw.SwitchRow({use_markup: false, ...props});
+    row.title = title;
+    row.subtitle = subtitle;
+    return row;
+}
+
 function switchRow(settings, key, title, subtitle = '') {
-    const row = new Adw.SwitchRow({title, subtitle});
+    const row = plainSwitchRow(title, subtitle);
     settings.bind(key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
     return row;
 }
@@ -163,6 +171,92 @@ function thresholdListRow(settings, key, title) {
         row.text = values.join(', ');
     });
     return row;
+}
+
+// Browser-cookie import is macOS-only, so on Linux web-backed providers need
+// their session cookie pasted by hand. It lives in the CLI's config.json as
+// cookieSource "manual" + cookieHeader — the CLI has no verb for it.
+const COOKIE_PROVIDERS = {
+    opencodego: {
+        site: 'https://opencode.ai',
+        cookie: 'auth',
+        valueHint: 'a long string starting with <tt>Fe26.2**</tt>',
+        without: 'Without it, bars are estimated from local OpenCode history against ' +
+            'the plan’s dollar caps ($12 / 5 h, $30 / week, $60 / month) and miss ' +
+            'usage from other machines.',
+    },
+    opencode: {
+        site: 'https://opencode.ai',
+        cookie: 'auth',
+        valueHint: 'a long string starting with <tt>Fe26.2**</tt>',
+        without: 'Without it, bars are estimated from local OpenCode history.',
+    },
+};
+
+function configPath() {
+    return GLib.build_filenamev([GLib.get_user_config_dir(), 'codexbar', 'config.json']);
+}
+
+function readConfig() {
+    const [, bytes] = GLib.file_get_contents(configPath());
+    return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function configEntry(config, id) {
+    return config.providers?.find(p => p.id === id) ?? null;
+}
+
+// Accepts the bare value, "auth=…", or a whole Cookie header; the CLI keeps
+// only the named cookie. Returns null for empty input.
+function normalizeCookie(text, name) {
+    const t = text.trim().replace(/^cookie:\s*/i, '');
+    if (!t)
+        return null;
+    const asHeader = new RegExp(`(^|;\\s*)(__Host-)?${name}=`);
+    return asHeader.test(t) ? t : `${name}=${t}`;
+}
+
+// null header removes the cookie (back to browser/auto behavior).
+function writeCookie(id, header) {
+    const config = readConfig();
+    const entry = configEntry(config, id);
+    if (!entry)
+        throw new Error(`${id} is not in the codexbar config`);
+    if (header) {
+        entry.cookieSource = 'manual';
+        entry.cookieHeader = header;
+    } else {
+        delete entry.cookieSource;
+        delete entry.cookieHeader;
+    }
+    // 0600: the file now holds a session credential. The mode argument only
+    // applies to new files, so tighten an existing one explicitly.
+    GLib.file_set_contents_full(configPath(),
+        new TextEncoder().encode(`${JSON.stringify(config, null, 2)}\n`),
+        GLib.FileSetContentsFlags.CONSISTENT, 0o600);
+    GLib.chmod(configPath(), 0o600);
+}
+
+// Which source the CLI actually used: "web" means the cookie worked; auto
+// mode falls back to "local" estimates when it's missing or rejected.
+function checkSource(binary, id, cb) {
+    try {
+        const proc = Gio.Subprocess.new(
+            [binary, 'usage', '--provider', id, '--json'],
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
+        proc.communicate_utf8_async(null, null, (p, res) => {
+            try {
+                const [, out] = p.communicate_utf8_finish(res);
+                const row = JSON.parse(out.slice(out.indexOf('[')))[0];
+                const error = row?.error?.message ?? (typeof row?.error === 'string' ? row.error : null);
+                cb(row?.source ?? null, error);
+            } catch {
+                cb(null, null);
+            }
+        });
+    } catch {
+        cb(null, null);
+    }
 }
 
 export default class UsageBarPreferences extends ExtensionPreferences {
@@ -234,6 +328,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             'Poll public status pages for the incident history strips'));
         behavior.add(switchRow(settings, 'sort-alphabetical', 'Sort providers alphabetically',
             'Off keeps the codexbar config order'));
+        behavior.add(switchRow(settings, 'update-check-enabled', 'Check for codexbar updates',
+            'Download verified CLI releases from GitHub and offer to install them'));
         general.add(behavior);
         window.add(general);
 
@@ -306,6 +402,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
                 title: 'Notifications',
                 subtitle: 'Quota and pace warnings from this provider',
             }));
+            if (COOKIE_PROVIDERS[id])
+                group.add(this._cookieRow(binary, id));
             if (id === 'antigravity') {
                 group.add(switchRow(settings, 'antigravity-overview-gemini',
                     'Overview: Gemini models',
@@ -321,13 +419,129 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         window.add(page);
     }
 
+    // Paste-a-cookie section for web-backed providers, with step-by-step
+    // instructions and a live check of whether the CLI accepted it. The
+    // extension picks changes up itself (it watches config.json).
+    _cookieRow(binary, id) {
+        const spec = COOKIE_PROVIDERS[id];
+        const host = GLib.Uri.parse(spec.site, GLib.UriFlags.NONE).get_host();
+        // Plain text: the subtitle can carry CLI error messages.
+        const expander = new Adw.ExpanderRow({title: `Exact usage from ${host}`, use_markup: false});
+        let alive = true;
+        expander.connect('destroy', () => {
+            alive = false;
+        });
+
+        const savedCookie = () => {
+            try {
+                return configEntry(readConfig(), id)?.cookieHeader ?? null;
+            } catch {
+                return null;
+            }
+        };
+        const refreshStatus = () => {
+            if (!savedCookie()) {
+                expander.subtitle = 'Off — bars are estimates from local history';
+                return;
+            }
+            if (!binary) {
+                expander.subtitle = 'Cookie saved';
+                return;
+            }
+            expander.subtitle = 'Checking the saved cookie…';
+            checkSource(binary, id, (source, error) => {
+                if (!alive)
+                    return;
+                expander.subtitle = source === 'web'
+                    ? `Working — bars show exact usage from ${host}`
+                    : `Cookie not accepted${error ? ` (${error})` : ''} — it may have ` +
+                      'expired; paste a fresh one';
+            });
+        };
+
+        const help = new Gtk.Label({
+            label: `Browser cookie import only works on macOS, so on Linux paste your ${host} ` +
+                'login cookie here.\n\n' +
+                `1. Sign in at <a href="${spec.site}">${host}</a> in your browser.\n` +
+                '2. Open developer tools (F12 or Ctrl+Shift+I).\n' +
+                `3. Chrome / Edge: <b>Application</b> tab → Storage → Cookies → ${spec.site}\n` +
+                `    Firefox: <b>Storage</b> tab → Cookies → ${spec.site}\n` +
+                `4. Find the cookie named <b>${spec.cookie}</b> and copy its Value ` +
+                `(${spec.valueHint}).\n` +
+                '5. Paste it below and press Enter.\n\n' +
+                'It’s saved to ~/.config/codexbar/config.json, readable only by you. ' +
+                `Signing out of ${host} invalidates it — if the status above says it’s ` +
+                `not accepted, repeat these steps.\n\n${spec.without}`,
+            use_markup: true,
+            wrap: true,
+            xalign: 0,
+            selectable: true,
+            margin_top: 12,
+            margin_bottom: 12,
+            margin_start: 12,
+            margin_end: 12,
+        });
+        expander.add_row(new Gtk.ListBoxRow({child: help, activatable: false}));
+
+        const openRow = new Adw.ActionRow({
+            title: `Open ${host}`,
+            subtitle: 'Sign in there first',
+            activatable: true,
+        });
+        openRow.add_suffix(new Gtk.Image({icon_name: 'adw-external-link-symbolic'}));
+        openRow.connect('activated', () => Gio.AppInfo.launch_default_for_uri(spec.site, null));
+        expander.add_row(openRow);
+
+        const entry = new Adw.PasswordEntryRow({
+            title: `Paste the “${spec.cookie}” cookie value`,
+            show_apply_button: true,
+        });
+        entry.connect('apply', () => {
+            const header = normalizeCookie(entry.text, spec.cookie);
+            if (!header) {
+                entry.add_css_class('error');
+                return;
+            }
+            try {
+                writeCookie(id, header);
+                entry.remove_css_class('error');
+                entry.text = '';
+                refreshStatus();
+            } catch (e) {
+                entry.add_css_class('error');
+                expander.subtitle = `Couldn’t save: ${e.message}`;
+            }
+        });
+        expander.add_row(entry);
+
+        const removeRow = new Adw.ActionRow({title: 'Remove saved cookie'});
+        const removeBtn = new Gtk.Button({
+            label: 'Remove',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['destructive-action'],
+        });
+        removeBtn.connect('clicked', () => {
+            try {
+                writeCookie(id, null);
+                refreshStatus();
+            } catch (e) {
+                expander.subtitle = `Couldn’t remove: ${e.message}`;
+            }
+        });
+        removeRow.add_suffix(removeBtn);
+        expander.add_row(removeRow);
+
+        expander.expanded = !savedCookie(); // show the steps until it's set up
+        refreshStatus();
+        return expander;
+    }
+
     // Enable/disable switch backed by `codexbar config enable|disable`;
     // reverts on failure. The extension notices success by itself — it
     // watches the CLI's config.json for changes.
     _providerToggleRow(binary, provider) {
-        const row = new Adw.SwitchRow({
-            title: provider.name,
-            subtitle: provider.id,
+        // CLI display names are plain text ("ai&").
+        const row = plainSwitchRow(provider.name, provider.id, {
             active: provider.enabled,
             sensitive: !!binary,
         });

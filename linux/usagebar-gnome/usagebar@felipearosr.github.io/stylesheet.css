@@ -83,6 +83,11 @@
   font-size: 9.5pt;
 }
 
+.usagebar-accel {
+  color: rgba(200, 200, 206, 0.6);
+  font-size: 9pt;
+}
+
 .usagebar-banner {
   color: #f5c211;
   font-size: 9.5pt;

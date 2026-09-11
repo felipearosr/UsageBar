@@ -145,5 +145,22 @@
       <summary>Show Gemini models in Antigravity overview</summary>
       <description>Show Gemini 5h and weekly limits in the All view for Antigravity; off shows Claude and GPT limits instead.</description>
     </key>
+
+    <!-- codexbar CLI self-update -->
+    <key name="update-check-enabled" type="b">
+      <default>true</default>
+      <summary>Check for codexbar CLI updates</summary>
+      <description>Poll upstream GitHub releases every few hours, stage a verified build, and offer "Update ready. Restart now?" in the menu.</description>
+    </key>
+    <key name="cli-installed-version" type="s">
+      <default>''</default>
+      <summary>Installed codexbar CLI version</summary>
+      <description>Version last installed by the updater; used when no VERSION file sits beside the binary (the CLI reports "unknown").</description>
+    </key>
+    <key name="cli-installed-fingerprint" type="s">
+      <default>''</default>
+      <summary>Fingerprint of the updater-installed codexbar binary</summary>
+      <description>Size and mtime of the binary the updater installed. If the binary no longer matches (e.g. a local fork build was copied over it), its version is treated as unknown and no update is offered.</description>
+    </key>
   </schema>
 </schemalist>

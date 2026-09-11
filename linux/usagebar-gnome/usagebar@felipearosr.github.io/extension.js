@@ -21,6 +21,8 @@ import Clutter from 'gi://Clutter';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Dialog from 'resource:///org/gnome/shell/ui/dialog.js';
+import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
@@ -593,6 +595,74 @@ function chartTooltipText(point) {
     return [day, ...lines].join('\n');
 }
 
+// ---------- local cost reports ----------
+//
+// The CLI's /cost prices only a few providers. OpenCode records each
+// response's billed cost, tokens and model in its SQLite history, so for
+// OpenCode Go the same report shape is built from there (read-only, last
+// historyDays local days). Needs python3's stdlib sqlite3 only.
+
+const LOCAL_COST_PROVIDERS = new Set(['opencodego']);
+const LOCAL_COST_DAYS = 30;
+
+const OPENCODE_GO_COST_PY = `
+import datetime, json, sqlite3, sys
+path, days = sys.argv[1], int(sys.argv[2])
+today = datetime.date.today()
+start = today - datetime.timedelta(days=days - 1)
+start_ms = int(datetime.datetime.combine(start, datetime.time()).timestamp() * 1000)
+db = sqlite3.connect("file:" + path + "?mode=ro", uri=True)
+db.execute("PRAGMA busy_timeout = 250")
+rows = db.execute("""
+  SELECT COALESCE(json_extract(data, '$.time.created'), time_created),
+         json_extract(data, '$.modelID'), json_extract(data, '$.cost'),
+         json_extract(data, '$.tokens.input'), json_extract(data, '$.tokens.output'),
+         json_extract(data, '$.tokens.reasoning'), json_extract(data, '$.tokens.cache.read'),
+         json_extract(data, '$.tokens.cache.write'), json_extract(data, '$.tokens.total')
+  FROM message
+  WHERE time_created >= ? AND json_valid(data)
+    AND json_extract(data, '$.providerID') = 'opencode-go'
+    AND json_extract(data, '$.role') = 'assistant'""", (start_ms,)).fetchall()
+keys = ("inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens", "totalTokens")
+num = lambda v: v if isinstance(v, (int, float)) else 0
+def blank():
+    b = {k: 0 for k in keys}
+    b["totalCost"] = 0.0
+    b["models"] = {}
+    return b
+daily, totals = {}, blank()
+for created, model, cost, inp, out, reasoning, cread, cwrite, total in rows:
+    date = datetime.datetime.fromtimestamp(created / 1000).date()
+    if date < start:
+        continue
+    vals = {"inputTokens": num(inp), "outputTokens": num(out) + num(reasoning),
+            "cacheReadTokens": num(cread), "cacheCreationTokens": num(cwrite)}
+    vals["totalTokens"] = num(total) or sum(vals.values())
+    for b in (daily.setdefault(date.isoformat(), blank()), totals):
+        b["totalCost"] += num(cost)
+        for k in keys:
+            b[k] += vals[k]
+        m = b["models"].setdefault(model or "unknown", [0.0, 0])
+        m[0] += num(cost)
+        m[1] += vals["totalTokens"]
+def breakdown(b):
+    models = sorted(b.pop("models").items(), key=lambda kv: -kv[1][0])
+    return [{"modelName": k, "cost": v[0], "totalTokens": v[1]} for k, v in models]
+entries = []
+for date in sorted(daily):
+    b = daily[date]
+    mb = breakdown(b)
+    entries.append(dict(b, date=date, modelBreakdowns=mb, modelsUsed=[m["modelName"] for m in mb]))
+totals.pop("models")
+print(json.dumps({
+    "provider": "opencodego", "source": "local", "currencyCode": "USD",
+    "provenance": "reported", "historyDays": days, "daily": entries, "totals": totals,
+    "last30DaysCostUSD": totals["totalCost"], "last30DaysTokens": totals["totalTokens"],
+    "sessionCostUSD": daily.get(today.isoformat(), {}).get("totalCost", 0.0),
+    "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}))
+`;
+
 // ---------- cost overview (All-view summary + hover panel) ----------
 
 const OV_LEFT_WIDTH = 270;
@@ -1093,6 +1163,260 @@ class ServeSupervisor {
     }
 }
 
+// ---------- CLI self-update ----------
+//
+// The macOS app updates through Sparkle; here the extension keeps the
+// codexbar CLI current itself: poll upstream's latest GitHub release, stage
+// the matching linux tarball (sha256-verified) under the cache dir, then on
+// "Restart now" swap it in next to the running binary and bounce serve.
+// `codexbar --version` prints "CodexBar unknown", so the installed version
+// comes from a VERSION file beside the binary (upstream's tarball layout)
+// or the version this updater last installed.
+
+const RELEASES_API = 'https://api.github.com/repos/steipete/CodexBar/releases/latest';
+const UPSTREAM_URL = 'https://github.com/steipete/CodexBar';
+const UPDATE_FIRST_CHECK_SECS = 30;
+const UPDATE_CHECK_SECS = 6 * 3600;
+const CLI_BUNDLE = 'CodexBar_CodexBarCore.bundle';
+
+// $1 binary (resolved), $2 its dir, $3 staging dir. Copy-then-rename so the
+// binary path never points at a half-written file; one backup is kept.
+// VERSION always lands beside the binary: the CLI reads it for --version,
+// which is how every session (not just this dconf) learns what's installed.
+const SWAP_SCRIPT = `set -e
+real="$1"; dir="$2"; stage="$3"
+[ -w "$dir" ] || { echo "no write access to $dir" >&2; exit 1; }
+cp -f "$stage/CodexBarCLI" "$real.new"
+mv -f "$real" "$real.bak-usagebar"
+mv -f "$real.new" "$real"
+if [ -d "$stage/${CLI_BUNDLE}" ]; then
+  rm -rf "$dir/${CLI_BUNDLE}.bak"
+  if [ -e "$dir/${CLI_BUNDLE}" ]; then mv "$dir/${CLI_BUNDLE}" "$dir/${CLI_BUNDLE}.bak"; fi
+  cp -R "$stage/${CLI_BUNDLE}" "$dir/${CLI_BUNDLE}"
+fi
+cp -f "$stage/VERSION" "$dir/VERSION"`;
+
+function runAsync(argv, cancellable) {
+    return new Promise((resolve, reject) => {
+        let proc;
+        try {
+            proc = Gio.Subprocess.new(argv,
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        } catch (e) {
+            reject(e);
+            return;
+        }
+        // Cancelling communicate() leaves the child running — kill it.
+        const cancelId = cancellable?.connect(() => proc.force_exit()) ?? 0;
+        proc.communicate_utf8_async(null, null, (p, res) => {
+            if (cancelId)
+                cancellable.disconnect(cancelId);
+            try {
+                const [, out, err] = p.communicate_utf8_finish(res);
+                if (cancellable?.is_cancelled())
+                    throw new Error('cancelled');
+                if (!p.get_successful()) {
+                    const why = (err ?? '').trim() || `exit ${p.get_exit_status()}`;
+                    throw new Error(`${GLib.path_get_basename(argv[0])}: ${why}`);
+                }
+                resolve(out ?? '');
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
+}
+
+function compareVersions(a, b) {
+    const pa = a.split('.').map(n => parseInt(n, 10) || 0);
+    const pb = b.split('.').map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+        if (d)
+            return d;
+    }
+    return 0;
+}
+
+// Follow symlinks (~/.local/bin/codexbar -> CodexBarCLI) to the real file.
+function realPath(path) {
+    for (let i = 0; i < 16; i++) {
+        let target;
+        try {
+            target = GLib.file_read_link(path);
+        } catch {
+            return path;
+        }
+        path = GLib.path_is_absolute(target)
+            ? target : GLib.build_filenamev([GLib.path_get_dirname(path), target]);
+    }
+    return path;
+}
+
+// Size + mtime: enough to tell whether the binary is still the one the
+// updater installed.
+function fileFingerprint(path) {
+    try {
+        const info = Gio.File.new_for_path(path).query_info(
+            'standard::size,time::modified', Gio.FileQueryInfoFlags.NONE, null);
+        return `${info.get_size()}:${info.get_attribute_uint64('time::modified')}`;
+    } catch {
+        return null;
+    }
+}
+
+class CliUpdater {
+    constructor(binary, settings, session, onReady) {
+        this._binary = binary;
+        this._settings = settings;
+        this._session = session;
+        this._onReady = onReady; // (version)
+        this._cancellable = new Gio.Cancellable();
+        this._stageRoot = GLib.build_filenamev(
+            [GLib.get_user_cache_dir(), 'usagebar', 'cli-update']);
+        this._busy = false;
+        this.ready = null; // {version, stage} once a verified build is staged
+    }
+
+    // Newer CLIs print "CodexBar 0.59.0"; older ones "CodexBar unknown".
+    async _probeVersion() {
+        try {
+            const out = await runAsync([this._binary, '--version'], this._cancellable);
+            this._probed = out.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
+        } catch {
+            this._probed = null;
+        }
+    }
+
+    installedVersion() {
+        // A binary other than the one this updater installed (say a fork
+        // build copied over it) would still read the VERSION file it left.
+        const ours = this._settings.get_string('cli-installed-fingerprint');
+        if (ours && ours !== fileFingerprint(realPath(this._binary)))
+            return null;
+        if (this._probed)
+            return this._probed;
+        const dir = GLib.path_get_dirname(realPath(this._binary));
+        try {
+            const [, bytes] = GLib.file_get_contents(`${dir}/VERSION`);
+            const v = new TextDecoder().decode(bytes).trim();
+            if (v)
+                return v;
+        } catch {
+            // no VERSION file — manual/brew install
+        }
+        return this._settings.get_string('cli-installed-version') || null;
+    }
+
+    async check() {
+        if (this._busy)
+            return;
+        this._busy = true;
+        try {
+            await this._probeVersion();
+            const release = await this._fetchRelease();
+            const version = release.tag_name?.replace(/^v/, '');
+            const installed = this.installedVersion();
+            // Unknown installed version means a local/fork build ("CodexBar
+            // unknown") — never offer to replace one of those.
+            if (!version || !installed || compareVersions(version, installed) <= 0)
+                return;
+            const stage = GLib.build_filenamev([this._stageRoot, version]);
+            const marker = `${stage}/.verified`;
+            if (!GLib.file_test(marker, GLib.FileTest.EXISTS)) {
+                await this._stage(release, version, stage);
+                GLib.file_set_contents(marker, version);
+            }
+            this.ready = {version, stage};
+            this._onReady(version);
+        } catch (e) {
+            if (!this._cancellable.is_cancelled())
+                console.warn(`usagebar: codexbar update check failed: ${e.message}`);
+        } finally {
+            this._busy = false;
+        }
+    }
+
+    _fetchRelease() {
+        return new Promise((resolve, reject) => {
+            const msg = Soup.Message.new('GET', RELEASES_API);
+            // GitHub rejects requests without a User-Agent.
+            msg.request_headers.append('User-Agent', 'UsageBar-GNOME');
+            msg.request_headers.append('Accept', 'application/vnd.github+json');
+            this._session.send_and_read_async(msg, GLib.PRIORITY_LOW, this._cancellable,
+                (session, res) => {
+                    try {
+                        const bytes = session.send_and_read_finish(res);
+                        if (msg.get_status() !== Soup.Status.OK)
+                            throw new Error(`GitHub HTTP ${msg.get_status()}`);
+                        resolve(JSON.parse(new TextDecoder().decode(bytes.get_data())));
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+        });
+    }
+
+    async _stage(release, version, stage) {
+        const c = this._cancellable;
+        const arch = (await runAsync(['uname', '-m'], c)).trim();
+        if (!['x86_64', 'aarch64'].includes(arch))
+            throw new Error(`no linux build for ${arch}`);
+        const musl = GLib.file_test(`/lib/ld-musl-${arch}.so.1`, GLib.FileTest.EXISTS);
+        const name = `CodexBarCLI-v${version}-linux-${musl ? 'musl-' : ''}${arch}.tar.gz`;
+        const assetUrl = n => release.assets?.find(a => a.name === n)?.browser_download_url;
+        const url = assetUrl(name);
+        const sumUrl = assetUrl(`${name}.sha256`);
+        if (!url || !sumUrl)
+            throw new Error(`release has no ${name}`);
+
+        // A newer release supersedes anything staged before.
+        await runAsync(['rm', '-rf', this._stageRoot], c);
+        GLib.mkdir_with_parents(stage, 0o755);
+        const tarball = `${this._stageRoot}/${name}`;
+        // curl, not Soup: a ~160 MB body shouldn't sit in the shell's heap.
+        await runAsync(['curl', '-fsSL', '--max-time', '900', '-o', tarball, url], c);
+        const expected = (await runAsync(['curl', '-fsSL', '--max-time', '60', sumUrl], c))
+            .trim().split(/\s+/)[0];
+        const actual = (await runAsync(['sha256sum', tarball], c)).trim().split(/\s+/)[0];
+        if (!expected || expected !== actual)
+            throw new Error(`checksum mismatch for ${name}`);
+        await runAsync(['tar', '-xzf', tarball, '-C', stage], c);
+        GLib.unlink(tarball);
+        const bin = `${stage}/CodexBarCLI`;
+        if (!GLib.file_test(bin, GLib.FileTest.IS_EXECUTABLE))
+            throw new Error('tarball has no CodexBarCLI');
+        await runAsync([bin, '--version'], c); // it runs on this machine
+    }
+
+    // Swap the staged build in; the caller restarts serve. Returns the version.
+    async apply() {
+        const ready = this.ready;
+        if (!ready)
+            throw new Error('no update staged');
+        if (this._busy)
+            throw new Error('update check in progress');
+        this._busy = true;
+        try {
+            const real = realPath(this._binary);
+            await runAsync(['sh', '-c', SWAP_SCRIPT, 'sh',
+                real, GLib.path_get_dirname(real), ready.stage], this._cancellable);
+            this._settings.set_string('cli-installed-version', ready.version);
+            this._settings.set_string('cli-installed-fingerprint', fileFingerprint(real) ?? '');
+            this._probed = ready.version;
+            this.ready = null;
+            await runAsync(['rm', '-rf', this._stageRoot], this._cancellable).catch(() => {});
+            return ready.version;
+        } finally {
+            this._busy = false;
+        }
+    }
+
+    stop() {
+        this._cancellable.cancel();
+    }
+}
+
 // ---------- indicator ----------
 
 const Indicator = GObject.registerClass(
@@ -1185,9 +1509,51 @@ class UsageBarIndicator extends PanelMenu.Button {
             this._costPanel = null;
         });
 
+        // Footer, mirroring the macOS app menu. The update row only shows
+        // once a verified CLI update is staged.
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._settingsItem = new PopupMenu.PopupMenuItem('Settings');
-        this.menu.addMenuItem(this._settingsItem);
+        const footerItem = (text, icon, accel) => {
+            const item = new PopupMenu.PopupImageMenuItem(text, icon);
+            if (accel) {
+                item.add_child(new St.Label({
+                    text: accel,
+                    style_class: 'usagebar-accel',
+                    x_expand: true,
+                    x_align: Clutter.ActorAlign.END,
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            }
+            this.menu.addMenuItem(item);
+            return item;
+        };
+        this._updateItem = footerItem('', 'software-update-available-symbolic');
+        this._updateItem.visible = false;
+        this._refreshItem = footerItem('Refresh', 'view-refresh-symbolic', 'Ctrl+R');
+        this._settingsItem = footerItem('Settings…', 'emblem-system-symbolic', 'Ctrl+,');
+        this._aboutItem = footerItem('About UsageBar', 'help-about-symbolic');
+        this._quitItem = footerItem('Quit', 'application-exit-symbolic', 'Ctrl+Q');
+
+        // Accelerators, live while the menu holds the keyboard grab.
+        const accels = {
+            [Clutter.KEY_r]: this._refreshItem,
+            [Clutter.KEY_R]: this._refreshItem,
+            [Clutter.KEY_comma]: this._settingsItem,
+            [Clutter.KEY_q]: this._quitItem,
+            [Clutter.KEY_Q]: this._quitItem,
+        };
+        this.menu.actor.connect('key-press-event', (_actor, event) => {
+            const item = accels[event.get_key_symbol()];
+            if (!item || !(event.get_state() & Clutter.ModifierType.CONTROL_MASK))
+                return Clutter.EVENT_PROPAGATE;
+            item.activate(event);
+            return Clutter.EVENT_STOP;
+        });
+    }
+
+    setUpdateReady(version) {
+        this._updateItem.visible = !!version;
+        if (version)
+            this._updateItem.label.text = `Update ready (codexbar ${version}). Restart now?`;
     }
 
     _openCostPanel() {
@@ -1412,6 +1778,16 @@ export default class UsageBarExtension extends Extension {
         this._indicator = new Indicator(this.dir);
         this._indicator._settingsItem.connect('activate', () => this.openPreferences());
         this._indicator._refreshButton.connect('clicked', () => this._fetchUsage(true));
+        this._indicator._refreshItem.connect('activate', () => this._fetchUsage(true));
+        this._indicator._aboutItem.connect('activate', () => this._showAbout());
+        this._indicator._updateItem.connect('activate', () => this._applyUpdate());
+        this._indicator._quitItem.connect('activate', () => {
+            // Deferred: disabling destroys the menu emitting this signal.
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                Main.extensionManager.disableExtension(this.uuid);
+                return GLib.SOURCE_REMOVE;
+            });
+        });
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
@@ -1466,6 +1842,14 @@ export default class UsageBarExtension extends Extension {
             });
         this._supervisor.start();
 
+        this._updater = new CliUpdater(binary, this._settings, this._session,
+            version => this._indicator?.setUpdateReady(version));
+        this._updateToggleId = this._settings.connect('changed::update-check-enabled', () => {
+            if (this._settings.get_boolean('update-check-enabled'))
+                this._scheduleUpdateCheck(5);
+        });
+        this._scheduleUpdateCheck(UPDATE_FIRST_CHECK_SECS);
+
         // Countdown/"updated ago" ticker while the menu is open.
         this._tickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, TICK_SECS, () => {
             if (this._indicator?.menu.isOpen)
@@ -1479,6 +1863,18 @@ export default class UsageBarExtension extends Extension {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = 0;
         }
+        if (this._updateToggleId) {
+            this._settings.disconnect(this._updateToggleId);
+            this._updateToggleId = 0;
+        }
+        if (this._updateCheckId) {
+            GLib.source_remove(this._updateCheckId);
+            this._updateCheckId = 0;
+        }
+        this._updater?.stop();
+        this._updater = null;
+        this._aboutDialog?.destroy();
+        this._aboutDialog = null;
         this._settings = null;
         if (this._fetchId) {
             GLib.source_remove(this._fetchId);
@@ -1510,6 +1906,73 @@ export default class UsageBarExtension extends Extension {
         this._notified = null;
         this._costs = null;
         this._status = null;
+    }
+
+    // ----- footer actions -----
+
+    _scheduleUpdateCheck(secs) {
+        if (this._updateCheckId)
+            GLib.source_remove(this._updateCheckId);
+        this._updateCheckId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW, secs, () => {
+            this._updateCheckId = 0;
+            if (this._settings.get_boolean('update-check-enabled'))
+                this._updater.check();
+            this._scheduleUpdateCheck(UPDATE_CHECK_SECS);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    async _applyUpdate() {
+        this._indicator.setUpdateReady(null);
+        this._indicator.setStatus('Installing codexbar update…');
+        try {
+            const version = await this._updater.apply();
+            if (!this._indicator)
+                return;
+            this._indicator.setStatus('');
+            this._supervisor?.restart(this._settings.get_int('refresh-interval-secs'));
+            this._loadDisplayNames(this._binary);
+            Main.notify('UsageBar', `codexbar CLI updated to ${version}`);
+        } catch (e) {
+            if (!this._indicator)
+                return;
+            this._indicator.setStatus(`codexbar update failed: ${e.message}`);
+            if (this._updater?.ready)
+                this._indicator.setUpdateReady(this._updater.ready.version);
+        }
+    }
+
+    _showAbout() {
+        this._aboutDialog?.destroy();
+        const dialog = new ModalDialog.ModalDialog({destroyOnClose: true});
+        this._aboutDialog = dialog;
+        dialog.connect('destroy', () => {
+            if (this._aboutDialog === dialog)
+                this._aboutDialog = null;
+        });
+        const cli = this._updater?.installedVersion() ?? 'unknown';
+        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
+            title: 'UsageBar',
+            description: `Version ${this.metadata.version} · codexbar CLI ${cli}\n\n` +
+                'AI coding-provider usage limits in the GNOME panel. ' +
+                'Linux port of CodexBar by Peter Steinberger.',
+        }));
+        const link = (label, url) => ({
+            label,
+            action: () => {
+                Gio.AppInfo.launch_default_for_uri(url, null);
+                dialog.close();
+            },
+        });
+        dialog.addButton(link('CodexBar', UPSTREAM_URL));
+        dialog.addButton(link('UsageBar', this.metadata.url));
+        dialog.addButton({
+            label: 'Close',
+            action: () => dialog.close(),
+            default: true,
+            key: Clutter.KEY_Escape,
+        });
+        dialog.open();
     }
 
     // ----- data -----
@@ -1677,28 +2140,55 @@ export default class UsageBarExtension extends Extension {
         const providers = [...new Set(this._rows.map(r => r.provider))];
         this._costInFlight = true;
         let pending = providers.length;
+        const done = () => {
+            if (--pending === 0) {
+                this._costInFlight = false;
+                this._costFetchedAt = Date.now();
+            }
+        };
         for (const provider of providers) {
+            // Never asked of serve: its answer could overwrite the local report.
+            if (LOCAL_COST_PROVIDERS.has(provider)) {
+                this._fetchLocalCost(provider).finally(done);
+                continue;
+            }
             this._get(`/cost?provider=${encodeURIComponent(provider)}`, (reports, error) => {
                 if (!this._indicator)
                     return; // disabled while in flight
-                if (!error && Array.isArray(reports)) { // cost is best-effort
-                    const next = [...(this._costs ?? [])];
-                    for (const report of reports) {
-                        const i = next.findIndex(c => c.provider === report.provider);
-                        if (i >= 0)
-                            next[i] = report;
-                        else
-                            next.push(report);
-                    }
-                    this._costs = next;
-                    this._render();
-                }
-                if (--pending === 0) {
-                    this._costInFlight = false;
-                    this._costFetchedAt = Date.now();
-                }
+                if (!error && Array.isArray(reports)) // cost is best-effort
+                    this._mergeCosts(reports);
+                done();
             });
         }
+    }
+
+    _mergeCosts(reports) {
+        if (!this._indicator)
+            return;
+        const next = [...(this._costs ?? [])];
+        for (const report of reports) {
+            const i = next.findIndex(c => c.provider === report.provider);
+            if (i >= 0)
+                next[i] = report;
+            else
+                next.push(report);
+        }
+        this._costs = next;
+        this._render();
+    }
+
+    // Resolves either way — cost is best-effort.
+    _fetchLocalCost(provider) {
+        const db = GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode', 'opencode.db']);
+        if (!GLib.file_test(db, GLib.FileTest.EXISTS))
+            return Promise.resolve();
+        return runAsync(['python3', '-c', OPENCODE_GO_COST_PY, db, String(LOCAL_COST_DAYS)],
+            this._cancellable)
+            .then(out => this._mergeCosts([JSON.parse(out)]))
+            .catch(e => {
+                if (!this._cancellable?.is_cancelled())
+                    console.warn(`usagebar: ${provider} local cost failed: ${e.message}`);
+            });
     }
 
     // Incident history for the status strips, straight from each provider's
