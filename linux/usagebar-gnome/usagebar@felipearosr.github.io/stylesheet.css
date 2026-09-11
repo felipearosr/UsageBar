@@ -32,6 +32,9 @@
   /* Fixed: long one-line labels (error banners, pace summaries) must wrap,
      not widen the popover. */
   width: 440px;
+  /* Same navy as the cost dashboard panel (.usagebar-ov-panel); the
+     theme's .popup-menu-content radius and shadow still apply. */
+  background-color: rgba(22, 27, 34, 0.98);
 }
 
 /* The popover rows are reactive:false menu items, which GNOME dims with
@@ -364,6 +367,159 @@
   border-radius: 6px;
   padding: 4px 9px;
   font-size: 9pt;
+}
+
+/* All-view spend row + its hover cost dashboard */
+.usagebar-ov-summary {
+  spacing: 6px;
+}
+
+.usagebar-ov-split {
+  border-radius: 2px;
+  background-color: rgba(160, 160, 166, 0.2);
+}
+
+.usagebar-ov-summary-legend {
+  spacing: 14px;
+}
+
+.usagebar-ov-panel {
+  width: 780px;
+  background-color: rgba(22, 27, 34, 0.98);
+  border: 1px solid rgba(160, 160, 166, 0.25);
+  border-radius: 12px;
+  padding: 20px 24px;
+  spacing: 4px;
+  color: #e6edf3;
+}
+
+.usagebar-ov-header {
+  spacing: 10px;
+  margin-bottom: 14px;
+}
+
+.usagebar-ov-close {
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+  margin-left: -6px;
+}
+
+.usagebar-ov-range {
+  color: rgba(200, 200, 206, 1);
+  font-size: 10.5pt;
+}
+
+.usagebar-ov-top {
+  spacing: 28px;
+}
+
+.usagebar-ov-caption {
+  color: rgba(200, 200, 206, 1);
+  font-size: 8.5pt;
+  letter-spacing: 1px;
+}
+
+.usagebar-ov-total {
+  color: #ffffff;
+  font-size: 24pt;
+  font-weight: bold;
+}
+
+.usagebar-ov-small {
+  color: rgba(200, 200, 206, 1);
+  font-size: 8.5pt;
+}
+
+.usagebar-ov-text {
+  color: #ffffff;
+  font-size: 10pt;
+}
+
+.usagebar-ov-dimtext {
+  color: rgba(200, 200, 206, 1);
+  font-size: 10pt;
+}
+
+.usagebar-ov-num {
+  text-align: right;
+}
+
+.usagebar-ov-provider {
+  margin-top: 14px;
+  spacing: 5px;
+}
+
+.usagebar-ov-provider-head {
+  spacing: 8px;
+}
+
+.usagebar-ov-track {
+  border-radius: 2px;
+  background-color: rgba(160, 160, 166, 0.2);
+}
+
+.usagebar-ov-heading {
+  color: #ffffff;
+  font-size: 10.5pt;
+  font-weight: bold;
+}
+
+.usagebar-ov-chart-head {
+  spacing: 14px;
+  margin-bottom: 8px;
+}
+
+.usagebar-ov-chart {
+  spacing: 8px;
+}
+
+.usagebar-ov-axis {
+  min-width: 64px;
+}
+
+.usagebar-ov-tick {
+  color: rgba(200, 200, 206, 0.8);
+  font-size: 7.5pt;
+}
+
+.usagebar-ov-kpis {
+  margin-top: 20px;
+  border-top: 1px solid rgba(160, 160, 166, 0.25);
+  border-bottom: 1px solid rgba(160, 160, 166, 0.25);
+}
+
+.usagebar-ov-kpi {
+  padding: 12px 14px;
+  spacing: 3px;
+}
+
+.usagebar-ov-kpi-sep {
+  border-left: 1px solid rgba(160, 160, 166, 0.25);
+}
+
+.usagebar-ov-kpi-value {
+  color: #ffffff;
+  font-size: 14pt;
+}
+
+.usagebar-ov-breakdown {
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
+
+.usagebar-ov-table-head {
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(160, 160, 166, 0.35);
+}
+
+.usagebar-ov-table-row {
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(160, 160, 166, 0.15);
+}
+
+.usagebar-ov-more {
+  margin-top: 6px;
 }
 
 .usagebar-hint {

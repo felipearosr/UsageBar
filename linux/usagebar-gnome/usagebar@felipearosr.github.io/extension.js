@@ -593,6 +593,119 @@ function chartTooltipText(point) {
     return [day, ...lines].join('\n');
 }
 
+// ---------- cost overview (All-view summary + hover panel) ----------
+
+const OV_LEFT_WIDTH = 270;
+const OV_CHART_HEIGHT = 170;
+const OV_MAX_MODELS = 12;
+// Codex counts cache reads inside inputTokens; the other priced providers
+// (claude) report fresh input only.
+const INPUT_INCLUDES_CACHE = new Set(['codex']);
+
+function hexRGB(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex ?? '');
+    const n = m ? parseInt(m[1], 16) : 0x9a9996;
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function fmtDay(date) {
+    return new Date(`${date}T12:00:00`)
+        .toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+}
+
+function fmtPct(frac) {
+    return `${(Number.isFinite(frac) ? frac * 100 : 0).toFixed(1)}%`;
+}
+
+// Round an axis max up to 1, 2, 2.5 or 5 × 10^n.
+function niceCeil(v) {
+    if (!(v > 0))
+        return 1;
+    const pow = 10 ** Math.floor(Math.log10(v));
+    return [1, 2, 2.5, 5, 10].find(m => m * pow >= v) * pow;
+}
+
+// Catmull-Rom through pts as cubic Béziers. Control points are clamped to
+// [top, bot], so the curve (inside their convex hull) never dips below the
+// baseline around zero days.
+function smoothPath(cr, pts, top, bot) {
+    const c = y => Math.max(top, Math.min(bot, y));
+    cr.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[Math.max(0, i - 1)];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = pts[Math.min(pts.length - 1, i + 2)];
+        cr.curveTo(
+            p1[0] + (p2[0] - p0[0]) / 6, c(p1[1] + (p2[1] - p0[1]) / 6),
+            p2[0] - (p3[0] - p1[0]) / 6, c(p2[1] - (p3[1] - p1[1]) / 6),
+            p2[0], p2[1]);
+    }
+}
+
+// Cross-provider rollup of every priced cost report: total, per-provider
+// split with a daily cost series each, token KPIs and a per-model
+// breakdown. Null when no report carries a dollar figure.
+function costOverview(reports) {
+    const priced = (reports ?? []).filter(r =>
+        typeof (r.last30DaysCostUSD ?? r.totals?.totalCost) === 'number');
+    if (!priced.length)
+        return null;
+    const days = Math.max(...priced.map(r => r.historyDays ?? 30));
+    const now = new Date();
+    const dates = [];
+    for (let i = days - 1; i >= 0; i--) {
+        dates.push(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+            .toLocaleDateString('en-CA')); // local YYYY-MM-DD
+    }
+    const active = new Set();
+    const models = new Map();
+    const providers = priced.map(r => {
+        const t = r.totals ?? {};
+        const cached = t.cacheReadTokens ?? 0;
+        const input = t.inputTokens ?? 0;
+        const byDate = new Map();
+        for (const d of r.daily ?? []) {
+            byDate.set(d.date, d.totalCost ?? 0);
+            if ((d.totalTokens ?? 0) > 0)
+                active.add(d.date);
+            for (const m of d.modelBreakdowns ?? []) {
+                if (!m.modelName)
+                    continue;
+                const e = models.get(m.modelName) ??
+                    {name: m.modelName, provider: r.provider, cost: 0, tokens: 0};
+                e.cost += m.cost ?? 0;
+                e.tokens += m.totalTokens ?? 0;
+                models.set(m.modelName, e);
+            }
+        }
+        return {
+            provider: r.provider,
+            color: PROVIDER_META[r.provider]?.color ?? '#9a9996',
+            cost: r.last30DaysCostUSD ?? t.totalCost ?? 0,
+            tokens: r.last30DaysTokens ?? t.totalTokens ?? 0,
+            cached,
+            uncached: INPUT_INCLUDES_CACHE.has(r.provider) ? Math.max(0, input - cached) : input,
+            writes: t.cacheCreationTokens ?? 0,
+            output: t.outputTokens ?? 0,
+            series: dates.map(d => byDate.get(d) ?? 0),
+        };
+    }).sort((a, b) => b.cost - a.cost);
+    const sum = key => providers.reduce((a, p) => a + p[key], 0);
+    return {
+        dates,
+        providers,
+        cost: sum('cost'),
+        tokens: sum('tokens'),
+        cached: sum('cached'),
+        uncached: sum('uncached'),
+        writes: sum('writes'),
+        output: sum('output'),
+        activeDays: active.size,
+        models: [...models.values()].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
+    };
+}
+
 // ---------- provider status (public status-page incident feeds) ----------
 
 // Both feeds normalize to impact intervals {rank, name, start, end,
@@ -805,9 +918,11 @@ function creditsInfo(row) {
     };
 }
 
+const LEGEND_COLLAPSED_COUNT = 2;
+
 // Colored legend under the chart: one dot + summed metric per model,
-// largest first — every model, not just the top two (the old
-// "opus-5 $398.6 · fable-5 $24.3" text line). Colors match the stacked
+// largest first. Shows the top two in a row (plus a "+N" hint); hovering
+// expands it into a vertical list of every model. Colors match the stacked
 // bar segments above it. Null when no day carries a model breakdown.
 function buildModelLegend(points, colors) {
     const totals = new Map();
@@ -818,7 +933,12 @@ function buildModelLegend(points, colors) {
     if (!totals.size)
         return null;
     const useCost = points.some(p => p.cost !== null);
-    const legend = new St.BoxLayout({style_class: 'usagebar-models'});
+    const legend = new St.BoxLayout({
+        style_class: 'usagebar-models',
+        reactive: true,
+        track_hover: true,
+    });
+    const entries = [];
     for (const [name, total] of [...totals.entries()].sort((a, b) => b[1] - a[1])) {
         const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
         entry.add_child(new St.Widget({
@@ -835,7 +955,27 @@ function buildModelLegend(points, colors) {
             y_align: Clutter.ActorAlign.CENTER,
         }));
         legend.add_child(entry);
+        entries.push(entry);
     }
+    const hiddenCount = entries.length - LEGEND_COLLAPSED_COUNT;
+    if (hiddenCount <= 0)
+        return legend;
+    const more = new St.Label({
+        text: `+${hiddenCount}`,
+        style_class: 'usagebar-dim',
+        y_align: Clutter.ActorAlign.CENTER,
+    });
+    legend.add_child(more);
+    const sync = () => {
+        const expanded = legend.hover;
+        legend.vertical = expanded;
+        entries.forEach((e, i) => {
+            e.visible = expanded || i < LEGEND_COLLAPSED_COUNT;
+        });
+        more.visible = !expanded;
+    };
+    legend.connect('notify::hover', sync);
+    sync();
     return legend;
 }
 
@@ -966,7 +1106,6 @@ class UsageBarIndicator extends PanelMenu.Button {
         this._setPanelText([]);
 
         this.menu.box.add_style_class_name('usagebar-menu');
-
         // Header: title left, "updated Xs ago" then a refresh icon button right.
         const header = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         header.add_child(new St.Label({
@@ -1012,18 +1151,58 @@ class UsageBarIndicator extends PanelMenu.Button {
         // destroyed with the indicator.
         this._tooltip = new St.Label({style_class: 'usagebar-tooltip', visible: false});
         Main.uiGroup.add_child(this._tooltip);
+        // Full cost dashboard shown while the All-view spend row is
+        // hovered; same lifecycle as the tooltip.
+        // It sits outside the menu, and the menu's grab closes the menu on
+        // any press outside it — so while open the panel holds its own grab:
+        // presses outside it (or Escape) close just the panel.
+        this._costPanel = new St.Bin({visible: false});
+        this._costGrab = null;
+        Main.uiGroup.add_child(this._costPanel);
+        this._costPanel.connect('captured-event', (actor, event) => {
+            const type = event.type();
+            const outside = (type === Clutter.EventType.BUTTON_PRESS ||
+                type === Clutter.EventType.TOUCH_BEGIN) &&
+                !actor.contains(global.stage.get_event_actor(event));
+            const escape = type === Clutter.EventType.KEY_PRESS &&
+                event.get_key_symbol() === Clutter.KEY_Escape;
+            if (!outside && !escape)
+                return Clutter.EVENT_PROPAGATE;
+            this._closeCostPanel();
+            return Clutter.EVENT_STOP;
+        });
         this.menu.connect('open-state-changed', (_menu, open) => {
-            if (!open)
+            if (!open) {
                 this._tooltip?.hide();
+                this._closeCostPanel();
+            }
         });
         this.connect('destroy', () => {
             this._tooltip?.destroy();
             this._tooltip = null;
+            this._closeCostPanel();
+            this._costPanel?.destroy();
+            this._costPanel = null;
         });
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._settingsItem = new PopupMenu.PopupMenuItem('Settings');
         this.menu.addMenuItem(this._settingsItem);
+    }
+
+    _openCostPanel() {
+        if (!this._costPanel)
+            return;
+        this._costPanel.show();
+        this._costGrab ??= Main.pushModal(this._costPanel);
+    }
+
+    _closeCostPanel() {
+        if (this._costGrab) {
+            Main.popModal(this._costGrab);
+            this._costGrab = null;
+        }
+        this._costPanel?.hide();
     }
 
     _setPanelText(chips) {
@@ -1159,6 +1338,7 @@ export default class UsageBarExtension extends Extension {
         this._notified = new Map();
         this._costs = null;
         this._costFetchedAt = 0;
+        this._costInFlight = false;
         this._status = {};
         this._lastFetchAt = 0;
         this._fetchId = 0;
@@ -1408,6 +1588,10 @@ export default class UsageBarExtension extends Extension {
                 this._indicator.setStatus('');
                 this._scheduleFetch(FETCH_OK_SECS);
                 this._maybeNotify();
+                // Warm the cost scan in the background so the chart is
+                // ready before the menu opens (a cold scan takes tens of
+                // seconds). TTL-gated, so this is a no-op most polls.
+                this._fetchCost();
             }
             this._render();
         });
@@ -1480,16 +1664,41 @@ export default class UsageBarExtension extends Extension {
         this._notified = seen;
     }
 
+    // One /cost?provider= request per provider, in parallel. Scoped requests
+    // skip the per-project breakdown the unscoped /cost builds (unused here,
+    // and most of its scan time), and serve runs them concurrently instead
+    // of one provider after another. Each report renders as it lands, so a
+    // fast provider's bars don't wait on a slow one's scan.
     _fetchCost() {
+        if (this._costInFlight || !this._rows.length)
+            return;
         if (this._costs && (Date.now() - this._costFetchedAt) / 1000 < COST_TTL_SECS)
             return;
-        this._get('/cost', (reports, error) => {
-            if (!this._indicator || error)
-                return; // cost is best-effort
-            this._costs = reports;
-            this._costFetchedAt = Date.now();
-            this._render();
-        });
+        const providers = [...new Set(this._rows.map(r => r.provider))];
+        this._costInFlight = true;
+        let pending = providers.length;
+        for (const provider of providers) {
+            this._get(`/cost?provider=${encodeURIComponent(provider)}`, (reports, error) => {
+                if (!this._indicator)
+                    return; // disabled while in flight
+                if (!error && Array.isArray(reports)) { // cost is best-effort
+                    const next = [...(this._costs ?? [])];
+                    for (const report of reports) {
+                        const i = next.findIndex(c => c.provider === report.provider);
+                        if (i >= 0)
+                            next[i] = report;
+                        else
+                            next.push(report);
+                    }
+                    this._costs = next;
+                    this._render();
+                }
+                if (--pending === 0) {
+                    this._costInFlight = false;
+                    this._costFetchedAt = Date.now();
+                }
+            });
+        }
     }
 
     // Incident history for the status strips, straight from each provider's
@@ -1621,10 +1830,30 @@ export default class UsageBarExtension extends Extension {
                 style_class: 'usagebar-dim',
             }));
         } else if (selectedRow) {
+            this._indicator._closeCostPanel();
             detail.add_child(this._buildCard(selectedRow, {flat: true, showBackButton: true}));
         } else {
             // All view: compact cards, one per provider, with brand icon,
             // reset countdown, chevron navigation to detail view, and inline mini bars.
+            // Topped by the cross-provider spend row when any cost is priced.
+            const overview = costOverview(this._costs);
+            // An open dashboard survives re-renders, refreshed in place.
+            const holder = this._indicator._costPanel;
+            if (holder?.visible) {
+                holder.child?.destroy();
+                if (overview)
+                    holder.set_child(this._buildCostPanel(overview));
+                else
+                    this._indicator._closeCostPanel();
+            }
+            if (overview) {
+                detail.add_child(this._buildCostSummary(overview));
+                detail.add_child(new St.Widget({
+                    style_class: 'usagebar-separator',
+                    height: 1,
+                    x_expand: true,
+                }));
+            }
             rows.forEach((row, i) => {
                 if (i > 0)
                     detail.add_child(new St.Widget({
@@ -1663,8 +1892,8 @@ export default class UsageBarExtension extends Extension {
     }
 
     // Mini daily-trend bar chart (port of the macOS MiniUsageBars): equal
-    // bars bottom-aligned over a 1px baseline, height and opacity scaled
-    // linearly to the max value. When the report carries per-model
+    // bars bottom-aligned over a 1px baseline, height scaled linearly to
+    // the max value. When the report carries per-model
     // breakdowns, each bar is a stack of model-colored segments (largest
     // slice at the bottom); providers without pricing fall back to one
     // plain brand-colored bar.
@@ -1679,33 +1908,39 @@ export default class UsageBarExtension extends Extension {
             const barH = ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1;
             const stack = new St.BoxLayout({vertical: true});
             const segs = [];
-            if (!point.models.length) {
+            // Zero slices are dropped entirely.
+            const slices = point.models.filter(([, v]) => v > 0).reverse();
+            if (!slices.length) {
                 const bar = new St.Widget({style_class: 'usagebar-chart-bar'});
                 if (brand)
                     bar.set_style(`background-color: ${brand};`);
                 stack.add_child(bar);
                 segs.push({widget: bar, h: barH});
             } else {
-                // Children pack top-down, so walk the sorted slices in
-                // reverse — smallest on top, largest resting on the baseline.
-                // Cumulative rounding keeps the stack exactly barH tall.
-                const sum = point.models.reduce((a, [, v]) => a + v, 0);
-                let cumFrac = 0;
-                let prevPx = 0;
-                for (const [name, v] of [...point.models].reverse()) {
-                    cumFrac += sum > 0 ? v / sum : 0;
-                    const px = Math.round(cumFrac * barH);
-                    const h = Math.max(1, px - prevPx);
-                    prevPx = px;
+                // Children pack top-down, so the slices run reversed —
+                // smallest on top, largest resting on the baseline. Every
+                // slice is at least MIN_SEG_H tall with a SEG_GAP gap between
+                // neighbours; the stack grows past barH when the minimums
+                // don't fit.
+                const MIN_SEG_H = 2;
+                const SEG_GAP = 1;
+                const sum = slices.reduce((a, [, v]) => a + v, 0);
+                const avail = Math.max(barH - SEG_GAP * (slices.length - 1), MIN_SEG_H * slices.length);
+                const hs = slices.map(([, v]) => Math.max(MIN_SEG_H, Math.round(v / sum * avail)));
+                // Settle rounding and minimum-height drift on the tallest slice.
+                const big = hs.indexOf(Math.max(...hs));
+                hs[big] = Math.max(MIN_SEG_H, hs[big] + avail - hs.reduce((a, h) => a + h, 0));
+                stack.set_style(`spacing: ${SEG_GAP}px;`);
+                slices.forEach(([name], i) => {
                     const seg = new St.Widget({style_class: 'usagebar-chart-bar'});
-                    seg.set_style(`background-color: ${colors.get(name) ?? brand ?? '#9a9996'};`);
+                    // Only the topmost (first-packed) segment keeps the
+                    // rounded cap; the ones beneath it are square.
+                    const radius = i > 0 ? ' border-radius: 0;' : '';
+                    seg.set_style(`background-color: ${colors.get(name) ?? brand ?? '#9a9996'};${radius}`);
                     stack.add_child(seg);
-                    segs.push({widget: seg, h});
-                }
+                    segs.push({widget: seg, h: hs[i]});
+                });
             }
-            const opacity = Math.round(255 * (0.42 + 0.58 * Math.max(0.18, ratio)));
-            for (const s of segs)
-                s.widget.set_opacity(opacity);
             const slot = new St.BoxLayout({vertical: true, reactive: true, track_hover: true});
             slot.add_child(new St.Widget({y_expand: true}));
             slot.add_child(stack);
@@ -1751,6 +1986,318 @@ export default class UsageBarExtension extends Extension {
         let x = Math.round(ax + anchor.get_width() / 2 - tw / 2);
         x = Math.max(monitor.x + 4, Math.min(x, monitor.x + monitor.width - tw - 4));
         tip.set_position(x, Math.round(ay - th - 6));
+    }
+
+    _providerIcon(provider, size) {
+        const file = this.dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
+        const icon = new St.Icon({
+            icon_size: size,
+            y_align: Clutter.ActorAlign.CENTER,
+            ...(file.query_exists(null)
+                ? {gicon: new Gio.FileIcon({file})}
+                : {icon_name: 'application-x-executable-symbolic'}),
+        });
+        const color = PROVIDER_META[provider]?.color;
+        if (color)
+            icon.set_style(`color: ${color};`);
+        return icon;
+    }
+
+    // Compact spend row for the All view: window total, a provider-colored
+    // split bar and per-provider totals. Clicking it toggles the full cost
+    // dashboard beside the menu.
+    _buildCostSummary(ov) {
+        const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-summary'});
+        const head = new St.BoxLayout({x_expand: true});
+        head.add_child(new St.Label({
+            text: `Spend · last ${ov.dates.length} days`,
+            style_class: 'usagebar-compact-title',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        head.add_child(new St.Label({
+            text: fmtUSD(ov.cost),
+            style_class: 'usagebar-kpi-value',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        row.add_child(head);
+
+        const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
+        const segs = ov.providers.map(p => {
+            const seg = new St.Widget({height: 4, style: `background-color: ${p.color};`});
+            split.add_child(seg);
+            return [seg, p];
+        });
+        split.connect('notify::allocation', () => {
+            const w = split.allocation.get_width();
+            let used = 0;
+            segs.forEach(([seg, p], i) => {
+                const sw = i === segs.length - 1
+                    ? w - used
+                    : Math.round(ov.cost > 0 ? p.cost / ov.cost * w : w / segs.length);
+                used += sw;
+                if (seg.width !== sw)
+                    seg.set_width(Math.max(0, sw));
+            });
+        });
+        row.add_child(split);
+
+        const legend = new St.BoxLayout({style_class: 'usagebar-ov-summary-legend'});
+        for (const p of ov.providers) {
+            const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
+            entry.add_child(this._providerIcon(p.provider, 12));
+            entry.add_child(new St.Label({
+                text: `${this._displayName(p.provider)} ${fmtUSD(p.cost)}`,
+                style_class: 'usagebar-dim',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            legend.add_child(entry);
+        }
+        row.add_child(legend);
+
+        const button = new St.Button({
+            child: row,
+            x_expand: true,
+            can_focus: true,
+            style_class: 'usagebar-compact-row',
+        });
+        // Opens only: while the panel is open its grab turns a click here
+        // into an outside press that closes it.
+        button.connect('clicked', () => this._showCostPanel(button, ov));
+        return button;
+    }
+
+    _showCostPanel(anchor, ov) {
+        const holder = this._indicator?._costPanel;
+        if (!holder)
+            return;
+        holder.child?.destroy();
+        holder.set_child(this._buildCostPanel(ov));
+        Main.uiGroup.set_child_above_sibling(holder, null);
+        this._indicator._openCostPanel();
+        const [, pw] = holder.get_preferred_width(-1);
+        const [, ph] = holder.get_preferred_height(pw);
+        const [ax, ay] = anchor.get_transformed_position();
+        const monitor = Main.layoutManager.currentMonitor;
+        // Left of the menu when it fits, else to its right.
+        let x = ax - pw - 16;
+        if (x < monitor.x + 8)
+            x = Math.min(ax + anchor.get_width() + 16, monitor.x + monitor.width - pw - 8);
+        const y = Math.max(monitor.y + 8, Math.min(ay - 12, monitor.y + monitor.height - ph - 8));
+        holder.set_position(Math.round(x), Math.round(y));
+    }
+
+    // The hover dashboard: range, total + per-provider split, a smoothed
+    // daily cost line per provider, token KPIs and a per-model table.
+    _buildCostPanel(ov) {
+        const panel = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-panel'});
+        const header = new St.BoxLayout({style_class: 'usagebar-ov-header'});
+        const close = new St.Button({
+            style_class: 'usagebar-btn usagebar-ov-close',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            child: new St.Icon({icon_name: 'window-close-symbolic', style_class: 'usagebar-btn-icon'}),
+        });
+        close.connect('clicked', () => this._indicator?._closeCostPanel());
+        header.add_child(close);
+        header.add_child(new St.Label({
+            text: `${fmtDay(ov.dates[0])} to ${fmtDay(ov.dates[ov.dates.length - 1])}`,
+            style_class: 'usagebar-ov-range',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        panel.add_child(header);
+
+        const top = new St.BoxLayout({style_class: 'usagebar-ov-top'});
+        const left = new St.BoxLayout({vertical: true, width: OV_LEFT_WIDTH});
+        left.add_child(new St.Label({text: 'RAW TOKEN COST', style_class: 'usagebar-ov-caption'}));
+        left.add_child(new St.Label({text: `${fmtUSD(ov.cost)}*`, style_class: 'usagebar-ov-total'}));
+        left.add_child(new St.Label({text: '* if billed at full API rate', style_class: 'usagebar-ov-small'}));
+        for (const p of ov.providers) {
+            const share = ov.cost > 0 ? p.cost / ov.cost : 0;
+            const block = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-provider'});
+            const head = new St.BoxLayout({style_class: 'usagebar-ov-provider-head'});
+            head.add_child(this._providerIcon(p.provider, 16));
+            head.add_child(new St.Label({
+                text: this._displayName(p.provider),
+                style_class: 'usagebar-ov-text',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            head.add_child(new St.Label({
+                text: fmtUSD(p.cost),
+                style_class: 'usagebar-ov-text',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            block.add_child(head);
+            const track = new St.BoxLayout({width: OV_LEFT_WIDTH, height: 4, style_class: 'usagebar-ov-track'});
+            track.add_child(new St.Widget({
+                width: Math.round(share * OV_LEFT_WIDTH),
+                height: 4,
+                style: `background-color: ${p.color};`,
+            }));
+            block.add_child(track);
+            block.add_child(new St.Label({
+                text: `${fmtPct(share)} of cost · ${fmtTokens(p.tokens)} tokens`,
+                style_class: 'usagebar-ov-small',
+            }));
+            left.add_child(block);
+        }
+        top.add_child(left);
+
+        const right = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-right'});
+        const chartHead = new St.BoxLayout({style_class: 'usagebar-ov-chart-head'});
+        chartHead.add_child(new St.Label({
+            text: 'Daily cost',
+            style_class: 'usagebar-ov-heading',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        for (const p of ov.providers) {
+            const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
+            entry.add_child(this._providerIcon(p.provider, 12));
+            entry.add_child(new St.Label({
+                text: this._displayName(p.provider),
+                style_class: 'usagebar-ov-small',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            chartHead.add_child(entry);
+        }
+        right.add_child(chartHead);
+        right.add_child(this._buildCostLineChart(ov));
+        top.add_child(right);
+        panel.add_child(top);
+
+        const observed = ov.cached + ov.uncached + ov.writes;
+        const kpis = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-kpis'});
+        [
+            ['Processed tokens', fmtTokens(ov.tokens),
+                `${fmtTokens(Math.round(ov.tokens / Math.max(1, ov.activeDays)))} per active day`],
+            ['Cached input', fmtTokens(ov.cached), `${fmtPct(ov.cached / observed)} of observed input`],
+            ['Uncached input', fmtTokens(ov.uncached), `${fmtTokens(ov.writes)} cache writes`],
+            ['Output', fmtTokens(ov.output), `${fmtPct(ov.output / ov.tokens)} of processed`],
+        ].forEach(([title, value, sub], i) => {
+            const cell = new St.BoxLayout({
+                vertical: true,
+                x_expand: true,
+                style_class: i ? 'usagebar-ov-kpi usagebar-ov-kpi-sep' : 'usagebar-ov-kpi',
+            });
+            cell.add_child(new St.Label({text: title, style_class: 'usagebar-ov-small'}));
+            cell.add_child(new St.Label({text: value, style_class: 'usagebar-ov-kpi-value'}));
+            cell.add_child(new St.Label({text: sub, style_class: 'usagebar-ov-small'}));
+            kpis.add_child(cell);
+        });
+        panel.add_child(kpis);
+
+        panel.add_child(new St.Label({text: 'Breakdown', style_class: 'usagebar-ov-heading usagebar-ov-breakdown'}));
+        const tableRow = (cells, cls) => {
+            const r = new St.BoxLayout({style_class: cls});
+            for (const c of cells)
+                r.add_child(c);
+            return r;
+        };
+        const num = (text, cls = 'usagebar-ov-text') => new St.Label({
+            text,
+            width: 96,
+            style_class: `${cls} usagebar-ov-num`,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        panel.add_child(tableRow([
+            new St.Label({text: 'Model', style_class: 'usagebar-ov-small', x_expand: true}),
+            num('Cost', 'usagebar-ov-small'),
+            num('Share', 'usagebar-ov-small'),
+            num('Tokens', 'usagebar-ov-small'),
+        ], 'usagebar-ov-table-head'));
+        for (const m of ov.models.slice(0, OV_MAX_MODELS)) {
+            const name = new St.BoxLayout({x_expand: true, style_class: 'usagebar-model-entry'});
+            name.add_child(this._providerIcon(m.provider, 14));
+            name.add_child(new St.Label({
+                text: m.name,
+                style_class: 'usagebar-ov-text',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            panel.add_child(tableRow([
+                name,
+                num(fmtUSD(m.cost)),
+                num(fmtPct(ov.cost > 0 ? m.cost / ov.cost : 0), 'usagebar-ov-dimtext'),
+                num(fmtTokens(m.tokens), 'usagebar-ov-dimtext'),
+            ], 'usagebar-ov-table-row'));
+        }
+        const hidden = ov.models.length - OV_MAX_MODELS;
+        if (hidden > 0) {
+            panel.add_child(new St.Label({
+                text: `+${hidden} more models`,
+                style_class: 'usagebar-ov-small usagebar-ov-more',
+            }));
+        }
+        return panel;
+    }
+
+    // Daily cost as one smoothed, lightly filled line per provider over
+    // three gridlines (0, half, nice max), dates along the bottom.
+    _buildCostLineChart(ov) {
+        const max = niceCeil(Math.max(0, ...ov.providers.flatMap(p => p.series)));
+        const box = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-chart'});
+        // Axis labels sit on the gridlines: the plot's top/bottom insets
+        // (PAD) match half a label's height.
+        const PAD = 7;
+        const axis = new St.BoxLayout({vertical: true, height: OV_CHART_HEIGHT, style_class: 'usagebar-ov-axis'});
+        [fmtUSD(max), fmtUSD(max / 2), '0'].forEach((text, i) => {
+            if (i > 0)
+                axis.add_child(new St.Widget({y_expand: true}));
+            axis.add_child(new St.Label({text, style_class: 'usagebar-ov-tick usagebar-ov-num'}));
+        });
+        box.add_child(axis);
+
+        const plot = new St.BoxLayout({vertical: true, x_expand: true});
+        const area = new St.DrawingArea({height: OV_CHART_HEIGHT, x_expand: true});
+        area.connect('repaint', a => {
+            const cr = a.get_context();
+            const [w, h] = a.get_surface_size();
+            const n = ov.dates.length;
+            if (w <= 0 || h <= 0 || n < 2) {
+                cr.$dispose();
+                return;
+            }
+            const top = PAD;
+            const bot = h - PAD;
+            cr.setLineWidth(1);
+            cr.setSourceRGBA(1, 1, 1, 0.12);
+            for (const y of [top, (top + bot) / 2, bot]) {
+                cr.moveTo(0, Math.round(y) + 0.5);
+                cr.lineTo(w, Math.round(y) + 0.5);
+                cr.stroke();
+            }
+            // Smallest provider drawn first so the biggest line sits on top.
+            for (const p of [...ov.providers].reverse()) {
+                const pts = p.series.map((v, i) => [
+                    1 + i * (w - 2) / (n - 1),
+                    bot - Math.min(v / max, 1) * (bot - top),
+                ]);
+                const [r, g, b] = hexRGB(p.color);
+                smoothPath(cr, pts, top, bot);
+                cr.lineTo(pts[n - 1][0], bot);
+                cr.lineTo(pts[0][0], bot);
+                cr.closePath();
+                cr.setSourceRGBA(r, g, b, 0.16);
+                cr.fill();
+                smoothPath(cr, pts, top, bot);
+                cr.setSourceRGBA(r, g, b, 1);
+                cr.setLineWidth(2);
+                cr.stroke();
+            }
+            cr.$dispose();
+        });
+        plot.add_child(area);
+        const dates = new St.BoxLayout({x_expand: true});
+        const mid = ov.dates[Math.floor(ov.dates.length / 2)];
+        [ov.dates[0], mid, ov.dates[ov.dates.length - 1]].forEach((d, i) => {
+            if (i > 0)
+                dates.add_child(new St.Widget({x_expand: true}));
+            dates.add_child(new St.Label({text: fmtDay(d).toUpperCase(), style_class: 'usagebar-ov-tick'}));
+        });
+        plot.add_child(dates);
+        box.add_child(plot);
+        return box;
     }
 
     // Statuspage-style history strip: one same-height bar per day, colored
