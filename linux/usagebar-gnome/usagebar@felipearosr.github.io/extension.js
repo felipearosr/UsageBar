@@ -1503,10 +1503,13 @@ class UsageBarIndicator extends PanelMenu.Button {
             reactive: true,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        this._refreshButton.add_child(new St.Icon({
+        this._refreshIcon = new St.Icon({
             icon_name: 'view-refresh-symbolic',
             style_class: 'usagebar-btn-icon',
-        }));
+        });
+        this._refreshIcon.set_pivot_point(0.5, 0.5);
+        this._refreshButton.add_child(this._refreshIcon);
+        this._refreshAnimationId = 0;
         header.add_child(this._refreshButton);
         this.menu.addMenuItem(header);
 
@@ -1565,6 +1568,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             }
         });
         this.connect('destroy', () => {
+            this.setRefreshing(false);
             this._tooltip?.destroy();
             this._tooltip = null;
             this._modelTable?.destroy();
@@ -1606,15 +1610,17 @@ class UsageBarIndicator extends PanelMenu.Button {
 
         // Accelerators, live while the menu holds the keyboard grab.
         const accels = {
-            [Clutter.KEY_comma]: this._settingsItem,
-            [Clutter.KEY_q]: this._quitItem,
-            [Clutter.KEY_Q]: this._quitItem,
+            [Clutter.KEY_r]: event => this._refreshButton.emit('clicked', event),
+            [Clutter.KEY_R]: event => this._refreshButton.emit('clicked', event),
+            [Clutter.KEY_comma]: event => this._settingsItem.activate(event),
+            [Clutter.KEY_q]: event => this._quitItem.activate(event),
+            [Clutter.KEY_Q]: event => this._quitItem.activate(event),
         };
         this.menu.actor.connect('key-press-event', (_actor, event) => {
-            const item = accels[event.get_key_symbol()];
-            if (!item || !(event.get_state() & Clutter.ModifierType.CONTROL_MASK))
+            const activate = accels[event.get_key_symbol()];
+            if (!activate || !(event.get_state() & Clutter.ModifierType.CONTROL_MASK))
                 return Clutter.EVENT_PROPAGATE;
-            item.activate(event);
+            activate(event);
             return Clutter.EVENT_STOP;
         });
     }
@@ -1626,6 +1632,21 @@ class UsageBarIndicator extends PanelMenu.Button {
                 actor.add_style_class_name('usagebar-theme-system');
             else
                 actor.remove_style_class_name('usagebar-theme-system');
+        }
+    }
+
+    setRefreshing(refreshing) {
+        if (this._refreshAnimationId)
+            GLib.source_remove(this._refreshAnimationId);
+        this._refreshAnimationId = 0;
+        this._refreshIcon.rotation_angle_z = 0;
+        if (refreshing) {
+            this._refreshAnimationStartedAt = GLib.get_monotonic_time();
+            this._refreshAnimationId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+                const elapsed = (GLib.get_monotonic_time() - this._refreshAnimationStartedAt) / 1000;
+                this._refreshIcon.rotation_angle_z = elapsed % 650 / 650 * 360;
+                return GLib.SOURCE_CONTINUE;
+            });
         }
     }
 
@@ -2296,6 +2317,8 @@ export default class UsageBarExtension extends Extension {
             return;
         const generation = this._generation;
         this._fetchInFlight = true;
+        if (force)
+            this._indicator?.setRefreshing(true);
         // force asks serve to bypass its response cache (?fresh=1) so the
         // refresh button fetches live data even inside the cache TTL; older
         // CLIs without the flag just answer from cache as before.
@@ -2303,6 +2326,8 @@ export default class UsageBarExtension extends Extension {
             if (generation !== this._generation || !this._indicator)
                 return;
             this._fetchInFlight = false;
+            if (force)
+                this._indicator.setRefreshing(false);
             if (error) {
                 this._indicator.setStatus(`usage fetch failed: ${error.message}`);
                 this._scheduleFetch(FETCH_RETRY_SECS);
