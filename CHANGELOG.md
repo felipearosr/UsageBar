@@ -2,8 +2,12 @@
 
 ## 0.43.1 — Unreleased
 
+### Added
+- Linux development: add a nested-GNOME dashboard smoke test with deterministic fixtures, rendered-control assertions, interaction checks, logs, and a screenshot artifact.
+
 ### Fixed
 - OpenCode: fall back to local usage history in Auto mode when browser cookies are unavailable, so the provider reports usage on Linux instead of the macOS-only web error.
+- Linux cost dashboard: keep the day-range tabs on-screen by avoiding an overflowing multi-child header allocation.
 
 ## 0.43.0 — 2026-07-14
 

@@ -18,6 +18,7 @@ import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Soup from 'gi://Soup';
 import Clutter from 'gi://Clutter';
+import Shell from 'gi://Shell';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -1831,6 +1832,7 @@ export default class UsageBarExtension extends Extension {
         this._detailRenderKey = null;
         this._overviewView = null;
         this._windowCatalogSignature = null;
+        this._uiSmokeTimeoutIds = [];
         this._providerIconCache = new LifetimeLookupCache(provider => {
             const file = this.dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
             try {
@@ -1949,6 +1951,10 @@ export default class UsageBarExtension extends Extension {
         });
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
+        const uiSmokeResult = GLib.getenv('USAGEBAR_UI_SMOKE_RESULT');
+        if (uiSmokeResult)
+            this._scheduleUISmoke(uiSmokeResult);
+
         const binary = findBinary();
         if (!binary) {
             this._indicator.setStatus('codexbar CLI not found — install it from ' +
@@ -2053,6 +2059,9 @@ export default class UsageBarExtension extends Extension {
             GLib.source_remove(this._restartDebounceId);
             this._restartDebounceId = 0;
         }
+        for (const id of this._uiSmokeTimeoutIds ?? [])
+            GLib.source_remove(id);
+        this._uiSmokeTimeoutIds = [];
         if (this._configDebounceId) {
             GLib.source_remove(this._configDebounceId);
             this._configDebounceId = 0;
@@ -2472,6 +2481,156 @@ export default class UsageBarExtension extends Extension {
 
     _requestRender() {
         this._renderScheduler?.request();
+    }
+
+    _scheduleUISmoke(resultPath) {
+        const generation = this._generation;
+        const later = (delay, callback) => {
+            const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
+                this._uiSmokeTimeoutIds = this._uiSmokeTimeoutIds.filter(value => value !== id);
+                if (generation === this._generation && this._indicator)
+                    callback();
+                return GLib.SOURCE_REMOVE;
+            });
+            this._uiSmokeTimeoutIds.push(id);
+        };
+        const finish = (assertions, error = null) => {
+            const failures = assertions.filter(assertion => !assertion.ok);
+            const result = {
+                ok: !error && failures.length === 0,
+                assertions,
+                ...(error ? {error: error.message ?? String(error)} : {}),
+            };
+            const screenshotPath = GLib.build_filenamev([
+                GLib.path_get_dirname(resultPath),
+                'cost-dashboard.png',
+            ]);
+            try {
+                const stream = Gio.File.new_for_path(screenshotPath).replace(
+                    null,
+                    false,
+                    Gio.FileCreateFlags.REPLACE_DESTINATION,
+                    null);
+                const screenshot = new Shell.Screenshot();
+                screenshot.screenshot(false, stream, (source, screenshotResult) => {
+                    try {
+                        source.screenshot_finish(screenshotResult);
+                        stream.close(null);
+                    } catch (screenshotError) {
+                        result.ok = false;
+                        result.screenshotError = screenshotError.message ?? String(screenshotError);
+                    }
+                    GLib.file_set_contents(resultPath, JSON.stringify(result, null, 2));
+                    console.log(`usagebar-ui-smoke: ${result.ok ? 'PASS' : 'FAIL'}`);
+                });
+            } catch (screenshotError) {
+                result.ok = false;
+                result.screenshotError = screenshotError.message ?? String(screenshotError);
+                GLib.file_set_contents(resultPath, JSON.stringify(result, null, 2));
+                console.log('usagebar-ui-smoke: FAIL');
+            }
+        };
+        const assertion = (name, ok, details = {}) => ({name, ok: Boolean(ok), ...details});
+        const painted = (name, actor) => {
+            const [x, y] = actor?.get_transformed_position?.() ?? [0, 0];
+            const state = {
+                visible: actor?.visible ?? false,
+                mapped: actor?.mapped ?? false,
+                width: actor?.get_width?.() ?? 0,
+                height: actor?.get_height?.() ?? 0,
+                paintOpacity: actor?.get_paint_opacity?.() ?? 0,
+                x,
+                y,
+            };
+            const onStage = state.x < global.stage.width && state.y < global.stage.height &&
+                state.x + state.width > 0 && state.y + state.height > 0;
+            return assertion(name, state.visible && state.mapped && state.width > 0 &&
+                state.height > 0 && state.paintOpacity > 0 && onStage, {...state, onStage});
+        };
+
+        later(800, () => {
+            const assertions = [];
+            try {
+                const dates = buildCostDateRange(COST_HISTORY_DAYS);
+                const providers = ['claude', 'codex', 'opencodego', 'gemini', 'cursor'];
+                this._costs = providers.map((provider, providerIndex) => ({
+                    provider,
+                    source: 'qa-fixture',
+                    totals: {totalCost: 1},
+                    daily: dates.map((date, dateIndex) => {
+                        const active = dateIndex % (providerIndex + 3) === 0;
+                        const totalTokens = active ? (providerIndex + 1) * (dateIndex + 1) * 1000 : 0;
+                        const totalCost = active ? totalTokens / (providerIndex + 2) / 10000 : 0;
+                        return {
+                            date,
+                            totalCost,
+                            totalTokens,
+                            inputTokens: Math.round(totalTokens * 0.8),
+                            outputTokens: Math.round(totalTokens * 0.2),
+                            modelBreakdowns: active ? [{
+                                modelName: `qa-model-${providerIndex + 1}`,
+                                cost: totalCost,
+                                totalTokens,
+                            }] : [],
+                        };
+                    }),
+                }));
+                this._costVersion++;
+                this._costOverviewReports = {};
+                this._costOverviewCache.clear();
+                const overview = this._costOverview(30);
+                this._showCostPanel(this._indicator, overview, 30);
+
+                later(500, () => {
+                    try {
+                        const refs = this._indicator._costPanel.child?._usagebarSmoke;
+                        assertions.push(painted('cost panel is painted', refs?.panel));
+                        assertions.push(painted('dashboard header is painted', refs?.header));
+                        assertions.push(painted('day filter group is painted', refs?.rangeSwitch));
+                        for (const days of [1, 7, 30, 90])
+                            assertions.push(painted(`${days}-day filter is painted`, refs?.rangeButtons.get(days)));
+                        assertions.push(painted('Cost tab is painted', refs?.metricButtons.get('cost')));
+                        assertions.push(painted('Tokens tab is painted', refs?.metricButtons.get('tokens')));
+                        assertions.push(painted('Model tab is painted', refs?.modelButton));
+                        assertions.push(painted('Day tab is painted', refs?.dayButton));
+                        assertions.push(assertion('chart is capped at four providers',
+                            refs?.chartProviderCount === 4,
+                            {actual: refs?.chartProviderCount ?? null}));
+
+                        refs.metricButtons.get('tokens').emit('clicked', 1);
+                        refs.dayButton.emit('clicked', 1);
+                        later(150, () => {
+                            try {
+                                assertions.push(assertion('Tokens tab changes the chart',
+                                    refs.chartTitle.text === 'Daily tokens',
+                                    {actual: refs.chartTitle.text}));
+                                assertions.push(assertion('Day tab changes the breakdown',
+                                    refs.dayTable.visible && !refs.modelTable.visible));
+                                refs.rangeButtons.get(7).emit('clicked', 1);
+                                later(250, () => {
+                                    try {
+                                        const next = this._indicator._costPanel.child?._usagebarSmoke;
+                                        assertions.push(assertion('7-day filter changes the range',
+                                            this._indicator._costPanel._usagebarRangeDays === 7));
+                                        assertions.push(painted('selected 7-day filter remains painted',
+                                            next?.rangeButtons.get(7)));
+                                        finish(assertions);
+                                    } catch (error) {
+                                        finish(assertions, error);
+                                    }
+                                });
+                            } catch (error) {
+                                finish(assertions, error);
+                            }
+                        });
+                    } catch (error) {
+                        finish(assertions, error);
+                    }
+                });
+            } catch (error) {
+                finish(assertions, error);
+            }
+        });
     }
 
     _costOverview(rangeDays = 30) {
@@ -3036,30 +3195,14 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.hiddenCostChartProviders);
         const panel = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-panel'});
         const header = new St.BoxLayout({
-            x_expand: true,
-            height: 30,
             style_class: 'usagebar-ov-header',
+            x_align: Clutter.ActorAlign.END,
         });
-        const close = new St.Button({
-            style_class: 'usagebar-btn usagebar-ov-close',
-            can_focus: true,
-            y_align: Clutter.ActorAlign.CENTER,
-            child: new St.Icon({icon_name: 'window-close-symbolic', style_class: 'usagebar-btn-icon'}),
-        });
-        close.connect('clicked', () => this._indicator?._closeCostPanel());
-        header.add_child(close);
-        const firstDate = ov.dates[0];
-        const lastDate = ov.dates[ov.dates.length - 1];
-        header.add_child(new St.Label({
-            text: firstDate === lastDate ? fmtDay(lastDate) : `${fmtDay(firstDate)} to ${fmtDay(lastDate)}`,
-            style_class: 'usagebar-ov-range',
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
-        header.add_child(new St.Widget({x_expand: true}));
         const rangeSwitch = new St.BoxLayout({
             style_class: 'usagebar-ov-switch',
             y_align: Clutter.ActorAlign.CENTER,
         });
+        const rangeButtons = new Map();
         costRangeOptions(rangeDays).forEach(option => {
             const edge = option.edge ? ` usagebar-ov-switch-${option.edge}` : '';
             const button = new St.Button({
@@ -3074,6 +3217,7 @@ export default class UsageBarExtension extends Extension {
                 if (overview)
                     this._showCostPanel(anchor, overview, option.days);
             });
+            rangeButtons.set(option.days, button);
             rangeSwitch.add_child(button);
         });
         header.add_child(rangeSwitch);
@@ -3310,6 +3454,19 @@ export default class UsageBarExtension extends Extension {
         modelButton.connect('clicked', () => selectBreakdown('model'));
         dayButton.connect('clicked', () => selectBreakdown('day'));
         selectBreakdown('model');
+        panel._usagebarSmoke = {
+            panel,
+            header,
+            rangeSwitch,
+            rangeButtons,
+            metricButtons,
+            chartTitle,
+            modelButton,
+            dayButton,
+            modelTable,
+            dayTable,
+            chartProviderCount: chartProviders.length,
+        };
         return panel;
     }
 

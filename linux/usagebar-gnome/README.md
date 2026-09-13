@@ -56,8 +56,19 @@ node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.git
 The pure state tests cover idle-render coalescing and cancellation, bounded
 cost-cache invalidation (including empty results), keyed provider-row reuse and
 order changes, positive/negative icon lookup caching, and persistent update
-completion guidance. Nested GNOME fixture automation separately exercises the
-live extension’s warm opens, navigation, value updates, and cleanup.
+completion guidance.
+
+Run the rendered dashboard smoke test on a Linux host with GNOME Shell using:
+
+```bash
+make test-linux-ui
+```
+
+It starts an isolated headless GNOME session, injects deterministic cost data,
+opens the real dashboard, verifies that its range/metric/breakdown controls are
+painted on-screen, exercises each control family, checks the four-provider cap,
+and fails on extension JavaScript errors. Every run prints paths to its JSON
+result, GNOME log, and full-stage PNG screenshot under `/tmp`.
 
 ## Files
 
