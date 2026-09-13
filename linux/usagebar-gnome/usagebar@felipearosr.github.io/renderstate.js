@@ -74,6 +74,41 @@ export function buildDailyCostRows(dates, providers) {
     }).filter(row => row.totalCost > 0 || row.totalTokens > 0).reverse();
 }
 
+export function formatSummaryUSD(value) {
+    if (Math.abs(value) < 10) {
+        return `$${value.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        })}`;
+    }
+    return `$${Math.trunc(value).toLocaleString('en-US')}`;
+}
+
+// Keep provider colors visually distinct while preserving a continuous bar:
+// the BoxLayout supplies a one-pixel gap and these radii round only the two
+// outer ends. Zero-cost providers do not consume space in the bar.
+export function buildSummaryBarSegments(providers, totalCost, width) {
+    const visible = providers.filter(provider => provider.cost > 0);
+    if (visible.length === 0)
+        return [];
+
+    const available = Math.max(0, width - Math.max(0, visible.length - 1));
+    let used = 0;
+    return visible.map((provider, index) => {
+        const remaining = visible.length - index - 1;
+        const segmentWidth = index === visible.length - 1
+            ? available - used
+            : Math.max(2, Math.min(
+                Math.round(provider.cost / totalCost * available),
+                available - used - remaining * 2));
+        used += segmentWidth;
+        const radius = visible.length === 1 ? '2px'
+            : index === 0 ? '2px 0 0 2px'
+                : index === visible.length - 1 ? '0 2px 2px 0' : '0';
+        return {width: Math.max(0, segmentWidth), radius};
+    });
+}
+
 // Cost aggregation is cheap compared with the provider scan, but it is still
 // needlessly repeated by every panel tick and navigation event.  The caller
 // supplies a monotonically increasing revision when reports change.  The

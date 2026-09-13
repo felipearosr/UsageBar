@@ -3,13 +3,35 @@ import assert from 'node:assert/strict';
 
 import {
     buildDailyCostRows,
+    buildSummaryBarSegments,
     cliUpdateCompletionMessage,
     CostOverviewCache,
+    formatSummaryUSD,
     LifetimeLookupCache,
     reconcileKeyed,
     RenderScheduler,
     StatusMessageState,
 } from '../usagebar@felipearosr.github.io/renderstate.js';
+
+test('spend summary omits cents from values of at least ten dollars', () => {
+    assert.equal(formatSummaryUSD(9.99), '$9.99');
+    assert.equal(formatSummaryUSD(10), '$10');
+    assert.equal(formatSummaryUSD(8936.45), '$8,936');
+});
+
+test('spend summary bar reserves one-pixel separators and rounds outer ends', () => {
+    assert.deepEqual(buildSummaryBarSegments([
+        {cost: 30},
+        {cost: 20},
+        {cost: 0},
+    ], 50, 101), [
+        {width: 60, radius: '2px 0 0 2px'},
+        {width: 40, radius: '0 2px 2px 0'},
+    ]);
+    assert.deepEqual(buildSummaryBarSegments([{cost: 10}], 10, 101), [
+        {width: 101, radius: '2px'},
+    ]);
+});
 
 test('daily cost rows combine providers, omit idle dates, and sort newest first', () => {
     const rows = buildDailyCostRows(

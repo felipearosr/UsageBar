@@ -380,6 +380,7 @@
 }
 
 .usagebar-ov-split {
+  spacing: 1px;
   border-radius: 2px;
   background-color: rgba(160, 160, 166, 0.2);
 }

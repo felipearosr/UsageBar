@@ -29,8 +29,10 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {PROVIDER_META} from './providermeta.js';
 import {
     buildDailyCostRows,
+    buildSummaryBarSegments,
     cliUpdateCompletionMessage,
     CostOverviewCache,
+    formatSummaryUSD,
     LifetimeLookupCache,
     reconcileKeyed,
     RenderScheduler,
@@ -2935,28 +2937,27 @@ export default class UsageBarExtension extends Extension {
             y_align: Clutter.ActorAlign.CENTER,
         }));
         head.add_child(new St.Label({
-            text: fmtUSD(ov.cost),
+            text: formatSummaryUSD(ov.cost),
             style_class: 'usagebar-kpi-value',
             y_align: Clutter.ActorAlign.CENTER,
         }));
         row.add_child(head);
 
         const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
-        const segs = ov.providers.map(p => {
-            const seg = new St.Widget({height: 4, style: `background-color: ${p.color};`});
+        const visibleProviders = ov.providers.filter(provider => provider.cost > 0);
+        const segs = visibleProviders.map(provider => {
+            const seg = new St.Widget({height: 4});
             split.add_child(seg);
-            return [seg, p];
+            return [seg, provider];
         });
         split.connect('notify::allocation', () => {
             const w = split.allocation.get_width();
-            let used = 0;
-            segs.forEach(([seg, p], i) => {
-                const sw = i === segs.length - 1
-                    ? w - used
-                    : Math.round(ov.cost > 0 ? p.cost / ov.cost * w : w / segs.length);
-                used += sw;
-                if (seg.width !== sw)
-                    seg.set_width(Math.max(0, sw));
+            const layout = buildSummaryBarSegments(visibleProviders, ov.cost, w);
+            segs.forEach(([seg, provider], index) => {
+                const {width, radius} = layout[index];
+                seg.set_style(`background-color: ${provider.color}; border-radius: ${radius};`);
+                if (seg.width !== width)
+                    seg.set_width(width);
             });
         });
         row.add_child(split);
@@ -2966,7 +2967,7 @@ export default class UsageBarExtension extends Extension {
             const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
             entry.add_child(this._providerIcon(p.provider, 12));
             entry.add_child(new St.Label({
-                text: `${this._displayName(p.provider)} ${fmtUSD(p.cost)}`,
+                text: `${this._displayName(p.provider)} ${formatSummaryUSD(p.cost)}`,
                 style_class: 'usagebar-dim',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
