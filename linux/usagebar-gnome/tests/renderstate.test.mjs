@@ -13,10 +13,31 @@ import {
     LifetimeLookupCache,
     reconcileKeyed,
     RenderScheduler,
+    moveProviderOrder,
+    resolveProviderOrder,
     selectCostChartProviders,
     summarizeCostRange,
     StatusMessageState,
 } from '../usagebar@felipearosr.github.io/renderstate.js';
+
+test('provider display order preserves configured entries and appends new providers', () => {
+    assert.deepEqual(
+        resolveProviderOrder(['claude', 'codex', 'gemini'], ['codex', 'claude']),
+        ['codex', 'claude', 'gemini']);
+    assert.deepEqual(
+        resolveProviderOrder(
+            ['claude', 'codex', 'gemini'],
+            [],
+            {claude: 'Claude', codex: 'Codex', gemini: 'Gemini'}),
+        ['claude', 'codex', 'gemini']);
+});
+
+test('provider display order moves only within its bounds', () => {
+    assert.deepEqual(moveProviderOrder(['claude', 'codex', 'gemini'], 'codex', -1),
+        ['codex', 'claude', 'gemini']);
+    assert.deepEqual(moveProviderOrder(['claude', 'codex'], 'claude', -1),
+        ['claude', 'codex']);
+});
 
 test('cost chart uses at most four eligible providers', () => {
     const providers = [

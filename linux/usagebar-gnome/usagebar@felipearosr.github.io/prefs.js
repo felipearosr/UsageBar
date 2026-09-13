@@ -10,6 +10,7 @@ import Gtk from 'gi://Gtk';
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 import {PROVIDER_META} from './providermeta.js';
+import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
 
 function findBinary() {
@@ -147,6 +148,62 @@ function switchRow(settings, key, title, subtitle = '') {
     const row = plainSwitchRow(title, subtitle);
     settings.bind(key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
     return row;
+}
+
+function providerOrderGroup(settings, providers) {
+    const group = new Adw.PreferencesGroup({
+        title: 'Display order',
+        description: 'Controls provider order in the panel and overview. ' +
+            'Moving a provider turns off alphabetical sorting.',
+    });
+    let rows = [];
+    let rebuildId = 0;
+    const rebuild = () => {
+        for (const row of rows)
+            group.remove(row);
+        const names = Object.fromEntries(providers.map(provider => [provider.id, provider.name]));
+        const order = resolveProviderOrder(
+            providers.map(provider => provider.id),
+            settings.get_strv('provider-order'),
+            settings.get_boolean('sort-alphabetical') ? names : null);
+        const byId = new Map(providers.map(provider => [provider.id, provider]));
+        rows = order.map((id, index) => {
+            const provider = byId.get(id);
+            const row = new Adw.ActionRow({title: provider.name, subtitle: provider.id});
+            const addMoveButton = (direction, iconName, tooltip, sensitive) => {
+                const button = new Gtk.Button({
+                    icon_name: iconName,
+                    tooltip_text: tooltip,
+                    valign: Gtk.Align.CENTER,
+                    sensitive,
+                    css_classes: ['flat'],
+                });
+                button.connect('clicked', () => {
+                    settings.set_strv('provider-order', moveProviderOrder(order, id, direction));
+                    settings.set_boolean('sort-alphabetical', false);
+                });
+                row.add_suffix(button);
+            };
+            addMoveButton(-1, 'go-up-symbolic', `Move ${provider.name} up`, index > 0);
+            addMoveButton(1, 'go-down-symbolic', `Move ${provider.name} down`,
+                index < order.length - 1);
+            group.add(row);
+            return row;
+        });
+    };
+    const queueRebuild = () => {
+        if (rebuildId)
+            return;
+        rebuildId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            rebuildId = 0;
+            rebuild();
+            return GLib.SOURCE_REMOVE;
+        });
+    };
+    rebuild();
+    settings.connect('changed::provider-order', queueRebuild);
+    settings.connect('changed::sort-alphabetical', queueRebuild);
+    return group;
 }
 
 // Comma-separated percent list bound to an 'ai' key (e.g. "80, 95").
@@ -376,7 +433,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
                 : 'codexbar CLI not found — install it to manage providers.',
         });
         const byName = (a, b) => a.name.localeCompare(b.name);
-        const enabled = providers.filter(p => p.enabled).sort(byName);
+        const enabledInConfigOrder = providers.filter(p => p.enabled);
+        const enabled = [...enabledInConfigOrder].sort(byName);
         const disabled = providers.filter(p => !p.enabled).sort(byName);
         for (const p of enabled)
             catalog.add(this._providerToggleRow(binary, p));
@@ -390,6 +448,7 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             catalog.add(more);
         }
         page.add(catalog);
+        page.add(providerOrderGroup(settings, enabledInConfigOrder));
 
         const costChart = new Adw.PreferencesGroup({
             title: 'Cost chart',

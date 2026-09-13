@@ -136,10 +136,6 @@
   spacing: 10px;
 }
 
-.usagebar-btn-disabled {
-  opacity: 0.25;
-}
-
 .usagebar-card {
   background-color: rgba(128, 128, 128, 0.12);
   border-radius: 12px;

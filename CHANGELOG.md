@@ -8,6 +8,7 @@
 ### Fixed
 - OpenCode: fall back to local usage history in Auto mode when browser cookies are unavailable, so the provider reports usage on Linux instead of the macOS-only web error.
 - Linux cost dashboard: keep the day-range tabs on-screen by avoiding an overflowing multi-child header allocation.
+- Linux overview: move provider reordering from every overview row into a dedicated Providers settings group.
 
 ## 0.43.0 — 2026-07-14
 

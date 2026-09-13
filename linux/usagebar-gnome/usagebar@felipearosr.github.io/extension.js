@@ -2553,6 +2553,13 @@ export default class UsageBarExtension extends Extension {
             try {
                 const dates = buildCostDateRange(COST_HISTORY_DAYS);
                 const providers = ['claude', 'codex', 'opencodego', 'gemini', 'cursor'];
+                const compact = this._buildCompactRow({
+                    provider: 'claude',
+                    usage: {primary: {usedPercent: 25}},
+                });
+                assertions.push(assertion('overview row has only its details action',
+                    compact._usagebarRowState.actionsBox.get_n_children() === 1));
+                compact.destroy();
                 this._costs = providers.map((provider, providerIndex) => ({
                     provider,
                     source: 'qa-fixture',
@@ -2909,17 +2916,17 @@ export default class UsageBarExtension extends Extension {
             view.rows,
             rows,
             row => row.provider,
-            (row, index, total) => this._buildCompactRow(row, index, total)._usagebarRowState,
-            (state, row, index, total) => {
+            row => this._buildCompactRow(row)._usagebarRowState,
+            (state, row) => {
                 const structureKey = this._compactRowStructureKey(row);
                 if (state.structureKey !== structureKey) {
                     state.rowBox.destroy();
                     state.separator?.destroy();
-                    const replacement = this._buildCompactRow(row, index, total)._usagebarRowState;
-                    replacement.update(row, index, total);
+                    const replacement = this._buildCompactRow(row)._usagebarRowState;
+                    replacement.update(row);
                     return replacement;
                 }
-                state.update(row, index, total);
+                state.update(row);
             },
             state => {
                 state.rowBox.destroy();
@@ -2954,31 +2961,6 @@ export default class UsageBarExtension extends Extension {
                 view.rowsBox.add_child(child);
         }
         this._popupView = 'all';
-    }
-
-    _moveProvider(provider, direction) {
-        const rows = this._sortedRows();
-        const currentOrder = rows.map(r => r.provider);
-        const idx = currentOrder.indexOf(provider);
-        if (idx < 0)
-            return;
-        const targetIdx = idx + direction;
-        if (targetIdx < 0 || targetIdx >= currentOrder.length)
-            return;
-
-        const temp = currentOrder[idx];
-        currentOrder[idx] = currentOrder[targetIdx];
-        currentOrder[targetIdx] = temp;
-
-        DISPLAY.providerOrder = currentOrder;
-        if (this._settings) {
-            this._settings.set_strv('provider-order', currentOrder);
-            if (DISPLAY.sortAlphabetical) {
-                DISPLAY.sortAlphabetical = false;
-                this._settings.set_boolean('sort-alphabetical', false);
-            }
-        }
-        this._render();
     }
 
     // Mini daily-trend bar chart (port of the macOS MiniUsageBars): equal
@@ -4034,7 +4016,7 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
-    _buildCompactRow(row, index, totalCount) {
+    _buildCompactRow(row) {
         const rowBox = new St.BoxLayout({
             vertical: true,
             style_class: 'usagebar-compact-row',
@@ -4050,8 +4032,7 @@ export default class UsageBarExtension extends Extension {
             extraLabel: null,
             unavailableLabel: null,
             contentBtn: null,
-            upBtn: null,
-            downBtn: null,
+            actionsBox: null,
             nextBtn: null,
             separator: null,
         };
@@ -4202,49 +4183,12 @@ export default class UsageBarExtension extends Extension {
         contentBtn.set_child(contentBox);
         mainRow.add_child(contentBtn);
 
-        // Actions: [Up] [Down] [Next]
+        // Provider details navigation.
         const actionsBox = new St.BoxLayout({
             style_class: 'usagebar-compact-actions',
             y_align: Clutter.ActorAlign.CENTER,
         });
-
-        const upBtn = new St.Button({
-            style_class: index > 0
-                ? 'usagebar-btn usagebar-action-btn'
-                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled',
-            can_focus: index > 0,
-            reactive: index > 0,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        upBtn.add_child(new St.Icon({
-            icon_name: 'go-up-symbolic',
-            icon_size: 11,
-            style_class: 'usagebar-btn-icon',
-        }));
-        upBtn.connect('clicked', () => {
-            this._moveProvider(state.provider, -1);
-        });
-        state.upBtn = upBtn;
-        actionsBox.add_child(upBtn);
-
-        const downBtn = new St.Button({
-            style_class: index < totalCount - 1
-                ? 'usagebar-btn usagebar-action-btn'
-                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled',
-            can_focus: index < totalCount - 1,
-            reactive: index < totalCount - 1,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        downBtn.add_child(new St.Icon({
-            icon_name: 'go-down-symbolic',
-            icon_size: 11,
-            style_class: 'usagebar-btn-icon',
-        }));
-        downBtn.connect('clicked', () => {
-            this._moveProvider(state.provider, 1);
-        });
-        state.downBtn = downBtn;
-        actionsBox.add_child(downBtn);
+        state.actionsBox = actionsBox;
 
         const nextBtn = new St.Button({
             style_class: 'usagebar-btn usagebar-action-btn usagebar-next-btn',
@@ -4267,7 +4211,7 @@ export default class UsageBarExtension extends Extension {
         mainRow.add_child(actionsBox);
         rowBox.add_child(mainRow);
 
-        state.update = (next, nextIndex, nextTotalCount) => {
+        state.update = next => {
             state.provider = next.provider;
             state.titleLabel.text = this._displayName(next.provider);
             if (state.subtitleLabel) {
@@ -4302,18 +4246,6 @@ export default class UsageBarExtension extends Extension {
             });
             if (state.unavailableLabel)
                 state.unavailableLabel.visible = !!next.error && !items.length;
-            const upClass = nextIndex > 0
-                ? 'usagebar-btn usagebar-action-btn'
-                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled';
-            const downClass = nextIndex < nextTotalCount - 1
-                ? 'usagebar-btn usagebar-action-btn'
-                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled';
-            state.upBtn.style_class = upClass;
-            state.upBtn.can_focus = nextIndex > 0;
-            state.upBtn.reactive = nextIndex > 0;
-            state.downBtn.style_class = downClass;
-            state.downBtn.can_focus = nextIndex < nextTotalCount - 1;
-            state.downBtn.reactive = nextIndex < nextTotalCount - 1;
             if (state.extraLabel)
                 state.extraLabel.text = `+${items.extraCount}`;
         };

@@ -106,6 +106,30 @@ export function selectCostChartProviders(providers, hiddenProviders = [], limit 
         .slice(0, Math.max(0, Math.trunc(limit)));
 }
 
+export function resolveProviderOrder(providerIds, explicitOrder = [], alphabeticalNames = null) {
+    const ids = [...new Set(providerIds)];
+    if (alphabeticalNames) {
+        return ids.sort((a, b) => (alphabeticalNames[a] ?? a)
+            .localeCompare(alphabeticalNames[b] ?? b));
+    }
+    const rank = new Map(explicitOrder.map((provider, index) => [provider, index]));
+    return ids.sort((a, b) => {
+        const aRank = rank.get(a) ?? Number.MAX_SAFE_INTEGER;
+        const bRank = rank.get(b) ?? Number.MAX_SAFE_INTEGER;
+        return aRank - bRank;
+    });
+}
+
+export function moveProviderOrder(providerIds, provider, direction) {
+    const next = [...providerIds];
+    const index = next.indexOf(provider);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= next.length)
+        return next;
+    [next[index], next[target]] = [next[target], next[index]];
+    return next;
+}
+
 export function summarizeCostRange(daily, dates) {
     const included = new Set(dates);
     const selected = daily.filter(day => included.has(day.date));
