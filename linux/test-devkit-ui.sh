@@ -18,7 +18,7 @@ ln -sfn "$extension_dir" \
     "$HOME/.local/share/gnome-shell/extensions/usagebar@felipearosr.github.io"
 printf 'user-db:codexbar_ui_smoke\n' > "$dconf_profile"
 
-if ! dbus-run-session -- bash -c '
+if ! GSETTINGS_SCHEMA_DIR="$extension_dir/schemas" dbus-run-session -- bash -c '
     set -euo pipefail
     result_path=$1
     log_path=$2
@@ -27,6 +27,7 @@ if ! dbus-run-session -- bash -c '
 
     export DCONF_PROFILE=$dconf_profile
     export USAGEBAR_UI_SMOKE_RESULT=$result_path
+    gsettings set org.gnome.shell.extensions.usagebar app-theme system
     gsettings set org.gnome.shell enabled-extensions \
         "[\"usagebar@felipearosr.github.io\"]"
 

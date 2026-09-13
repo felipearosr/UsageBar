@@ -326,6 +326,23 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             icon_name: 'preferences-system-symbolic',
         });
 
+        const appearance = new Adw.PreferencesGroup({
+            title: 'Appearance',
+            description: 'Choose how UsageBar fits your desktop.',
+        });
+        const themeRow = new Adw.ComboRow({
+            title: 'Theme',
+            subtitle: 'System follows the GNOME Shell colors',
+            model: Gtk.StringList.new(['CodexBar dark', 'System']),
+        });
+        const THEMES = ['codexbar', 'system'];
+        themeRow.selected = Math.max(0, THEMES.indexOf(settings.get_string('app-theme')));
+        themeRow.connect('notify::selected', () => {
+            settings.set_string('app-theme', THEMES[themeRow.selected]);
+        });
+        appearance.add(themeRow);
+        general.add(appearance);
+
         const panel = new Adw.PreferencesGroup({
             title: 'Panel',
             description: 'How usage chips appear in the top bar.',

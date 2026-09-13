@@ -466,6 +466,7 @@ function agoText(secs) {
 // Mutable display preferences, refreshed from GSettings on every settings
 // change (same pattern as THRESHOLDS) so render paths never hit GSettings.
 const DISPLAY = {
+    appTheme: 'codexbar',
     absoluteResets: false,
     barsShowUsed: false,
     sortAlphabetical: false,
@@ -1596,6 +1597,16 @@ class UsageBarIndicator extends PanelMenu.Button {
         });
     }
 
+    setAppTheme(theme) {
+        const system = theme === 'system';
+        for (const actor of [this.menu.box, this._tooltip, this._costPanel]) {
+            if (system)
+                actor.add_style_class_name('usagebar-theme-system');
+            else
+                actor.remove_style_class_name('usagebar-theme-system');
+        }
+    }
+
     setUpdateReady(version) {
         this._updateItem.visible = !!version;
         if (version)
@@ -1856,6 +1867,7 @@ export default class UsageBarExtension extends Extension {
 
         this._settings = this.getSettings();
         const applySettings = () => {
+            DISPLAY.appTheme = this._settings.get_string('app-theme');
             THRESHOLDS.warn = this._settings.get_int('warn-threshold');
             THRESHOLDS.crit = this._settings.get_int('crit-threshold');
             DISPLAY.absoluteResets = this._settings.get_boolean('absolute-reset-times');
@@ -1920,11 +1932,14 @@ export default class UsageBarExtension extends Extension {
                         return GLib.SOURCE_REMOVE;
                     });
             }
+            if (key === 'app-theme')
+                this._indicator?.setAppTheme(DISPLAY.appTheme);
             if (DISPLAY_KEYS.has(key))
                 this._requestRender();
         });
 
         this._indicator = new Indicator(this.dir);
+        this._indicator.setAppTheme(DISPLAY.appTheme);
         this._indicator._settingsItem.connect('activate', () => this.openPreferences());
         this._indicator._refreshButton.connect('clicked', () => this._fetchUsage(true));
         this._indicator._refreshItem.connect('activate', () => this._fetchUsage(true));
@@ -2591,6 +2606,10 @@ export default class UsageBarExtension extends Extension {
                 later(500, () => {
                     try {
                         const refs = this._indicator._costPanel.child?._usagebarSmoke;
+                        assertions.push(assertion('system theme is applied to the popover',
+                            this._indicator.menu.box.has_style_class_name('usagebar-theme-system')));
+                        assertions.push(assertion('system theme is applied to the cost panel',
+                            this._indicator._costPanel.has_style_class_name('usagebar-theme-system')));
                         assertions.push(painted('cost panel is painted', refs?.panel));
                         assertions.push(painted('dashboard header is painted', refs?.header));
                         assertions.push(painted('day filter group is painted', refs?.rangeSwitch));

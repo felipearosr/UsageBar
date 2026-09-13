@@ -567,3 +567,53 @@
   background-color: rgba(53, 132, 228, 0.25);
   color: #9cc6f5;
 }
+
+/* System appearance keeps the CodexBar structure and provider colors, but
+   lets GNOME Shell supply the surface and text colors. On the stock dark
+   shell theme this produces the quieter neutral-grey popover. */
+.usagebar-theme-system.usagebar-menu {
+  background-color: -st-background-color;
+  color: -st-foreground-color;
+}
+
+.usagebar-theme-system.usagebar-ov-panel,
+.usagebar-theme-system.usagebar-tooltip {
+  background-color: -st-background-color;
+  border-color: -st-border-color;
+  color: -st-foreground-color;
+}
+
+.usagebar-theme-system .usagebar-title,
+.usagebar-theme-system .usagebar-compact-title,
+.usagebar-theme-system .usagebar-card-title,
+.usagebar-theme-system .usagebar-window-label,
+.usagebar-theme-system .usagebar-credits-count,
+.usagebar-theme-system .usagebar-kpi-value,
+.usagebar-theme-system .usagebar-ov-total,
+.usagebar-theme-system .usagebar-ov-text,
+.usagebar-theme-system .usagebar-ov-heading,
+.usagebar-theme-system .usagebar-ov-kpi-value,
+.usagebar-theme-system.usagebar-tooltip {
+  color: -st-foreground-color;
+}
+
+.usagebar-theme-system .usagebar-dim,
+.usagebar-theme-system .usagebar-accel,
+.usagebar-theme-system .usagebar-ov-caption,
+.usagebar-theme-system .usagebar-ov-small,
+.usagebar-theme-system .usagebar-ov-dimtext,
+.usagebar-theme-system .usagebar-ov-tick {
+  color: -st-foreground-color;
+  opacity: 0.7;
+}
+
+.usagebar-theme-system .usagebar-btn,
+.usagebar-theme-system .usagebar-ov-switch-button,
+.usagebar-theme-system .usagebar-btn:hover,
+.usagebar-theme-system .usagebar-btn:focus,
+.usagebar-theme-system .usagebar-btn:active,
+.usagebar-theme-system .usagebar-ov-switch-button:hover,
+.usagebar-theme-system .usagebar-ov-switch-button:focus,
+.usagebar-theme-system .usagebar-ov-switch-button.selected {
+  color: -st-foreground-color;
+}
