@@ -32,12 +32,14 @@ import {
     buildDailyCostRows,
     buildSummaryBarSegments,
     cliUpdateCompletionMessage,
+    costChartMetricOptions,
     CostOverviewCache,
     costRangeOptions,
     formatSummaryUSD,
     LifetimeLookupCache,
     reconcileKeyed,
     RenderScheduler,
+    selectCostChartProviders,
     summarizeCostRange,
     StatusMessageState,
 } from './renderstate.js';
@@ -474,6 +476,7 @@ const DISPLAY = {
     antigravityOverviewGemini: true,
     hiddenChips: new Set(),
     hiddenWindows: new Set(),
+    hiddenCostChartProviders: new Set(),
 };
 
 function resetText(w) {
@@ -1864,6 +1867,8 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.antigravityOverviewGemini = this._settings.get_boolean('antigravity-overview-gemini');
             DISPLAY.hiddenChips = new Set(this._settings.get_strv('hidden-chips'));
             DISPLAY.hiddenWindows = new Set(this._settings.get_strv('hidden-windows'));
+            DISPLAY.hiddenCostChartProviders = new Set(
+                this._settings.get_strv('hidden-cost-chart-providers'));
         };
         applySettings();
         this._statusScopes = scopeMap(this._settings);
@@ -1875,6 +1880,7 @@ export default class UsageBarExtension extends Extension {
             'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
             'show-reset-when-exhausted', 'chip-display-mode',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
+            'hidden-cost-chart-providers',
             'status-scopes', 'status-checks-enabled',
         ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
@@ -2665,7 +2671,8 @@ export default class UsageBarExtension extends Extension {
         const names = overview.providers
             .map(provider => `${provider.provider}:${this._displayName(provider.provider)}`)
             .join('|');
-        return `${this._costVersion}:${localDateKey()}:${this._namesVersion}:${names}`;
+        const hiddenChartProviders = [...DISPLAY.hiddenCostChartProviders].sort().join(',');
+        return `${this._costVersion}:${localDateKey()}:${this._namesVersion}:${names}:${hiddenChartProviders}`;
     }
 
     _renderOverview(rows) {
@@ -3024,6 +3031,9 @@ export default class UsageBarExtension extends Extension {
     // The hover dashboard: range, total + per-provider split, a smoothed
     // daily cost line per provider, token KPIs and a per-model table.
     _buildCostPanel(ov, anchor, rangeDays) {
+        const chartProviders = selectCostChartProviders(
+            ov.providers,
+            DISPLAY.hiddenCostChartProviders);
         const panel = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-panel'});
         const header = new St.BoxLayout({
             x_expand: true,
@@ -3074,7 +3084,7 @@ export default class UsageBarExtension extends Extension {
         left.add_child(new St.Label({text: 'RAW TOKEN COST', style_class: 'usagebar-ov-caption'}));
         left.add_child(new St.Label({text: `${fmtUSD(ov.cost)}*`, style_class: 'usagebar-ov-total'}));
         left.add_child(new St.Label({text: '* if billed at full API rate', style_class: 'usagebar-ov-small'}));
-        for (const p of ov.providers) {
+        for (const p of chartProviders) {
             const share = ov.cost > 0 ? p.cost / ov.cost : 0;
             const block = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-provider'});
             const head = new St.BoxLayout({style_class: 'usagebar-ov-provider-head'});
@@ -3108,13 +3118,29 @@ export default class UsageBarExtension extends Extension {
 
         const right = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-right'});
         const chartHead = new St.BoxLayout({style_class: 'usagebar-ov-chart-head'});
-        chartHead.add_child(new St.Label({
+        const chartTitle = new St.Label({
             text: 'Daily cost',
             style_class: 'usagebar-ov-heading',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
-        }));
-        for (const p of ov.providers) {
+        });
+        chartHead.add_child(chartTitle);
+        const metricSwitch = new St.BoxLayout({
+            style_class: 'usagebar-ov-switch',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const metricButtons = new Map();
+        costChartMetricOptions().forEach(option => {
+            const button = new St.Button({
+                label: option.label,
+                can_focus: true,
+                style_class: `usagebar-ov-switch-button usagebar-ov-switch-${option.edge}`,
+            });
+            metricButtons.set(option.metric, button);
+            metricSwitch.add_child(button);
+        });
+        chartHead.add_child(metricSwitch);
+        for (const p of chartProviders) {
             const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
             entry.add_child(this._providerIcon(p.provider, 12));
             entry.add_child(new St.Label({
@@ -3125,7 +3151,32 @@ export default class UsageBarExtension extends Extension {
             chartHead.add_child(entry);
         }
         right.add_child(chartHead);
-        right.add_child(this._buildCostLineChart(ov));
+        const chartHost = new St.BoxLayout({vertical: true, x_expand: true});
+        right.add_child(chartHost);
+        const selectMetric = metric => {
+            const options = costChartMetricOptions(metric);
+            const selected = options.find(option => option.selected);
+            chartTitle.text = selected.title;
+            chartHost.destroy_all_children();
+            if (chartProviders.length) {
+                chartHost.add_child(this._buildCostLineChart(ov, selected, chartProviders));
+            } else {
+                chartHost.add_child(new St.Label({
+                    text: 'Choose providers in Settings → Providers',
+                    style_class: 'usagebar-ov-small usagebar-ov-chart-empty',
+                    x_align: Clutter.ActorAlign.CENTER,
+                    x_expand: true,
+                }));
+            }
+            for (const option of options) {
+                metricButtons.get(option.metric).set_style_class_name(
+                    `usagebar-ov-switch-button usagebar-ov-switch-${option.edge}` +
+                    `${option.selected ? ' selected' : ''}`);
+            }
+        };
+        for (const [metric, button] of metricButtons)
+            button.connect('clicked', () => selectMetric(metric));
+        selectMetric('cost');
         top.add_child(right);
         panel.add_child(top);
 
@@ -3264,14 +3315,15 @@ export default class UsageBarExtension extends Extension {
 
     // Daily cost as one smoothed, lightly filled line per provider over
     // three gridlines (0, half, nice max), dates along the bottom.
-    _buildCostLineChart(ov) {
-        const max = niceCeil(Math.max(0, ...ov.providers.flatMap(p => p.series)));
+    _buildCostLineChart(ov, metric, providers) {
+        const max = niceCeil(Math.max(0, ...providers.flatMap(p => p[metric.seriesKey])));
+        const formatValue = metric.metric === 'tokens' ? fmtTokens : fmtUSD;
         const box = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-chart'});
         // Axis labels sit on the gridlines: the plot's top/bottom insets
         // (PAD) match half a label's height.
         const PAD = 7;
         const axis = new St.BoxLayout({vertical: true, height: OV_CHART_HEIGHT, style_class: 'usagebar-ov-axis'});
-        [fmtUSD(max), fmtUSD(max / 2), '0'].forEach((text, i) => {
+        [formatValue(max), formatValue(max / 2), '0'].forEach((text, i) => {
             if (i > 0)
                 axis.add_child(new St.Widget({y_expand: true}));
             axis.add_child(new St.Label({text, style_class: 'usagebar-ov-tick usagebar-ov-num'}));
@@ -3298,16 +3350,16 @@ export default class UsageBarExtension extends Extension {
                 cr.stroke();
             }
             // Smallest provider drawn first so the biggest line sits on top.
-            for (const p of [...ov.providers].reverse()) {
+            for (const p of [...providers].reverse()) {
                 if (n === 1) {
                     const [r, g, b] = hexRGB(p.color);
-                    const y = bot - Math.min(p.series[0] / max, 1) * (bot - top);
+                    const y = bot - Math.min(p[metric.seriesKey][0] / max, 1) * (bot - top);
                     cr.arc(w / 2, y, 3, 0, Math.PI * 2);
                     cr.setSourceRGBA(r, g, b, 1);
                     cr.fill();
                     continue;
                 }
-                const pts = p.series.map((v, i) => [
+                const pts = p[metric.seriesKey].map((v, i) => [
                     1 + i * (w - 2) / (n - 1),
                     bot - Math.min(v / max, 1) * (bot - top),
                 ]);

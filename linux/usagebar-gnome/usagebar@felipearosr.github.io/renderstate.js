@@ -80,6 +80,32 @@ export function costRangeOptions(selectedDays = 30) {
     ].map(option => ({...option, selected: option.days === selectedDays}));
 }
 
+export function costChartMetricOptions(selectedMetric = 'cost') {
+    return [
+        {
+            metric: 'cost',
+            label: 'COST',
+            title: 'Daily cost',
+            seriesKey: 'series',
+            edge: 'left',
+        },
+        {
+            metric: 'tokens',
+            label: 'TOKENS',
+            title: 'Daily tokens',
+            seriesKey: 'tokenSeries',
+            edge: 'right',
+        },
+    ].map(option => ({...option, selected: option.metric === selectedMetric}));
+}
+
+export function selectCostChartProviders(providers, hiddenProviders = [], limit = 4) {
+    const hidden = new Set(hiddenProviders);
+    return providers
+        .filter(provider => !hidden.has(provider.provider))
+        .slice(0, Math.max(0, Math.trunc(limit)));
+}
+
 export function summarizeCostRange(daily, dates) {
     const included = new Set(dates);
     const selected = daily.filter(day => included.has(day.date));

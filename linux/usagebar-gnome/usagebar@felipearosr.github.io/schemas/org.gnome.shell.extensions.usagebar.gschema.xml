@@ -60,6 +60,11 @@
       <summary>Usage bars hidden from the popover</summary>
       <description>Bar ids ("provider:key") whose usage bar is removed from the card.</description>
     </key>
+    <key name="hidden-cost-chart-providers" type="as">
+      <default>[]</default>
+      <summary>Providers excluded from the cost chart</summary>
+      <description>Provider ids excluded from the cost chart; at most four eligible providers are plotted.</description>
+    </key>
     <key name="known-windows" type="as">
       <default>[]</default>
       <summary>Usage bars discovered at render time</summary>

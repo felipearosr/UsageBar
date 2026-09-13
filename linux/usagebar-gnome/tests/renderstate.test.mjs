@@ -7,14 +7,53 @@ import {
     buildSummaryBarSegments,
     cliUpdateCompletionMessage,
     CostOverviewCache,
+    costChartMetricOptions,
     costRangeOptions,
     formatSummaryUSD,
     LifetimeLookupCache,
     reconcileKeyed,
     RenderScheduler,
+    selectCostChartProviders,
     summarizeCostRange,
     StatusMessageState,
 } from '../usagebar@felipearosr.github.io/renderstate.js';
+
+test('cost chart uses at most four eligible providers', () => {
+    const providers = [
+        {provider: 'claude', cost: 50},
+        {provider: 'codex', cost: 40},
+        {provider: 'opencode', cost: 30},
+        {provider: 'gemini', cost: 20},
+        {provider: 'cursor', cost: 10},
+        {provider: 'amp', cost: 5},
+    ];
+
+    assert.deepEqual(
+        selectCostChartProviders(providers, ['codex']).map(provider => provider.provider),
+        ['claude', 'opencode', 'gemini', 'cursor']);
+    assert.deepEqual(selectCostChartProviders(providers, [], 2), providers.slice(0, 2));
+});
+
+test('cost chart metric control selects matching series and title', () => {
+    assert.deepEqual(costChartMetricOptions('tokens'), [
+        {
+            metric: 'cost',
+            label: 'COST',
+            title: 'Daily cost',
+            seriesKey: 'series',
+            edge: 'left',
+            selected: false,
+        },
+        {
+            metric: 'tokens',
+            label: 'TOKENS',
+            title: 'Daily tokens',
+            seriesKey: 'tokenSeries',
+            edge: 'right',
+            selected: true,
+        },
+    ]);
+});
 
 test('cost range control exposes all tabs and selects thirty days by default', () => {
     assert.deepEqual(costRangeOptions(30), [

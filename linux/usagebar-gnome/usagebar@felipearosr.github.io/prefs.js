@@ -391,6 +391,19 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         }
         page.add(catalog);
 
+        const costChart = new Adw.PreferencesGroup({
+            title: 'Cost chart',
+            description: 'Plot up to four eligible providers. When more are enabled, ' +
+                'the providers with the highest cost appear.',
+        });
+        for (const {id, name} of enabled) {
+            costChart.add(strvMemberRow(settings, 'hidden-cost-chart-providers', id, {
+                title: name,
+                subtitle: 'Show when cost data is available',
+            }));
+        }
+        page.add(costChart);
+
         // Per-provider display settings, enabled providers only.
         for (const {id, name} of enabled) {
             const group = new Adw.PreferencesGroup({title: name});
