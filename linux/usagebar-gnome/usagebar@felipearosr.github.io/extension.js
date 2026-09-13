@@ -28,6 +28,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {PROVIDER_META} from './providermeta.js';
 import {
+    buildCostDateRange,
     buildDailyCostRows,
     buildSummaryBarSegments,
     cliUpdateCompletionMessage,
@@ -36,6 +37,7 @@ import {
     LifetimeLookupCache,
     reconcileKeyed,
     RenderScheduler,
+    summarizeCostRange,
     StatusMessageState,
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
@@ -45,6 +47,7 @@ const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
 const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
+const COST_HISTORY_DAYS = 90;
 const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
 const STATUS_DAYS = 45;        // history strip length, like statuspage.io
 const STATUS_BAR_HEIGHT = 18;
@@ -614,8 +617,6 @@ function chartTooltipText(point) {
 // historyDays local days). Needs python3's stdlib sqlite3 only.
 
 const LOCAL_COST_PROVIDERS = new Set(['opencodego']);
-const LOCAL_COST_DAYS = 30;
-
 const OPENCODE_GO_COST_PY = `
 import datetime, json, sqlite3, sys
 path, days = sys.argv[1], int(sys.argv[2])
@@ -739,27 +740,22 @@ function isPricedCostReport(report) {
 // Cross-provider rollup of every priced cost report: total, per-provider
 // split with a daily cost series each, token KPIs and a per-model
 // breakdown. Null when no report carries a dollar figure.
-function costOverview(reports) {
+function costOverview(reports, rangeDays = 30) {
     const priced = (reports ?? []).filter(r =>
         typeof (r.last30DaysCostUSD ?? r.totals?.totalCost) === 'number');
     if (!priced.length)
         return null;
-    const days = Math.max(...priced.map(r => r.historyDays ?? 30));
-    const now = new Date();
-    const dates = [];
-    for (let i = days - 1; i >= 0; i--) {
-        dates.push(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
-            .toLocaleDateString('en-CA')); // local YYYY-MM-DD
-    }
+    const dates = buildCostDateRange(rangeDays);
     const active = new Set();
     const models = new Map();
     const providers = priced.map(r => {
-        const t = r.totals ?? {};
-        const cached = t.cacheReadTokens ?? 0;
-        const input = t.inputTokens ?? 0;
+        const range = summarizeCostRange(r.daily ?? [], dates);
+        const daily = range.daily;
+        const cached = range.cached;
+        const input = range.input;
         const byDate = new Map();
         const tokensByDate = new Map();
-        for (const d of r.daily ?? []) {
+        for (const d of daily) {
             byDate.set(d.date, d.totalCost ?? 0);
             tokensByDate.set(d.date, d.totalTokens ?? 0);
             if ((d.totalTokens ?? 0) > 0)
@@ -777,12 +773,12 @@ function costOverview(reports) {
         return {
             provider: r.provider,
             color: PROVIDER_META[r.provider]?.color ?? '#9a9996',
-            cost: r.last30DaysCostUSD ?? t.totalCost ?? 0,
-            tokens: r.last30DaysTokens ?? t.totalTokens ?? 0,
+            cost: range.cost,
+            tokens: range.tokens,
             cached,
             uncached: INPUT_INCLUDES_CACHE.has(r.provider) ? Math.max(0, input - cached) : input,
-            writes: t.cacheCreationTokens ?? 0,
-            output: t.outputTokens ?? 0,
+            writes: range.writes,
+            output: range.output,
             series: dates.map(d => byDate.get(d) ?? 0),
             tokenSeries: dates.map(d => tokensByDate.get(d) ?? 0),
         };
@@ -2369,13 +2365,14 @@ export default class UsageBarExtension extends Extension {
                 this._fetchLocalCost(provider).finally(done);
                 continue;
             }
-            this._get(`/cost?provider=${encodeURIComponent(provider)}`, (reports, error) => {
-                if (generation !== this._generation || !this._indicator)
-                    return; // disabled while in flight
-                if (!error && Array.isArray(reports)) // cost is best-effort
-                    this._mergeCosts(reports);
-                done();
-            });
+            this._get(`/cost?provider=${encodeURIComponent(provider)}&days=${COST_HISTORY_DAYS}`,
+                (reports, error) => {
+                    if (generation !== this._generation || !this._indicator)
+                        return; // disabled while in flight
+                    if (!error && Array.isArray(reports)) // cost is best-effort
+                        this._mergeCosts(reports);
+                    done();
+                });
         }
     }
 
@@ -2415,7 +2412,7 @@ export default class UsageBarExtension extends Extension {
         const db = GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode', 'opencode.db']);
         if (!GLib.file_test(db, GLib.FileTest.EXISTS))
             return Promise.resolve();
-        return runAsync(['python3', '-c', OPENCODE_GO_COST_PY, db, String(LOCAL_COST_DAYS)],
+        return runAsync(['python3', '-c', OPENCODE_GO_COST_PY, db, String(COST_HISTORY_DAYS)],
             this._cancellable)
             .then(out => this._mergeCosts([JSON.parse(out)], generation))
             .catch(e => {
@@ -2470,16 +2467,17 @@ export default class UsageBarExtension extends Extension {
         this._renderScheduler?.request();
     }
 
-    _costOverview() {
+    _costOverview(rangeDays = 30) {
         if (!this._costs)
             return null;
         if (!this._costOverviewCache)
-            return costOverview(this._costs);
+            return costOverview(this._costs, rangeDays);
         return this._costOverviewCache.get(
             this._costOverviewReports,
             this._costVersion,
             localDateKey(),
-            () => costOverview(this._costs)
+            () => costOverview(this._costs, rangeDays),
+            String(rangeDays)
         );
     }
 
@@ -2684,6 +2682,7 @@ export default class UsageBarExtension extends Extension {
                     style_class: 'usagebar-dim',
                 }),
                 rows: new Map(),
+                summaryButton: null,
                 summaryKey: null,
             };
             container.add_child(view.summaryHost);
@@ -2705,8 +2704,10 @@ export default class UsageBarExtension extends Extension {
         const summaryKey = this._overviewSummaryKey(overview);
         if (view.summaryKey !== summaryKey) {
             view.summaryHost.destroy_all_children();
+            view.summaryButton = null;
             if (overview) {
-                view.summaryHost.add_child(this._buildCostSummary(overview));
+                view.summaryButton = this._buildCostSummary(overview);
+                view.summaryHost.add_child(view.summaryButton);
                 view.summaryHost.add_child(new St.Widget({
                     style_class: 'usagebar-separator',
                     height: 1,
@@ -2717,14 +2718,23 @@ export default class UsageBarExtension extends Extension {
         }
 
         const holder = this._indicator._costPanel;
-        if (holder?.visible && holder._usagebarSummaryKey !== summaryKey) {
-            holder.child?.destroy();
-            if (overview) {
-                holder.set_child(this._buildCostPanel(overview));
-                holder._usagebarSummaryKey = summaryKey;
-            } else {
-                this._indicator._closeCostPanel();
-                holder._usagebarSummaryKey = null;
+        if (holder?.visible) {
+            holder._usagebarAnchor = view.summaryButton;
+            const rangeDays = holder._usagebarRangeDays ?? 30;
+            const panelOverview = this._costOverview(rangeDays);
+            const panelKey = this._overviewSummaryKey(panelOverview);
+            if (holder._usagebarSummaryKey !== panelKey) {
+                holder.child?.destroy();
+                if (panelOverview) {
+                    holder.set_child(this._buildCostPanel(
+                        panelOverview,
+                        holder._usagebarAnchor,
+                        rangeDays));
+                    holder._usagebarSummaryKey = panelKey;
+                } else {
+                    this._indicator._closeCostPanel();
+                    holder._usagebarSummaryKey = null;
+                }
             }
         }
 
@@ -2987,13 +2997,15 @@ export default class UsageBarExtension extends Extension {
         return button;
     }
 
-    _showCostPanel(anchor, ov) {
+    _showCostPanel(anchor, ov, rangeDays = 30) {
         const holder = this._indicator?._costPanel;
         if (!holder)
             return;
         holder.child?.destroy();
-        holder.set_child(this._buildCostPanel(ov));
+        holder.set_child(this._buildCostPanel(ov, anchor, rangeDays));
         holder._usagebarSummaryKey = this._overviewSummaryKey(ov);
+        holder._usagebarRangeDays = rangeDays;
+        holder._usagebarAnchor = anchor;
         Main.uiGroup.set_child_above_sibling(holder, null);
         this._indicator._openCostPanel();
         const [, pw] = holder.get_preferred_width(-1);
@@ -3010,7 +3022,7 @@ export default class UsageBarExtension extends Extension {
 
     // The hover dashboard: range, total + per-provider split, a smoothed
     // daily cost line per provider, token KPIs and a per-model table.
-    _buildCostPanel(ov) {
+    _buildCostPanel(ov, anchor, rangeDays) {
         const panel = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-panel'});
         const header = new St.BoxLayout({style_class: 'usagebar-ov-header'});
         const close = new St.Button({
@@ -3021,11 +3033,39 @@ export default class UsageBarExtension extends Extension {
         });
         close.connect('clicked', () => this._indicator?._closeCostPanel());
         header.add_child(close);
+        const firstDate = ov.dates[0];
+        const lastDate = ov.dates[ov.dates.length - 1];
         header.add_child(new St.Label({
-            text: `${fmtDay(ov.dates[0])} to ${fmtDay(ov.dates[ov.dates.length - 1])}`,
+            text: firstDate === lastDate ? fmtDay(lastDate) : `${fmtDay(firstDate)} to ${fmtDay(lastDate)}`,
             style_class: 'usagebar-ov-range',
             y_align: Clutter.ActorAlign.CENTER,
         }));
+        header.add_child(new St.Widget({x_expand: true}));
+        const rangeSwitch = new St.BoxLayout({style_class: 'usagebar-ov-switch'});
+        const ranges = [
+            [1, 'TODAY'],
+            [7, '7 DAYS'],
+            [30, '30 DAYS'],
+            [90, '90 DAYS'],
+        ];
+        ranges.forEach(([days, label], index) => {
+            const edge = index === 0 ? ' usagebar-ov-switch-left'
+                : index === ranges.length - 1 ? ' usagebar-ov-switch-right' : '';
+            const button = new St.Button({
+                label,
+                can_focus: true,
+                style_class: `usagebar-ov-switch-button${edge}${days === rangeDays ? ' selected' : ''}`,
+            });
+            button.connect('clicked', () => {
+                if (days === rangeDays)
+                    return;
+                const overview = this._costOverview(days);
+                if (overview)
+                    this._showCostPanel(anchor, overview, days);
+            });
+            rangeSwitch.add_child(button);
+        });
+        header.add_child(rangeSwitch);
         panel.add_child(header);
 
         const top = new St.BoxLayout({style_class: 'usagebar-ov-top'});
@@ -3243,7 +3283,7 @@ export default class UsageBarExtension extends Extension {
             const cr = a.get_context();
             const [w, h] = a.get_surface_size();
             const n = ov.dates.length;
-            if (w <= 0 || h <= 0 || n < 2) {
+            if (w <= 0 || h <= 0 || n < 1) {
                 cr.$dispose();
                 return;
             }
@@ -3258,6 +3298,14 @@ export default class UsageBarExtension extends Extension {
             }
             // Smallest provider drawn first so the biggest line sits on top.
             for (const p of [...ov.providers].reverse()) {
+                if (n === 1) {
+                    const [r, g, b] = hexRGB(p.color);
+                    const y = bot - Math.min(p.series[0] / max, 1) * (bot - top);
+                    cr.arc(w / 2, y, 3, 0, Math.PI * 2);
+                    cr.setSourceRGBA(r, g, b, 1);
+                    cr.fill();
+                    continue;
+                }
                 const pts = p.series.map((v, i) => [
                     1 + i * (w - 2) / (n - 1),
                     bot - Math.min(v / max, 1) * (bot - top),
@@ -3278,12 +3326,24 @@ export default class UsageBarExtension extends Extension {
         });
         plot.add_child(area);
         const dates = new St.BoxLayout({x_expand: true});
-        const mid = ov.dates[Math.floor(ov.dates.length / 2)];
-        [ov.dates[0], mid, ov.dates[ov.dates.length - 1]].forEach((d, i) => {
-            if (i > 0)
-                dates.add_child(new St.Widget({x_expand: true}));
-            dates.add_child(new St.Label({text: fmtDay(d).toUpperCase(), style_class: 'usagebar-ov-tick'}));
-        });
+        if (ov.dates.length === 1) {
+            dates.add_child(new St.Widget({x_expand: true}));
+            dates.add_child(new St.Label({
+                text: fmtDay(ov.dates[0]).toUpperCase(),
+                style_class: 'usagebar-ov-tick',
+            }));
+            dates.add_child(new St.Widget({x_expand: true}));
+        } else {
+            const mid = ov.dates[Math.floor(ov.dates.length / 2)];
+            [ov.dates[0], mid, ov.dates[ov.dates.length - 1]].forEach((d, i) => {
+                if (i > 0)
+                    dates.add_child(new St.Widget({x_expand: true}));
+                dates.add_child(new St.Label({
+                    text: fmtDay(d).toUpperCase(),
+                    style_class: 'usagebar-ov-tick',
+                }));
+            });
+        }
         plot.add_child(dates);
         box.add_child(plot);
         return box;

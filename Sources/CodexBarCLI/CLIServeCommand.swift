@@ -27,7 +27,7 @@ struct ServeOptions: CommanderParsable {
 enum CLIServeRoute: Equatable {
     case health
     case usage(provider: String?)
-    case cost(provider: String?)
+    case cost(provider: String?, days: Int?)
 }
 
 enum CLIServeRouteError: Error, Equatable {
@@ -43,6 +43,7 @@ enum CLIServeRouter {
 
         let provider = queryItems["provider"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedProvider = provider?.isEmpty == false ? provider : nil
+        let days = queryItems["days"].flatMap(Int.init).map { max(1, min(365, $0)) }
 
         switch path {
         case "/health":
@@ -50,7 +51,7 @@ enum CLIServeRouter {
         case "/usage":
             return .usage(provider: normalizedProvider)
         case "/cost":
-            return .cost(provider: normalizedProvider)
+            return .cost(provider: normalizedProvider, days: days)
         default:
             throw CLIServeRouteError.notFound
         }
@@ -115,6 +116,7 @@ private struct ServeUsageContext: Sendable {
 
 private struct ServeCostContext: Sendable {
     let config: CodexBarConfig
+    let historyDays: Int
     let collection: ServeCostCollectionContext
 }
 
@@ -678,12 +680,13 @@ extension CodexBarCLI {
                             providerDeadline: providerDeadline,
                             providerOperations: runtime.providerOperations))
                 })
-        case let .cost(provider):
+        case let .cost(provider, days):
             let snapshot: CLIServeConfigSnapshot
             let operationKey: String
+            let historyDays = days ?? 30
             do {
                 snapshot = try Self.loadServeConfigSnapshot(configStore: runtime.configStore)
-                operationKey = try Self.serveOperationKey(kind: "cost", provider: provider)
+                operationKey = try Self.serveOperationKey(kind: "cost-\(historyDays)d", provider: provider)
             } catch {
                 let status: CLIHTTPStatus = error is CLIServeArgumentError ? .badRequest : .internalServerError
                 return Self.serveError(status: status, message: error.localizedDescription)
@@ -700,8 +703,9 @@ extension CodexBarCLI {
                         provider: provider,
                         context: ServeCostContext(
                             config: snapshot.config,
+                            historyDays: historyDays,
                             collection: ServeCostCollectionContext(
-                                configFingerprint: snapshot.cacheToken,
+                                configFingerprint: "\(snapshot.cacheToken):days=\(historyDays)",
                                 providerTimeout: providerTimeout,
                                 requestDeadline: requestDeadline,
                                 now: { ContinuousClock().now },
@@ -1032,6 +1036,7 @@ extension CodexBarCLI {
                 let snapshot = try await fetcher.loadTokenSnapshot(
                     provider: provider,
                     forceRefresh: false,
+                    historyDays: context.historyDays,
                     refreshPricingInBackground: Self.serveCostRefreshesPricingInBackground)
                 return Self.makeCostPayload(provider: provider, snapshot: snapshot, error: nil)
             } catch {

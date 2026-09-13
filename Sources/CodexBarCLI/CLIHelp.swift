@@ -149,7 +149,7 @@ extension CodexBarCLI {
           GET /usage?provider=claude
           GET /usage?provider=all
           GET /cost
-          GET /cost?provider=codex
+          GET /cost?provider=codex&days=90
 
         Examples:
           codexbar serve

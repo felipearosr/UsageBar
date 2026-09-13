@@ -58,6 +58,34 @@ export function cliUpdateCompletionMessage(version) {
     return `codexbar ${version} installed — log out and back in to finish the update`;
 }
 
+export function buildCostDateRange(days, now = new Date()) {
+    const count = Math.max(1, Math.trunc(days));
+    const dates = [];
+    for (let offset = count - 1; offset >= 0; offset--) {
+        const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        dates.push(`${year}-${month}-${day}`);
+    }
+    return dates;
+}
+
+export function summarizeCostRange(daily, dates) {
+    const included = new Set(dates);
+    const selected = daily.filter(day => included.has(day.date));
+    const sum = key => selected.reduce((total, day) => total + (day[key] ?? 0), 0);
+    return {
+        daily: selected,
+        cost: sum('totalCost'),
+        tokens: sum('totalTokens'),
+        cached: sum('cacheReadTokens'),
+        input: sum('inputTokens'),
+        writes: sum('cacheCreationTokens'),
+        output: sum('outputTokens'),
+    };
+}
+
 // Build newest-first rows for the cost panel's Day breakdown. Provider
 // series are aligned to `dates`; omit completely idle days so the table stays
 // useful (and bounded) even when the report covers a long sparse window.

@@ -60,7 +60,12 @@ struct CLIServeRouterTests {
             try CLIServeRouter.route(
                 method: "GET",
                 path: "/cost",
-                queryItems: ["provider": "codex"]) == .cost(provider: "codex"))
+                queryItems: ["provider": "codex"]) == .cost(provider: "codex", days: nil))
+        #expect(
+            try CLIServeRouter.route(
+                method: "GET",
+                path: "/cost",
+                queryItems: ["provider": "codex", "days": "90"]) == .cost(provider: "codex", days: 90))
     }
 
     @Test

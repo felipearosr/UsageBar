@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    buildCostDateRange,
     buildDailyCostRows,
     buildSummaryBarSegments,
     cliUpdateCompletionMessage,
@@ -10,8 +11,36 @@ import {
     LifetimeLookupCache,
     reconcileKeyed,
     RenderScheduler,
+    summarizeCostRange,
     StatusMessageState,
 } from '../usagebar@felipearosr.github.io/renderstate.js';
+
+test('cost date ranges end today and include the requested number of local days', () => {
+    const today = new Date(2026, 8, 12, 12);
+    assert.deepEqual(buildCostDateRange(1, today), ['2026-09-12']);
+    assert.deepEqual(buildCostDateRange(7, today), [
+        '2026-09-06',
+        '2026-09-07',
+        '2026-09-08',
+        '2026-09-09',
+        '2026-09-10',
+        '2026-09-11',
+        '2026-09-12',
+    ]);
+});
+
+test('cost range totals include only selected dates', () => {
+    const summary = summarizeCostRange([
+        {date: '2026-09-05', totalCost: 20, totalTokens: 200},
+        {date: '2026-09-11', totalCost: 7, totalTokens: 70, cacheReadTokens: 30},
+        {date: '2026-09-12', totalCost: 3, totalTokens: 30, cacheReadTokens: 10},
+    ], ['2026-09-11', '2026-09-12']);
+
+    assert.deepEqual(summary.daily.map(day => day.date), ['2026-09-11', '2026-09-12']);
+    assert.equal(summary.cost, 10);
+    assert.equal(summary.tokens, 100);
+    assert.equal(summary.cached, 40);
+});
 
 test('spend summary omits cents from values of at least ten dollars', () => {
     assert.equal(formatSummaryUSD(9.99), '$9.99');
