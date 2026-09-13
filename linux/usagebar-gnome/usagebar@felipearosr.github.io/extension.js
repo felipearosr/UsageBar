@@ -27,6 +27,15 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {PROVIDER_META} from './providermeta.js';
+import {
+    buildDailyCostRows,
+    cliUpdateCompletionMessage,
+    CostOverviewCache,
+    LifetimeLookupCache,
+    reconcileKeyed,
+    RenderScheduler,
+    StatusMessageState,
+} from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
 
 const REQUEST_TIMEOUT_SECS = 120;
@@ -668,6 +677,7 @@ print(json.dumps({
 const OV_LEFT_WIDTH = 270;
 const OV_CHART_HEIGHT = 170;
 const OV_MAX_MODELS = 12;
+const OV_MAX_DAYS = 12;
 // Codex counts cache reads inside inputTokens; the other priced providers
 // (claude) report fresh input only.
 const INPUT_INCLUDES_CACHE = new Set(['codex']);
@@ -681,6 +691,13 @@ function hexRGB(hex) {
 function fmtDay(date) {
     return new Date(`${date}T12:00:00`)
         .toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+}
+
+function localDateKey(date = new Date()) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
 }
 
 function fmtPct(frac) {
@@ -713,6 +730,10 @@ function smoothPath(cr, pts, top, bot) {
     }
 }
 
+function isPricedCostReport(report) {
+    return typeof (report?.last30DaysCostUSD ?? report?.totals?.totalCost) === 'number';
+}
+
 // Cross-provider rollup of every priced cost report: total, per-provider
 // split with a daily cost series each, token KPIs and a per-model
 // breakdown. Null when no report carries a dollar figure.
@@ -735,8 +756,10 @@ function costOverview(reports) {
         const cached = t.cacheReadTokens ?? 0;
         const input = t.inputTokens ?? 0;
         const byDate = new Map();
+        const tokensByDate = new Map();
         for (const d of r.daily ?? []) {
             byDate.set(d.date, d.totalCost ?? 0);
+            tokensByDate.set(d.date, d.totalTokens ?? 0);
             if ((d.totalTokens ?? 0) > 0)
                 active.add(d.date);
             for (const m of d.modelBreakdowns ?? []) {
@@ -759,6 +782,7 @@ function costOverview(reports) {
             writes: t.cacheCreationTokens ?? 0,
             output: t.outputTokens ?? 0,
             series: dates.map(d => byDate.get(d) ?? 0),
+            tokenSeries: dates.map(d => tokensByDate.get(d) ?? 0),
         };
     }).sort((a, b) => b.cost - a.cost);
     const sum = key => providers.reduce((a, p) => a + p[key], 0);
@@ -773,6 +797,7 @@ function costOverview(reports) {
         output: sum('output'),
         activeDays: active.size,
         models: [...models.values()].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
+        dailyRows: buildDailyCostRows(dates, providers),
     };
 }
 
@@ -1424,6 +1449,18 @@ class UsageBarIndicator extends PanelMenu.Button {
     _init(dir) {
         super._init(0.5, 'UsageBar', false);
         this._dir = dir;
+        this._panelEntries = new Map();
+        this._statusState = new StatusMessageState();
+        this._panelIconCache = new LifetimeLookupCache(provider => {
+            if (!this._dir || !provider)
+                return null;
+            const file = this._dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
+            try {
+                return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
+            } catch {
+                return null;
+            }
+        });
 
         this._chipBox = new St.BoxLayout({style_class: 'usagebar-panel-box'});
         this.add_child(this._chipBox);
@@ -1507,6 +1544,12 @@ class UsageBarIndicator extends PanelMenu.Button {
             this._closeCostPanel();
             this._costPanel?.destroy();
             this._costPanel = null;
+            for (const entry of this._panelEntries.values())
+                entry.box.destroy();
+            this._panelEntries.clear();
+            this._panelIconCache.clear();
+            this._panelEmptyLabel?.destroy();
+            this._panelEmptyLabel = null;
         });
 
         // Footer, mirroring the macOS app menu. The update row only shows
@@ -1571,120 +1614,185 @@ class UsageBarIndicator extends PanelMenu.Button {
         this._costPanel?.hide();
     }
 
-    _setPanelText(chips) {
-        this._chipBox.destroy_all_children();
-        if (!chips.length) {
-            this._chipBox.add_child(new St.Label({
-                text: 'UB',
+    _panelIcon(provider) {
+        return this._panelIconCache.get(provider);
+    }
+
+    _newPanelEntry(chip) {
+        const entry = {
+            provider: chip.provider,
+            mode: chip.mode,
+            hasText: !!chip.text,
+            box: new St.BoxLayout({style_class: 'usagebar-chip'}),
+            dot: null,
+            ring: null,
+            label: null,
+            state: {percent: chip.percent, sev: chip.sev},
+        };
+        if (chip.mode === 'dot') {
+            entry.dot = new St.Widget({
+                style_class: `usagebar-dot usagebar-bg-${chip.sev}`,
+                width: 8,
+                height: 8,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            entry.box.add_child(entry.dot);
+        } else {
+            const gicon = this._panelIcon(chip.provider);
+            entry.box.add_child(gicon
+                ? new St.Icon({
+                    gicon,
+                    icon_size: 14,
+                    style_class: 'usagebar-chip-icon',
+                    y_align: Clutter.ActorAlign.CENTER,
+                })
+                : new St.Icon({
+                    icon_name: 'application-x-executable-symbolic',
+                    icon_size: 14,
+                    style_class: 'usagebar-chip-icon',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+
+            if (chip.mode !== 'percent') {
+                entry.ring = new St.DrawingArea({
+                    style_class: 'usagebar-chip-ring',
+                    width: 14,
+                    height: 14,
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+                entry.ring.connect('repaint', area => {
+                    const cr = area.get_context();
+                    const [w, h] = area.get_surface_size();
+                    if (w <= 0 || h <= 0) {
+                        cr.$dispose();
+                        return;
+                    }
+                    const xc = w / 2;
+                    const yc = h / 2;
+                    const lineWidth = 2.0;
+                    const radius = Math.max(1, Math.min(w, h) / 2 - lineWidth / 2 - 0.5);
+
+                    cr.arc(xc, yc, radius, 0, 2 * Math.PI);
+                    cr.setSourceRGBA(1.0, 1.0, 1.0, 0.22);
+                    cr.setLineWidth(lineWidth);
+                    cr.stroke();
+
+                    const {percent, sev} = entry.state;
+                    if (percent > 0) {
+                        const startAngle = -Math.PI / 2;
+                        const progressFrac = Math.min(1.0, Math.max(0.0, percent / 100.0));
+                        cr.arc(xc, yc, radius, startAngle,
+                            startAngle + progressFrac * 2 * Math.PI);
+
+                        let r = 0.18, g = 0.76, b = 0.49; // ok (#2ec27e)
+                        if (sev === 'crit') {
+                            r = 0.93; g = 0.20; b = 0.23; // crit (#ed333b)
+                        } else if (sev === 'warn') {
+                            r = 0.96; g = 0.76; b = 0.07; // warn (#f5c211)
+                        } else if (sev === 'stale') {
+                            r = 0.60; g = 0.60; b = 0.59; // stale (#9a9996)
+                        }
+
+                        cr.setSourceRGBA(r, g, b, 1.0);
+                        cr.setLineWidth(lineWidth);
+                        cr.setLineCap(1); // CAIRO_LINE_CAP_ROUND
+                        cr.stroke();
+                    }
+                    cr.$dispose();
+                });
+                entry.box.add_child(entry.ring);
+            }
+        }
+
+        if (chip.text) {
+            entry.label = new St.Label({
+                text: chip.text,
                 style_class: 'usagebar-chip-label',
                 y_align: Clutter.ActorAlign.CENTER,
-            }));
-            return;
+            });
+            entry.box.add_child(entry.label);
         }
-        for (const chip of chips) {
-            const box = new St.BoxLayout({style_class: 'usagebar-chip'});
+        return entry;
+    }
 
-            if (chip.mode === 'dot') {
-                box.add_child(new St.Widget({
-                    style_class: `usagebar-dot usagebar-bg-${chip.sev}`,
-                    width: 8,
-                    height: 8,
-                    y_align: Clutter.ActorAlign.CENTER,
-                }));
-            } else {
-                // 1. Provider Brand Icon (pure white)
-                let iconAdded = false;
-                if (this._dir && chip.provider) {
-                    const iconFile = this._dir.get_child('icons').get_child(`ProviderIcon-${chip.provider}.svg`);
-                    if (iconFile.query_exists(null)) {
-                        const gicon = new Gio.FileIcon({file: iconFile});
-                        box.add_child(new St.Icon({
-                            gicon,
-                            icon_size: 14,
-                            style_class: 'usagebar-chip-icon',
-                            y_align: Clutter.ActorAlign.CENTER,
-                        }));
-                        iconAdded = true;
-                    }
-                }
-                if (!iconAdded) {
-                    box.add_child(new St.Icon({
-                        icon_name: 'application-x-executable-symbolic',
-                        icon_size: 14,
-                        style_class: 'usagebar-chip-icon',
-                        y_align: Clutter.ActorAlign.CENTER,
-                    }));
-                }
-
-                // 2. Circular Progress Ring (if not percent-only mode)
-                if (chip.mode !== 'percent') {
-                    const ring = new St.DrawingArea({
-                        style_class: 'usagebar-chip-ring',
-                        width: 14,
-                        height: 14,
-                        y_align: Clutter.ActorAlign.CENTER,
-                    });
-                    const percent = chip.percent;
-                    const sev = chip.sev;
-                    ring.connect('repaint', area => {
-                        const cr = area.get_context();
-                        const [w, h] = area.get_surface_size();
-                        if (w <= 0 || h <= 0) {
-                            cr.$dispose();
-                            return;
-                        }
-                        const xc = w / 2;
-                        const yc = h / 2;
-                        const lineWidth = 2.0;
-                        const radius = Math.max(1, Math.min(w, h) / 2 - lineWidth / 2 - 0.5);
-
-                        // Background track
-                        cr.arc(xc, yc, radius, 0, 2 * Math.PI);
-                        cr.setSourceRGBA(1.0, 1.0, 1.0, 0.22);
-                        cr.setLineWidth(lineWidth);
-                        cr.stroke();
-
-                        // Progress arc
-                        if (percent > 0) {
-                            const startAngle = -Math.PI / 2;
-                            const progressFrac = Math.min(1.0, Math.max(0.0, percent / 100.0));
-                            const endAngle = startAngle + progressFrac * 2 * Math.PI;
-
-                            cr.arc(xc, yc, radius, startAngle, endAngle);
-
-                            let r = 0.18, g = 0.76, b = 0.49; // ok (#2ec27e)
-                            if (sev === 'crit') {
-                                r = 0.93; g = 0.20; b = 0.23; // crit (#ed333b)
-                            } else if (sev === 'warn') {
-                                r = 0.96; g = 0.76; b = 0.07; // warn (#f5c211)
-                            } else if (sev === 'stale') {
-                                r = 0.60; g = 0.60; b = 0.59; // stale (#9a9996)
-                            }
-
-                            cr.setSourceRGBA(r, g, b, 1.0);
-                            cr.setLineWidth(lineWidth);
-                            cr.setLineCap(1); // CAIRO_LINE_CAP_ROUND
-                            cr.stroke();
-                        }
-                        cr.$dispose();
-                    });
-                    box.add_child(ring);
-                }
-            }
-
-            // 3. Percentage or name label (if enabled and present)
-            if (chip.text) {
-                box.add_child(new St.Label({
-                    text: chip.text,
+    _setPanelText(chips) {
+        if (!chips.length) {
+            for (const entry of this._panelEntries.values())
+                entry.box.destroy();
+            this._panelEntries.clear();
+            if (!this._panelEmptyLabel) {
+                this._panelEmptyLabel = new St.Label({
+                    text: 'UB',
                     style_class: 'usagebar-chip-label',
                     y_align: Clutter.ActorAlign.CENTER,
-                }));
+                });
             }
-            this._chipBox.add_child(box);
+            for (const child of this._chipBox.get_children())
+                this._chipBox.remove_child(child);
+            this._chipBox.add_child(this._panelEmptyLabel);
+            return;
+        }
+
+        if (this._panelEmptyLabel?.get_parent() === this._chipBox)
+            this._chipBox.remove_child(this._panelEmptyLabel);
+        const wanted = new Set(chips.map(chip => chip.provider));
+        for (const [provider, entry] of this._panelEntries) {
+            if (!wanted.has(provider)) {
+                entry.box.destroy();
+                this._panelEntries.delete(provider);
+            }
+        }
+
+        const ordered = [];
+        for (const chip of chips) {
+            let entry = this._panelEntries.get(chip.provider);
+            const hasText = !!chip.text;
+            if (entry && (entry.mode !== chip.mode || entry.hasText !== hasText)) {
+                entry.box.destroy();
+                this._panelEntries.delete(chip.provider);
+                entry = null;
+            }
+            if (!entry) {
+                entry = this._newPanelEntry(chip);
+                this._panelEntries.set(chip.provider, entry);
+            } else {
+                entry.state.percent = chip.percent;
+                entry.state.sev = chip.sev;
+                if (entry.dot)
+                    entry.dot.style_class = `usagebar-dot usagebar-bg-${chip.sev}`;
+                if (entry.label)
+                    entry.label.text = chip.text;
+                entry.ring?.queue_repaint();
+            }
+            ordered.push(entry.box);
+        }
+
+        // Reparenting existing actors keeps their signal handlers and child
+        // actors alive while still applying a changed provider order. Skip
+        // even that small relayout when the identity/order is unchanged.
+        const current = this._chipBox.get_children();
+        const same = current.length === ordered.length &&
+            current.every((child, i) => child === ordered[i]);
+        if (!same) {
+            for (const child of current)
+                this._chipBox.remove_child(child);
+            for (const child of ordered)
+                this._chipBox.add_child(child);
         }
     }
 
     setStatus(message) {
+        this._statusState.setTransient(message);
+        this._syncStatus();
+    }
+
+    setPersistentStatus(message) {
+        this._statusState.setPersistent(message);
+        this._syncStatus();
+    }
+
+    _syncStatus() {
+        const message = this._statusState.current;
         this._statusItem.visible = !!message;
         this._statusLabel.text = message ? `⚠ ${message}` : '';
     }
@@ -1698,19 +1806,49 @@ class UsageBarIndicator extends PanelMenu.Button {
 
 export default class UsageBarExtension extends Extension {
     enable() {
+        this._generation = (this._generation ?? 0) + 1;
+        const generation = this._generation;
         this._rows = [];
         this._names = {};
+        this._namesVersion = 0;
         this._selectedProvider = null;
         this._notified = new Map();
         this._costs = null;
+        this._costVersion = 0;
+        this._costProviderVersions = new Map();
+        this._costOverviewReports = {};
+        this._costOverviewCache = new CostOverviewCache(2);
         this._costFetchedAt = 0;
         this._costInFlight = false;
         this._status = {};
         this._lastFetchAt = 0;
         this._fetchId = 0;
         this._tickId = 0;
+        this._popupDirty = true;
+        this._popupView = null;
+        this._detailRenderKey = null;
+        this._overviewView = null;
+        this._windowCatalogSignature = null;
+        this._providerIconCache = new LifetimeLookupCache(provider => {
+            const file = this.dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
+            try {
+                return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
+            } catch {
+                return null;
+            }
+        });
         this._session = new Soup.Session({timeout: REQUEST_TIMEOUT_SECS + 10});
         this._cancellable = new Gio.Cancellable();
+        this._renderScheduler = new RenderScheduler(
+            callback => GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                callback();
+                return GLib.SOURCE_REMOVE;
+            }),
+            sourceId => GLib.source_remove(sourceId),
+            () => {
+                if (this._generation === generation && this._indicator)
+                    this._render();
+            });
 
         this._settings = this.getSettings();
         const applySettings = () => {
@@ -1741,6 +1879,8 @@ export default class UsageBarExtension extends Extension {
             'status-scopes', 'status-checks-enabled',
         ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
+            if (generation !== this._generation)
+                return;
             applySettings();
             if (key === 'status-scopes' && this._status) {
                 // Drop only rescoped providers' caches so they refetch.
@@ -1766,13 +1906,15 @@ export default class UsageBarExtension extends Extension {
                 this._restartDebounceId = GLib.timeout_add_seconds(
                     GLib.PRIORITY_DEFAULT, 2, () => {
                         this._restartDebounceId = 0;
+                        if (generation !== this._generation || !this._indicator)
+                            return GLib.SOURCE_REMOVE;
                         this._supervisor?.restart(
                             this._settings.get_int('refresh-interval-secs'));
                         return GLib.SOURCE_REMOVE;
                     });
             }
             if (DISPLAY_KEYS.has(key))
-                this._render();
+                this._requestRender();
         });
 
         this._indicator = new Indicator(this.dir);
@@ -1784,6 +1926,8 @@ export default class UsageBarExtension extends Extension {
         this._indicator._quitItem.connect('activate', () => {
             // Deferred: disabling destroys the menu emitting this signal.
             GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                if (generation !== this._generation)
+                    return GLib.SOURCE_REMOVE;
                 Main.extensionManager.disableExtension(this.uuid);
                 return GLib.SOURCE_REMOVE;
             });
@@ -1819,11 +1963,15 @@ export default class UsageBarExtension extends Extension {
                 [GLib.get_user_config_dir(), 'codexbar', 'config.json']))
                 .monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, null);
             this._configMonitor.connect('changed', () => {
+                if (generation !== this._generation || !this._indicator)
+                    return;
                 if (this._configDebounceId)
                     GLib.source_remove(this._configDebounceId);
                 this._configDebounceId = GLib.timeout_add_seconds(
                     GLib.PRIORITY_DEFAULT, 1, () => {
                         this._configDebounceId = 0;
+                        if (generation !== this._generation || !this._indicator)
+                            return GLib.SOURCE_REMOVE;
                         this._loadDisplayNames(this._binary);
                         this._fetchUsage();
                         return GLib.SOURCE_REMOVE;
@@ -1835,6 +1983,8 @@ export default class UsageBarExtension extends Extension {
 
         this._supervisor = new ServeSupervisor(binary,
             this._settings.get_int('refresh-interval-secs'), (port, status) => {
+                if (generation !== this._generation || !this._indicator)
+                    return;
                 if (status)
                     this._indicator.setStatus(status);
                 if (port)
@@ -1843,8 +1993,13 @@ export default class UsageBarExtension extends Extension {
         this._supervisor.start();
 
         this._updater = new CliUpdater(binary, this._settings, this._session,
-            version => this._indicator?.setUpdateReady(version));
+            version => {
+                if (generation === this._generation)
+                    this._indicator?.setUpdateReady(version);
+            });
         this._updateToggleId = this._settings.connect('changed::update-check-enabled', () => {
+            if (generation !== this._generation)
+                return;
             if (this._settings.get_boolean('update-check-enabled'))
                 this._scheduleUpdateCheck(5);
         });
@@ -1859,6 +2014,9 @@ export default class UsageBarExtension extends Extension {
     }
 
     disable() {
+        this._generation = (this._generation ?? 0) + 1;
+        this._renderScheduler?.cancel();
+        this._renderScheduler = null;
         if (this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = 0;
@@ -1880,6 +2038,8 @@ export default class UsageBarExtension extends Extension {
             GLib.source_remove(this._fetchId);
             this._fetchId = 0;
         }
+        this._fetchInFlight = false;
+        this._costInFlight = false;
         if (this._tickId) {
             GLib.source_remove(this._tickId);
             this._tickId = 0;
@@ -1900,12 +2060,42 @@ export default class UsageBarExtension extends Extension {
         this._session = null;
         this._supervisor?.stop();
         this._supervisor = null;
+        this._destroyOverviewView();
         this._indicator?.destroy();
         this._indicator = null;
         this._rows = [];
         this._notified = null;
         this._costs = null;
+        this._costOverviewReports = null;
+        this._costProviderVersions?.clear();
+        this._costProviderVersions = null;
+        this._costOverviewCache?.clear();
+        this._costOverviewCache = null;
         this._status = null;
+        this._overviewView = null;
+        this._popupView = null;
+        this._detailRenderKey = null;
+        this._providerIconCache?.clear();
+        this._providerIconCache = null;
+    }
+
+    _destroyOverviewView() {
+        const view = this._overviewView;
+        if (!view)
+            return;
+        this._indicator?._tooltip?.hide();
+        this._indicator?._closeCostPanel();
+        for (const child of view.rowsBox.get_children())
+            view.rowsBox.remove_child(child);
+        for (const state of view.rows.values()) {
+            state.rowBox.destroy();
+            state.separator?.destroy();
+        }
+        view.rows.clear();
+        view.emptyLabel.destroy();
+        view.summaryHost.destroy_all_children();
+        view.container.destroy();
+        this._overviewView = null;
     }
 
     // ----- footer actions -----
@@ -1913,8 +2103,11 @@ export default class UsageBarExtension extends Extension {
     _scheduleUpdateCheck(secs) {
         if (this._updateCheckId)
             GLib.source_remove(this._updateCheckId);
+        const generation = this._generation;
         this._updateCheckId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW, secs, () => {
             this._updateCheckId = 0;
+            if (generation !== this._generation)
+                return GLib.SOURCE_REMOVE;
             if (this._settings.get_boolean('update-check-enabled'))
                 this._updater.check();
             this._scheduleUpdateCheck(UPDATE_CHECK_SECS);
@@ -1923,18 +2116,19 @@ export default class UsageBarExtension extends Extension {
     }
 
     async _applyUpdate() {
+        const generation = this._generation;
         this._indicator.setUpdateReady(null);
         this._indicator.setStatus('Installing codexbar update…');
         try {
             const version = await this._updater.apply();
-            if (!this._indicator)
+            if (generation !== this._generation || !this._indicator)
                 return;
+            const message = cliUpdateCompletionMessage(version);
             this._indicator.setStatus('');
-            this._supervisor?.restart(this._settings.get_int('refresh-interval-secs'));
-            this._loadDisplayNames(this._binary);
-            Main.notify('UsageBar', `codexbar CLI updated to ${version}`);
+            this._indicator.setPersistentStatus(message);
+            Main.notify('UsageBar', message);
         } catch (e) {
-            if (!this._indicator)
+            if (generation !== this._generation || !this._indicator)
                 return;
             this._indicator.setStatus(`codexbar update failed: ${e.message}`);
             if (this._updater?.ready)
@@ -1978,16 +2172,26 @@ export default class UsageBarExtension extends Extension {
     // ----- data -----
 
     _loadDisplayNames(binary) {
+        const generation = this._generation;
         try {
             const proc = Gio.Subprocess.new(
                 [binary, 'config', 'providers', '--format', 'json'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
             proc.communicate_utf8_async(null, this._cancellable, (p, res) => {
                 try {
+                    if (generation !== this._generation || !this._indicator)
+                        return;
                     const [, out] = p.communicate_utf8_finish(res);
-                    for (const entry of JSON.parse(out))
-                        this._names[entry.provider] = entry.displayName;
-                    this._render();
+                    let changed = false;
+                    for (const entry of JSON.parse(out)) {
+                        if (entry.displayName && this._names[entry.provider] !== entry.displayName) {
+                            this._names[entry.provider] = entry.displayName;
+                            changed = true;
+                        }
+                    }
+                    if (changed)
+                        this._namesVersion++;
+                    this._requestRender();
                 } catch {
                     // cosmetic only — fall back to capitalized ids
                 }
@@ -1998,10 +2202,13 @@ export default class UsageBarExtension extends Extension {
     }
 
     _fetchJSON(url, cb) {
+        const generation = this._generation;
         const msg = Soup.Message.new('GET', url);
         this._session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
             (session, res) => {
                 try {
+                    if (generation !== this._generation || !this._indicator)
+                        return;
                     const bytes = session.send_and_read_finish(res);
                     if (msg.get_status() !== Soup.Status.OK)
                         throw new Error(`HTTP ${msg.get_status()}`);
@@ -2024,8 +2231,11 @@ export default class UsageBarExtension extends Extension {
     _scheduleFetch(secs) {
         if (this._fetchId)
             GLib.source_remove(this._fetchId);
+        const generation = this._generation;
         this._fetchId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, secs, () => {
             this._fetchId = 0;
+            if (generation !== this._generation)
+                return GLib.SOURCE_REMOVE;
             this._fetchUsage();
             return GLib.SOURCE_REMOVE;
         });
@@ -2034,14 +2244,15 @@ export default class UsageBarExtension extends Extension {
     _fetchUsage(force) {
         if (this._fetchInFlight)
             return;
+        const generation = this._generation;
         this._fetchInFlight = true;
         // force asks serve to bypass its response cache (?fresh=1) so the
         // refresh button fetches live data even inside the cache TTL; older
         // CLIs without the flag just answer from cache as before.
         this._get(force ? '/usage?fresh=1' : '/usage', (rows, error) => {
+            if (generation !== this._generation || !this._indicator)
+                return;
             this._fetchInFlight = false;
-            if (!this._indicator)
-                return; // disabled while in flight
             if (error) {
                 this._indicator.setStatus(`usage fetch failed: ${error.message}`);
                 this._scheduleFetch(FETCH_RETRY_SECS);
@@ -2051,12 +2262,13 @@ export default class UsageBarExtension extends Extension {
                 this._indicator.setStatus('');
                 this._scheduleFetch(FETCH_OK_SECS);
                 this._maybeNotify();
+                this._publishWindowCatalog();
                 // Warm the cost scan in the background so the chart is
                 // ready before the menu opens (a cold scan takes tens of
                 // seconds). TTL-gated, so this is a no-op most polls.
                 this._fetchCost();
             }
-            this._render();
+            this._requestRender();
         });
     }
 
@@ -2137,10 +2349,13 @@ export default class UsageBarExtension extends Extension {
             return;
         if (this._costs && (Date.now() - this._costFetchedAt) / 1000 < COST_TTL_SECS)
             return;
+        const generation = this._generation;
         const providers = [...new Set(this._rows.map(r => r.provider))];
         this._costInFlight = true;
         let pending = providers.length;
         const done = () => {
+            if (generation !== this._generation)
+                return;
             if (--pending === 0) {
                 this._costInFlight = false;
                 this._costFetchedAt = Date.now();
@@ -2153,7 +2368,7 @@ export default class UsageBarExtension extends Extension {
                 continue;
             }
             this._get(`/cost?provider=${encodeURIComponent(provider)}`, (reports, error) => {
-                if (!this._indicator)
+                if (generation !== this._generation || !this._indicator)
                     return; // disabled while in flight
                 if (!error && Array.isArray(reports)) // cost is best-effort
                     this._mergeCosts(reports);
@@ -2162,31 +2377,47 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    _mergeCosts(reports) {
-        if (!this._indicator)
+    _mergeCosts(reports, generation = this._generation) {
+        if (generation !== this._generation || !this._indicator)
             return;
+        this._costProviderVersions ??= new Map();
         const next = [...(this._costs ?? [])];
+        let overviewChanged = false;
         for (const report of reports) {
             const i = next.findIndex(c => c.provider === report.provider);
+            const previous = i >= 0 ? next[i] : null;
             if (i >= 0)
                 next[i] = report;
             else
                 next.push(report);
+            if (previous !== report) {
+                this._costProviderVersions.set(
+                    report.provider,
+                    (this._costProviderVersions.get(report.provider) ?? 0) + 1);
+                overviewChanged = overviewChanged || isPricedCostReport(previous) ||
+                    isPricedCostReport(report);
+            }
         }
         this._costs = next;
-        this._render();
+        if (overviewChanged) {
+            this._costVersion++;
+            this._costOverviewReports = {};
+        }
+        this._costOverview(); // prepare the small aggregation off the click path
+        this._requestRender();
     }
 
     // Resolves either way — cost is best-effort.
     _fetchLocalCost(provider) {
+        const generation = this._generation;
         const db = GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode', 'opencode.db']);
         if (!GLib.file_test(db, GLib.FileTest.EXISTS))
             return Promise.resolve();
         return runAsync(['python3', '-c', OPENCODE_GO_COST_PY, db, String(LOCAL_COST_DAYS)],
             this._cancellable)
-            .then(out => this._mergeCosts([JSON.parse(out)]))
+            .then(out => this._mergeCosts([JSON.parse(out)], generation))
             .catch(e => {
-                if (!this._cancellable?.is_cancelled())
+                if (generation === this._generation && !this._cancellable?.is_cancelled())
                     console.warn(`usagebar: ${provider} local cost failed: ${e.message}`);
             });
     }
@@ -2197,6 +2428,7 @@ export default class UsageBarExtension extends Extension {
     _fetchStatus() {
         if (!this._settings?.get_boolean('status-checks-enabled'))
             return;
+        const generation = this._generation;
         const scopes = scopeMap(this._settings);
         for (const row of this._rows) {
             const provider = row.provider;
@@ -2208,10 +2440,10 @@ export default class UsageBarExtension extends Extension {
                 continue;
             const scope = scopes.get(provider) ?? defaultScope(provider);
             const done = result => {
-                if (!this._indicator || !this._status || !result)
+                if (generation !== this._generation || !this._indicator || !this._status || !result)
                     return;
                 this._status[provider] = {...result, scope, fetchedAt: Date.now()};
-                this._render();
+                this._requestRender();
             };
             if (feed.kind === 'statuspage') {
                 this._fetchJSON(`${feed.base}/api/v2/incidents.json`, (data, error) =>
@@ -2220,7 +2452,7 @@ export default class UsageBarExtension extends Extension {
                 // incident.io: the component/group structure lives in the
                 // summary document, the impact windows in /incidents.
                 this._fetchJSON(feed.base, (summary, error) => {
-                    if (error || !this._indicator)
+                    if (generation !== this._generation || error || !this._indicator)
                         return;
                     const ids = incidentIoScopeIds(summary.summary, scope);
                     this._fetchJSON(`${feed.base}/incidents`, (data, err2) =>
@@ -2231,6 +2463,23 @@ export default class UsageBarExtension extends Extension {
     }
 
     // ----- rendering -----
+
+    _requestRender() {
+        this._renderScheduler?.request();
+    }
+
+    _costOverview() {
+        if (!this._costs)
+            return null;
+        if (!this._costOverviewCache)
+            return costOverview(this._costs);
+        return this._costOverviewCache.get(
+            this._costOverviewReports,
+            this._costVersion,
+            localDateKey(),
+            () => costOverview(this._costs)
+        );
+    }
 
     _displayName(provider) {
         return this._names[provider] ?? PROVIDER_META[provider]?.name ??
@@ -2305,55 +2554,227 @@ export default class UsageBarExtension extends Extension {
             ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
             : 'fetching…');
 
-        this._publishWindowCatalog();
+        // A closed menu only needs the panel and state caches refreshed. The
+        // retained overview is attached lazily on the next open, so a burst
+        // of provider responses cannot build hidden cards or charts.
+        if (!this._indicator.menu.isOpen) {
+            this._popupDirty = true;
+            return;
+        }
 
-        // Selection determines view: null means the All / overview view
-        // (compact cards with chevron arrow). Selecting a provider shows
-        // that provider's full detail view with a back button.
         const selectedRow = rows.find(r => r.provider === this._selectedProvider) ?? null;
+        if (selectedRow)
+            this._renderDetail(selectedRow);
+        else
+            this._renderOverview(rows);
+        this._popupDirty = false;
+    }
 
+    _detailPayloadKey(row) {
+        const usage = row.usage ?? {};
+        const windowKey = window => window ? {
+            usedPercent: window.usedPercent,
+            resetsAt: window.resetsAt,
+            resetDescription: window.resetDescription,
+            windowMinutes: window.windowMinutes,
+            isSyntheticPlaceholder: !!window.isSyntheticPlaceholder,
+        } : null;
+        const resetCredits = usage.codexResetCredits;
+        return JSON.stringify({
+            provider: row.provider,
+            stale: !!row.stale,
+            error: row.error ? {
+                kind: row.error.kind,
+                message: row.error.message,
+                code: row.error.code,
+            } : null,
+            usage: {
+                loginMethod: usage.loginMethod,
+                identityLoginMethod: usage.identity?.loginMethod,
+                primary: windowKey(usage.primary),
+                secondary: windowKey(usage.secondary),
+                tertiary: windowKey(usage.tertiary),
+                extras: extraWindowsOf(row).map(x => ({
+                    id: x.id,
+                    title: x.title,
+                    window: windowKey(x.window),
+                })),
+                resetCredits: resetCredits ? {
+                    availableCount: resetCredits.availableCount,
+                    credits: (resetCredits.credits ?? []).map(c => ({
+                        status: c.status,
+                        expiresAt: c.expires_at,
+                    })),
+                } : null,
+            },
+            pace: [row.pace?.primary?.summary, row.pace?.secondary?.summary],
+            creditsRemaining: row.credits?.remaining,
+        });
+    }
+
+    _detailKey(row) {
+        const provider = row.provider;
+        const hidden = [...DISPLAY.hiddenWindows]
+            .filter(key => key.startsWith(`${provider}:`))
+            .sort()
+            .join(',');
+        const status = this._status?.[provider];
+        const scope = this._statusScopes?.get(provider) ?? '';
+        const costVersion = this._costProviderVersions?.get(provider) ?? 0;
+        const timeBucket = Math.floor(Date.now() / 1000 / TICK_SECS);
+        return [
+            provider,
+            this._detailPayloadKey(row),
+            this._displayName(provider),
+            DISPLAY.absoluteResets,
+            DISPLAY.barsShowUsed,
+            DISPLAY.showExtras,
+            THRESHOLDS.warn,
+            THRESHOLDS.crit,
+            hidden,
+            scope,
+            status?.fetchedAt ?? 0,
+            costVersion,
+            localDateKey(),
+            timeBucket,
+        ].join('|');
+    }
+
+    _renderDetail(row) {
+        const key = this._detailKey(row);
+        if (this._popupView === `detail:${row.provider}` && this._detailRenderKey === key)
+            return;
         const detail = this._indicator._detailBox;
-        detail.destroy_all_children();
-        if (!rows.length) {
-            detail.add_child(new St.Label({
-                text: 'No usage data yet.',
-                style_class: 'usagebar-dim',
-            }));
-        } else if (selectedRow) {
-            this._indicator._closeCostPanel();
-            detail.add_child(this._buildCard(selectedRow, {flat: true, showBackButton: true}));
-        } else {
-            // All view: compact cards, one per provider, with brand icon,
-            // reset countdown, chevron navigation to detail view, and inline mini bars.
-            // Topped by the cross-provider spend row when any cost is priced.
-            const overview = costOverview(this._costs);
-            // An open dashboard survives re-renders, refreshed in place.
-            const holder = this._indicator._costPanel;
-            if (holder?.visible) {
-                holder.child?.destroy();
-                if (overview)
-                    holder.set_child(this._buildCostPanel(overview));
-                else
-                    this._indicator._closeCostPanel();
-            }
+        this._indicator._closeCostPanel();
+        this._indicator._tooltip?.hide();
+        for (const child of detail.get_children()) {
+            if (child === this._overviewView?.container)
+                detail.remove_child(child);
+            else
+                child.destroy();
+        }
+        detail.add_child(this._buildCard(row, {flat: true, showBackButton: true}));
+        this._popupView = `detail:${row.provider}`;
+        this._detailRenderKey = key;
+    }
+
+    _overviewSummaryKey(overview) {
+        if (!overview)
+            return 'none';
+        const names = overview.providers
+            .map(provider => `${provider.provider}:${this._displayName(provider.provider)}`)
+            .join('|');
+        return `${this._costVersion}:${localDateKey()}:${this._namesVersion}:${names}`;
+    }
+
+    _renderOverview(rows) {
+        const detail = this._indicator._detailBox;
+        this._indicator._tooltip?.hide();
+        let view = this._overviewView;
+        if (!view) {
+            const container = new St.BoxLayout({vertical: true, x_expand: true});
+            view = {
+                container,
+                summaryHost: new St.BoxLayout({vertical: true, x_expand: true}),
+                rowsBox: new St.BoxLayout({vertical: true, x_expand: true}),
+                emptyLabel: new St.Label({
+                    text: 'No usage data yet.',
+                    style_class: 'usagebar-dim',
+                }),
+                rows: new Map(),
+                summaryKey: null,
+            };
+            container.add_child(view.summaryHost);
+            container.add_child(view.rowsBox);
+            this._overviewView = view;
+        }
+
+        // Remove a detail card while keeping the overview container and all
+        // its provider rows alive for an immediate back/reopen.
+        for (const child of detail.get_children()) {
+            if (child === view.container)
+                continue;
+            child.destroy();
+        }
+        if (view.container.get_parent() !== detail)
+            detail.add_child(view.container);
+
+        const overview = this._costOverview();
+        const summaryKey = this._overviewSummaryKey(overview);
+        if (view.summaryKey !== summaryKey) {
+            view.summaryHost.destroy_all_children();
             if (overview) {
-                detail.add_child(this._buildCostSummary(overview));
-                detail.add_child(new St.Widget({
+                view.summaryHost.add_child(this._buildCostSummary(overview));
+                view.summaryHost.add_child(new St.Widget({
                     style_class: 'usagebar-separator',
                     height: 1,
                     x_expand: true,
                 }));
             }
-            rows.forEach((row, i) => {
-                if (i > 0)
-                    detail.add_child(new St.Widget({
+            view.summaryKey = summaryKey;
+        }
+
+        const holder = this._indicator._costPanel;
+        if (holder?.visible && holder._usagebarSummaryKey !== summaryKey) {
+            holder.child?.destroy();
+            if (overview) {
+                holder.set_child(this._buildCostPanel(overview));
+                holder._usagebarSummaryKey = summaryKey;
+            } else {
+                this._indicator._closeCostPanel();
+                holder._usagebarSummaryKey = null;
+            }
+        }
+
+        view.rows = reconcileKeyed(
+            view.rows,
+            rows,
+            row => row.provider,
+            (row, index, total) => this._buildCompactRow(row, index, total)._usagebarRowState,
+            (state, row, index, total) => {
+                const structureKey = this._compactRowStructureKey(row);
+                if (state.structureKey !== structureKey) {
+                    state.rowBox.destroy();
+                    state.separator?.destroy();
+                    const replacement = this._buildCompactRow(row, index, total)._usagebarRowState;
+                    replacement.update(row, index, total);
+                    return replacement;
+                }
+                state.update(row, index, total);
+            },
+            state => {
+                state.rowBox.destroy();
+                state.separator?.destroy();
+            }
+        );
+
+        const desired = [];
+        if (!rows.length) {
+            desired.push(view.emptyLabel);
+        } else {
+            for (const [index, row] of rows.entries()) {
+                const state = view.rows.get(row.provider);
+                if (index > 0) {
+                    state.separator ??= new St.Widget({
                         style_class: 'usagebar-separator',
                         height: 1,
                         x_expand: true,
-                    }));
-                detail.add_child(this._buildCompactRow(row, i, rows.length));
-            });
+                    });
+                    desired.push(state.separator);
+                }
+                desired.push(state.rowBox);
+            }
         }
+        const current = view.rowsBox.get_children();
+        const same = current.length === desired.length &&
+            current.every((child, i) => child === desired[i]);
+        if (!same) {
+            for (const child of current)
+                view.rowsBox.remove_child(child);
+            for (const child of desired)
+                view.rowsBox.add_child(child);
+        }
+        this._popupView = 'all';
     }
 
     _moveProvider(provider, direction) {
@@ -2479,12 +2900,20 @@ export default class UsageBarExtension extends Extension {
     }
 
     _providerIcon(provider, size) {
-        const file = this.dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
+        this._providerIconCache ??= new LifetimeLookupCache(provider => {
+            const file = this.dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
+            try {
+                return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
+            } catch {
+                return null;
+            }
+        });
+        const gicon = this._providerIconCache.get(provider);
         const icon = new St.Icon({
             icon_size: size,
             y_align: Clutter.ActorAlign.CENTER,
-            ...(file.query_exists(null)
-                ? {gicon: new Gio.FileIcon({file})}
+            ...(gicon
+                ? {gicon}
                 : {icon_name: 'application-x-executable-symbolic'}),
         });
         const color = PROVIDER_META[provider]?.color;
@@ -2563,6 +2992,7 @@ export default class UsageBarExtension extends Extension {
             return;
         holder.child?.destroy();
         holder.set_child(this._buildCostPanel(ov));
+        holder._usagebarSummaryKey = this._overviewSummaryKey(ov);
         Main.uiGroup.set_child_above_sibling(holder, null);
         this._indicator._openCostPanel();
         const [, pw] = holder.get_preferred_width(-1);
@@ -2678,7 +3108,29 @@ export default class UsageBarExtension extends Extension {
         });
         panel.add_child(kpis);
 
-        panel.add_child(new St.Label({text: 'Breakdown', style_class: 'usagebar-ov-heading usagebar-ov-breakdown'}));
+        const breakdownHead = new St.BoxLayout({style_class: 'usagebar-ov-breakdown'});
+        breakdownHead.add_child(new St.Label({
+            text: 'Breakdown',
+            style_class: 'usagebar-ov-heading',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        const breakdownSwitch = new St.BoxLayout({style_class: 'usagebar-ov-switch'});
+        const modelButton = new St.Button({
+            label: 'MODEL',
+            can_focus: true,
+            style_class: 'usagebar-ov-switch-button usagebar-ov-switch-left',
+        });
+        const dayButton = new St.Button({
+            label: 'DAY',
+            can_focus: true,
+            style_class: 'usagebar-ov-switch-button usagebar-ov-switch-right',
+        });
+        breakdownSwitch.add_child(modelButton);
+        breakdownSwitch.add_child(dayButton);
+        breakdownHead.add_child(breakdownSwitch);
+        panel.add_child(breakdownHead);
+
         const tableRow = (cells, cls) => {
             const r = new St.BoxLayout({style_class: cls});
             for (const c of cells)
@@ -2691,7 +3143,9 @@ export default class UsageBarExtension extends Extension {
             style_class: `${cls} usagebar-ov-num`,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        panel.add_child(tableRow([
+
+        const modelTable = new St.BoxLayout({vertical: true});
+        modelTable.add_child(tableRow([
             new St.Label({text: 'Model', style_class: 'usagebar-ov-small', x_expand: true}),
             num('Cost', 'usagebar-ov-small'),
             num('Share', 'usagebar-ov-small'),
@@ -2705,7 +3159,7 @@ export default class UsageBarExtension extends Extension {
                 style_class: 'usagebar-ov-text',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
-            panel.add_child(tableRow([
+            modelTable.add_child(tableRow([
                 name,
                 num(fmtUSD(m.cost)),
                 num(fmtPct(ov.cost > 0 ? m.cost / ov.cost : 0), 'usagebar-ov-dimtext'),
@@ -2714,11 +3168,55 @@ export default class UsageBarExtension extends Extension {
         }
         const hidden = ov.models.length - OV_MAX_MODELS;
         if (hidden > 0) {
-            panel.add_child(new St.Label({
+            modelTable.add_child(new St.Label({
                 text: `+${hidden} more models`,
                 style_class: 'usagebar-ov-small usagebar-ov-more',
             }));
         }
+        panel.add_child(modelTable);
+
+        const dayTable = new St.BoxLayout({vertical: true});
+        dayTable.add_child(tableRow([
+            new St.Label({text: 'Day', style_class: 'usagebar-ov-small', x_expand: true}),
+            ...ov.providers.map(p => num(this._displayName(p.provider), 'usagebar-ov-small')),
+            num('Total', 'usagebar-ov-small'),
+            num('Tokens', 'usagebar-ov-small'),
+        ], 'usagebar-ov-table-head'));
+        for (const day of ov.dailyRows.slice(0, OV_MAX_DAYS)) {
+            dayTable.add_child(tableRow([
+                new St.Label({
+                    text: fmtDay(day.date),
+                    style_class: 'usagebar-ov-text',
+                    x_expand: true,
+                    y_align: Clutter.ActorAlign.CENTER,
+                }),
+                ...day.costs.map(cost => num(fmtUSD(cost), 'usagebar-ov-dimtext')),
+                num(fmtUSD(day.totalCost)),
+                num(fmtTokens(day.totalTokens), 'usagebar-ov-dimtext'),
+            ], 'usagebar-ov-table-row'));
+        }
+        const hiddenDays = ov.dailyRows.length - OV_MAX_DAYS;
+        if (hiddenDays > 0) {
+            dayTable.add_child(new St.Label({
+                text: `+${hiddenDays} earlier active days`,
+                style_class: 'usagebar-ov-small usagebar-ov-more',
+            }));
+        }
+        dayTable.hide();
+        panel.add_child(dayTable);
+
+        const selectBreakdown = mode => {
+            const modelSelected = mode === 'model';
+            modelTable.visible = modelSelected;
+            dayTable.visible = !modelSelected;
+            modelButton.set_style_class_name(
+                `usagebar-ov-switch-button usagebar-ov-switch-left${modelSelected ? ' selected' : ''}`);
+            dayButton.set_style_class_name(
+                `usagebar-ov-switch-button usagebar-ov-switch-right${modelSelected ? '' : ' selected'}`);
+        };
+        modelButton.connect('clicked', () => selectBreakdown('model'));
+        dayButton.connect('clicked', () => selectBreakdown('day'));
+        selectBreakdown('model');
         return panel;
     }
 
@@ -2959,7 +3457,11 @@ export default class UsageBarExtension extends Extension {
                 catalog.push({p: row.provider, k: `x:${x.id ?? x.title}`, l: x.title ?? x.id});
         }
         const encoded = catalog.map(e => JSON.stringify(e));
+        const signature = encoded.join('\u0000');
+        if (signature === this._windowCatalogSignature)
+            return;
         const prev = this._settings.get_strv('known-windows');
+        this._windowCatalogSignature = signature;
         if (encoded.length !== prev.length || encoded.some((v, i) => v !== prev[i]))
             this._settings.set_strv('known-windows', encoded);
     }
@@ -3004,31 +3506,8 @@ export default class UsageBarExtension extends Extension {
         const iconWrap = new St.Bin({
             style_class: 'usagebar-compact-icon-wrap',
             y_align: Clutter.ActorAlign.CENTER,
+            child: this._providerIcon(row.provider, 20),
         });
-        const meta = PROVIDER_META[row.provider];
-        const iconFile = this.dir.get_child('icons').get_child(`ProviderIcon-${row.provider}.svg`);
-        let iconActor;
-        if (iconFile.query_exists(null)) {
-            const gicon = new Gio.FileIcon({file: iconFile});
-            iconActor = new St.Icon({
-                gicon,
-                icon_size: 20,
-                style_class: 'usagebar-compact-icon',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (meta?.color)
-                iconActor.set_style(`color: ${meta.color};`);
-        } else {
-            iconActor = new St.Icon({
-                icon_name: 'application-x-executable-symbolic',
-                icon_size: 20,
-                style_class: 'usagebar-compact-icon',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (meta?.color)
-                iconActor.set_style(`color: ${meta.color};`);
-        }
-        iconWrap.set_child(iconActor);
         head.add_child(iconWrap);
 
         head.add_child(new St.Label({
@@ -3197,109 +3676,7 @@ export default class UsageBarExtension extends Extension {
         return card;
     }
 
-    _buildCompactRow(row, index, totalCount) {
-        const rowBox = new St.BoxLayout({
-            vertical: true,
-            style_class: 'usagebar-compact-row',
-            x_expand: true,
-        });
-
-        const mainRow = new St.BoxLayout({
-            style_class: 'usagebar-compact-inner',
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-
-        // 1. Clickable content area: brand icon + body (title, subtitle, metrics)
-        const contentBtn = new St.Button({
-            style_class: 'usagebar-compact-content-btn',
-            x_expand: true,
-            reactive: true,
-            can_focus: true,
-        });
-        contentBtn.connect('clicked', () => {
-            this._selectedProvider = row.provider;
-            this._render();
-        });
-
-        const contentBox = new St.BoxLayout({
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-            style_class: 'usagebar-compact-content-box',
-        });
-
-        // Brand icon
-        const iconWrap = new St.Bin({
-            style_class: 'usagebar-compact-icon-wrap',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        const meta = PROVIDER_META[row.provider];
-        const iconFile = this.dir.get_child('icons').get_child(`ProviderIcon-${row.provider}.svg`);
-        let iconActor;
-        if (iconFile.query_exists(null)) {
-            const gicon = new Gio.FileIcon({file: iconFile});
-            iconActor = new St.Icon({
-                gicon,
-                icon_size: 20,
-                style_class: 'usagebar-compact-icon',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (meta?.color)
-                iconActor.set_style(`color: ${meta.color};`);
-        } else {
-            iconActor = new St.Icon({
-                icon_name: 'application-x-executable-symbolic',
-                icon_size: 20,
-                style_class: 'usagebar-compact-icon',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (meta?.color)
-                iconActor.set_style(`color: ${meta.color};`);
-        }
-        iconWrap.set_child(iconActor);
-        contentBox.add_child(iconWrap);
-
-        // Body: Top line (Title + Subtitle), Bottom line (Metrics)
-        const body = new St.BoxLayout({
-            vertical: true,
-            style_class: 'usagebar-compact-body',
-            x_expand: true,
-        });
-
-        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-compact-head'});
-        head.add_child(new St.Label({
-            text: this._displayName(row.provider),
-            style_class: 'usagebar-compact-title',
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
-
-        let subtitle = '';
-        if (row.error) {
-            subtitle = row.error.message ?? 'fetch failed';
-        } else {
-            for (const {w} of windowsOf(row)) {
-                const rt = resetText(w);
-                if (rt) {
-                    subtitle = rt;
-                    break;
-                }
-            }
-        }
-        if (subtitle) {
-            head.add_child(new St.Label({
-                text: subtitle,
-                style_class: row.error ? 'usagebar-banner usagebar-compact-subtitle' : 'usagebar-dim usagebar-compact-subtitle',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
-        body.add_child(head);
-
-        // Bottom line: metrics
-        const metricsBox = new St.BoxLayout({
-            style_class: 'usagebar-compact-metrics',
-            x_expand: true,
-        });
-
+    _compactDisplayItems(row) {
         const items = [];
         for (const {w, slot} of windowsOf(row)) {
             if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
@@ -3312,40 +3689,26 @@ export default class UsageBarExtension extends Extension {
 
         const extras = extraWindowsOf(row);
         if (row.provider === 'antigravity') {
-            // Antigravity in All view: user switch selects Gemini (default) vs Claude/GPT models
             const useGemini = DISPLAY.antigravityOverviewGemini !== false;
             for (const x of extras) {
                 if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
                     continue;
                 const isGemini = x.id.includes('gemini');
-                if ((useGemini && isGemini) || (!useGemini && !isGemini)) {
-                    items.push({
-                        label: compactWindowLabel(x.title ?? x.id),
-                        w: x.window,
-                    });
-                }
+                if ((useGemini && isGemini) || (!useGemini && !isGemini))
+                    items.push({label: compactWindowLabel(x.title ?? x.id), w: x.window});
             }
         } else if (row.provider === 'codex') {
-            // Codex in All view: ensure 5h session bar is present (from Spark 5h if primary is null)
             const has5h = items.some(it => it.label === '5h');
             for (const x of extras) {
                 if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
                     continue;
                 const label = compactWindowLabel(x.title ?? x.id);
-                if (!has5h && label === '5h') {
-                    items.unshift({
-                        label,
-                        w: x.window,
-                    });
-                } else if (DISPLAY.showExtras) {
-                    items.push({
-                        label,
-                        w: x.window,
-                    });
-                }
+                if (!has5h && label === '5h')
+                    items.unshift({label, w: x.window});
+                else if (DISPLAY.showExtras)
+                    items.push({label, w: x.window});
             }
         } else if (row.provider === 'claude') {
-            // Claude in All view: include Fable only window alongside 5h, wk, and Sonnet; never Daily Routines
             for (const x of extras) {
                 if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
                     continue;
@@ -3355,25 +3718,18 @@ export default class UsageBarExtension extends Extension {
                 if (isRoutine)
                     continue;
                 const label = compactWindowLabel(x.title ?? x.id);
-                if (label === 'Fable' || DISPLAY.showExtras) {
-                    items.push({
-                        label,
-                        w: x.window,
-                    });
-                }
+                if (label === 'Fable' || DISPLAY.showExtras)
+                    items.push({label, w: x.window});
             }
         } else if (DISPLAY.showExtras) {
             for (const x of extras) {
                 if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
                     continue;
-                items.push({
-                    label: compactWindowLabel(x.title ?? x.id),
-                    w: x.window,
-                });
+                items.push({label: compactWindowLabel(x.title ?? x.id), w: x.window});
             }
         }
 
-        let displayItems = [];
+        const displayItems = [];
         const seenLabels = new Set();
         for (const item of items) {
             if (!seenLabels.has(item.label)) {
@@ -3392,7 +3748,121 @@ export default class UsageBarExtension extends Extension {
                 }
             }
         }
-        const extraCount = items.length - displayItems.length;
+        displayItems.extraCount = items.length - displayItems.length;
+        return displayItems;
+    }
+
+    _compactRowStructureKey(row) {
+        const items = this._compactDisplayItems(row);
+        return JSON.stringify({
+            provider: row.provider,
+            error: !!row.error,
+            subtitle: !!(row.error || windowsOf(row).some(({w}) => resetText(w))),
+            labels: items.map(item => item.label),
+            extraCount: items.extraCount,
+        });
+    }
+
+    _buildCompactRow(row, index, totalCount) {
+        const rowBox = new St.BoxLayout({
+            vertical: true,
+            style_class: 'usagebar-compact-row',
+            x_expand: true,
+        });
+        const state = {
+            rowBox,
+            provider: row.provider,
+            structureKey: this._compactRowStructureKey(row),
+            titleLabel: null,
+            subtitleLabel: null,
+            metricRefs: [],
+            extraLabel: null,
+            unavailableLabel: null,
+            contentBtn: null,
+            upBtn: null,
+            downBtn: null,
+            nextBtn: null,
+            separator: null,
+        };
+
+        const mainRow = new St.BoxLayout({
+            style_class: 'usagebar-compact-inner',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        // 1. Clickable content area: brand icon + body (title, subtitle, metrics)
+        const contentBtn = new St.Button({
+            style_class: 'usagebar-compact-content-btn',
+            x_expand: true,
+            reactive: true,
+            can_focus: true,
+        });
+        contentBtn.connect('clicked', () => {
+            this._selectedProvider = state.provider;
+            this._render();
+        });
+        state.contentBtn = contentBtn;
+
+        const contentBox = new St.BoxLayout({
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            style_class: 'usagebar-compact-content-box',
+        });
+
+        // Brand icon
+        const iconWrap = new St.Bin({
+            style_class: 'usagebar-compact-icon-wrap',
+            y_align: Clutter.ActorAlign.CENTER,
+            child: this._providerIcon(row.provider, 20),
+        });
+        contentBox.add_child(iconWrap);
+
+        // Body: Top line (Title + Subtitle), Bottom line (Metrics)
+        const body = new St.BoxLayout({
+            vertical: true,
+            style_class: 'usagebar-compact-body',
+            x_expand: true,
+        });
+
+        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-compact-head'});
+        state.titleLabel = new St.Label({
+            text: this._displayName(row.provider),
+            style_class: 'usagebar-compact-title',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        head.add_child(state.titleLabel);
+
+        let subtitle = '';
+        if (row.error) {
+            subtitle = row.error.message ?? 'fetch failed';
+        } else {
+            for (const {w} of windowsOf(row)) {
+                const rt = resetText(w);
+                if (rt) {
+                    subtitle = rt;
+                    break;
+                }
+            }
+        }
+        if (subtitle) {
+            state.subtitleLabel = new St.Label({
+                text: subtitle,
+                style_class: row.error ? 'usagebar-banner usagebar-compact-subtitle' : 'usagebar-dim usagebar-compact-subtitle',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            head.add_child(state.subtitleLabel);
+        }
+        body.add_child(head);
+
+        // Bottom line: metrics
+        const metricsBox = new St.BoxLayout({
+            style_class: 'usagebar-compact-metrics',
+            x_expand: true,
+        });
+
+        const displayItems = this._compactDisplayItems(row);
+        const extraCount = displayItems.extraCount;
 
         if (displayItems.length > 0) {
             for (const item of displayItems) {
@@ -3436,21 +3906,24 @@ export default class UsageBarExtension extends Extension {
                     y_align: Clutter.ActorAlign.CENTER,
                 });
                 metricItem.add_child(percentLabel);
+                state.metricRefs.push({fill, track, percentLabel});
 
                 metricsBox.add_child(metricItem);
             }
             if (extraCount > 0) {
-                metricsBox.add_child(new St.Label({
+                state.extraLabel = new St.Label({
                     text: `+${extraCount}`,
                     style_class: 'usagebar-dim usagebar-compact-metric-label',
                     y_align: Clutter.ActorAlign.CENTER,
-                }));
+                });
+                metricsBox.add_child(state.extraLabel);
             }
         } else if (row.error) {
-            metricsBox.add_child(new St.Label({
+            state.unavailableLabel = new St.Label({
                 text: 'Unavailable',
                 style_class: 'usagebar-dim',
-            }));
+            });
+            metricsBox.add_child(state.unavailableLabel);
         }
 
         body.add_child(metricsBox);
@@ -3477,11 +3950,10 @@ export default class UsageBarExtension extends Extension {
             icon_size: 11,
             style_class: 'usagebar-btn-icon',
         }));
-        if (index > 0) {
-            upBtn.connect('clicked', () => {
-                this._moveProvider(row.provider, -1);
-            });
-        }
+        upBtn.connect('clicked', () => {
+            this._moveProvider(state.provider, -1);
+        });
+        state.upBtn = upBtn;
         actionsBox.add_child(upBtn);
 
         const downBtn = new St.Button({
@@ -3497,11 +3969,10 @@ export default class UsageBarExtension extends Extension {
             icon_size: 11,
             style_class: 'usagebar-btn-icon',
         }));
-        if (index < totalCount - 1) {
-            downBtn.connect('clicked', () => {
-                this._moveProvider(row.provider, 1);
-            });
-        }
+        downBtn.connect('clicked', () => {
+            this._moveProvider(state.provider, 1);
+        });
+        state.downBtn = downBtn;
         actionsBox.add_child(downBtn);
 
         const nextBtn = new St.Button({
@@ -3516,13 +3987,66 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-btn-icon',
         }));
         nextBtn.connect('clicked', () => {
-            this._selectedProvider = row.provider;
+            this._selectedProvider = state.provider;
             this._render();
         });
+        state.nextBtn = nextBtn;
         actionsBox.add_child(nextBtn);
 
         mainRow.add_child(actionsBox);
         rowBox.add_child(mainRow);
+
+        state.update = (next, nextIndex, nextTotalCount) => {
+            state.provider = next.provider;
+            state.titleLabel.text = this._displayName(next.provider);
+            if (state.subtitleLabel) {
+                let nextSubtitle = '';
+                if (next.error) {
+                    nextSubtitle = next.error.message ?? 'fetch failed';
+                } else {
+                    for (const {w} of windowsOf(next)) {
+                        const rt = resetText(w);
+                        if (rt) {
+                            nextSubtitle = rt;
+                            break;
+                        }
+                    }
+                }
+                state.subtitleLabel.text = nextSubtitle;
+            }
+            const items = this._compactDisplayItems(next);
+            state.metricRefs.forEach((ref, i) => {
+                const item = items[i];
+                if (!item)
+                    return;
+                const known = item.w.usedPercent !== null && item.w.usedPercent !== undefined;
+                const used = known ? Math.max(0, Math.min(100, Math.round(item.w.usedPercent))) : 0;
+                const dispPercent = DISPLAY.barsShowUsed ? used : (100 - used);
+                const sev = severity(used, next.stale || !known);
+                ref.percentLabel.text = known ? `${dispPercent}%` : T.unavailable;
+                ref.percentLabel.style_class = `usagebar-compact-metric-val usagebar-fg-${sev}`;
+                ref.fill.style_class = `usagebar-fill usagebar-bg-${sev}`;
+                ref.fill.set_size((known && used > 0)
+                    ? Math.max(2, Math.round(24 * used / 100)) : 0, 4);
+            });
+            if (state.unavailableLabel)
+                state.unavailableLabel.visible = !!next.error && !items.length;
+            const upClass = nextIndex > 0
+                ? 'usagebar-btn usagebar-action-btn'
+                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled';
+            const downClass = nextIndex < nextTotalCount - 1
+                ? 'usagebar-btn usagebar-action-btn'
+                : 'usagebar-btn usagebar-action-btn usagebar-btn-disabled';
+            state.upBtn.style_class = upClass;
+            state.upBtn.can_focus = nextIndex > 0;
+            state.upBtn.reactive = nextIndex > 0;
+            state.downBtn.style_class = downClass;
+            state.downBtn.can_focus = nextIndex < nextTotalCount - 1;
+            state.downBtn.reactive = nextIndex < nextTotalCount - 1;
+            if (state.extraLabel)
+                state.extraLabel.text = `+${items.extraCount}`;
+        };
+        rowBox._usagebarRowState = state;
 
         return rowBox;
     }

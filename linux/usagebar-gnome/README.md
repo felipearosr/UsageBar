@@ -9,6 +9,10 @@ notifications, and a libadwaita Settings window. This is the primary
 Linux/GNOME surface; the Tauri app in `../codexbar-tray/` is the fallback for
 non-GNOME desktops (KDE, XFCE, …).
 
+After installing an update from the UsageBar menu, log out and back in to let
+GNOME finish loading the update. UsageBar keeps this instruction in its status
+banner until the session ends.
+
 Self-contained: it supervises its own `codexbar serve` child on a free
 loopback port (restart with backoff, killed on disable) and polls
 `GET /usage` / `GET /cost`. Requires the `codexbar` CLI ≥ 0.43.0 — install
@@ -38,6 +42,22 @@ Health check from a running session:
 `gnome-extensions info usagebar@felipearosr.github.io` and
 `journalctl --user -b -g 'usagebar|codexbar'` (no `JS ERROR` lines, state
 ACTIVE, one `codexbar serve` child).
+
+## Tests
+
+Run the dependency-free render-state regression tests and syntax checks with:
+
+```bash
+node --test linux/usagebar-gnome/tests/*.test.mjs
+node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/extension.js
+node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/renderstate.js
+```
+
+The pure state tests cover idle-render coalescing and cancellation, bounded
+cost-cache invalidation (including empty results), keyed provider-row reuse and
+order changes, positive/negative icon lookup caching, and persistent update
+completion guidance. Nested GNOME fixture automation separately exercises the
+live extension’s warm opens, navigation, value updates, and cleanup.
 
 ## Files
 
