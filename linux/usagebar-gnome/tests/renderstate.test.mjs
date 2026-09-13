@@ -7,6 +7,7 @@ import {
     buildSummaryBarSegments,
     cliUpdateCompletionMessage,
     CostOverviewCache,
+    costRangeOptions,
     formatSummaryUSD,
     LifetimeLookupCache,
     reconcileKeyed,
@@ -14,6 +15,15 @@ import {
     summarizeCostRange,
     StatusMessageState,
 } from '../usagebar@felipearosr.github.io/renderstate.js';
+
+test('cost range control exposes all tabs and selects thirty days by default', () => {
+    assert.deepEqual(costRangeOptions(30), [
+        {days: 1, label: 'TODAY', edge: 'left', selected: false},
+        {days: 7, label: '7 DAYS', edge: null, selected: false},
+        {days: 30, label: '30 DAYS', edge: null, selected: true},
+        {days: 90, label: '90 DAYS', edge: 'right', selected: false},
+    ]);
+});
 
 test('cost date ranges end today and include the requested number of local days', () => {
     const today = new Date(2026, 8, 12, 12);

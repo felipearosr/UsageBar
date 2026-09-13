@@ -33,6 +33,7 @@ import {
     buildSummaryBarSegments,
     cliUpdateCompletionMessage,
     CostOverviewCache,
+    costRangeOptions,
     formatSummaryUSD,
     LifetimeLookupCache,
     reconcileKeyed,
@@ -3024,7 +3025,11 @@ export default class UsageBarExtension extends Extension {
     // daily cost line per provider, token KPIs and a per-model table.
     _buildCostPanel(ov, anchor, rangeDays) {
         const panel = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-panel'});
-        const header = new St.BoxLayout({style_class: 'usagebar-ov-header'});
+        const header = new St.BoxLayout({
+            x_expand: true,
+            height: 30,
+            style_class: 'usagebar-ov-header',
+        });
         const close = new St.Button({
             style_class: 'usagebar-btn usagebar-ov-close',
             can_focus: true,
@@ -3041,27 +3046,23 @@ export default class UsageBarExtension extends Extension {
             y_align: Clutter.ActorAlign.CENTER,
         }));
         header.add_child(new St.Widget({x_expand: true}));
-        const rangeSwitch = new St.BoxLayout({style_class: 'usagebar-ov-switch'});
-        const ranges = [
-            [1, 'TODAY'],
-            [7, '7 DAYS'],
-            [30, '30 DAYS'],
-            [90, '90 DAYS'],
-        ];
-        ranges.forEach(([days, label], index) => {
-            const edge = index === 0 ? ' usagebar-ov-switch-left'
-                : index === ranges.length - 1 ? ' usagebar-ov-switch-right' : '';
+        const rangeSwitch = new St.BoxLayout({
+            style_class: 'usagebar-ov-switch',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        costRangeOptions(rangeDays).forEach(option => {
+            const edge = option.edge ? ` usagebar-ov-switch-${option.edge}` : '';
             const button = new St.Button({
-                label,
+                label: option.label,
                 can_focus: true,
-                style_class: `usagebar-ov-switch-button${edge}${days === rangeDays ? ' selected' : ''}`,
+                style_class: `usagebar-ov-switch-button${edge}${option.selected ? ' selected' : ''}`,
             });
             button.connect('clicked', () => {
-                if (days === rangeDays)
+                if (option.selected)
                     return;
-                const overview = this._costOverview(days);
+                const overview = this._costOverview(option.days);
                 if (overview)
-                    this._showCostPanel(anchor, overview, days);
+                    this._showCostPanel(anchor, overview, option.days);
             });
             rangeSwitch.add_child(button);
         });

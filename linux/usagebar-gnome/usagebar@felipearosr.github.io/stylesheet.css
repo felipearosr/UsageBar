@@ -400,6 +400,7 @@
 }
 
 .usagebar-ov-header {
+  min-height: 30px;
   spacing: 10px;
   margin-bottom: 14px;
 }

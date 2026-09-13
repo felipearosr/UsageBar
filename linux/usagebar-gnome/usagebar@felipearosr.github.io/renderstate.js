@@ -71,6 +71,15 @@ export function buildCostDateRange(days, now = new Date()) {
     return dates;
 }
 
+export function costRangeOptions(selectedDays = 30) {
+    return [
+        {days: 1, label: 'TODAY', edge: 'left'},
+        {days: 7, label: '7 DAYS', edge: null},
+        {days: 30, label: '30 DAYS', edge: null},
+        {days: 90, label: '90 DAYS', edge: 'right'},
+    ].map(option => ({...option, selected: option.days === selectedDays}));
+}
+
 export function summarizeCostRange(daily, dates) {
     const included = new Set(dates);
     const selected = daily.filter(day => included.has(day.date));
