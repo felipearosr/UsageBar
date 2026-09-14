@@ -58,6 +58,7 @@ const STATUS_BAR_HEIGHT = 18;
 const BAR_WIDTH = 320;
 const KPI_COL_WIDTH = 180; // left column of the 2x2 cost grid
 const CHART_HEIGHT = 44; // daily cost/token trend bars
+const TREND_CHART_DAYS = 30; // mini chart window, matching the macOS inline dashboard
 const COST_HINTS = {
     codex: 'Estimated from local Codex logs for the selected account.',
     claude: 'Estimated from local logs · may differ from your bill',
@@ -510,10 +511,10 @@ function fmtTokens(n) {
     return String(n);
 }
 
+// All dollar amounts share formatSummaryUSD's rule: cents under $10,
+// whole dollars (truncated) otherwise. Null-safe for the "—" placeholders.
 function fmtUSD(v) {
-    return v === null || v === undefined
-        ? null
-        : `$${v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    return v === null || v === undefined ? null : formatSummaryUSD(v);
 }
 
 // Cost as a 2x2 label-over-value grid, like the macOS inline dashboard:
@@ -540,17 +541,18 @@ function costKpis(report) {
 }
 
 // Daily trend values for the mini bar chart (port of the macOS inline
-// dashboard): a continuous series of the last historyDays days ending
-// today — days without usage are zero (1px stub) so the rightmost bar is
-// always today. Dollars when the report is priced, tokens otherwise.
-// Null when there is no history at all.
-function chartPoints(report) {
+// dashboard): a continuous series of the last `limit` days ending today —
+// days without usage are zero (1px stub) so the rightmost bar is always
+// today. The macOS inline dashboard caps this at 30 days; the cost report
+// carries more (up to 90) for the dashboard's range selector. Dollars when
+// the report is priced, tokens otherwise. Null when there is no history.
+function chartPoints(report, limit = TREND_CHART_DAYS) {
     const daily = report?.daily ?? [];
     if (!daily.length)
         return null;
     const byDate = new Map(daily.map(d => [d.date, d]));
     const useCost = daily.some(d => typeof d.totalCost === 'number');
-    const days = report.historyDays ?? 30;
+    const days = Math.min(report.historyDays ?? TREND_CHART_DAYS, limit);
     const now = new Date();
     const points = [];
     for (let i = days - 1; i >= 0; i--) {
@@ -1021,9 +1023,10 @@ const LEGEND_COLLAPSED_COUNT = 2;
 
 // Colored legend under the chart: one dot + summed metric per model,
 // largest first. Shows the top two in a row (plus a "+N" hint); hovering
-// expands it into a vertical list of every model. Colors match the stacked
-// bar segments above it. Null when no day carries a model breakdown.
-function buildModelLegend(points, colors) {
+// shows a floating table of every model ranked by share of the total
+// (onHoverChange(anchor, rows)). Colors match the stacked bar segments
+// above it. Null when no day carries a model breakdown.
+function buildModelLegend(points, colors, onHoverChange) {
     const totals = new Map();
     for (const p of points) {
         for (const [name, v] of p.models)
@@ -1032,24 +1035,26 @@ function buildModelLegend(points, colors) {
     if (!totals.size)
         return null;
     const useCost = points.some(p => p.cost !== null);
+    const ordered = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+    const total = ordered.reduce((sum, [, v]) => sum + v, 0);
     const legend = new St.BoxLayout({
         style_class: 'usagebar-models',
         reactive: true,
         track_hover: true,
     });
     const entries = [];
-    for (const [name, total] of [...totals.entries()].sort((a, b) => b[1] - a[1])) {
+    for (const [name, value] of ordered) {
         const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
         entry.add_child(new St.Widget({
             style: `width: 8px; height: 8px; border-radius: 4px;` +
                 `background-color: ${colors.get(name) ?? '#9a9996'};`,
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        const value = useCost
-            ? (fmtUSD(total) ?? `$${total.toFixed(1)}`)
-            : `${fmtTokens(total)} tok`;
+        const shown = useCost
+            ? (fmtUSD(value) ?? `$${value.toFixed(1)}`)
+            : `${fmtTokens(value)} tok`;
         entry.add_child(new St.Label({
-            text: `${name.replace(/^claude-/, '')} ${value}`,
+            text: `${name.replace(/^claude-/, '')} ${shown}`,
             style_class: 'usagebar-dim',
             y_align: Clutter.ActorAlign.CENTER,
         }));
@@ -1065,16 +1070,23 @@ function buildModelLegend(points, colors) {
         y_align: Clutter.ActorAlign.CENTER,
     });
     legend.add_child(more);
-    const sync = () => {
-        const expanded = legend.hover;
-        legend.vertical = expanded;
-        entries.forEach((e, i) => {
-            e.visible = expanded || i < LEGEND_COLLAPSED_COUNT;
-        });
-        more.visible = !expanded;
-    };
-    legend.connect('notify::hover', sync);
-    sync();
+    entries.forEach((e, i) => {
+        e.visible = i < LEGEND_COLLAPSED_COUNT;
+    });
+    const rows = ordered.map(([name, value]) => ({
+        name: name.replace(/^claude-/, ''),
+        color: colors.get(name) ?? '#9a9996',
+        value: useCost
+            ? (fmtUSD(value) ?? `$${value.toFixed(1)}`)
+            : `${fmtTokens(value)} tok`,
+        pct: total > 0 ? value / total * 100 : 0,
+    }));
+    legend.connect('notify::hover', () => {
+        if (legend.hover)
+            onHoverChange?.(legend, rows);
+        else
+            onHoverChange?.(null, null);
+    });
     return legend;
 }
 
@@ -1507,6 +1519,7 @@ class UsageBarIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(this._statusItem);
 
         const detailItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        detailItem.add_style_class_name('usagebar-detail-item');
         this._detailBox = new St.BoxLayout({vertical: true, x_expand: true});
         detailItem.add_child(this._detailBox);
         this.menu.addMenuItem(detailItem);
@@ -1516,6 +1529,14 @@ class UsageBarIndicator extends PanelMenu.Button {
         // destroyed with the indicator.
         this._tooltip = new St.Label({style_class: 'usagebar-tooltip', visible: false});
         Main.uiGroup.add_child(this._tooltip);
+        // Floating model-share table shown while the chart legend is
+        // hovered; same lifecycle as the tooltip.
+        this._modelTable = new St.BoxLayout({
+            vertical: true,
+            style_class: 'usagebar-model-table',
+            visible: false,
+        });
+        Main.uiGroup.add_child(this._modelTable);
         // Full cost dashboard shown while the All-view spend row is
         // hovered; same lifecycle as the tooltip.
         // It sits outside the menu, and the menu's grab closes the menu on
@@ -1539,12 +1560,15 @@ class UsageBarIndicator extends PanelMenu.Button {
         this.menu.connect('open-state-changed', (_menu, open) => {
             if (!open) {
                 this._tooltip?.hide();
+                this._modelTable?.hide();
                 this._closeCostPanel();
             }
         });
         this.connect('destroy', () => {
             this._tooltip?.destroy();
             this._tooltip = null;
+            this._modelTable?.destroy();
+            this._modelTable = null;
             this._closeCostPanel();
             this._costPanel?.destroy();
             this._costPanel = null;
@@ -1561,6 +1585,7 @@ class UsageBarIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const footerItem = (text, icon, accel) => {
             const item = new PopupMenu.PopupImageMenuItem(text, icon);
+            item.add_style_class_name('usagebar-footer-item');
             if (accel) {
                 item.add_child(new St.Label({
                     text: accel,
@@ -1575,15 +1600,12 @@ class UsageBarIndicator extends PanelMenu.Button {
         };
         this._updateItem = footerItem('', 'software-update-available-symbolic');
         this._updateItem.visible = false;
-        this._refreshItem = footerItem('Refresh', 'view-refresh-symbolic', 'Ctrl+R');
         this._settingsItem = footerItem('Settings…', 'emblem-system-symbolic', 'Ctrl+,');
         this._aboutItem = footerItem('About UsageBar', 'help-about-symbolic');
         this._quitItem = footerItem('Quit', 'application-exit-symbolic', 'Ctrl+Q');
 
         // Accelerators, live while the menu holds the keyboard grab.
         const accels = {
-            [Clutter.KEY_r]: this._refreshItem,
-            [Clutter.KEY_R]: this._refreshItem,
             [Clutter.KEY_comma]: this._settingsItem,
             [Clutter.KEY_q]: this._quitItem,
             [Clutter.KEY_Q]: this._quitItem,
@@ -1942,7 +1964,6 @@ export default class UsageBarExtension extends Extension {
         this._indicator.setAppTheme(DISPLAY.appTheme);
         this._indicator._settingsItem.connect('activate', () => this.openPreferences());
         this._indicator._refreshButton.connect('clicked', () => this._fetchUsage(true));
-        this._indicator._refreshItem.connect('activate', () => this._fetchUsage(true));
         this._indicator._aboutItem.connect('activate', () => this._showAbout());
         this._indicator._updateItem.connect('activate', () => this._applyUpdate());
         this._indicator._quitItem.connect('activate', () => {
@@ -2572,9 +2593,21 @@ export default class UsageBarExtension extends Extension {
                     provider: 'claude',
                     usage: {primary: {usedPercent: 25}},
                 });
-                assertions.push(assertion('overview row has only its details action',
-                    compact._usagebarRowState.actionsBox.get_n_children() === 1));
+                assertions.push(assertion('overview row exposes a single details action',
+                    compact._usagebarRowState.contentBtn?.reactive === true));
+                assertions.push(assertion('overview row tracks hover',
+                    compact._usagebarRowState.rowBox.reactive === true &&
+                    compact._usagebarRowState.rowBox.track_hover === true));
                 compact.destroy();
+                const trendReport = {
+                    historyDays: COST_HISTORY_DAYS,
+                    daily: dates.map(date => ({
+                        date, totalCost: 1, totalTokens: 1, modelBreakdowns: [],
+                    })),
+                };
+                assertions.push(assertion('mini trend chart caps at 30 days',
+                    chartPoints(trendReport).length === TREND_CHART_DAYS,
+                    {actual: chartPoints(trendReport).length}));
                 this._costs = providers.map((provider, providerIndex) => ({
                     provider,
                     source: 'qa-fixture',
@@ -2839,6 +2872,7 @@ export default class UsageBarExtension extends Extension {
         const detail = this._indicator._detailBox;
         this._indicator._closeCostPanel();
         this._indicator._tooltip?.hide();
+        this._hideModelTable();
         for (const child of detail.get_children()) {
             if (child === this._overviewView?.container)
                 detail.remove_child(child);
@@ -2863,6 +2897,7 @@ export default class UsageBarExtension extends Extension {
     _renderOverview(rows) {
         const detail = this._indicator._detailBox;
         this._indicator._tooltip?.hide();
+        this._hideModelTable();
         let view = this._overviewView;
         if (!view) {
             const container = new St.BoxLayout({vertical: true, x_expand: true});
@@ -2872,7 +2907,7 @@ export default class UsageBarExtension extends Extension {
                 rowsBox: new St.BoxLayout({vertical: true, x_expand: true}),
                 emptyLabel: new St.Label({
                     text: 'No usage data yet.',
-                    style_class: 'usagebar-dim',
+                    style_class: 'usagebar-dim usagebar-detail-empty',
                 }),
                 rows: new Map(),
                 summaryButton: null,
@@ -2902,7 +2937,7 @@ export default class UsageBarExtension extends Extension {
                 view.summaryButton = this._buildCostSummary(overview);
                 view.summaryHost.add_child(view.summaryButton);
                 view.summaryHost.add_child(new St.Widget({
-                    style_class: 'usagebar-separator',
+                    style_class: 'usagebar-separator usagebar-row-sep',
                     height: 1,
                     x_expand: true,
                 }));
@@ -2961,7 +2996,7 @@ export default class UsageBarExtension extends Extension {
                 const state = view.rows.get(row.provider);
                 if (index > 0) {
                     state.separator ??= new St.Widget({
-                        style_class: 'usagebar-separator',
+                        style_class: 'usagebar-separator usagebar-row-sep',
                         height: 1,
                         x_expand: true,
                     });
@@ -3077,6 +3112,60 @@ export default class UsageBarExtension extends Extension {
         let x = Math.round(ax + anchor.get_width() / 2 - tw / 2);
         x = Math.max(monitor.x + 4, Math.min(x, monitor.x + monitor.width - tw - 4));
         tip.set_position(x, Math.round(ay - th - 6));
+    }
+
+    // Floating table of every model in the chart legend, ranked with its
+    // share of the total. Shown beside the legend while it is hovered.
+    _showModelTable(anchor, rows) {
+        const table = this._indicator?._modelTable;
+        if (!table)
+            return;
+        table.destroy_all_children();
+        for (const row of rows) {
+            const line = new St.BoxLayout({style_class: 'usagebar-model-table-row', x_expand: true});
+            line.add_child(new St.Widget({
+                style: `width: 8px; height: 8px; border-radius: 4px;` +
+                    `background-color: ${row.color};`,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            line.add_child(new St.Label({
+                text: row.name,
+                style_class: 'usagebar-dim',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            line.add_child(new St.Label({
+                text: row.value,
+                style_class: 'usagebar-model-table-value',
+                x_align: Clutter.ActorAlign.END,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            line.add_child(new St.Label({
+                text: `${row.pct.toFixed(1)}%`,
+                style_class: 'usagebar-model-table-pct',
+                x_align: Clutter.ActorAlign.END,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            table.add_child(line);
+        }
+        // The open menu is a later addition to uiGroup — restack or the
+        // table renders behind it.
+        Main.uiGroup.set_child_above_sibling(table, null);
+        table.show();
+        const [ax, ay] = anchor.get_transformed_position();
+        const [, natW] = table.get_preferred_width(-1);
+        const [, natH] = table.get_preferred_height(-1);
+        const monitor = Main.layoutManager.currentMonitor;
+        let x = Math.round(ax + anchor.get_width() + 10);
+        if (x + natW > monitor.x + monitor.width - 8)
+            x = Math.round(ax - natW - 10);
+        const y = Math.max(monitor.y + 8,
+            Math.min(Math.round(ay), monitor.y + monitor.height - natH - 8));
+        table.set_position(x, y);
+    }
+
+    _hideModelTable() {
+        this._indicator?._modelTable?.hide();
     }
 
     _providerIcon(provider, size) {
@@ -3861,7 +3950,12 @@ export default class UsageBarExtension extends Extension {
         const brand = PROVIDER_META[row.provider]?.color;
         const trend = chartPoints(report);
         const colors = trend ? modelColorsFromPoints(trend, brand) : new Map();
-        const legend = trend ? buildModelLegend(trend, colors) : null;
+        const legend = trend ? buildModelLegend(trend, colors, (anchor, rows) => {
+            if (anchor)
+                this._showModelTable(anchor, rows);
+            else
+                this._hideModelTable();
+        }) : null;
         if (flat && (credits || kpis || legend))
             addSeparator();
         if (credits) {
@@ -4040,6 +4134,8 @@ export default class UsageBarExtension extends Extension {
             vertical: true,
             style_class: 'usagebar-compact-row',
             x_expand: true,
+            reactive: true,
+            track_hover: true,
         });
         const state = {
             rowBox,
@@ -4051,8 +4147,6 @@ export default class UsageBarExtension extends Extension {
             extraLabel: null,
             unavailableLabel: null,
             contentBtn: null,
-            actionsBox: null,
-            nextBtn: null,
             separator: null,
         };
 
@@ -4201,33 +4295,6 @@ export default class UsageBarExtension extends Extension {
         contentBox.add_child(body);
         contentBtn.set_child(contentBox);
         mainRow.add_child(contentBtn);
-
-        // Provider details navigation.
-        const actionsBox = new St.BoxLayout({
-            style_class: 'usagebar-compact-actions',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        state.actionsBox = actionsBox;
-
-        const nextBtn = new St.Button({
-            style_class: 'usagebar-btn usagebar-action-btn usagebar-next-btn',
-            can_focus: true,
-            reactive: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        nextBtn.add_child(new St.Icon({
-            icon_name: 'go-next-symbolic',
-            icon_size: 11,
-            style_class: 'usagebar-btn-icon',
-        }));
-        nextBtn.connect('clicked', () => {
-            this._selectedProvider = state.provider;
-            this._render();
-        });
-        state.nextBtn = nextBtn;
-        actionsBox.add_child(nextBtn);
-
-        mainRow.add_child(actionsBox);
         rowBox.add_child(mainRow);
 
         state.update = next => {

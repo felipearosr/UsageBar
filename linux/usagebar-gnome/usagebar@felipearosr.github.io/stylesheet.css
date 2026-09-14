@@ -88,6 +88,12 @@
   font-size: 9pt;
 }
 
+/* Footer rows (Settings / About / Quit): 8px tall, 12px sides to match the
+   header/content side padding. */
+.usagebar-footer-item {
+  padding: 8px 12px;
+}
+
 .usagebar-banner {
   color: #f5c211;
   font-size: 9.5pt;
@@ -107,23 +113,6 @@
 
 .usagebar-back-icon {
   icon-size: 14px;
-}
-
-.usagebar-action-btn {
-  width: 20px;
-  height: 20px;
-  padding: 2px;
-  border-radius: 4px;
-}
-
-.usagebar-compact-row:hover .usagebar-action-btn,
-.usagebar-compact-row:focus .usagebar-action-btn {
-  background-color: rgba(160, 160, 166, 0.2);
-  color: #ffffff;
-}
-
-.usagebar-compact-actions {
-  spacing: 2px;
 }
 
 .usagebar-compact-content-btn {
@@ -147,7 +136,7 @@
 /* Per-provider tabs: same content, no card chrome — sections are split by
    .usagebar-separator rules instead. */
 .usagebar-card-flat {
-  padding: 4px 2px;
+  padding: 4px 14px;
   margin: 4px 0;
   spacing: 4px;
 }
@@ -158,17 +147,25 @@
   margin-bottom: 4px;
 }
 
+/* Overview row dividers sit centered between rows, so the space above and
+   below each provider row is equal. */
+.usagebar-row-sep {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
 /* Compact overview rows (All tab) */
 .usagebar-compact-row {
   background-color: transparent;
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 12px;
+  padding: 6px 12px;
   margin: 2px 0;
 }
 
+/* Match the popup-menu-item hover the footer items use. */
 .usagebar-compact-row:hover,
 .usagebar-compact-row:focus {
-  background-color: rgba(128, 128, 128, 0.15);
+  background-color: rgba(128, 128, 128, 0.55);
 }
 
 .usagebar-compact-inner {
@@ -178,8 +175,6 @@
 .usagebar-compact-icon-wrap {
   width: 26px;
   height: 26px;
-  border-radius: 6px;
-  background-color: rgba(128, 128, 128, 0.18);
   padding: 3px;
 }
 
@@ -324,6 +319,33 @@
   spacing: 5px;
 }
 
+/* Floating model-share table shown beside the chart legend on hover. */
+.usagebar-model-table {
+  background-color: rgba(28, 28, 32, 0.97);
+  border: 1px solid rgba(160, 160, 166, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  spacing: 4px;
+  color: #eeeeec;
+}
+
+.usagebar-model-table-row {
+  spacing: 8px;
+}
+
+.usagebar-model-table-value {
+  color: rgba(200, 200, 206, 0.9);
+  font-size: 9pt;
+  min-width: 72px;
+}
+
+.usagebar-model-table-pct {
+  color: #ffffff;
+  font-size: 9.5pt;
+  font-weight: bold;
+  min-width: 46px;
+}
+
 .usagebar-chart-wrap {
   margin-top: 12px;
 }
@@ -370,9 +392,23 @@
   font-size: 9pt;
 }
 
+/* The detail item spans the full popover width so its rows' hover tiles
+   line up with the footer items; the content re-adds the side padding. */
+.usagebar-detail-item {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.usagebar-detail-empty {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
 /* All-view spend row + its hover cost dashboard */
 .usagebar-ov-summary {
   spacing: 6px;
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 .usagebar-ov-split {
