@@ -16,5 +16,6 @@ echo "ℹ️  Click the UsageBar chip in the top panel of the nested window to t
 echo "ℹ️  Close the window or press Ctrl+C to exit."
 
 DCONF_PROFILE=/tmp/codexbar-dconf-profile dbus-run-session -- sh -c '
+  gsettings set org.gnome.shell disabled-extensions "[]"
   gsettings set org.gnome.shell enabled-extensions "[\"usagebar@felipearosr.github.io\"]"
   exec gnome-shell --devkit'
