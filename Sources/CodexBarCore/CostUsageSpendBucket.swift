@@ -135,3 +135,37 @@ extension CostUsageScanner {
         }
     }
 }
+
+extension CostUsageSpendBucket {
+    /// All local-log Spend Buckets for `provider`: the provider's own session logs plus Pi sessions that ran
+    /// against it, merged per hour × model. Account Billing sources never feed this path.
+    static func loadLocalLogBuckets(
+        provider: UsageProvider,
+        since: Date,
+        until: Date,
+        now: Date = Date(),
+        scannerOptions: CostUsageScanner.Options = CostUsageScanner.Options(),
+        piOptions: PiSessionCostScanner.Options = PiSessionCostScanner.Options(),
+        checkCancellation: CostUsageScanner.CancellationCheck? = nil) throws -> [CostUsageSpendBucket]
+    {
+        var piOptions = piOptions
+        if piOptions.cacheRoot == nil {
+            piOptions.cacheRoot = scannerOptions.cacheRoot
+        }
+        let native = try CostUsageScanner.loadSpendBuckets(
+            provider: provider,
+            since: since,
+            until: until,
+            now: now,
+            options: scannerOptions,
+            checkCancellation: checkCancellation)
+        let pi = try PiSessionCostScanner.loadSpendBuckets(
+            provider: provider,
+            since: since,
+            until: until,
+            now: now,
+            options: piOptions,
+            checkCancellation: checkCancellation)
+        return Self.merged(native, pi)
+    }
+}
