@@ -656,6 +656,50 @@ extension CostUsageScanner {
         options: Options,
         checkCancellation: CancellationCheck?) throws -> CostUsageDailyReport
     {
+        let cache = try Self.refreshClaudeCache(
+            provider: provider,
+            range: range,
+            now: now,
+            options: options,
+            checkCancellation: checkCancellation)
+        let modelsDevCatalog = CostUsagePricing.modelsDevCatalog(now: now, cacheRoot: options.cacheRoot)
+        return Self.buildClaudeReportFromCache(
+            cache: cache,
+            range: range,
+            modelsDevCatalog: modelsDevCatalog,
+            modelsDevCacheRoot: options.cacheRoot)
+    }
+
+    static func loadClaudeSpendBuckets(
+        since: Date,
+        until: Date,
+        now: Date,
+        options: Options,
+        checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
+    {
+        let range = CostUsageDayRange(since: since, until: until)
+        let cache = try Self.refreshClaudeCache(
+            provider: .claude,
+            range: range,
+            now: now,
+            options: options,
+            checkCancellation: checkCancellation)
+        let modelsDevCatalog = CostUsagePricing.modelsDevCatalog(now: now, cacheRoot: options.cacheRoot)
+        return Self.buildClaudeSpendBucketsFromCache(
+            cache: cache,
+            since: since,
+            until: until,
+            modelsDevCatalog: modelsDevCatalog,
+            modelsDevCacheRoot: options.cacheRoot)
+    }
+
+    private static func refreshClaudeCache(
+        provider: UsageProvider,
+        range: CostUsageDayRange,
+        now: Date,
+        options: Options,
+        checkCancellation: CancellationCheck?) throws -> CostUsageCache
+    {
         var cache = CostUsageCacheIO.load(provider: provider, cacheRoot: options.cacheRoot)
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
 
@@ -710,13 +754,68 @@ extension CostUsageScanner {
             try checkCancellation?()
             CostUsageCacheIO.save(provider: provider, cache: cache, cacheRoot: options.cacheRoot)
         }
+        return cache
+    }
 
-        let modelsDevCatalog = CostUsagePricing.modelsDevCatalog(now: now, cacheRoot: options.cacheRoot)
-        return Self.buildClaudeReportFromCache(
-            cache: cache,
-            range: range,
+    /// Current-pricing cost for one cached row, or `nil` when the row's model can't be priced.
+    private static func claudeRowCostUSD(
+        _ row: ClaudeUsageRow,
+        modelsDevCatalog: ModelsDevCatalog?,
+        modelsDevCacheRoot: URL?) -> Double?
+    {
+        let isPriced = row.costPriced ?? (row.costNanos > 0)
+        let currentPricingCost = CostUsagePricing.claudeCostUSD(
+            model: row.model,
+            inputTokens: row.input,
+            cacheReadInputTokens: row.cacheRead,
+            cacheCreationInputTokens: row.cacheCreate,
+            cacheCreationInputTokens1h: row.cacheCreate1h ?? 0,
+            outputTokens: row.output,
+            pricingDate: row.timestampUnixMs.map {
+                Date(timeIntervalSince1970: Double($0) / 1000)
+            },
             modelsDevCatalog: modelsDevCatalog,
-            modelsDevCacheRoot: options.cacheRoot)
+            modelsDevCacheRoot: modelsDevCacheRoot)
+        return if isPriced, row.costNanos == 0 {
+            0
+        } else if let currentPricingCost {
+            currentPricingCost
+        } else if isPriced {
+            Double(row.costNanos) / 1_000_000_000.0
+        } else {
+            nil
+        }
+    }
+
+    private static func buildClaudeSpendBucketsFromCache(
+        cache: CostUsageCache,
+        since: Date,
+        until: Date,
+        modelsDevCatalog: ModelsDevCatalog?,
+        modelsDevCacheRoot: URL?) -> [CostUsageSpendBucket]
+    {
+        var buckets: [CostUsageSpendBucket] = []
+        for row in Self.reconciledClaudeRows(cache: cache) {
+            // Rows cached before timestamps were recorded can't be placed in an hour.
+            guard let timestampUnixMs = row.timestampUnixMs else { continue }
+            let date = Date(timeIntervalSince1970: Double(timestampUnixMs) / 1000)
+            guard date >= since, date < until else { continue }
+            buckets.append(CostUsageSpendBucket(
+                hourStart: CostUsageSpendBucket.hourStart(of: date),
+                provider: .claude,
+                model: row.model,
+                costUSD: Self.claudeRowCostUSD(
+                    row,
+                    modelsDevCatalog: modelsDevCatalog,
+                    modelsDevCacheRoot: modelsDevCacheRoot),
+                inputTokens: row.input,
+                outputTokens: row.output,
+                cacheReadTokens: row.cacheRead,
+                cacheCreationTokens: row.cacheCreate,
+                totalTokens: row.input + row.cacheRead + row.cacheCreate + row.output,
+                requests: 1))
+        }
+        return CostUsageSpendBucket.merged(buckets)
     }
 
     private static func buildClaudeReportFromCache(
@@ -733,35 +832,16 @@ extension CostUsageScanner {
         var totalTokens = 0
         var totalCost: Double = 0
         var costSeen = false
-        let costScale = 1_000_000_000.0
         var repricedCosts: [ClaudeDayModelKey: ClaudeRepricedCost] = [:]
 
         for row in Self.reconciledClaudeRows(cache: cache) {
             let key = ClaudeDayModelKey(day: row.dayKey, model: row.model)
             var aggregate = repricedCosts[key] ?? ClaudeRepricedCost()
             aggregate.sampleCount += 1
-            let isPriced = row.costPriced ?? (row.costNanos > 0)
-            let currentPricingCost = CostUsagePricing.claudeCostUSD(
-                model: row.model,
-                inputTokens: row.input,
-                cacheReadInputTokens: row.cacheRead,
-                cacheCreationInputTokens: row.cacheCreate,
-                cacheCreationInputTokens1h: row.cacheCreate1h ?? 0,
-                outputTokens: row.output,
-                pricingDate: row.timestampUnixMs.map {
-                    Date(timeIntervalSince1970: Double($0) / 1000)
-                },
+            let cost = Self.claudeRowCostUSD(
+                row,
                 modelsDevCatalog: modelsDevCatalog,
                 modelsDevCacheRoot: modelsDevCacheRoot)
-            let cost: Double? = if isPriced, row.costNanos == 0 {
-                0
-            } else if let currentPricingCost {
-                currentPricingCost
-            } else if isPriced {
-                Double(row.costNanos) / costScale
-            } else {
-                nil
-            }
             if let cost {
                 aggregate.total += cost
             } else {
