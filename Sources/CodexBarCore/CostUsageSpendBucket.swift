@@ -56,16 +56,19 @@ extension CostUsageSpendBucket {
         Key(hourStart: self.hourStart, model: self.model)
     }
 
-    static let utcCalendar: Calendar = {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        return calendar
-    }()
+    /// Whole UTC hours since the Unix epoch; the compact hour key the scanner caches store.
+    static func epochHour(of date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 / 3600).rounded(.down))
+    }
+
+    /// Start of the UTC hour identified by `epochHour`.
+    static func hourStart(epochHour: Int64) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(epochHour) * 3600)
+    }
 
     /// Truncates `date` to the start of its UTC hour.
     static func hourStart(of date: Date) -> Date {
-        let seconds = date.timeIntervalSince1970
-        return Date(timeIntervalSince1970: (seconds / 3600).rounded(.down) * 3600)
+        self.hourStart(epochHour: self.epochHour(of: date))
     }
 
     /// Adds `other` into `self`. Counts add where either side reports them; cost stays known only

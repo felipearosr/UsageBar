@@ -177,6 +177,13 @@ extension CostUsageScanner {
                         let cacheRead = max(0, toInt(usage["cache_read_input_tokens"]))
                         let output = max(0, toInt(usage["output_tokens"]))
                         if input == 0, cacheCreate == 0, cacheRead == 0, output == 0 { return }
+                        let usageKeys: [(String, ClaudeUsageField)] = [
+                            ("input_tokens", .input),
+                            ("output_tokens", .output),
+                            ("cache_read_input_tokens", .cacheRead),
+                            ("cache_creation_input_tokens", .cacheCreation),
+                        ]
+                        let omittedFields = Set(usageKeys.filter { usage[$0.0] == nil }.map(\.1))
 
                         let cost = CostUsagePricing.claudeCostUSD(
                             model: model,
@@ -226,7 +233,8 @@ extension CostUsageScanner {
                             cacheCreate1h: tokens.cacheCreate1h,
                             output: tokens.output,
                             costNanos: tokens.costNanos,
-                            costPriced: tokens.costPriced)
+                            costPriced: tokens.costPriced,
+                            omittedFields: omittedFields.isEmpty ? nil : omittedFields)
 
                         // Streaming chunks share message.id + requestId inside a file.
                         // Keep overwriting so the final cumulative chunk wins.
@@ -781,7 +789,7 @@ extension CostUsageScanner {
         } else if let currentPricingCost {
             currentPricingCost
         } else if isPriced {
-            Double(row.costNanos) / 1_000_000_000.0
+            Double(row.costNanos) / Self.costScale
         } else {
             nil
         }
@@ -801,6 +809,10 @@ extension CostUsageScanner {
             let hourStart = CostUsageSpendBucket.hourStart(
                 of: Date(timeIntervalSince1970: Double(timestampUnixMs) / 1000))
             guard hourStart >= since, hourStart < until else { continue }
+            let omitted = row.omittedFields ?? []
+            func reported(_ value: Int, _ field: ClaudeUsageField) -> Int? {
+                omitted.contains(field) ? nil : value
+            }
             buckets.append(CostUsageSpendBucket(
                 hourStart: hourStart,
                 provider: .claude,
@@ -809,10 +821,10 @@ extension CostUsageScanner {
                     row,
                     modelsDevCatalog: modelsDevCatalog,
                     modelsDevCacheRoot: modelsDevCacheRoot),
-                inputTokens: row.input,
-                outputTokens: row.output,
-                cacheReadTokens: row.cacheRead,
-                cacheCreationTokens: row.cacheCreate,
+                inputTokens: reported(row.input, .input),
+                outputTokens: reported(row.output, .output),
+                cacheReadTokens: reported(row.cacheRead, .cacheRead),
+                cacheCreationTokens: reported(row.cacheCreate, .cacheCreation),
                 totalTokens: row.input + row.cacheRead + row.cacheCreate + row.output,
                 requests: 1))
         }

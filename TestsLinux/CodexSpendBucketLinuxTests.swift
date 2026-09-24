@@ -210,4 +210,34 @@ struct CodexSpendBucketLinuxTests {
         #expect(buckets.map(\.requests) == [1])
         #expect(buckets.first?.totalTokens == 110)
     }
+
+    @Test
+    func `each call is priced on its own so a busy hour stays below long-context rates`() throws {
+        let env = try SpendBucketTestEnvironment()
+        defer { env.cleanup() }
+
+        // Three calls of 150k input each: every call is under the long-context threshold, the hour's sum is not.
+        let start = try SpendBucketTestEnvironment.utc(2025, 12, 20, 10, 0)
+        try Self.writeSession(env, startedAt: start, lines: [
+            Self.sessionMeta(at: start),
+            Self.turnContext(at: start),
+            Self.tokenCount(at: start, input: 150_000, cached: 0, output: 1000),
+            Self.tokenCount(at: start.addingTimeInterval(600), input: 300_000, cached: 0, output: 2000),
+            Self.tokenCount(at: start.addingTimeInterval(1200), input: 450_000, cached: 0, output: 3000),
+        ])
+
+        let buckets = try Self.load(
+            env,
+            since: SpendBucketTestEnvironment.utc(2025, 12, 20, 0),
+            until: SpendBucketTestEnvironment.utc(2025, 12, 21, 0))
+
+        let perCall = try #require(CostUsagePricing.codexCostUSD(
+            model: Self.model,
+            inputTokens: 150_000,
+            cachedInputTokens: 0,
+            outputTokens: 1000))
+        #expect(buckets.first?.requests == 3)
+        #expect(abs((buckets.first?.costUSD ?? 0) - 3 * perCall) < 0.000001)
+    }
 }
+

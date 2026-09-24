@@ -145,4 +145,35 @@ struct ClaudeSpendBucketLinuxTests {
 
         #expect(buckets.map(\.hourStart) == [try SpendBucketTestEnvironment.utc(2025, 12, 20, 10)])
     }
+
+    @Test
+    func `fields the log omits stay absent`() throws {
+        let env = try SpendBucketTestEnvironment()
+        defer { env.cleanup() }
+
+        let at = try SpendBucketTestEnvironment.utc(2025, 12, 20, 9, 0)
+        try env.write(root: env.claudeProjectsRoot, relativePath: "project-a/session.jsonl", lines: [[
+            "type": "assistant",
+            "timestamp": SpendBucketTestEnvironment.iso(at),
+            "requestId": "req_1",
+            "message": [
+                "id": "msg_1",
+                "model": Self.pricedModel,
+                "usage": ["input_tokens": 40, "output_tokens": 8],
+            ],
+        ]])
+
+        let buckets = try Self.load(
+            env,
+            since: SpendBucketTestEnvironment.utc(2025, 12, 20, 0),
+            until: SpendBucketTestEnvironment.utc(2025, 12, 21, 0))
+
+        let bucket = try #require(buckets.first)
+        #expect(bucket.inputTokens == 40)
+        #expect(bucket.outputTokens == 8)
+        #expect(bucket.cacheReadTokens == nil)
+        #expect(bucket.cacheCreationTokens == nil)
+        #expect(bucket.totalTokens == 48)
+    }
 }
+

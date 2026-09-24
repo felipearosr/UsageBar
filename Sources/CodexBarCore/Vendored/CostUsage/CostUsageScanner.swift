@@ -693,6 +693,13 @@ enum CostUsageScanner {
         case subagent
     }
 
+    enum ClaudeUsageField: String, Codable {
+        case input
+        case output
+        case cacheRead
+        case cacheCreation
+    }
+
     struct ClaudeUsageRow: Codable {
         let dayKey: String
         let model: String
@@ -709,6 +716,8 @@ enum CostUsageScanner {
         let output: Int
         let costNanos: Int
         let costPriced: Bool?
+        /// Usage fields absent from the log line (recorded as 0 above). `nil` for rows cached before this was tracked.
+        var omittedFields: Set<ClaudeUsageField>?
     }
 
     static func loadDailyReport(
@@ -2123,9 +2132,7 @@ enum CostUsageScanner {
                     input: deltaInput,
                     cached: deltaCached,
                     output: deltaOutput,
-                    hour: Self.dateFromTimestamp(record.timestamp).map {
-                        Int64(($0.timeIntervalSince1970 / 3600).rounded(.down))
-                    }))
+                    hour: Self.dateFromTimestamp(record.timestamp).map(CostUsageSpendBucket.epochHour(of:))))
             }
         }
 
@@ -2490,17 +2497,12 @@ enum CostUsageScanner {
         options: Options,
         checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
     {
-        let (cache, plan) = try Self.refreshCodexCache(
+        let (cache, _) = try Self.refreshCodexCache(
             range: CostUsageDayRange(since: since, until: until),
             now: now,
             options: options,
             checkCancellation: checkCancellation)
-        return Self.buildCodexSpendBucketsFromCache(
-            cache: cache,
-            since: since,
-            until: until,
-            modelsDevCatalog: plan.modelsDevCatalog,
-            modelsDevCacheRoot: options.cacheRoot)
+        return Self.buildCodexSpendBucketsFromCache(cache: cache, since: since, until: until)
     }
 
     /// Buckets are priced at standard rates; the priority-tier surcharge applied by the daily report
@@ -2508,9 +2510,7 @@ enum CostUsageScanner {
     private static func buildCodexSpendBucketsFromCache(
         cache: CostUsageCache,
         since: Date,
-        until: Date,
-        modelsDevCatalog: ModelsDevCatalog?,
-        modelsDevCacheRoot: URL?) -> [CostUsageSpendBucket]
+        until: Date) -> [CostUsageSpendBucket]
     {
         var buckets: [CostUsageSpendBucket] = []
         for usage in cache.files.values {
@@ -2518,31 +2518,28 @@ enum CostUsageScanner {
                 guard let separator = key.firstIndex(of: "|"),
                       let hour = Int64(key[key.index(after: separator)...])
                 else { continue }
-                let hourStart = Date(timeIntervalSince1970: TimeInterval(hour) * 3600)
+                let hourStart = CostUsageSpendBucket.hourStart(epochHour: hour)
                 guard hourStart >= since, hourStart < until else { continue }
                 for (model, packed) in models {
                     let input = packed[safe: 0] ?? 0
                     let cached = min(packed[safe: 1] ?? 0, input)
                     let output = packed[safe: 2] ?? 0
+                    let requests = packed[safe: 3] ?? 0
+                    let costNanos = packed[safe: 4] ?? 0
+                    let pricedRequests = packed[safe: 5] ?? 0
                     // Codex `input` includes cached tokens; buckets count them separately. Codex logs have no
                     // cache-creation count.
                     buckets.append(CostUsageSpendBucket(
                         hourStart: hourStart,
                         provider: .codex,
                         model: model,
-                        costUSD: CostUsagePricing.codexCostUSD(
-                            model: model,
-                            inputTokens: input,
-                            cachedInputTokens: cached,
-                            outputTokens: output,
-                            modelsDevCatalog: modelsDevCatalog,
-                            modelsDevCacheRoot: modelsDevCacheRoot),
+                        costUSD: pricedRequests == requests ? Double(costNanos) / Self.costScale : nil,
                         inputTokens: input - cached,
                         outputTokens: output,
                         cacheReadTokens: cached,
                         cacheCreationTokens: nil,
                         totalTokens: input + output,
-                        requests: packed[safe: 3] ?? 0))
+                        requests: requests))
                 }
             }
         }

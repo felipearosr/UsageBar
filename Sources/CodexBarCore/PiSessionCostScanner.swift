@@ -868,9 +868,9 @@ extension PiSessionCostScanner {
             pricingContext: pricingContext).map { Int64(($0 * self.costScale).rounded()) }
     }
 
-    /// Cache key for the UTC hour containing `date`: whole hours since the Unix epoch.
+    /// Cache key for the UTC hour containing `date`.
     static func utcHourKey(_ date: Date) -> String {
-        String(Int64((date.timeIntervalSince1970 / 3600).rounded(.down)))
+        String(CostUsageSpendBucket.epochHour(of: date))
     }
 
     private static func buildSpendBuckets(
@@ -894,7 +894,7 @@ extension PiSessionCostScanner {
         var buckets: [CostUsageSpendBucket] = []
         for (hourKey, models) in hours[provider.rawValue] ?? [:] {
             guard let epochHour = Int64(hourKey) else { continue }
-            let hourStart = Date(timeIntervalSince1970: TimeInterval(epochHour) * 3600)
+            let hourStart = CostUsageSpendBucket.hourStart(epochHour: epochHour)
             guard hourStart >= since, hourStart < until else { continue }
             for (modelName, packed) in models {
                 let costNanos = self.costNanos(
