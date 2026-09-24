@@ -34,7 +34,7 @@ codexbar-sync+http://<host>[:<port>][/<base-path>]#<root-key>
 ```
 
 - `<root-key>`: 32 random bytes, base64url without padding (43 chars). Everything else is derived from it (§3). Clients reject a key that isn't exactly 43 base64url characters, including one whose unused trailing bits aren't zero.
-- The scheme is case-insensitive. `<host>` is a DNS name, an IPv4 address, or a bracketed IPv6 address, with no userinfo. `<port>` is 1–65535. A trailing `/` on `<base-path>` is dropped. Links carry no query string, and clients reject one that does.
+- The scheme is case-insensitive. `<host>` is either a bracketed IPv6 address or a non-empty run of ASCII letters, digits, `.`, and `-`, so userinfo (`@`), `_`, and whitespace are rejected. Clients leave any further host checks to name resolution. `<port>` is decimal, 1–65535. Trailing `/` characters on `<base-path>` are dropped. Links carry no query string, and clients reject one that does.
 - `codexbar-sync://` maps to `https://<host>[:<port>]/<base-path>`. `codexbar-sync+http://` maps to plain `http://` and exists only for loopback or tailnet self-hosting. Clients must warn before using it with a non-loopback host. Blob contents are E2E-encrypted either way, but the bearer credential (§3) would travel in cleartext.
 - The key sits in the URL fragment so it never appears in HTTP requests or server logs, even if the link is pasted into a browser.
 - The Pairing Link never contains the Enrollment Token. The token is needed only once, to create the group.

@@ -294,6 +294,11 @@
         "error": "invalid_host"
       },
       {
+        "description": "underscore in the host",
+        "link": "codexbar-sync://sync_host.example.com#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "error": "invalid_host"
+      },
+      {
         "description": "port 0",
         "link": "codexbar-sync://sync.example.com:0#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
         "error": "invalid_port"

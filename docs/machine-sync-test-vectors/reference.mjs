@@ -227,7 +227,7 @@ const BLOBS = [
     },
 ];
 
-// Sets the two unused low bits of the last character, which a lenient decoder ignores.
+// Sets one of the two unused low bits of the last character, which a lenient decoder ignores.
 function nonCanonical(keyText) {
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
     return keyText.slice(0, -1) + alphabet[alphabet.indexOf(keyText.at(-1)) | 0b01];
@@ -267,6 +267,7 @@ function linkCases(rootKeyText) {
         [`codexbar-sync://:8443#${rootKeyText}`, 'port without host', 'missing_host'],
         [`codexbar-sync://user@sync.example.com#${rootKeyText}`, 'userinfo before the host', 'invalid_host'],
         [`codexbar-sync://sync example.com#${rootKeyText}`, 'space in the host', 'invalid_host'],
+        [`codexbar-sync://sync_host.example.com#${rootKeyText}`, 'underscore in the host', 'invalid_host'],
         [`codexbar-sync://sync.example.com:0#${rootKeyText}`, 'port 0', 'invalid_port'],
         [`codexbar-sync://sync.example.com:65536#${rootKeyText}`, 'port above 65535', 'invalid_port'],
         [`codexbar-sync://sync.example.com:84a3#${rootKeyText}`, 'port with a non-digit', 'invalid_port'],
