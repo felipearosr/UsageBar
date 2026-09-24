@@ -2,7 +2,7 @@ import Foundation
 
 enum PiSessionCostCacheIO {
     /// Artifact schema version. Pricing changes are tracked separately by `pricingKey`.
-    private static let artifactVersion = 5
+    private static let artifactVersion = 6
 
     private static func defaultCacheRoot() -> URL {
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -56,7 +56,7 @@ struct PiSessionCostCache: Codable {
     var daysByProvider: [String: [String: [String: PiPackedUsage]]] = [:]
     var files: [String: PiSessionFileUsage] = [:]
 
-    init(version: Int = 5) {
+    init(version: Int = 6) {
         self.version = version
     }
 }
@@ -67,6 +67,8 @@ struct PiSessionFileUsage: Codable {
     var parsedBytes: Int64
     var lastModelContext: PiModelContext?
     var contributions: [String: [String: [String: PiPackedUsage]]]
+    /// Same usage as `contributions`, keyed provider → UTC hour key → model (see `PiSessionCostScanner.utcHourKey`).
+    var hourContributions: [String: [String: [String: PiPackedUsage]]]
 }
 
 struct PiModelContext: Codable, Equatable {

@@ -37,6 +37,7 @@ enum PiSessionCostScanner {
 
     private struct ParseResult {
         let contributions: [String: [String: [String: PiPackedUsage]]]
+        let hourContributions: [String: [String: [String: PiPackedUsage]]]
         let parsedBytes: Int64
         let lastModelContext: PiModelContext?
     }
@@ -98,6 +99,53 @@ enum PiSessionCostScanner {
         }
 
         let range = CostUsageScanner.CostUsageDayRange(since: since, until: until)
+        let (cache, pricingContext) = try self.refreshCache(
+            range: range,
+            since: since,
+            now: now,
+            options: options,
+            checkCancellation: checkCancellation)
+        return self.buildReport(
+            provider: provider,
+            cache: cache,
+            range: range,
+            pricingContext: pricingContext)
+    }
+
+    /// Scans Pi session logs into UTC-hour Spend Buckets for `provider` whose hour starts in `since..<until`.
+    static func loadSpendBuckets(
+        provider: UsageProvider,
+        since: Date,
+        until: Date,
+        now: Date = Date(),
+        options: Options = Options(),
+        checkCancellation: CostUsageScanner.CancellationCheck?) throws -> [CostUsageSpendBucket]
+    {
+        guard provider == .codex || provider == .claude else { return [] }
+
+        let range = CostUsageScanner.CostUsageDayRange(since: since, until: until)
+        let (cache, pricingContext) = try self.refreshCache(
+            range: range,
+            since: since,
+            now: now,
+            options: options,
+            checkCancellation: checkCancellation)
+        return self.buildSpendBuckets(
+            provider: provider,
+            cache: cache,
+            since: since,
+            until: until,
+            pricingContext: pricingContext)
+    }
+
+    private static func refreshCache(
+        range: CostUsageScanner.CostUsageDayRange,
+        since: Date,
+        now: Date,
+        options: Options,
+        checkCancellation: CostUsageScanner.CancellationCheck?) throws
+        -> (PiSessionCostCache, ModelsDevPricingContext)
+    {
         var cache = PiSessionCostCacheIO.load(cacheRoot: options.cacheRoot)
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
         let refreshMs = Int64(max(0, options.refreshMinIntervalSeconds) * 1000)
@@ -147,12 +195,7 @@ enum PiSessionCostScanner {
             try checkCancellation?()
             PiSessionCostCacheIO.save(cache: cache, cacheRoot: options.cacheRoot)
         }
-
-        return self.buildReport(
-            provider: provider,
-            cache: cache,
-            range: range,
-            pricingContext: pricingContext)
+        return (cache, pricingContext)
     }
 
     struct CachedDailyReportResult {
@@ -332,12 +375,16 @@ enum PiSessionCostScanner {
                     sign: 1)
             }
             let merged = self.mergedContributions(existing: cached.contributions, delta: delta.contributions)
+            let mergedHours = self.mergedContributions(
+                existing: cached.hourContributions,
+                delta: delta.hourContributions)
             storeFileUsage(PiSessionFileUsage(
                 mtimeUnixMs: mtimeMs,
                 size: size,
                 parsedBytes: delta.parsedBytes,
                 lastModelContext: delta.lastModelContext,
-                contributions: merged))
+                contributions: merged,
+                hourContributions: mergedHours))
             return
         }
 
@@ -362,7 +409,8 @@ enum PiSessionCostScanner {
             size: size,
             parsedBytes: parsed.parsedBytes,
             lastModelContext: parsed.lastModelContext,
-            contributions: parsed.contributions))
+            contributions: parsed.contributions,
+            hourContributions: parsed.hourContributions))
     }
 
     private static func parsePiSessionFile(
@@ -375,9 +423,11 @@ enum PiSessionCostScanner {
     {
         var currentModelContext = initialModelContext
         var contributions: [String: [String: [String: PiPackedUsage]]] = [:]
+        var hourContributions: [String: [String: [String: PiPackedUsage]]] = [:]
 
-        func add(provider: UsageProvider, dayKey: String, modelName: String, usage: PiPackedUsage) {
+        func add(provider: UsageProvider, date: Date, modelName: String, usage: PiPackedUsage) {
             guard !usage.isZero else { return }
+            let dayKey = CostUsageScanner.CostUsageDayRange.dayKey(from: date)
             guard CostUsageScanner.CostUsageDayRange.isInRange(
                 dayKey: dayKey,
                 since: range.scanSinceKey,
@@ -386,25 +436,14 @@ enum PiSessionCostScanner {
                 return
             }
 
-            let providerKey = provider.rawValue
-            var providerDays = contributions[providerKey] ?? [:]
-            var dayModels = providerDays[dayKey] ?? [:]
-            let merged = self.addPacked(a: dayModels[modelName] ?? PiPackedUsage(), b: usage, sign: 1)
-            if merged.isZero {
-                dayModels.removeValue(forKey: modelName)
-            } else {
-                dayModels[modelName] = merged
-            }
-            if dayModels.isEmpty {
-                providerDays.removeValue(forKey: dayKey)
-            } else {
-                providerDays[dayKey] = dayModels
-            }
-            if providerDays.isEmpty {
-                contributions.removeValue(forKey: providerKey)
-            } else {
-                contributions[providerKey] = providerDays
-            }
+            self.applyContributions(
+                daysByProvider: &contributions,
+                contributions: [provider.rawValue: [dayKey: [modelName: usage]]],
+                sign: 1)
+            self.applyContributions(
+                daysByProvider: &hourContributions,
+                contributions: [provider.rawValue: [self.utcHourKey(date): [modelName: usage]]],
+                sign: 1)
         }
 
         let parsedBytes: Int64
@@ -436,14 +475,13 @@ enum PiSessionCostScanner {
                             fallback: currentModelContext)
                         guard let identity else { return }
                         guard let date = self.timestampDate(entry: object, message: message) else { return }
-                        let dayKey = CostUsageScanner.CostUsageDayRange.dayKey(from: date)
                         let usage = self.extractUsage(
                             provider: identity.provider,
                             modelName: identity.modelName,
                             message: message,
                             pricingDate: date,
                             pricingContext: pricingContext)
-                        add(provider: identity.provider, dayKey: dayKey, modelName: identity.modelName, usage: usage)
+                        add(provider: identity.provider, date: date, modelName: identity.modelName, usage: usage)
                     }
                 })
         } catch is CancellationError {
@@ -454,6 +492,7 @@ enum PiSessionCostScanner {
 
         return ParseResult(
             contributions: contributions,
+            hourContributions: hourContributions,
             parsedBytes: parsedBytes,
             lastModelContext: currentModelContext)
     }
@@ -756,18 +795,11 @@ extension PiSessionCostScanner {
                 let modelTotalTokens = max(
                     packed.totalTokens,
                     packed.inputTokens + packed.cacheReadTokens + packed.cacheWriteTokens + packed.outputTokens)
-                let currentPricingCost = self.computedCostUSD(
+                let costNanos = self.costNanos(
                     provider: provider,
                     modelName: modelName,
-                    usage: packed,
+                    packed: packed,
                     pricingContext: pricingContext)
-                let usageSampleCount = packed.usageSampleCount
-                let hasCompleteCachedCost = (usageSampleCount ?? 0) > 0
-                    && packed.costSampleCount == usageSampleCount
-                // Cached costs are accumulated per message, which preserves Claude long-context threshold boundaries.
-                let costNanos = hasCompleteCachedCost
-                    ? packed.costNanos
-                    : currentPricingCost.map { Int64(($0 * self.costScale).rounded()) }
                 breakdown.append(CostUsageDailyReport.ModelBreakdown(
                     modelName: modelName,
                     costUSD: costNanos.map { Double($0) / Self.costScale },
@@ -814,6 +846,80 @@ extension PiSessionCostScanner {
                 cacheCreationTokens: totalCacheWrite > 0 ? totalCacheWrite : nil,
                 totalTokens: totalTokens > 0 ? totalTokens : nil,
                 totalCostUSD: totalCostSamples > 0 ? Double(totalCostNanos) / Self.costScale : nil))
+    }
+
+    private static func costNanos(
+        provider: UsageProvider,
+        modelName: String,
+        packed: PiPackedUsage,
+        pricingContext: ModelsDevPricingContext?) -> Int64?
+    {
+        let usageSampleCount = packed.usageSampleCount
+        let hasCompleteCachedCost = (usageSampleCount ?? 0) > 0
+            && packed.costSampleCount == usageSampleCount
+        // Cached costs are accumulated per message, which preserves Claude long-context threshold boundaries.
+        if hasCompleteCachedCost {
+            return packed.costNanos
+        }
+        return self.computedCostUSD(
+            provider: provider,
+            modelName: modelName,
+            usage: packed,
+            pricingContext: pricingContext).map { Int64(($0 * self.costScale).rounded()) }
+    }
+
+    /// Cache key for the UTC hour containing `date`: whole hours since the Unix epoch.
+    static func utcHourKey(_ date: Date) -> String {
+        String(Int64((date.timeIntervalSince1970 / 3600).rounded(.down)))
+    }
+
+    private static func buildSpendBuckets(
+        provider: UsageProvider,
+        cache: PiSessionCostCache,
+        since: Date,
+        until: Date,
+        pricingContext: ModelsDevPricingContext) -> [CostUsageSpendBucket]
+    {
+        var hours: [String: [String: [String: PiPackedUsage]]] = [:]
+        for file in cache.files.values {
+            guard let providerHours = file.hourContributions[provider.rawValue] else { continue }
+            self.applyContributions(
+                daysByProvider: &hours,
+                contributions: [provider.rawValue: providerHours],
+                sign: 1)
+        }
+
+        var buckets: [CostUsageSpendBucket] = []
+        for (hourKey, models) in hours[provider.rawValue] ?? [:] {
+            guard let hours = Int64(hourKey) else { continue }
+            let hourStart = Date(timeIntervalSince1970: TimeInterval(hours) * 3600)
+            guard hourStart >= since, hourStart < until else { continue }
+            for (modelName, packed) in models {
+                // Pi stores a field the log omitted as 0, so 0 is reported as absent.
+                func reported(_ value: Int) -> Int? {
+                    value > 0 ? value : nil
+                }
+                let costNanos = self.costNanos(
+                    provider: provider,
+                    modelName: modelName,
+                    packed: packed,
+                    pricingContext: pricingContext)
+                buckets.append(CostUsageSpendBucket(
+                    hourStart: hourStart,
+                    provider: provider,
+                    model: modelName,
+                    costUSD: costNanos.map { Double($0) / Self.costScale },
+                    inputTokens: reported(packed.inputTokens),
+                    outputTokens: reported(packed.outputTokens),
+                    cacheReadTokens: reported(packed.cacheReadTokens),
+                    cacheCreationTokens: reported(packed.cacheWriteTokens),
+                    totalTokens: reported(max(
+                        packed.totalTokens,
+                        packed.inputTokens + packed.cacheReadTokens + packed.cacheWriteTokens + packed.outputTokens)),
+                    requests: packed.usageSampleCount))
+            }
+        }
+        return CostUsageSpendBucket.merged(buckets)
     }
 
     private static func mergedContributions(

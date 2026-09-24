@@ -798,10 +798,11 @@ extension CostUsageScanner {
         for row in Self.reconciledClaudeRows(cache: cache) {
             // Rows cached before timestamps were recorded can't be placed in an hour.
             guard let timestampUnixMs = row.timestampUnixMs else { continue }
-            let date = Date(timeIntervalSince1970: Double(timestampUnixMs) / 1000)
-            guard date >= since, date < until else { continue }
+            let hourStart = CostUsageSpendBucket.hourStart(
+                of: Date(timeIntervalSince1970: Double(timestampUnixMs) / 1000))
+            guard hourStart >= since, hourStart < until else { continue }
             buckets.append(CostUsageSpendBucket(
-                hourStart: CostUsageSpendBucket.hourStart(of: date),
+                hourStart: hourStart,
                 provider: .claude,
                 model: row.model,
                 costUSD: Self.claudeRowCostUSD(
