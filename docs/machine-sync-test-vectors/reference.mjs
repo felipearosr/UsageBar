@@ -9,9 +9,10 @@ import { createCipheriv, createDecipheriv, createHash, hkdfSync } from 'node:cry
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const PROTOCOL_LABEL = 'codexbar-sync/v1';
-export const ENVELOPE_VERSION = 0x01;
+const PROTOCOL_LABEL = 'codexbar-sync/v1';
+const ENVELOPE_VERSION = 0x01;
 const NONCE_BYTES = 12;
+const HEADER_BYTES = 1 + NONCE_BYTES;
 const TAG_BYTES = 16;
 const PAD_BLOCK = 1024;
 const ROOT_KEY_BYTES = 32;
@@ -39,7 +40,7 @@ export function associatedData({ groupId, machineId, name }) {
 }
 
 export function pad(plaintext) {
-    const length = Math.max(PAD_BLOCK, Math.ceil(plaintext.length / PAD_BLOCK) * PAD_BLOCK);
+    const length = Math.ceil(plaintext.length / PAD_BLOCK) * PAD_BLOCK;
     const padded = Buffer.alloc(length);
     plaintext.copy(padded);
     return padded;
@@ -59,10 +60,10 @@ export function sealEnvelope({ encKey, nonce, aad, plaintext }) {
 }
 
 export function openEnvelope({ encKey, aad, envelope }) {
-    if (envelope.length < 1 + NONCE_BYTES + TAG_BYTES) throw new Error('envelope too short');
+    if (envelope.length < HEADER_BYTES + TAG_BYTES) throw new Error('envelope too short');
     if (envelope[0] !== ENVELOPE_VERSION) throw new Error(`unsupported envelope version ${envelope[0]}`);
-    const nonce = envelope.subarray(1, 1 + NONCE_BYTES);
-    const ciphertext = envelope.subarray(1 + NONCE_BYTES, envelope.length - TAG_BYTES);
+    const nonce = envelope.subarray(1, HEADER_BYTES);
+    const ciphertext = envelope.subarray(HEADER_BYTES, envelope.length - TAG_BYTES);
     const tag = envelope.subarray(envelope.length - TAG_BYTES);
     const decipher = createDecipheriv('chacha20-poly1305', encKey, nonce, { authTagLength: TAG_BYTES });
     decipher.setAAD(aad, { plaintextLength: ciphertext.length });
@@ -82,7 +83,8 @@ export class PairingLinkError extends Error {
 
 const TRANSPORTS = { 'codexbar-sync': 'https', 'codexbar-sync+http': 'http' };
 const LINK_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)([^?#]*)(\?[^#]*)?(?:#(.*))?$/;
-const AUTHORITY_PATTERN = /^(\[[0-9A-Fa-f:.]+\]|[^:[\]]+)(?::([0-9]*))?$/;
+const AUTHORITY_PATTERN = /^(\[[0-9A-Fa-f:.]+\]|[^:[\]]*)(?::([^:]*))?$/;
+const HOST_PATTERN = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)$/;
 
 function isLoopback(host) {
     const lower = host.toLowerCase();
@@ -93,17 +95,18 @@ export function parsePairingLink(link) {
     const match = LINK_PATTERN.exec(link);
     if (!match) throw new PairingLinkError('unsupported_scheme', 'not a codexbar-sync link');
     const [, scheme, authority, rawPath, query, fragment] = match;
-    const transport = TRANSPORTS[scheme];
+    const transport = TRANSPORTS[scheme.toLowerCase()];
     if (!transport) throw new PairingLinkError('unsupported_scheme', `unsupported scheme ${scheme}`);
     if (query !== undefined) throw new PairingLinkError('unexpected_query', 'pairing links carry no query');
 
-    const authorityMatch = AUTHORITY_PATTERN.exec(authority);
-    if (!authorityMatch) throw new PairingLinkError('missing_host', 'pairing link has no host');
-    const [, host, rawPort] = authorityMatch;
+    const [, host, rawPort] = AUTHORITY_PATTERN.exec(authority) ?? [];
+    if (host === '') throw new PairingLinkError('missing_host', 'pairing link has no host');
+    if (!host || !HOST_PATTERN.test(host)) throw new PairingLinkError('invalid_host', `invalid host ${authority}`);
     let port = null;
     if (rawPort !== undefined) {
-        port = /^\d{1,5}$/.test(rawPort) ? Number(rawPort) : 0;
-        if (port < 1 || port > 65535) throw new PairingLinkError('invalid_port', `invalid port ${rawPort}`);
+        const isValidPort = /^\d{1,5}$/.test(rawPort) && Number(rawPort) >= 1 && Number(rawPort) <= 65535;
+        if (!isValidPort) throw new PairingLinkError('invalid_port', `invalid port ${rawPort}`);
+        port = Number(rawPort);
     }
 
     if (!fragment) throw new PairingLinkError('missing_root_key', 'pairing link has no root key');
@@ -111,7 +114,9 @@ export function parsePairingLink(link) {
         throw new PairingLinkError('invalid_root_key', 'root key must be 43 base64url characters');
     }
     const rootKey = Buffer.from(fragment, 'base64url');
-    if (rootKey.length !== ROOT_KEY_BYTES) throw new PairingLinkError('invalid_root_key', 'root key is not 32 bytes');
+    if (rootKey.length !== ROOT_KEY_BYTES || rootKey.toString('base64url') !== fragment) {
+        throw new PairingLinkError('invalid_root_key', 'root key is not the canonical encoding of 32 bytes');
+    }
 
     const basePath = rawPath.replace(/\/+$/, '');
     const baseURL = `${transport}://${host}${port === null ? '' : `:${port}`}${basePath}`;
@@ -151,6 +156,19 @@ function dayBucket(hour, overrides = {}) {
         requests: 41,
         ...overrides,
     };
+}
+
+function exactBlockProfile() {
+    const profile = {
+        v: 1,
+        displayName: '',
+        platform: 'macos',
+        clientVersion: '0.24.0',
+        coverageStart: '2026-01-02',
+        pushedAt: '2026-09-23T14:05:40Z',
+    };
+    profile.displayName = 'x'.repeat(PAD_BLOCK - Buffer.byteLength(JSON.stringify(profile)));
+    return profile;
 }
 
 const BLOBS = [
@@ -194,6 +212,13 @@ const BLOBS = [
         },
     },
     {
+        description: 'profile blob whose JSON is exactly 1024 bytes, so it gets no padding',
+        machineId: OTHER_MACHINE_ID,
+        name: 'profile',
+        nonce: sequentialBytes(0x50, 12),
+        body: exactBlockProfile(),
+    },
+    {
         description: 'group retired blob from §5.3 (machine-id = group)',
         machineId: GROUP_MACHINE_ID,
         name: 'retired',
@@ -201,6 +226,12 @@ const BLOBS = [
         body: { v: 1, machines: { [OTHER_MACHINE_ID]: { retiredAt: '2026-09-01T10:00:00Z' } } },
     },
 ];
+
+// Sets the two unused low bits of the last character, which a lenient decoder ignores.
+function nonCanonical(keyText) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    return keyText.slice(0, -1) + alphabet[alphabet.indexOf(keyText.at(-1)) | 0b01];
+}
 
 function linkCases(rootKeyText) {
     const valid = [
@@ -211,6 +242,7 @@ function linkCases(rootKeyText) {
         ['codexbar-sync+http://[::1]:8787', 'plain http on IPv6 loopback, no warning'],
         ['codexbar-sync+http://localhost', 'plain http on localhost, no warning'],
         ['codexbar-sync+http://nas.tail1234.ts.net:8787', 'plain http on a non-loopback host must warn before use'],
+        ['CODEXBAR-SYNC://sync.example.com', 'the scheme is case-insensitive'],
     ];
     const invalid = [
         ['codexbar-sync://sync.example.com', 'no fragment', 'missing_root_key'],
@@ -224,12 +256,20 @@ function linkCases(rootKeyText) {
             'key in standard base64 alphabet',
             'invalid_root_key',
         ],
+        [
+            `codexbar-sync://sync.example.com#${nonCanonical(rootKeyText)}`,
+            'key whose unused trailing bits are not zero (non-canonical encoding of the same bytes)',
+            'invalid_root_key',
+        ],
         [`https://sync.example.com#${rootKeyText}`, 'https scheme instead of codexbar-sync', 'unsupported_scheme'],
         [`codexbar-sync+https://sync.example.com#${rootKeyText}`, 'unknown transport suffix', 'unsupported_scheme'],
         [`codexbar-sync://#${rootKeyText}`, 'no host', 'missing_host'],
         [`codexbar-sync://:8443#${rootKeyText}`, 'port without host', 'missing_host'],
+        [`codexbar-sync://user@sync.example.com#${rootKeyText}`, 'userinfo before the host', 'invalid_host'],
+        [`codexbar-sync://sync example.com#${rootKeyText}`, 'space in the host', 'invalid_host'],
         [`codexbar-sync://sync.example.com:0#${rootKeyText}`, 'port 0', 'invalid_port'],
         [`codexbar-sync://sync.example.com:65536#${rootKeyText}`, 'port above 65535', 'invalid_port'],
+        [`codexbar-sync://sync.example.com:84a3#${rootKeyText}`, 'port with a non-digit', 'invalid_port'],
         [`codexbar-sync://sync.example.com?group=x#${rootKeyText}`, 'query string', 'unexpected_query'],
     ];
     return {
@@ -260,14 +300,14 @@ export function buildVectors() {
             associatedData: aad.toString('utf8'),
             plaintext: plaintext.toString('utf8'),
             paddedPlaintext: paddedPlaintext.toString('hex'),
-            ciphertext: envelope.subarray(1 + NONCE_BYTES).toString('hex'),
+            ciphertext: envelope.subarray(HEADER_BYTES).toString('hex'),
             envelope: envelope.toString('base64'),
         };
     });
 
     const day = envelopes.find((blob) => blob.name === 'day-2026-09-23');
     const flipped = Buffer.from(day.envelope, 'base64');
-    flipped[1 + NONCE_BYTES] ^= 0x01;
+    flipped[HEADER_BYTES] ^= 0x01;
     const tamperedEnvelopes = [
         {
             description: 'day envelope replayed under another machine ID (AAD mismatch)',

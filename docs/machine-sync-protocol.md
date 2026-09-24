@@ -33,7 +33,8 @@ codexbar-sync://<host>[:<port>][/<base-path>]#<root-key>
 codexbar-sync+http://<host>[:<port>][/<base-path>]#<root-key>
 ```
 
-- `<root-key>`: 32 random bytes, base64url without padding (43 chars). Everything else is derived from it (§3).
+- `<root-key>`: 32 random bytes, base64url without padding (43 chars). Everything else is derived from it (§3). Clients reject a key that isn't exactly 43 base64url characters, including one whose unused trailing bits aren't zero.
+- The scheme is case-insensitive. `<host>` is a DNS name, an IPv4 address, or a bracketed IPv6 address, with no userinfo. `<port>` is 1–65535. A trailing `/` on `<base-path>` is dropped. Links carry no query string, and clients reject one that does.
 - `codexbar-sync://` maps to `https://<host>[:<port>]/<base-path>`. `codexbar-sync+http://` maps to plain `http://` and exists only for loopback or tailnet self-hosting. Clients must warn before using it with a non-loopback host. Blob contents are E2E-encrypted either way, but the bearer credential (§3) would travel in cleartext.
 - The key sits in the URL fragment so it never appears in HTTP requests or server logs, even if the link is pasted into a browser.
 - The Pairing Link never contains the Enrollment Token. The token is needed only once, to create the group.
@@ -70,7 +71,7 @@ bytes 1..12   nonce (12 random bytes)
 bytes 13..    ChaCha20-Poly1305 ciphertext || 16-byte tag
 ```
 
-- Associated data: UTF-8 `"codexbar-sync/v1|<group-id>|<machine-id>|<name>"`, with the group and Machine IDs in their base64url form. This binds each blob to its address, so a server can't swap blobs between Machines, days, or groups without decryption failing.
+- Associated data: UTF-8 `"codexbar-sync/v1|<group-id>|<machine-id>|<name>"`, with the group and Machine IDs in their base64url form (or the literal `group` for group blobs, §5.3). This binds each blob to its address, so a server can't swap blobs between Machines, days, or groups without decryption failing.
 - Plaintext: UTF-8 JSON, zero-padded to the next multiple of 1024 bytes before encryption to blur exact model and hour counts. A plaintext that is already a multiple of 1024 bytes gets no extra padding. Readers strip trailing `0x00` bytes before parsing.
 - Maximum envelope size: 64 KiB.
 

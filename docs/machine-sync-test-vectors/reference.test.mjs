@@ -65,6 +65,7 @@ test('associated data binds the base64url group ID, machine ID, and blob name', 
 });
 
 test('padding rounds up to the next 1 KiB and leaves exact multiples alone', () => {
+    assert.equal(pad(Buffer.alloc(0)).length, 0);
     assert.equal(pad(Buffer.from('{}')).length, 1024);
     assert.equal(pad(Buffer.alloc(1024, 0x20)).length, 1024);
     assert.equal(pad(Buffer.alloc(1025, 0x20)).length, 2048);
@@ -119,6 +120,16 @@ test('a plain-http pairing link warns unless the host is loopback', () => {
     assert.equal(tailnet.cleartextWarning, true);
 });
 
+test('the pairing link scheme is case-insensitive', () => {
+    const key = Buffer.alloc(32, 3).toString('base64url');
+    assert.equal(parsePairingLink(`CodexBar-Sync+HTTP://127.0.0.1#${key}`).transport, 'http');
+});
+
+test('the envelope vectors pin a plaintext that is exactly one padding block', () => {
+    const { envelopes } = buildVectors();
+    assert.ok(envelopes.some((blob) => Buffer.byteLength(blob.plaintext) === 1024));
+});
+
 test('malformed pairing links are rejected with a reason', () => {
     const key = Buffer.alloc(32, 3).toString('base64url');
     const cases = [
@@ -130,6 +141,10 @@ test('malformed pairing links are rejected with a reason', () => {
         [`https://sync.example.com#${key}`, 'unsupported_scheme'],
         [`codexbar-sync://#${key}`, 'missing_host'],
         [`codexbar-sync://sync.example.com?x=1#${key}`, 'unexpected_query'],
+        [`codexbar-sync://sync.example.com:08x#${key}`, 'invalid_port'],
+        [`codexbar-sync://user@sync.example.com#${key}`, 'invalid_host'],
+        [`codexbar-sync://sync example.com#${key}`, 'invalid_host'],
+        [`codexbar-sync://sync.example.com#${key.slice(0, 42)}N`, 'invalid_root_key'],
     ];
     for (const [link, code] of cases) {
         assert.throws(() => parsePairingLink(link), (error) => {
