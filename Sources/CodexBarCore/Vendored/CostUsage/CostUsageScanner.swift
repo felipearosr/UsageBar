@@ -74,6 +74,8 @@ enum CostUsageScanner {
         let input: Int
         let cached: Int
         let output: Int
+        /// UTC hour of the event, in whole hours since the Unix epoch. `nil` when the timestamp didn't parse.
+        var hour: Int64?
     }
 
     struct CodexScanState {
@@ -2120,7 +2122,10 @@ enum CostUsageScanner {
                     eventIndex: eventIndex,
                     input: deltaInput,
                     cached: deltaCached,
-                    output: deltaOutput))
+                    output: deltaOutput,
+                    hour: Self.dateFromTimestamp(record.timestamp).map {
+                        Int64(($0.timeIntervalSince1970 / 3600).rounded(.down))
+                    }))
             }
         }
 
@@ -2465,6 +2470,91 @@ enum CostUsageScanner {
         options: Options,
         checkCancellation: CancellationCheck?) throws -> CostUsageDailyReport
     {
+        let (cache, plan) = try Self.refreshCodexCache(
+            range: range,
+            now: now,
+            options: options,
+            checkCancellation: checkCancellation)
+        return Self.buildCodexReportFromCache(
+            cache: cache,
+            range: range,
+            modelsDevCatalog: plan.modelsDevCatalog,
+            modelsDevCacheRoot: options.cacheRoot,
+            priorityTurns: plan.priorityTurns)
+    }
+
+    static func loadCodexSpendBuckets(
+        since: Date,
+        until: Date,
+        now: Date,
+        options: Options,
+        checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
+    {
+        let (cache, plan) = try Self.refreshCodexCache(
+            range: CostUsageDayRange(since: since, until: until),
+            now: now,
+            options: options,
+            checkCancellation: checkCancellation)
+        return Self.buildCodexSpendBucketsFromCache(
+            cache: cache,
+            since: since,
+            until: until,
+            modelsDevCatalog: plan.modelsDevCatalog,
+            modelsDevCacheRoot: options.cacheRoot)
+    }
+
+    /// Buckets are priced at standard rates; the priority-tier surcharge applied by the daily report
+    /// isn't split by hour.
+    private static func buildCodexSpendBucketsFromCache(
+        cache: CostUsageCache,
+        since: Date,
+        until: Date,
+        modelsDevCatalog: ModelsDevCatalog?,
+        modelsDevCacheRoot: URL?) -> [CostUsageSpendBucket]
+    {
+        var buckets: [CostUsageSpendBucket] = []
+        for usage in cache.files.values {
+            for (key, models) in usage.codexHours ?? [:] {
+                guard let separator = key.firstIndex(of: "|"),
+                      let hour = Int64(key[key.index(after: separator)...])
+                else { continue }
+                let hourStart = Date(timeIntervalSince1970: TimeInterval(hour) * 3600)
+                guard hourStart >= since, hourStart < until else { continue }
+                for (model, packed) in models {
+                    let input = packed[safe: 0] ?? 0
+                    let cached = min(packed[safe: 1] ?? 0, input)
+                    let output = packed[safe: 2] ?? 0
+                    // Codex `input` includes cached tokens; buckets count them separately. Codex logs have no
+                    // cache-creation count.
+                    buckets.append(CostUsageSpendBucket(
+                        hourStart: hourStart,
+                        provider: .codex,
+                        model: model,
+                        costUSD: CostUsagePricing.codexCostUSD(
+                            model: model,
+                            inputTokens: input,
+                            cachedInputTokens: cached,
+                            outputTokens: output,
+                            modelsDevCatalog: modelsDevCatalog,
+                            modelsDevCacheRoot: modelsDevCacheRoot),
+                        inputTokens: input - cached,
+                        outputTokens: output,
+                        cacheReadTokens: cached,
+                        cacheCreationTokens: nil,
+                        totalTokens: input + output,
+                        requests: packed[safe: 3] ?? 0))
+                }
+            }
+        }
+        return CostUsageSpendBucket.merged(buckets)
+    }
+
+    private static func refreshCodexCache(
+        range: CostUsageDayRange,
+        now: Date,
+        options: Options,
+        checkCancellation: CancellationCheck?) throws -> (CostUsageCache, CodexRefreshPlan)
+    {
         var cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
         let plan = Self.makeCodexRefreshPlan(cache: cache, range: range, now: now, nowMs: nowMs, options: options)
@@ -2616,13 +2706,7 @@ enum CostUsageScanner {
             try checkCancellation?()
             CostUsageCacheIO.save(provider: .codex, cache: cache, cacheRoot: options.cacheRoot)
         }
-
-        return Self.buildCodexReportFromCache(
-            cache: cache,
-            range: range,
-            modelsDevCatalog: plan.modelsDevCatalog,
-            modelsDevCacheRoot: options.cacheRoot,
-            priorityTurns: plan.priorityTurns)
+        return (cache, plan)
     }
 
     private static func codexFileScanContext(

@@ -296,6 +296,7 @@ extension CostUsageScanner {
         codexPriorityTokens: [String: [String: Int]]? = nil,
         codexTurnIDs: [String]? = nil,
         codexRows: [CodexUsageRow]? = nil,
+        codexHours: [String: [String: [Int]]]? = nil,
         claudeRows: [ClaudeUsageRow]? = nil) -> CostUsageFileUsage
     {
         CostUsageFileUsage(
@@ -325,6 +326,7 @@ extension CostUsageScanner {
             codexPriorityTokens: codexPriorityTokens,
             codexTurnIDs: codexTurnIDs,
             codexRows: codexRows,
+            codexHours: codexHours,
             claudeRows: claudeRows)
     }
 
@@ -669,6 +671,30 @@ extension CostUsageScanner {
         return days
     }
 
+    static func codexFileHours(rows: [CodexUsageRow]) -> [String: [String: [Int]]] {
+        var hours: [String: [String: [Int]]] = [:]
+        for row in rows {
+            guard let hour = row.hour else { continue }
+            let key = "\(row.day)|\(hour)"
+            let packed = hours[key]?[row.model] ?? []
+            hours[key, default: [:]][row.model] = Self.addPacked(
+                a: packed,
+                b: [row.input, row.cached, row.output, 1],
+                sign: 1)
+        }
+        return hours
+    }
+
+    static func fileHoursOutsideScanWindow(
+        _ hours: [String: [String: [Int]]]?,
+        range: CostUsageDayRange) -> [String: [String: [Int]]]
+    {
+        (hours ?? [:]).filter {
+            let dayKey = String($0.key.prefix { $0 != "|" })
+            return !CostUsageDayRange.isInRange(dayKey: dayKey, since: range.scanSinceKey, until: range.scanUntilKey)
+        }
+    }
+
     static func codexFileUsageByFilteringRows(
         _ usage: CostUsageFileUsage,
         rows: [CodexUsageRow],
@@ -682,6 +708,8 @@ extension CostUsageScanner {
                 until: context.range.scanUntilKey)
         }
         Self.mergeFileDays(existing: &days, delta: Self.codexFileDays(rows: rowsInScanWindow))
+        var hours = Self.fileHoursOutsideScanWindow(usage.codexHours, range: context.range)
+        Self.mergeFileDays(existing: &hours, delta: Self.codexFileHours(rows: rowsInScanWindow))
         let splitMaps = Self.codexModeSplitMaps(
             rows: rows,
             range: context.range,
@@ -735,7 +763,8 @@ extension CostUsageScanner {
                 Self.intMapOutsideScanWindow(usage.codexPriorityTokens, range: context.range),
                 splitMaps.priorityTokens),
             codexTurnIDs: Self.mergeCodexTurnIDs(nil, rows: rows),
-            codexRows: rows)
+            codexRows: rows,
+            codexHours: hours)
     }
 
     static func mergeCostMaps(
@@ -1044,6 +1073,8 @@ extension CostUsageScanner {
 
         var mergedDays = migratedCached.days
         Self.mergeFileDays(existing: &mergedDays, delta: uniqueDays)
+        var mergedHours = migratedCached.codexHours ?? [:]
+        Self.mergeFileDays(existing: &mergedHours, delta: Self.codexFileHours(rows: uniqueRows))
         let splitMaps = Self.codexModeSplitMaps(
             rows: uniqueRows,
             range: context.range,
@@ -1089,7 +1120,8 @@ extension CostUsageScanner {
                 migratedCached.codexPriorityTokens,
                 splitMaps.priorityTokens),
             codexTurnIDs: Self.mergeCodexTurnIDs(migratedCached.codexTurnIDs, rows: uniqueRows),
-            codexRows: Self.mergeCodexRows(retainedCachedRows, rows: uniqueRows, sessionId: sessionId))
+            codexRows: Self.mergeCodexRows(retainedCachedRows, rows: uniqueRows, sessionId: sessionId),
+            codexHours: mergedHours)
         Self.rememberScannedCodexFile(
             input: input,
             session: CodexScannedSession(id: sessionId, days: mergedDays),
@@ -1140,6 +1172,10 @@ extension CostUsageScanner {
         }
         let uniqueDays = Self.codexFileDays(rows: uniqueRows)
         Self.mergeFileDays(existing: &usageDays, delta: uniqueDays)
+        var usageHours = context.dropDeferredCodexRows
+            ? [:]
+            : Self.fileHoursOutsideScanWindow(migratedCached?.codexHours, range: context.range)
+        Self.mergeFileDays(existing: &usageHours, delta: Self.codexFileHours(rows: uniqueRows))
         let splitMaps = Self.codexModeSplitMaps(
             rows: uniqueRows,
             range: context.range,
@@ -1209,7 +1245,8 @@ extension CostUsageScanner {
                 : Self.mergeCodexTurnIDs(migratedCached?.codexTurnIDs, rows: uniqueRows),
             codexRows: context.dropDeferredCodexRows
                 ? nil
-                : Self.mergeCodexRows(migratedCached?.codexRows, rows: uniqueRows, sessionId: sessionId))
+                : Self.mergeCodexRows(migratedCached?.codexRows, rows: uniqueRows, sessionId: sessionId),
+            codexHours: usageHours)
         Self.applyFileDays(cache: &cache, fileDays: cache.files[input.metadata.path]?.days ?? [:], sign: 1)
         Self.rememberScannedCodexFile(
             input: input,

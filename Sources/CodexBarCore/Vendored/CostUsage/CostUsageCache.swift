@@ -9,7 +9,7 @@ enum CostUsageCacheIO {
     private static func artifactVersion(for provider: UsageProvider) -> Int {
         switch provider {
         case .codex:
-            9
+            10
         case .claude, .vertexai:
             4
         default:
@@ -152,6 +152,9 @@ struct CostUsageFileUsage: Codable {
     var codexPriorityTokens: [String: [String: Int]]?
     var codexTurnIDs: [String]?
     var codexRows: [CostUsageScanner.CodexUsageRow]?
+    /// Codex usage by UTC hour, shaped like `days`: `"<dayKey>|<epochHour>"` -> model -> packed
+    /// `[input, cached, output, requests]`. The local day prefix lets it follow `days` through scan-window filtering.
+    var codexHours: [String: [String: [Int]]]?
     var claudeRows: [CostUsageScanner.ClaudeUsageRow]?
 }
 

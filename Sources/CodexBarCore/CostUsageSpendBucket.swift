@@ -116,6 +116,13 @@ extension CostUsageScanner {
         checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
     {
         switch provider {
+        case .codex:
+            try self.loadCodexSpendBuckets(
+                since: since,
+                until: until,
+                now: now,
+                options: options,
+                checkCancellation: checkCancellation)
         case .claude:
             try self.loadClaudeSpendBuckets(
                 since: since,

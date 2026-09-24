@@ -889,16 +889,14 @@ extension PiSessionCostScanner {
                 sign: 1)
         }
 
+        // Pi stores a field the log omitted as 0, so 0 is reported as absent.
+        let reported: (Int) -> Int? = { $0 > 0 ? $0 : nil }
         var buckets: [CostUsageSpendBucket] = []
         for (hourKey, models) in hours[provider.rawValue] ?? [:] {
-            guard let hours = Int64(hourKey) else { continue }
-            let hourStart = Date(timeIntervalSince1970: TimeInterval(hours) * 3600)
+            guard let epochHour = Int64(hourKey) else { continue }
+            let hourStart = Date(timeIntervalSince1970: TimeInterval(epochHour) * 3600)
             guard hourStart >= since, hourStart < until else { continue }
             for (modelName, packed) in models {
-                // Pi stores a field the log omitted as 0, so 0 is reported as absent.
-                func reported(_ value: Int) -> Int? {
-                    value > 0 ? value : nil
-                }
                 let costNanos = self.costNanos(
                     provider: provider,
                     modelName: modelName,

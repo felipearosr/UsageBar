@@ -68,7 +68,7 @@ struct PiSessionFileUsage: Codable {
     var lastModelContext: PiModelContext?
     var contributions: [String: [String: [String: PiPackedUsage]]]
     /// Same usage as `contributions`, keyed provider → UTC hour key → model (see `PiSessionCostScanner.utcHourKey`).
-    var hourContributions: [String: [String: [String: PiPackedUsage]]]
+    var hourContributions: [String: [String: [String: PiPackedUsage]]] = [:]
 }
 
 struct PiModelContext: Codable, Equatable {
