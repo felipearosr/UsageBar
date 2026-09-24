@@ -138,8 +138,9 @@ Base URL: from the Pairing Link, with `/v1` appended. Bodies are JSON unless sta
 
 ### 6.1 Authentication
 
-- Every group-scoped request carries `Authorization: Bearer <base64url(auth-key)>`.
-- The server compares `SHA-256(auth-key)` to the stored hash in constant time. On mismatch or an unknown group it returns `404 group_not_found`, so it never confirms whether a group exists.
+- Every group-scoped request carries `Authorization: Bearer <base64url(auth-key)>`. The scheme name is case-insensitive.
+- The server compares `SHA-256(auth-key)` to the stored hash in constant time. On mismatch or an unknown group it returns `404 group_not_found`, so it never confirms whether a group exists. A missing or malformed `Authorization` header gets the same answer.
+- Authentication comes first. The server checks credentials before it validates the path or reads the body, so a bad credential gets `404 group_not_found` even when the request would also fail another check (for example `413`).
 
 ### 6.2 `GET /v1/info`
 
@@ -166,6 +167,7 @@ Creates a Sync Group. Headers: `Authorization: Enrollment <token>` when `enrollm
 ```
 
 - `201` returns `{ "limits": Limits }`.
+- `400 invalid_request` when the body isn't JSON, `groupId` isn't 22 base64url characters, or `authKeyHash` isn't 43.
 - `409 group_exists` if the group ID is already registered. Creating a group is idempotent for the same `authKeyHash`, which returns `200` with the limits.
 - `402 enrollment_required`, `403 enrollment_invalid`, `403 enrollment_expired`.
 - An Enrollment Token binds to exactly one group. Presenting it again for a different group returns `403 enrollment_used`.
@@ -180,18 +182,22 @@ Creates a Sync Group. Headers: `Authorization: Enrollment <token>` when `enrollm
 
 ### 6.4 `PUT /v1/groups/{groupId}/machines/{machineId}/blobs/{name}`
 
-Body: `application/octet-stream` envelope. Optional `If-Match: <etag>`.
+Body: `application/octet-stream` envelope, at least 1 byte. Optional `If-Match: <etag>`.
 
 - `200` returns `{ "etag": "...", "updatedAt": "..." }`. The server sets the Machine's Last Seen to its own receive time on every successful PUT from that Machine (not for `machine-id = group`).
-- `412 precondition_failed` on an `If-Match` mismatch.
+- `412 precondition_failed` on an `If-Match` mismatch, including when the blob doesn't exist yet. `If-Match: *` matches any existing blob.
 - `413 payload_too_large` above `maxBlobBytes`.
 - `403 machine_limit` when the write would introduce a Machine beyond `maxMachines`. Retired Machines still count until they are deleted (§6.7).
 - `403 enrollment_expired` once `expiresAt` has passed. After expiry, reads keep working for at least 30 days so users can export or move servers.
-- `422 invalid_name`: names must match `^(profile|retired|day-\d{4}-\d{2}-\d{2})$`, and `retired` is allowed only under `machine-id = group`.
+- `422 invalid_name`: names must match `^(profile|retired|day-\d{4}-\d{2}-\d{2})$`. `retired` is allowed only under `machine-id = group`, and it's the only name allowed there.
+- `422 invalid_machine_id` when `machineId` is neither 22 base64url characters (§4) nor `group`.
+- `400 invalid_request` for an empty body.
+
+ETags are opaque strings that include their HTTP double quotes, for example `"k3v9QxT0bW2c"`. The JSON `etag` field and the `ETag` header carry the same value, and clients send it back in `If-Match` exactly as they received it. Every successful PUT gets a new ETag, even when the bytes are unchanged.
 
 ### 6.5 `GET /v1/groups/{groupId}/changes?since=<cursor>&limit=<n>`
 
-Incremental read of everything that changed since `cursor`. Omitting `since` returns everything.
+Incremental read of everything that changed since `cursor`. Omitting `since` returns everything. `limit` defaults to 100 and must be between 1 and 500. Anything else, or a `since` this server didn't issue, returns `400 invalid_request`.
 
 ```json
 {
@@ -214,11 +220,12 @@ Incremental read of everything that changed since `cursor`. Omitting `since` ret
 ```
 
 - `machines` always lists every Machine in the group, whatever the cursor.
+- Blobs come back in write order, and a blob written again moves to the end. When `hasMore` is `true`, the client calls again with the returned `cursor`. When no blobs changed, the returned `cursor` is the one sent.
 - Clients keep the cursor and a decrypted local cache. A reader that fails to decrypt a blob skips it and reports a sync error. It never shows partial data from that blob.
 
 ### 6.6 `GET /v1/groups/{groupId}/machines/{machineId}/blobs/{name}`
 
-Returns a single envelope with an `ETag` header. It's used for the `retired` read-modify-write cycle.
+Returns a single envelope with an `ETag` header. It's used for the `retired` read-modify-write cycle. Validates `machineId` and `name` as in §6.4, and returns `404 blob_not_found` when nothing is stored at that address.
 
 ### 6.7 Deletion
 
@@ -227,7 +234,7 @@ Returns a single envelope with an `ETag` header. It's used for the `retired` rea
 
 ### 6.8 Errors and rate limits
 
-Error body: `{ "error": { "code": "<snake_case>", "message": "<human text>" } }`. Codes used above plus `unauthorized`, `rate_limited` (`429` with `Retry-After`), and `unsupported_version` (`400`).
+Error body: `{ "error": { "code": "<snake_case>", "message": "<human text>" } }`. Codes used above plus `unauthorized`, `rate_limited` (`429` with `Retry-After`), `unsupported_version` (`400`), `not_found` (`404`, unknown endpoint), and `internal_error` (`500`).
 
 Clients display `message` only as a fallback. They map known codes to their own localized text.
 
