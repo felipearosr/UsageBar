@@ -75,6 +75,11 @@ check_documentation_links() {
   node "${ROOT_DIR}/Scripts/check-documentation-links.mjs"
 }
 
+check_machine_sync_vectors() {
+  node --test "${ROOT_DIR}/docs/machine-sync-test-vectors/reference.test.mjs"
+  node "${ROOT_DIR}/docs/machine-sync-test-vectors/reference.mjs" --check
+}
+
 check_llms_index() {
   node "${ROOT_DIR}/Scripts/generate-llms.mjs" --check
 }
@@ -92,6 +97,7 @@ run_portable_checks() {
   check_shell_scripts
   check_documentation_links
   check_llms_index
+  check_machine_sync_vectors
   check_site_locales
 }
 
