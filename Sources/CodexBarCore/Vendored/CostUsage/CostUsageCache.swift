@@ -11,7 +11,7 @@ enum CostUsageCacheIO {
         case .codex:
             10
         case .claude, .vertexai:
-            4
+            5
         default:
             1
         }

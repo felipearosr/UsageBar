@@ -177,13 +177,7 @@ extension CostUsageScanner {
                         let cacheRead = max(0, toInt(usage["cache_read_input_tokens"]))
                         let output = max(0, toInt(usage["output_tokens"]))
                         if input == 0, cacheCreate == 0, cacheRead == 0, output == 0 { return }
-                        let usageKeys: [(String, ClaudeUsageField)] = [
-                            ("input_tokens", .input),
-                            ("output_tokens", .output),
-                            ("cache_read_input_tokens", .cacheRead),
-                            ("cache_creation_input_tokens", .cacheCreation),
-                        ]
-                        let omittedFields = Set(usageKeys.filter { usage[$0.0] == nil }.map(\.1))
+                        let omittedFields = Self.claudeOmittedUsageFields(usage)
 
                         let cost = CostUsagePricing.claudeCostUSD(
                             model: model,
@@ -655,6 +649,17 @@ extension CostUsageScanner {
         }
 
         // Root mtime caching removed — see comment above.
+    }
+
+    /// Usage fields missing (or `null`) in a log line's `usage` object.
+    private static func claudeOmittedUsageFields(_ usage: [String: Any]) -> Set<ClaudeUsageField> {
+        let usageKeys: [(String, ClaudeUsageField)] = [
+            ("input_tokens", .input),
+            ("output_tokens", .output),
+            ("cache_read_input_tokens", .cacheRead),
+            ("cache_creation_input_tokens", .cacheCreation),
+        ]
+        return Set(usageKeys.filter { key, _ in usage[key] == nil || usage[key] is NSNull }.map(\.1))
     }
 
     static func loadClaudeDaily(

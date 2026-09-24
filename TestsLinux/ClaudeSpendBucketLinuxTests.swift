@@ -159,7 +159,7 @@ struct ClaudeSpendBucketLinuxTests {
             "message": [
                 "id": "msg_1",
                 "model": Self.pricedModel,
-                "usage": ["input_tokens": 40, "output_tokens": 8],
+                "usage": ["input_tokens": 40, "output_tokens": 8, "cache_read_input_tokens": NSNull()],
             ],
         ]])
 
@@ -176,4 +176,3 @@ struct ClaudeSpendBucketLinuxTests {
         #expect(bucket.totalTokens == 48)
     }
 }
-

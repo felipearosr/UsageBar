@@ -240,4 +240,3 @@ struct CodexSpendBucketLinuxTests {
         #expect(abs((buckets.first?.costUSD ?? 0) - 3 * perCall) < 0.000001)
     }
 }
-
