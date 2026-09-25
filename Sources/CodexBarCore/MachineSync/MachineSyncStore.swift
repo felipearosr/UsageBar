@@ -15,11 +15,19 @@ public struct MachineSyncSettings: Codable, Sendable, Equatable {
     public var displayName: String?
     /// Present only while this Machine belongs to a Sync Group. Holds the group key: keep the file private.
     public var pairingLink: String?
+    /// How `sync status` groups Spend into days. `nil` means the system timezone with days starting at midnight.
+    public var reportingDay: MachineSyncReportingDay?
 
-    public init(machineID: String, displayName: String? = nil, pairingLink: String? = nil) {
+    public init(
+        machineID: String,
+        displayName: String? = nil,
+        pairingLink: String? = nil,
+        reportingDay: MachineSyncReportingDay? = nil)
+    {
         self.machineID = machineID
         self.displayName = displayName
         self.pairingLink = pairingLink
+        self.reportingDay = reportingDay
     }
 }
 
@@ -32,13 +40,22 @@ public struct MachineSyncPushState: Codable, Sendable, Equatable {
     public var coverageStart: String?
     public var consecutiveFailures: Int = 0
     public var nextAttemptAt: Date?
+    /// Server's `retentionDays`, learned when this Machine joined the group. Caps backfill and `coverageStart`.
+    public var retentionDays: Int?
+    /// When the backfill (§8.2) finished. `nil` means the next push backfills the whole retention window.
+    public var backfilledAt: Date?
+    /// Last successful `profile` upload. Re-uploaded after `MachineSyncPusher.heartbeatInterval` so Last Seen
+    /// stays fresh while an idle Machine is online.
+    public var profileUploadedAt: Date?
 
-    public init(groupID: String? = nil) {
+    public init(groupID: String? = nil, retentionDays: Int? = nil) {
         self.groupID = groupID
+        self.retentionDays = retentionDays
     }
 }
 
-/// Files next to `config.json`: `sync.json` (settings), `sync-state.json` (push state), `sync.lock`.
+/// Files next to `config.json`: `sync.json` (settings), `sync-state.json` (push state), `sync.lock`, and
+/// `sync-cache.json` (decrypted Spend of every Machine, read by `sync status`).
 public struct MachineSyncStore: Sendable {
     public let directory: URL
 
@@ -58,6 +75,10 @@ public struct MachineSyncStore: Sendable {
         self.directory.appendingPathComponent("sync.lock")
     }
 
+    public var cacheURL: URL {
+        self.directory.appendingPathComponent("sync-cache.json")
+    }
+
     public func loadSettings() throws -> MachineSyncSettings? {
         try self.load(MachineSyncSettings.self, from: self.settingsURL)
     }
@@ -72,6 +93,14 @@ public struct MachineSyncStore: Sendable {
 
     public func saveState(_ state: MachineSyncPushState) throws {
         try self.save(state, to: self.stateURL)
+    }
+
+    public func loadCache() throws -> MachineSyncCache? {
+        try self.load(MachineSyncCache.self, from: self.cacheURL)
+    }
+
+    public func saveCache(_ cache: MachineSyncCache) throws {
+        try self.save(cache, to: self.cacheURL)
     }
 
     private func load<T: Decodable>(_ type: T.Type, from url: URL) throws -> T? {

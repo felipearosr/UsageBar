@@ -237,23 +237,37 @@ extension CodexBarCLI {
         CodexBar \(version)
 
         Usage:
-          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]
+          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>] [--yes]
                                [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync pair <pairing-link> [--name <display-name>] [--yes]
+                             [--format text|json] [--json] [--json-only] [--pretty]
           codexbar sync push [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync status [--timezone <iana-id>] [--day-start <hour>]
+                               [--format text|json] [--json] [--json-only] [--pretty]
 
         Description:
           Machine Sync shares each Machine's Spend (local-log cost, tokens, and requests) with your other
           Machines through a Sync Server, end-to-end encrypted. It stays off until you create a Sync Group.
 
           create  Generates the Sync Group key on this Machine, registers the group on the server (with an
-                  Enrollment Token if the server requires one), pushes this Machine's Spend, and prints the
+                  Enrollment Token if the server requires one), backfills this Machine's Spend, and prints the
                   Pairing Link. Store the link somewhere safe: it is the recovery key for the group.
+                  A plain http:// server that isn't loopback asks first; --yes skips the question.
+          pair    Joins the Sync Group in a Pairing Link and backfills this Machine's Spend for every day the
+                  server keeps. A codexbar-sync+http:// link to a host that isn't loopback asks first; --yes
+                  skips the question.
           push    Uploads today's and yesterday's UTC Spend plus this Machine's profile, skipping anything
                   unchanged since the last push. Only one push runs at a time per Machine.
+          status  Shows every Machine: display name, active (Last Seen under 5 minutes), today's and 30-day
+                  Spend, the split by provider and model, and Coverage. Days follow the Reporting Day: the
+                  system timezone and midnight unless sync.json sets "reportingDay" or the flags override it.
 
         Examples:
           codexbar sync create --server https://sync.example.com --token tok_123 --name laptop
+          codexbar sync pair 'codexbar-sync://sync.example.com#<key>' --name desk
           codexbar sync push
+          codexbar sync status --timezone America/Los_Angeles --day-start 4
+          codexbar sync status --json --pretty
         """
     }
 
@@ -320,7 +334,9 @@ extension CodexBarCLI {
           codexbar cache clear <--cookies|--cost|--all> [--provider <name>]
           codexbar diagnose --provider <name|all> --format json [--redact] [--output <path>] [--pretty]
           codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]
+          codexbar sync pair <pairing-link> [--name <display-name>] [--yes]
           codexbar sync push
+          codexbar sync status [--timezone <iana-id>] [--day-start <hour>] [--json]
 
         Global flags:
           -h, --help      Show help

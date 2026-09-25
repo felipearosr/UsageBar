@@ -92,8 +92,12 @@ public enum MachineSyncDay {
     }
 
     public static func dateString(for date: Date) -> String {
-        let components = self.utcCalendar.dateComponents([.year, .month, .day], from: date)
-        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+        self.dateString(self.utcCalendar.dateComponents([.year, .month, .day], from: date))
+    }
+
+    /// `YYYY-MM-DD` for calendar date components, in whatever calendar produced them.
+    static func dateString(_ components: DateComponents) -> String {
+        String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
     }
 
     public static func blobName(for date: Date) -> String {

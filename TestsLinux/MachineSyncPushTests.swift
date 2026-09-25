@@ -5,235 +5,6 @@ import FoundationNetworking
 #endif
 import Testing
 
-/// In-memory Sync Server speaking just enough of §6 for create and push.
-final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
-    struct Failure {
-        var status: Int
-        var code: String
-        var headers: [String: String] = [:]
-    }
-
-    private let lock = NSLock()
-    private var _requests: [URLRequest] = []
-    private var _blobs: [String: Data] = [:]
-    private var _failures: [Failure] = []
-    private var _networkFailures = 0
-    private var _putFailures: [String: Failure] = [:]
-    private var _postFailure: Failure?
-    var enrollment = "none"
-    var protocols = [1]
-
-    var requests: [URLRequest] {
-        self.lock.withLock { self._requests }
-    }
-
-    var putNames: [String] {
-        self.requests.filter { $0.httpMethod == "PUT" }.compactMap { $0.url?.lastPathComponent }
-    }
-
-    func blob(machineID: String, name: String) -> Data? {
-        self.lock.withLock { self._blobs.first { $0.key.hasSuffix("/machines/\(machineID)/blobs/\(name)") }?.value }
-    }
-
-    /// The next requests fail with these errors, in order.
-    func failNext(_ failures: Failure...) {
-        self.lock.withLock { self._failures.append(contentsOf: failures) }
-    }
-
-    /// The next PUT of blob `name` fails once.
-    func failPut(named name: String, with failure: Failure) {
-        self.lock.withLock { self._putFailures[name] = failure }
-    }
-
-    /// The next `POST /v1/groups` fails once.
-    func failPost(with failure: Failure) {
-        self.lock.withLock { self._postFailure = failure }
-    }
-
-    func failNextWithNetworkError() {
-        self.lock.withLock { self._networkFailures += 1 }
-    }
-
-    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        let (failure, networkFailure) = self.lock.withLock { () -> (Failure?, Bool) in
-            self._requests.append(request)
-            if self._networkFailures > 0 {
-                self._networkFailures -= 1
-                return (nil, true)
-            }
-            if request.httpMethod == "POST", let failure = self._postFailure {
-                self._postFailure = nil
-                return (failure, false)
-            }
-            if request.httpMethod == "PUT", let name = request.url?.lastPathComponent,
-               let failure = self._putFailures.removeValue(forKey: name)
-            {
-                return (failure, false)
-            }
-            return (self._failures.isEmpty ? nil : self._failures.removeFirst(), false)
-        }
-        if networkFailure { throw URLError(.notConnectedToInternet) }
-        if let failure {
-            let body = #"{"error":{"code":"\#(failure.code)","message":"server says no"}}"#
-            return Self.response(request, status: failure.status, body: Data(body.utf8), headers: failure.headers)
-        }
-
-        let fullPath = request.url?.path ?? ""
-        let path = fullPath.range(of: "/v1/").map { String(fullPath[$0.lowerBound...]) } ?? fullPath
-        switch (request.httpMethod ?? "GET", path) {
-        case ("GET", "/v1/info"):
-            let body = try JSONSerialization.data(withJSONObject: [
-                "protocols": self.protocols,
-                "enrollment": self.enrollment,
-                "maxBlobBytes": 65536,
-                "retentionDays": 400,
-            ])
-            return Self.response(request, status: 200, body: body)
-        case ("POST", "/v1/groups"):
-            let body = #"{"limits":{"maxMachines":10,"retentionDays":400,"expiresAt":null}}"#
-            return Self.response(request, status: 201, body: Data(body.utf8))
-        case let ("PUT", putPath) where putPath.contains("/blobs/"):
-            self.lock.withLock { self._blobs[putPath] = request.httpBody ?? Data() }
-            let body = #"{"etag":"\"e1\"","updatedAt":"2026-09-24T12:00:00Z"}"#
-            return Self.response(request, status: 200, body: Data(body.utf8))
-        default:
-            return Self.response(request, status: 404, body: Data(#"{"error":{"code":"not_found"}}"#.utf8))
-        }
-    }
-
-    private static func response(
-        _ request: URLRequest,
-        status: Int,
-        body: Data,
-        headers: [String: String] = [:]) -> (Data, URLResponse)
-    {
-        (body, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!)
-    }
-}
-
-/// Spend a test can change between pushes, plus an optional gate that holds the scan open.
-final class TestSpend: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _buckets: [CostUsageSpendBucket] = []
-    private var gate: CheckedContinuation<Void, Never>?
-    private var gateArmed = false
-    private var entered: CheckedContinuation<Void, Never>?
-
-    var buckets: [CostUsageSpendBucket] {
-        get { self.lock.withLock { self._buckets } }
-        set { self.lock.withLock { self._buckets = newValue } }
-    }
-
-    /// The next scan blocks until `release()`.
-    func holdNextScan() {
-        self.lock.withLock { self.gateArmed = true }
-    }
-
-    func waitUntilScanning() async {
-        await withCheckedContinuation { continuation in
-            let resumeNow = self.lock.withLock { () -> Bool in
-                if self.gate != nil { return true }
-                self.entered = continuation
-                return false
-            }
-            if resumeNow { continuation.resume() }
-        }
-    }
-
-    func release() {
-        let gate = self.lock.withLock { () -> CheckedContinuation<Void, Never>? in
-            defer { self.gate = nil }
-            return self.gate
-        }
-        gate?.resume()
-    }
-
-    var source: MachineSyncSpendSource {
-        { [self] since, until in
-            let armed = self.lock.withLock { () -> Bool in
-                defer { self.gateArmed = false }
-                return self.gateArmed
-            }
-            if armed {
-                await withCheckedContinuation { continuation in
-                    let entered = self.lock.withLock { () -> CheckedContinuation<Void, Never>? in
-                        self.gate = continuation
-                        defer { self.entered = nil }
-                        return self.entered
-                    }
-                    entered?.resume()
-                }
-            }
-            return self.buckets.filter { $0.hourStart >= since && $0.hourStart < until }
-        }
-    }
-}
-
-struct MachineSyncTestContext {
-    let directory: URL
-    let server = FakeSyncServer()
-    let spend = TestSpend()
-    var now: Date
-
-    init(now: Date) {
-        self.directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("machine-sync-\(UUID().uuidString)", isDirectory: true)
-        self.now = now
-    }
-
-    var store: MachineSyncStore {
-        MachineSyncStore(directory: self.directory)
-    }
-
-    var environment: MachineSyncEnvironment {
-        let now = self.now
-        return MachineSyncEnvironment(
-            store: self.store,
-            transport: self.server,
-            spendSource: self.spend.source,
-            clientVersion: "0.24.0",
-            hostName: "test-host",
-            now: { now })
-    }
-
-    func cleanup() {
-        try? FileManager.default.removeItem(at: self.directory)
-    }
-
-    @discardableResult
-    func create(token: String? = nil) async throws -> MachineSyncCreateResult {
-        try await MachineSyncGroupCreator.create(
-            serverURL: "https://sync.example.com/base",
-            enrollmentToken: token,
-            displayName: nil,
-            environment: self.environment)
-    }
-
-    static func utc(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
-        MachineSyncDay.utcCalendar.date(from: DateComponents(
-            year: year, month: month, day: day, hour: hour, minute: minute))!
-    }
-
-    static func bucket(
-        _ hourStart: Date,
-        provider: UsageProvider = .claude,
-        model: String = "claude-sonnet-4-5",
-        cost: Double? = 1.5) -> CostUsageSpendBucket
-    {
-        CostUsageSpendBucket(
-            hourStart: hourStart,
-            provider: provider,
-            model: model,
-            costUSD: cost,
-            inputTokens: 100,
-            outputTokens: 20,
-            cacheReadTokens: nil,
-            cacheCreationTokens: nil,
-            totalTokens: 120,
-            requests: 3)
-    }
-}
-
 struct MachineSyncPushTests {
     private static let now = MachineSyncTestContext.utc(2026, 9, 24, 12, 30)
 
@@ -268,7 +39,7 @@ struct MachineSyncPushTests {
     }
 
     @Test
-    func `first push uploads today, yesterday, and profile`() async throws {
+    func `first push after create backfills every day, then profile`() async throws {
         let context = MachineSyncTestContext(now: Self.now)
         defer { context.cleanup() }
         context.spend.buckets = [
@@ -281,7 +52,9 @@ struct MachineSyncPushTests {
 
         let outcome = try await MachineSyncPusher.push(environment: context.environment)
 
-        #expect(outcome == .pushed(uploaded: ["day-2026-09-23", "day-2026-09-24", "profile"], unchanged: 0))
+        #expect(outcome == .pushed(
+            uploaded: ["day-2026-09-22", "day-2026-09-23", "day-2026-09-24", "profile"],
+            unchanged: 0))
         let today = try self.openBlob(context, name: "day-2026-09-24")
         let buckets = try #require(today["buckets"] as? [[String: Any]])
         #expect(buckets.count == 2)
@@ -294,12 +67,12 @@ struct MachineSyncPushTests {
         let profile = try self.openBlob(context, name: "profile")
         #expect(profile["displayName"] as? String == "test-host")
         #expect(profile["clientVersion"] as? String == "0.24.0")
-        #expect(profile["coverageStart"] as? String == "2026-09-23")
+        #expect(profile["coverageStart"] as? String == "2026-09-22")
         #expect(profile["pushedAt"] as? String == "2026-09-24T12:30:00Z")
     }
 
     @Test
-    func `second push with no new Spend makes no PUTs`() async throws {
+    func `an immediate second push with no new Spend makes no PUTs`() async throws {
         var context = MachineSyncTestContext(now: Self.now)
         defer { context.cleanup() }
         context.spend.buckets = [MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 24, 9))]
@@ -307,11 +80,109 @@ struct MachineSyncPushTests {
         _ = try await MachineSyncPusher.push(environment: context.environment)
         let putsAfterFirst = context.server.putNames.count
 
-        context.now = Self.now.addingTimeInterval(150)
+        context.now = Self.now.addingTimeInterval(60)
         let outcome = try await MachineSyncPusher.push(environment: context.environment)
 
         #expect(outcome == .pushed(uploaded: [], unchanged: 2))
         #expect(context.server.putNames.count == putsAfterFirst)
+    }
+
+    @Test
+    func `an idle Machine re-uploads profile every two minutes so Last Seen stays fresh`() async throws {
+        var context = MachineSyncTestContext(now: Self.now)
+        defer { context.cleanup() }
+        context.spend.buckets = [MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 24, 9))]
+        try await context.create()
+        _ = try await context.push()
+
+        context.now = Self.now.addingTimeInterval(150)
+        context.server.now = context.now
+        let outcome = try await context.push()
+
+        #expect(outcome == .pushed(uploaded: ["profile"], unchanged: 1))
+        #expect(try self.openBlob(context, name: "profile")["pushedAt"] as? String == "2026-09-24T12:32:30Z")
+        let machineID = try #require(try context.store.loadSettings()?.machineID)
+        #expect(context.server.lastSeen(machineID: machineID) == context.now)
+    }
+
+    @Test
+    func `after the backfill, pushes only look at today and yesterday`() async throws {
+        let context = MachineSyncTestContext(now: Self.now)
+        defer { context.cleanup() }
+        context.spend.buckets = [MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 24, 9))]
+        try await context.create()
+        _ = try await context.push()
+
+        context.spend.buckets.append(MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 20, 9)))
+        let outcome = try await context.push()
+
+        #expect(outcome == .pushed(uploaded: [], unchanged: 2))
+        #expect(try context.server.blob(
+            machineID: #require(try context.store.loadSettings()?.machineID),
+            name: "day-2026-09-20") == nil)
+    }
+
+    @Test
+    func `backfill stops at the server's retention window`() async throws {
+        let context = MachineSyncTestContext(now: Self.now)
+        defer { context.cleanup() }
+        context.server.retentionDays = 5
+        context.spend.buckets = [
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 10, 9)),
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 18, 23)),
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 19, 0)),
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 24, 9)),
+        ]
+        try await context.create()
+
+        let outcome = try await context.push()
+
+        #expect(outcome == .pushed(uploaded: ["day-2026-09-19", "day-2026-09-24", "profile"], unchanged: 0))
+        #expect(try self.openBlob(context, name: "profile")["coverageStart"] as? String == "2026-09-19")
+    }
+
+    @Test
+    func `coverageStart is clamped to the oldest day still inside retention`() async throws {
+        var context = MachineSyncTestContext(now: Self.now)
+        defer { context.cleanup() }
+        context.server.retentionDays = 10
+        context.spend.buckets = [MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 24, 9))]
+        try await context.create()
+        _ = try await context.push()
+        var state = try #require(try context.store.loadState())
+        state.coverageStart = "2026-01-01"
+        try context.store.saveState(state)
+
+        context.now = Self.now.addingTimeInterval(150)
+        _ = try await context.push()
+
+        #expect(try self.openBlob(context, name: "profile")["coverageStart"] as? String == "2026-09-14")
+        #expect(try context.store.loadState()?.coverageStart == "2026-09-14")
+    }
+
+    @Test
+    func `a Machine paired before backfill existed backfills on its next push`() async throws {
+        let context = MachineSyncTestContext(now: Self.now)
+        defer { context.cleanup() }
+        context.spend.buckets = [
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 8, 1, 9)),
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 1, 9)),
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 24, 9)),
+        ]
+        try await context.create()
+        context.server.retentionDays = 30
+        // A #7-era state file: no retention, no backfill marker, no heartbeat time.
+        let groupID = try #require(try context.store.loadState()?.groupID)
+        try Data(#"{"groupID":"\#(groupID)","uploadedHashes":{},"consecutiveFailures":0}"#.utf8)
+            .write(to: context.store.stateURL)
+
+        let outcome = try await context.push()
+
+        // Retention is learned from `GET /info` first, so August (past 30 days) stays local.
+        #expect(outcome == .pushed(uploaded: ["day-2026-09-01", "day-2026-09-24", "profile"], unchanged: 0))
+        #expect(try context.store.loadState()?.backfilledAt == Self.now)
+        #expect(try context.store.loadState()?.retentionDays == 30)
+        #expect(try self.openBlob(context, name: "profile")["coverageStart"] as? String == "2026-09-01")
     }
 
     @Test
