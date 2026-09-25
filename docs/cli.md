@@ -103,6 +103,14 @@ See `docs/configuration.md` for the schema.
   - `CODEXBAR_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`, when set, are written into the job so it reads the same `sync.json` and the same Codex and Claude logs as the shell that installed it.
   - Each push takes the push lock, so the timer coexists with the desktop app or GNOME extension on the same Machine.
   - `--uninstall` stops the job and deletes only those files; `sync.json` and the Sync Group are untouched.
+- `codexbar sync link` prints this Machine's Pairing Link on stdout and a warning on stderr: the link is the group key and the recovery key. `--json` prints `{"pairingLink","server"}`.
+- `codexbar sync rename <display-name>` saves a new display name in `sync.json` and pushes `profile` right away so other Machines see it on their next read. Unpaired, it only saves the name for the next `pair`.
+- `codexbar sync retire <machine-id-or-name>` marks another Machine as retired, for example after a reinstall.
+  - Adds it to the group `retired` blob with read-modify-write: `GET` the blob and its ETag, add the entry, `PUT` with `If-Match`. A `412` means another Machine wrote first, so it re-reads and retries (up to 5 times). Other Machines' entries and unknown fields are kept.
+  - Retired Machines still count toward totals and show as `retired` in `sync status`. A retired Machine that pushes again shows as active again; retiring it again hides it again.
+  - The Machine is matched by Machine ID, else by display name (ignoring case). A name shared by several Machines is refused with their IDs. This Machine can't retire or forget itself; use `leave`.
+- `codexbar sync forget <machine-id-or-name> [--yes]` deletes another Machine and all its blobs from the Sync Server (`DELETE /v1/groups/{id}/machines/{machine}`). It asks first; without a terminal, or with JSON output, it needs `--yes`.
+- `codexbar sync leave [--yes]` unpairs this Machine: removes the Pairing Link from `sync.json` and deletes `sync-state.json` and `sync-cache.json`. Its data stays on the server, and the Machine ID and name are kept, so `sync pair` with the same link restores the same Machine. It asks first; `--yes` skips the question. Refused while a push holds `sync.lock`.
 - `--provider <id|both|all>` (default: enabled providers in config; falls back to defaults when missing).
   - Provider IDs live in the config file (see `docs/configuration.md`).
   - With three or more providers enabled, the default stays scoped to enabled providers; use `--provider all` to query

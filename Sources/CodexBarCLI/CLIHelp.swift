@@ -245,6 +245,11 @@ extension CodexBarCLI {
           codexbar sync status [--timezone <iana-id>] [--day-start <hour>]
                                [--format text|json] [--json] [--json-only] [--pretty]
           codexbar sync install-timer [--uninstall] [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync link [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync rename <display-name> [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync retire <machine-id-or-name> [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync forget <machine-id-or-name> [--yes] [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync leave [--yes] [--format text|json] [--json] [--json-only] [--pretty]
 
         Description:
           Machine Sync shares each Machine's Spend (local-log cost, tokens, and requests) with your other
@@ -269,6 +274,15 @@ extension CodexBarCLI {
                   lingering is on: `loginctl enable-linger $USER`. Pushes take the push lock, so the timer can
                   run next to the desktop app or GNOME extension. --uninstall stops the job and removes only
                   its unit or agent files.
+          link    Prints the Pairing Link (the warning goes to stderr). Anyone who has it can read and change
+                  the group's Spend.
+          rename  Changes this Machine's display name and pushes it so the other Machines see it.
+          retire  Marks another Machine as gone, for example after a reinstall. Its Spend stays in totals but
+                  it no longer shows as active. If it pushes again, it shows as active again.
+          forget  Deletes another Machine and all its Spend from the Sync Server. Asks first; --yes skips the
+                  question (needed without a terminal or with JSON output).
+          leave   Unpairs this Machine and forgets the Pairing Link. Its Spend stays on the server, and pairing
+                  again restores the same Machine. Asks first; --yes skips the question.
 
         Examples:
           codexbar sync create --server https://sync.example.com --token tok_123 --name laptop
@@ -278,6 +292,9 @@ extension CodexBarCLI {
           codexbar sync status --json --pretty
           codexbar sync install-timer
           codexbar sync install-timer --uninstall
+          codexbar sync rename "work laptop"
+          codexbar sync retire old-desktop
+          codexbar sync forget old-desktop --yes
         """
     }
 
@@ -348,6 +365,7 @@ extension CodexBarCLI {
           codexbar sync push
           codexbar sync status [--timezone <iana-id>] [--day-start <hour>] [--json]
           codexbar sync install-timer [--uninstall]
+          codexbar sync link | rename <display-name> | retire <machine> | forget <machine> [--yes] | leave [--yes]
 
         Global flags:
           -h, --help      Show help

@@ -15,6 +15,18 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
     /// The request never got an HTTP answer.
     case network(String)
     case invalidResponse(status: Int)
+    /// No Machine in the Sync Group has this ID or display name.
+    case machineNotFound(String)
+    /// More than one Machine has this display name; pass the Machine ID instead.
+    case ambiguousMachine(name: String, machineIDs: [String])
+    /// `retire` and `forget` act on other Machines; this one would push itself back.
+    case isThisMachine(command: String)
+    /// The group `retired` blob kept changing under us (§5.3).
+    case retiredConflict
+    /// The group `retired` blob exists but this client can't read it, so rewriting it would lose data.
+    case unreadableRetiredBlob
+    /// Another process on this Machine holds the push lock.
+    case pushInProgress
 
     public var errorDescription: String? {
         switch self {
@@ -32,6 +44,20 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
             return "Couldn't reach the Sync Server: \(details)"
         case let .invalidResponse(status):
             return "The Sync Server sent an unexpected response (HTTP \(status))."
+        case let .machineNotFound(query):
+            return "No Machine in this Sync Group is called \"\(query)\". Run `codexbar sync status` to list them."
+        case let .ambiguousMachine(name, machineIDs):
+            return "More than one Machine is called \"\(name)\". Use its Machine ID instead: "
+                + machineIDs.joined(separator: ", ") + "."
+        case let .isThisMachine(command):
+            return "That is this Machine. Run `codexbar sync \(command)` from another Machine, "
+                + "or `codexbar sync leave` to unpair this one."
+        case .retiredConflict:
+            return "Other Machines kept changing the retired list at the same time. Try again."
+        case .unreadableRetiredBlob:
+            return "The Sync Group's retired list can't be read by this version, so it was left unchanged."
+        case .pushInProgress:
+            return "A push is running on this Machine right now. Try again in a moment."
         case let .server(status, code, message, _):
             if let text = Self.text(forCode: code) { return text }
             let fallback = message.map { ": \($0)" } ?? ""
@@ -73,6 +99,8 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
             "A blob is larger than the server allows."
         case "rate_limited":
             "The Sync Server is rate limiting requests. Try again later."
+        case "precondition_failed":
+            "The blob changed on the server while it was being updated."
         default:
             nil
         }
@@ -137,6 +165,10 @@ public struct MachineSyncClient: Sendable {
         let limits: Limits
     }
 
+    private struct PutBody: Decodable {
+        let etag: String?
+    }
+
     public let apiBaseURL: String
     private let transport: any ProviderHTTPTransport
     private let timeout: TimeInterval
@@ -170,14 +202,53 @@ public struct MachineSyncClient: Sendable {
         return try self.decode(LimitsBody.self, from: data, status: 200).limits
     }
 
-    public func putBlob(_ envelope: Data, at address: MachineSyncBlobAddress, keys: MachineSyncKeys) async throws {
-        var request = try self.request(
-            path: "/groups/\(address.groupID)/machines/\(address.machineID)/blobs/\(address.name)",
-            method: "PUT")
+    /// PUTs `envelope` and returns the new ETag. With `ifMatch`, the server answers `412 precondition_failed`
+    /// unless the stored blob still has that ETag (§6.4).
+    @discardableResult
+    public func putBlob(
+        _ envelope: Data,
+        at address: MachineSyncBlobAddress,
+        keys: MachineSyncKeys,
+        ifMatch: String? = nil) async throws -> String?
+    {
+        var request = try self.request(path: Self.blobPath(address), method: "PUT")
         request.setValue(keys.authorizationHeader, forHTTPHeaderField: "Authorization")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        if let ifMatch {
+            request.setValue(ifMatch, forHTTPHeaderField: "If-Match")
+        }
         request.httpBody = envelope
+        let (data, response) = try await self.sendReturningResponse(request)
+        let body = try? JSONDecoder().decode(PutBody.self, from: data)
+        return body?.etag ?? response.value(forHTTPHeaderField: "ETag")
+    }
+
+    /// One stored envelope and its ETag (§6.6), or `nil` when nothing is stored at `address`.
+    public func getBlob(at address: MachineSyncBlobAddress, keys: MachineSyncKeys) async throws
+        -> (envelope: Data, etag: String?)?
+    {
+        var request = try self.request(path: Self.blobPath(address), method: "GET")
+        request.setValue(keys.authorizationHeader, forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await self.sendReturningResponse(request)
+            return (data, response.value(forHTTPHeaderField: "ETag"))
+        } catch let MachineSyncError.server(status, code, _, _) where status == 404 && code == "blob_not_found" {
+            return nil
+        }
+    }
+
+    /// Deletes a Machine and all its blobs (§6.7, "forget this Machine").
+    public func deleteMachine(_ machineID: String, keys: MachineSyncKeys) async throws {
+        var request = try self.request(
+            path: "/groups/\(keys.groupIDBase64URL)/machines/\(machineID)",
+            method: "DELETE")
+        request.setValue(keys.authorizationHeader, forHTTPHeaderField: "Authorization")
         _ = try await self.send(request)
+    }
+
+    private static func blobPath(_ address: MachineSyncBlobAddress) -> String {
+        "/groups/\(address.groupID)/machines/\(address.machineID)/blobs/\(address.name)"
     }
 
     /// Everything written since `cursor`, or everything when `cursor` is `nil`.
@@ -210,6 +281,12 @@ public struct MachineSyncClient: Sendable {
     }
 
     private func send(_ request: URLRequest) async throws -> Data {
+        try await self.sendReturningResponse(request).data
+    }
+
+    private func sendReturningResponse(_ request: URLRequest) async throws
+        -> (data: Data, response: HTTPURLResponse)
+    {
         let data: Data
         let response: URLResponse
         do {
@@ -229,7 +306,7 @@ public struct MachineSyncClient: Sendable {
                 message: body?.error.message,
                 retryAfter: retryAfter)
         }
-        return data
+        return (data, http)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data, status: Int) throws -> T {

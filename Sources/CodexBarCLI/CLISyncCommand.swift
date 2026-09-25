@@ -20,6 +20,8 @@ extension CodexBarCLI {
             await self.runSyncStatus(values)
         case ["sync", "install-timer"]:
             await self.runSyncInstallTimer(values)
+        case ["sync", "link"], ["sync", "rename"], ["sync", "retire"], ["sync", "forget"], ["sync", "leave"]:
+            await self.runSyncManage(path[1], values: values)
         default:
             await self.runSyncPush(values)
         }
@@ -212,7 +214,7 @@ extension CodexBarCLI {
         return uploaded.count(where: { $0.hasPrefix("day-") })
     }
 
-    private static func syncEnvironment() -> MachineSyncEnvironment {
+    static func syncEnvironment() -> MachineSyncEnvironment {
         MachineSyncEnvironment(clientVersion: currentVersion() ?? "unknown")
     }
 
