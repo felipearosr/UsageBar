@@ -232,6 +232,31 @@ extension CodexBarCLI {
         """
     }
 
+    static func syncHelp(version: String) -> String {
+        """
+        CodexBar \(version)
+
+        Usage:
+          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]
+                               [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync push [--format text|json] [--json] [--json-only] [--pretty]
+
+        Description:
+          Machine Sync shares each Machine's Spend (local-log cost, tokens, and requests) with your other
+          Machines through a Sync Server, end-to-end encrypted. It stays off until you create a Sync Group.
+
+          create  Generates the Sync Group key on this Machine, registers the group on the server (with an
+                  Enrollment Token if the server requires one), pushes this Machine's Spend, and prints the
+                  Pairing Link. Store the link somewhere safe: it is the recovery key for the group.
+          push    Uploads today's and yesterday's UTC Spend plus this Machine's profile, skipping anything
+                  unchanged since the last push. Only one push runs at a time per Machine.
+
+        Examples:
+          codexbar sync create --server https://sync.example.com --token tok_123 --name laptop
+          codexbar sync push
+        """
+    }
+
     static func diagnoseHelp(version: String) -> String {
         """
         CodexBar \(version)
@@ -294,6 +319,8 @@ extension CodexBarCLI {
                                    --organization-id <org> --workspace-id <project>
           codexbar cache clear <--cookies|--cost|--all> [--provider <name>]
           codexbar diagnose --provider <name|all> --format json [--redact] [--output <path>] [--pretty]
+          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]
+          codexbar sync push
 
         Global flags:
           -h, --help      Show help
