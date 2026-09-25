@@ -111,6 +111,7 @@ enum CodexBarCLI {
         let syncPushSignature = CommandSignature.describe(SyncPushOptions())
         let syncPairSignature = CommandSignature.describe(SyncPairOptions())
         let syncStatusSignature = CommandSignature.describe(SyncStatusOptions())
+        let syncInstallTimerSignature = CommandSignature.describe(SyncInstallTimerOptions())
 
         return [
             CommandDescriptor(
@@ -228,6 +229,11 @@ enum CodexBarCLI {
                         abstract: "Show every Machine's Spend, Last Seen, and Coverage",
                         discussion: nil,
                         signature: syncStatusSignature),
+                    CommandDescriptor(
+                        name: "install-timer",
+                        abstract: "Run `sync push` every ~150 s from a systemd user timer or launchd agent",
+                        discussion: nil,
+                        signature: syncInstallTimerSignature),
                 ],
                 defaultSubcommandName: "push"),
             CommandDescriptor(
