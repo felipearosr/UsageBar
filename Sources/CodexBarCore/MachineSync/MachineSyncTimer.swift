@@ -87,12 +87,16 @@ public enum MachineSyncTimer {
 
     // MARK: - systemd
 
-    /// Variables that move `config.json`, and with it `sync.json`. The service manager doesn't share the
-    /// installing shell's environment, so the ones that are set are written into the job; otherwise the timer
-    /// could push as a different, unpaired Machine.
+    /// Variables that change what `sync push` reads. `CODEXBAR_CONFIG` and `XDG_CONFIG_HOME` move `config.json`,
+    /// and with it `sync.json`; `CODEX_HOME` and `CLAUDE_CONFIG_DIR` choose the logs the Spend scan reads.
+    /// The service manager doesn't share the installing shell's environment, so the ones that are set are written
+    /// into the job; otherwise the timer could push as a different, unpaired Machine, or push day blobs built from
+    /// the default `~/.codex` and `~/.claude` over the correct ones.
     public static let carriedEnvironmentKeys = [
         CodexBarConfigStore.pathEnvironmentKey,
         CodexBarConfigStore.xdgConfigHomeEnvironmentKey,
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
     ]
 
     public static func carriedEnvironment(_ environment: [String: String]) -> [(key: String, value: String)] {

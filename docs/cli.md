@@ -100,7 +100,7 @@ See `docs/configuration.md` for the schema.
   - No graphical session is needed, but a user timer stops when the user's last session ends. Run `loginctl enable-linger $USER` to keep it going; the command says so when lingering is off.
   - macOS: writes `~/Library/LaunchAgents/com.steipete.codexbar.sync-push.plist` (`StartInterval` 150 s, each run first sleeps 0-20 s) and bootstraps it into `gui/<uid>`, or `user/<uid>` when nobody is logged in at the screen.
   - Requires a paired Machine. Reinstalling replaces the files. The job runs the `codexbar` path that installed it.
-  - `CODEXBAR_CONFIG` and `XDG_CONFIG_HOME`, when set, are written into the job so it reads the same `sync.json` as the shell that installed it.
+  - `CODEXBAR_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`, when set, are written into the job so it reads the same `sync.json` and the same Codex and Claude logs as the shell that installed it.
   - Each push takes the push lock, so the timer coexists with the desktop app or GNOME extension on the same Machine.
   - `--uninstall` stops the job and deletes only those files; `sync.json` and the Sync Group are untouched.
 - `--provider <id|both|all>` (default: enabled providers in config; falls back to defaults when missing).

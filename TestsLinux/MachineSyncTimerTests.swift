@@ -96,27 +96,38 @@ struct MachineSyncTimerTests {
     }
 
     @Test
-    func `the job carries the variables that move sync json`() throws {
+    func `the job carries the variables that move sync json and the Spend logs`() throws {
         let environment = [
             "CODEXBAR_CONFIG": " ~/cfg/config.json ",
             "XDG_CONFIG_HOME": "/xdg",
+            "CODEX_HOME": "/work/codex",
+            "CLAUDE_CONFIG_DIR": "/work/claude",
             "XDG_DATA_HOME": "/data",
             "PATH": "/usr/bin",
         ]
         let carried = MachineSyncTimer.carriedEnvironment(environment)
-        #expect(carried.map(\.key) == ["CODEXBAR_CONFIG", "XDG_CONFIG_HOME"])
-        #expect(carried.map(\.value) == ["~/cfg/config.json", "/xdg"])
+        #expect(carried.map(\.key) == ["CODEXBAR_CONFIG", "XDG_CONFIG_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"])
+        #expect(carried.map(\.value) == ["~/cfg/config.json", "/xdg", "/work/codex", "/work/claude"])
         #expect(MachineSyncTimer.carriedEnvironment(["CODEXBAR_CONFIG": "  "]).isEmpty)
 
         let files = Self.files(.systemd, home: "/home/dev", environment: environment)
         #expect(files[0].contents.contains("Environment=\"CODEXBAR_CONFIG=~/cfg/config.json\"\n"))
         #expect(files[0].contents.contains("Environment=\"XDG_CONFIG_HOME=/xdg\"\n"))
+        #expect(files[0].contents.contains("Environment=\"CODEX_HOME=/work/codex\"\n"))
+        #expect(files[0].contents.contains("Environment=\"CLAUDE_CONFIG_DIR=/work/claude\"\n"))
         #expect(!files[0].contents.contains("XDG_DATA_HOME"))
 
-        let plist = Self.files(.launchd, home: "/Users/dev", environment: ["XDG_CONFIG_HOME": "/a&b"])[0].contents
+        let plist = Self.files(
+            .launchd,
+            home: "/Users/dev",
+            environment: ["XDG_CONFIG_HOME": "/a&b", "CODEX_HOME": "/c", "CLAUDE_CONFIG_DIR": "/d"])[0].contents
         let parsed = try #require(
             try PropertyListSerialization.propertyList(from: Data(plist.utf8), format: nil) as? [String: Any])
-        #expect(parsed["EnvironmentVariables"] as? [String: String] == ["XDG_CONFIG_HOME": "/a&b"])
+        #expect(parsed["EnvironmentVariables"] as? [String: String] == [
+            "XDG_CONFIG_HOME": "/a&b",
+            "CODEX_HOME": "/c",
+            "CLAUDE_CONFIG_DIR": "/d",
+        ])
     }
 
     @Test
