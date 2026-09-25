@@ -362,7 +362,7 @@ private struct SyncPairPayload: Encodable {
     let pushError: String?
 }
 
-private struct SyncPushPayload: Encodable {
+struct SyncPushPayload: Encodable {
     let status: String
     let uploaded: [String]
     let unchanged: Int

@@ -604,6 +604,72 @@
   color: #9cc6f5;
 }
 
+/* Providers | Machines tab strip (only while Machine Sync is paired). */
+.usagebar-tab-item {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.usagebar-tab-button {
+  font-size: 9pt;
+  padding: 4px 16px;
+}
+
+/* Machines tab */
+.usagebar-machines {
+  spacing: 4px;
+}
+
+.usagebar-machines-banner {
+  margin: 2px 4px 4px 4px;
+}
+
+.usagebar-machines-head {
+  padding: 2px 4px 4px 4px;
+  spacing: 8px;
+}
+
+.usagebar-machine-head {
+  spacing: 8px;
+}
+
+.usagebar-machine-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+}
+
+.usagebar-machine-dot-active { background-color: #2ec27e; }
+.usagebar-machine-dot-idle { background-color: rgba(160, 160, 166, 0.6); }
+.usagebar-machine-dot-retired {
+  background-color: transparent;
+  border: 1px solid rgba(160, 160, 166, 0.6);
+}
+
+.usagebar-machine-tags {
+  font-size: 8.5pt;
+}
+
+.usagebar-machine-spend {
+  font-size: 10pt;
+  margin-top: 2px;
+}
+
+.usagebar-machine-model {
+  spacing: 6px;
+  margin-left: 16px;
+}
+
+.usagebar-machine-foot {
+  font-size: 8.5pt;
+  margin-top: 4px;
+}
+
+.usagebar-machines-note {
+  font-size: 8.5pt;
+  margin: 4px 4px 0 4px;
+}
+
 /* System appearance keeps the CodexBar structure and provider colors, but
    lets GNOME Shell supply the surface and text colors. On the stock dark
    shell theme this produces the quieter neutral-grey popover. */
