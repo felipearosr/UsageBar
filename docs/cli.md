@@ -73,15 +73,28 @@ See `docs/configuration.md` for the schema.
   - `--cost` removes local cost-usage scan caches.
   - `--all` clears both cookies and cost caches. `--provider` is cookie-only and cannot be combined with `--cost` or `--all`.
 - `codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]` creates a Machine Sync group (see `docs/machine-sync-protocol.md`).
-  - Generates the Sync Group key locally, registers the group on the server, pushes this Machine's Spend, and prints the Pairing Link. The link is the recovery key: store it somewhere safe.
+  - Generates the Sync Group key locally, registers the group on the server, backfills this Machine's Spend, and prints the Pairing Link. The link is the recovery key: store it somewhere safe.
   - `--token` is needed only when the server's `GET /v1/info` reports `enrollment: required`.
   - `http://` servers other than loopback print a warning: the bearer credential would travel unencrypted.
   - Settings live in `sync.json` next to `config.json` (mode `0600`); the app and the CLI share its Machine ID.
+- `codexbar sync pair <pairing-link> [--name <display-name>] [--yes]` joins an existing Sync Group from another Machine.
+  - Checks the server and the key (`GET /v1/info`, then `changes`) before saving anything, so a wrong or mistyped link leaves this Machine unpaired.
+  - A `codexbar-sync+http://` link to a host that isn't loopback prints a warning and asks for confirmation; non-interactive runs need `--yes`.
+  - Then backfills: one `day-*` blob per UTC day with Spend in the local logs, oldest first, going back no further than the server's `retentionDays` (400 days when the server doesn't say). If the backfill fails partway, the next `sync push` finishes it.
+  - Re-pairing after leaving reuses the Machine ID in `sync.json`.
 - `codexbar sync push` uploads today's and yesterday's UTC Spend Buckets plus the Machine profile, skipping blobs whose content hasn't changed.
-  - Does nothing (and makes no network calls) until `sync create` has run; exits non-zero with a hint.
+  - Does nothing (and makes no network calls) until `sync create` or `sync pair` has run; exits non-zero with a hint.
+  - The first push after `create` or `pair` is the backfill (see above).
+  - `profile` is uploaded again whenever the last upload is 2 minutes old or more, even with no new Spend, so the server's Last Seen for an online Machine stays fresh. `coverageStart` never names a day older than the server keeps.
   - Takes an exclusive lock on `sync.lock`; a second concurrent push exits 0 without uploading.
   - Rate limits (`429`), server errors (`5xx`), and network errors back off exponentially from 60 s, capped at 15 minutes.
   - `--format json` prints `{"status":"pushed|locked|backing_off","uploaded":[...],"unchanged":n,"nextAttemptAt":...}`.
+- `codexbar sync status [--timezone <iana-id>] [--day-start <hour>] [--json]` shows every Machine in the Sync Group.
+  - For each Machine: display name, active (Last Seen under 5 minutes), today's and 30-day Spend (cost, tokens, requests), the 30-day split by provider and model, and Coverage as a date range (`coverageStart` to Last Seen, UTC dates).
+  - Days are Reporting Days: the timezone and start hour from `"reportingDay": {"timeZone": "Europe/Berlin", "startHour": 4}` in `sync.json`, else the system timezone starting at midnight. The flags override both for one run.
+  - Keeps a decrypted cache in `sync-cache.json` (mode `0600`) with the server's `changes` cursor, so later runs fetch only blobs written since.
+  - A blob that fails to decrypt or parse is left out entirely (its older copy too) and listed under the errors until a readable copy replaces it.
+  - `--json` prints the same data for other surfaces: `generatedAt`, `reportingDay`, `today`, `machines[]` (with `today`, `last30Days`, `models`, `days`, `coverage`), `total`, and `errors`.
 - `--provider <id|both|all>` (default: enabled providers in config; falls back to defaults when missing).
   - Provider IDs live in the config file (see `docs/configuration.md`).
   - With three or more providers enabled, the default stays scoped to enabled providers; use `--provider all` to query

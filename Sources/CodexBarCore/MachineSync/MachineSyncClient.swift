@@ -8,6 +8,8 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
     case alreadyPaired
     case unsupportedServer
     case enrollmentTokenRequired
+    /// A `codexbar-sync+http://` link to a host that isn't loopback, used without the user's confirmation.
+    case cleartextNotConfirmed(host: String)
     /// The server answered with an error body (§6.8).
     case server(status: Int, code: String?, message: String?, retryAfter: TimeInterval?)
     /// The request never got an HTTP answer.
@@ -19,11 +21,13 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
         case .notPaired:
             return "Machine Sync is off. Run `codexbar sync create --server <url>` first."
         case .alreadyPaired:
-            return "This Machine already belongs to a Sync Group. Leave it before creating another."
+            return "This Machine already belongs to a Sync Group. Leave it before creating or joining another."
         case .unsupportedServer:
             return "This server doesn't speak Machine Sync protocol v1."
         case .enrollmentTokenRequired:
             return "This server requires an Enrollment Token. Pass it with --token."
+        case let .cleartextNotConfirmed(host):
+            return "This Pairing Link uses plain http:// to \(host). Pass --yes to pair anyway."
         case let .network(details):
             return "Couldn't reach the Sync Server: \(details)"
         case let .invalidResponse(status):
@@ -99,6 +103,27 @@ public struct MachineSyncClient: Sendable {
         public let expiresAt: String?
     }
 
+    /// One page of `GET /changes` (§6.5).
+    public struct ChangesPage: Decodable, Sendable {
+        public struct Machine: Decodable, Sendable, Equatable {
+            public let machineId: String
+            public let lastSeen: String?
+        }
+
+        public struct Blob: Decodable, Sendable, Equatable {
+            public let machineId: String
+            public let name: String
+            /// Base64 envelope.
+            public let body: String
+        }
+
+        public let limits: Limits?
+        public let machines: [Machine]
+        public let blobs: [Blob]
+        public let cursor: String
+        public let hasMore: Bool
+    }
+
     private struct ErrorBody: Decodable {
         struct Detail: Decodable {
             let code: String?
@@ -155,8 +180,29 @@ public struct MachineSyncClient: Sendable {
         _ = try await self.send(request)
     }
 
-    private func request(path: String, method: String) throws -> URLRequest {
-        guard let url = URL(string: self.apiBaseURL + path) else { throw MachineSyncError.invalidResponse(status: 0) }
+    /// Everything written since `cursor`, or everything when `cursor` is `nil`.
+    public func changes(keys: MachineSyncKeys, since cursor: String?, limit: Int) async throws -> ChangesPage {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let cursor {
+            query.insert(URLQueryItem(name: "since", value: cursor), at: 0)
+        }
+        var request = try self.request(path: "/groups/\(keys.groupIDBase64URL)/changes", method: "GET", query: query)
+        request.setValue(keys.authorizationHeader, forHTTPHeaderField: "Authorization")
+        let data = try await self.send(request)
+        return try self.decode(ChangesPage.self, from: data, status: 200)
+    }
+
+    private func request(path: String, method: String, query: [URLQueryItem] = []) throws -> URLRequest {
+        guard var components = URLComponents(string: self.apiBaseURL + path) else {
+            throw MachineSyncError.invalidResponse(status: 0)
+        }
+        if !query.isEmpty {
+            components.queryItems = query
+            // The cursor is opaque; `+` would otherwise reach the server as a space.
+            components.percentEncodedQuery = components.percentEncodedQuery?
+                .replacingOccurrences(of: "+", with: "%2B")
+        }
+        guard let url = components.url else { throw MachineSyncError.invalidResponse(status: 0) }
         var request = URLRequest(url: url, timeoutInterval: self.timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")

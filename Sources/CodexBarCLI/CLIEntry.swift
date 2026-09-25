@@ -109,6 +109,8 @@ enum CodexBarCLI {
         let diagnoseSignature = CommandSignature.describe(DiagnoseOptions())
         let syncCreateSignature = CommandSignature.describe(SyncCreateOptions())
         let syncPushSignature = CommandSignature.describe(SyncPushOptions())
+        let syncPairSignature = CommandSignature.describe(SyncPairOptions())
+        let syncStatusSignature = CommandSignature.describe(SyncStatusOptions())
 
         return [
             CommandDescriptor(
@@ -212,10 +214,20 @@ enum CodexBarCLI {
                         discussion: nil,
                         signature: syncCreateSignature),
                     CommandDescriptor(
+                        name: "pair",
+                        abstract: "Join a Sync Group with its Pairing Link and backfill this Machine's Spend",
+                        discussion: nil,
+                        signature: syncPairSignature),
+                    CommandDescriptor(
                         name: "push",
                         abstract: "Push this Machine's Spend to its Sync Group",
                         discussion: nil,
                         signature: syncPushSignature),
+                    CommandDescriptor(
+                        name: "status",
+                        abstract: "Show every Machine's Spend, Last Seen, and Coverage",
+                        discussion: nil,
+                        signature: syncStatusSignature),
                 ],
                 defaultSubcommandName: "push"),
             CommandDescriptor(

@@ -99,8 +99,57 @@ public enum MachineSyncGroupCreator {
             displayName: name ?? existing?.displayName ?? environment.hostName,
             pairingLink: link.link)
         try environment.store.saveSettings(settings)
-        try environment.store.saveState(MachineSyncPushState(groupID: keys.groupIDBase64URL))
+        try environment.store.saveState(MachineSyncPushState(
+            groupID: keys.groupIDBase64URL,
+            retentionDays: limits.retentionDays ?? info.retentionDays))
         return MachineSyncCreateResult(link: link, limits: limits, settings: settings)
+    }
+}
+
+// MARK: - Pair
+
+public struct MachineSyncPairResult: Sendable {
+    public let link: MachineSyncPairingLink
+    public let settings: MachineSyncSettings
+    public let retentionDays: Int?
+}
+
+public enum MachineSyncPairer {
+    /// Joins the Sync Group in `pairingLink`. The server and the key are checked before anything is saved, and
+    /// the next push backfills this Machine's Spend (§8.2).
+    ///
+    /// - Parameter allowCleartext: the user confirmed plain `http://` to a host that isn't loopback (§2).
+    public static func pair(
+        pairingLink: String,
+        displayName: String?,
+        allowCleartext: Bool,
+        environment: MachineSyncEnvironment) async throws -> MachineSyncPairResult
+    {
+        let existing = try environment.store.loadSettings()
+        guard existing?.pairingLink == nil else { throw MachineSyncError.alreadyPaired }
+
+        let link = try MachineSyncPairingLink(parsing: pairingLink.trimmingCharacters(in: .whitespacesAndNewlines))
+        if link.cleartextWarning, !allowCleartext { throw MachineSyncError.cleartextNotConfirmed(host: link.host) }
+        let keys = link.keys
+        let client = MachineSyncClient(apiBaseURL: link.apiBaseURL, transport: environment.transport)
+
+        let info = try await client.info()
+        guard info.protocols.contains(1) else { throw MachineSyncError.unsupportedServer }
+        // Proves the group exists and the key is right (`404 group_not_found` otherwise).
+        let page = try await client.changes(keys: keys, since: nil, limit: 1)
+        let retentionDays = page.limits?.retentionDays ?? info.retentionDays
+
+        let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let settings = MachineSyncSettings(
+            machineID: existing?.machineID ?? MachineSyncMachineID.generate(),
+            displayName: name ?? existing?.displayName ?? environment.hostName,
+            pairingLink: link.link,
+            reportingDay: existing?.reportingDay)
+        try environment.store.saveSettings(settings)
+        try environment.store.saveState(MachineSyncPushState(
+            groupID: keys.groupIDBase64URL,
+            retentionDays: retentionDays))
+        return MachineSyncPairResult(link: link, settings: settings, retentionDays: retentionDays)
     }
 }
 
@@ -118,9 +167,15 @@ public enum MachineSyncPushOutcome: Sendable, Equatable {
 public enum MachineSyncPusher {
     static let backoffBase: TimeInterval = 60
     static let backoffCap: TimeInterval = 15 * 60
+    /// `profile` is re-uploaded at least this often so Last Seen stays under the 5-minute active threshold (§8.3)
+    /// on a Machine that is online but has no new Spend.
+    public static let heartbeatInterval: TimeInterval = 120
+    /// How far back the backfill reaches when the server doesn't report `retentionDays`.
+    public static let defaultBackfillDays = 400
 
     /// One push cycle (§8.1): take the lock, scan today and yesterday (UTC), and PUT each `day-*` blob and
-    /// `profile` whose plaintext changed since the last successful upload.
+    /// `profile` whose plaintext changed since the last successful upload. The first push after `create` or
+    /// `pair` backfills every day inside the retention window instead (§8.2).
     public static func push(environment: MachineSyncEnvironment) async throws -> MachineSyncPushOutcome {
         guard let settings = try environment.store.loadSettings(), let rawLink = settings.pairingLink else {
             throw MachineSyncError.notPaired
@@ -185,9 +240,13 @@ private struct PushCycle {
         state: inout MachineSyncPushState) async throws
     {
         let today = MachineSyncDay.startOfDay(now)
-        let yesterday = today.addingTimeInterval(-86400)
-        let window = [yesterday, today].map(MachineSyncDay.blobName(for:))
-        let buckets = try await environment.spendSource(yesterday, today.addingTimeInterval(86400))
+        let retentionStart = today.addingTimeInterval(
+            -86400 * Double(state.retentionDays ?? MachineSyncPusher.defaultBackfillDays))
+        let backfilling = state.backfilledAt == nil
+        // Never upload a day the server would already have dropped (§7).
+        let firstDay = max(backfilling ? retentionStart : today.addingTimeInterval(-86400), retentionStart)
+        let window = stride(from: firstDay, through: today, by: 86400).map(MachineSyncDay.blobName(for:))
+        let buckets = try await environment.spendSource(firstDay, today.addingTimeInterval(86400))
         let days = MachineSyncDayBlob.days(from: buckets)
 
         // Hashes of days that left the window are never needed again.
@@ -200,6 +259,13 @@ private struct PushCycle {
             let date = String(name.dropFirst("day-".count))
             state.coverageStart = min(state.coverageStart ?? date, date)
         }
+        if backfilling {
+            state.backfilledAt = now
+        }
+        // The server deletes days older than retention, so Coverage can't start before the oldest kept day.
+        if state.retentionDays != nil, let coverageStart = state.coverageStart {
+            state.coverageStart = max(coverageStart, MachineSyncDay.dateString(for: retentionStart))
+        }
 
         var profile = MachineSyncProfile(
             displayName: settings.displayName ?? environment.hostName,
@@ -208,23 +274,32 @@ private struct PushCycle {
             coverageStart: state.coverageStart,
             pushedAt: nil)
         // `pushedAt` changes every run, so it stays out of the hash; otherwise profile would always upload.
+        // The heartbeat re-uploads it anyway once Last Seen would start to look stale.
         let hashed = try MachineSyncJSON.encode(profile)
         profile.pushedAt = ISO8601DateFormatter().string(from: now)
+        let heartbeatDue = state.profileUploadedAt
+            .map { now.timeIntervalSince($0) >= MachineSyncPusher.heartbeatInterval } ?? true
+        let uploadedBefore = self.uploaded.count
         try await self.putIfChanged(
             name: "profile",
             plaintext: MachineSyncJSON.encode(profile),
             hashed: hashed,
+            force: heartbeatDue,
             state: &state)
+        if self.uploaded.count > uploadedBefore {
+            state.profileUploadedAt = now
+        }
     }
 
     private mutating func putIfChanged(
         name: String,
         plaintext: Data,
         hashed: Data,
+        force: Bool = false,
         state: inout MachineSyncPushState) async throws
     {
         let hash = SHA256.hash(data: hashed).map { String(format: "%02x", $0) }.joined()
-        guard state.uploadedHashes[name] != hash else {
+        guard force || state.uploadedHashes[name] != hash else {
             self.unchanged += 1
             return
         }
