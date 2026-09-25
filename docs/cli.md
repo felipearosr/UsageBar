@@ -95,6 +95,14 @@ See `docs/configuration.md` for the schema.
   - Keeps a decrypted cache in `sync-cache.json` (mode `0600`) with the server's `changes` cursor, so later runs fetch only blobs written since.
   - A blob that fails to decrypt or parse is left out entirely (its older copy too) and listed under the errors until a readable copy replaces it.
   - `--json` prints the same data for other surfaces: `generatedAt`, `reportingDay`, `today`, `machines[]` (with `today`, `last30Days`, `models`, `days`, `coverage`), `total`, and `errors`.
+- `codexbar sync install-timer [--uninstall]` runs `sync push` in the background on a Machine without a desktop surface (VPS, SSH devbox).
+  - Linux: writes `codexbar-sync-push.service` and `codexbar-sync-push.timer` to `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/`), then runs `systemctl --user daemon-reload` and `enable --now` on the timer. Pushes start 130-170 s apart (`OnUnitActiveSec=130s`, `RandomizedDelaySec=40s`).
+  - No graphical session is needed, but a user timer stops when the user's last session ends. Run `loginctl enable-linger $USER` to keep it going; the command says so when lingering is off.
+  - macOS: writes `~/Library/LaunchAgents/com.steipete.codexbar.sync-push.plist` (`StartInterval` 150 s, each run first sleeps 0-20 s) and bootstraps it into `gui/<uid>`, or `user/<uid>` when nobody is logged in at the screen.
+  - Requires a paired Machine. Reinstalling replaces the files. The job runs the `codexbar` path that installed it.
+  - `CODEXBAR_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`, when set, are written into the job so it reads the same `sync.json` and the same Codex and Claude logs as the shell that installed it.
+  - Each push takes the push lock, so the timer coexists with the desktop app or GNOME extension on the same Machine.
+  - `--uninstall` stops the job and deletes only those files; `sync.json` and the Sync Group are untouched.
 - `--provider <id|both|all>` (default: enabled providers in config; falls back to defaults when missing).
   - Provider IDs live in the config file (see `docs/configuration.md`).
   - With three or more providers enabled, the default stays scoped to enabled providers; use `--provider all` to query

@@ -244,6 +244,7 @@ extension CodexBarCLI {
           codexbar sync push [--format text|json] [--json] [--json-only] [--pretty]
           codexbar sync status [--timezone <iana-id>] [--day-start <hour>]
                                [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar sync install-timer [--uninstall] [--format text|json] [--json] [--json-only] [--pretty]
 
         Description:
           Machine Sync shares each Machine's Spend (local-log cost, tokens, and requests) with your other
@@ -261,6 +262,13 @@ extension CodexBarCLI {
           status  Shows every Machine: display name, active (Last Seen under 5 minutes), today's and 30-day
                   Spend, the split by provider and model, and Coverage. Days follow the Reporting Day: the
                   system timezone and midnight unless sync.json sets "reportingDay" or the flags override it.
+          install-timer
+                  For Machines without a desktop surface (VPS, SSH devbox): installs a systemd user timer
+                  (Linux) or launchd agent (macOS) that runs `codexbar sync push` about every 150 s, with
+                  +/-20 s of jitter. It needs no graphical session. On Linux the timer stops at logout unless
+                  lingering is on: `loginctl enable-linger $USER`. Pushes take the push lock, so the timer can
+                  run next to the desktop app or GNOME extension. --uninstall stops the job and removes only
+                  its unit or agent files.
 
         Examples:
           codexbar sync create --server https://sync.example.com --token tok_123 --name laptop
@@ -268,6 +276,8 @@ extension CodexBarCLI {
           codexbar sync push
           codexbar sync status --timezone America/Los_Angeles --day-start 4
           codexbar sync status --json --pretty
+          codexbar sync install-timer
+          codexbar sync install-timer --uninstall
         """
     }
 
@@ -337,6 +347,7 @@ extension CodexBarCLI {
           codexbar sync pair <pairing-link> [--name <display-name>] [--yes]
           codexbar sync push
           codexbar sync status [--timezone <iana-id>] [--day-start <hour>] [--json]
+          codexbar sync install-timer [--uninstall]
 
         Global flags:
           -h, --help      Show help

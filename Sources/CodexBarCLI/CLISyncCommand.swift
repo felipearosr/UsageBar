@@ -18,6 +18,8 @@ extension CodexBarCLI {
             await self.runSyncPair(values)
         case ["sync", "status"]:
             await self.runSyncStatus(values)
+        case ["sync", "install-timer"]:
+            await self.runSyncInstallTimer(values)
         default:
             await self.runSyncPush(values)
         }
@@ -196,7 +198,9 @@ extension CodexBarCLI {
     {
         guard link.cleartextWarning else { return true }
         writeStderr(self.syncCleartextWarning(host: link.host))
-        if values.flags.contains("yes") { return true }
+        if values.flags.contains("yes") {
+            return true
+        }
         guard !output.usesJSONOutput, isatty(STDIN_FILENO) == 1 else { return false }
         writeStderr("Continue over plain http:// anyway? [y/N] ")
         let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
@@ -266,7 +270,9 @@ extension CodexBarCLI {
         }
         for machine in status.machines {
             var header = machine.displayName
-            if machine.isThisMachine { header += " (this Machine)" }
+            if machine.isThisMachine {
+                header += " (this Machine)"
+            }
             let state = machine.retired ? "retired" : machine.active ? "active" : "inactive"
             header += " · \(state) · last seen \(Self.syncLastSeenText(machine.lastSeen, now: status.generatedAt))"
             lines += ["", header]
