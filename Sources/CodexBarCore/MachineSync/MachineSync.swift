@@ -240,9 +240,13 @@ private struct PushCycle {
         state: inout MachineSyncPushState) async throws
     {
         let today = MachineSyncDay.startOfDay(now)
+        let backfilling = state.backfilledAt == nil
+        // Machines paired before backfill existed never recorded retention; ask once before reaching back.
+        if backfilling, state.retentionDays == nil {
+            state.retentionDays = try await self.client.info().retentionDays
+        }
         let retentionStart = today.addingTimeInterval(
             -86400 * Double(state.retentionDays ?? MachineSyncPusher.defaultBackfillDays))
-        let backfilling = state.backfilledAt == nil
         // Never upload a day the server would already have dropped (§7).
         let firstDay = max(backfilling ? retentionStart : today.addingTimeInterval(-86400), retentionStart)
         let window = stride(from: firstDay, through: today, by: 86400).map(MachineSyncDay.blobName(for:))

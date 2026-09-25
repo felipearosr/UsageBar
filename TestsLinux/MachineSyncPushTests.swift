@@ -165,10 +165,12 @@ struct MachineSyncPushTests {
         let context = MachineSyncTestContext(now: Self.now)
         defer { context.cleanup() }
         context.spend.buckets = [
+            MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 8, 1, 9)),
             MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 1, 9)),
             MachineSyncTestContext.bucket(MachineSyncTestContext.utc(2026, 9, 24, 9)),
         ]
         try await context.create()
+        context.server.retentionDays = 30
         // A #7-era state file: no retention, no backfill marker, no heartbeat time.
         let groupID = try #require(try context.store.loadState()?.groupID)
         try Data(#"{"groupID":"\#(groupID)","uploadedHashes":{},"consecutiveFailures":0}"#.utf8)
@@ -176,8 +178,11 @@ struct MachineSyncPushTests {
 
         let outcome = try await context.push()
 
+        // Retention is learned from `GET /info` first, so August (past 30 days) stays local.
         #expect(outcome == .pushed(uploaded: ["day-2026-09-01", "day-2026-09-24", "profile"], unchanged: 0))
         #expect(try context.store.loadState()?.backfilledAt == Self.now)
+        #expect(try context.store.loadState()?.retentionDays == 30)
+        #expect(try self.openBlob(context, name: "profile")["coverageStart"] as? String == "2026-09-01")
     }
 
     @Test

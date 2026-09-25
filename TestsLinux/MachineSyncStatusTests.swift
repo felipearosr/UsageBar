@@ -207,6 +207,23 @@ struct MachineSyncStatusTests {
     }
 
     @Test
+    func `a server that never advances its cursor can't trap the reader`() async throws {
+        let (laptop, desk) = try await self.twoMachines()
+        defer {
+            laptop.cleanup()
+            desk.cleanup()
+        }
+        _ = try await laptop.refresh()
+        laptop.server.stuckCursor = true
+        let requests = laptop.server.changesCursors.count
+
+        let result = try await laptop.refresh()
+
+        #expect(laptop.server.changesCursors.count == requests + 1)
+        #expect(laptop.server.changesCursors.last == .some(result.cache.cursor))
+    }
+
+    @Test
     func `status without a Sync Group makes no network calls`() async throws {
         let context = MachineSyncTestContext(now: Self.now)
         defer { context.cleanup() }

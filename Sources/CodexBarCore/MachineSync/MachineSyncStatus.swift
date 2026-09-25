@@ -48,7 +48,7 @@ public struct MachineSyncReportingDay: Codable, Sendable, Equatable {
             let previous = calendar.date(byAdding: .day, value: -1, to: noon)!
             date = calendar.dateComponents([.year, .month, .day], from: previous)
         }
-        return String(format: "%04d-%02d-%02d", date.year ?? 0, date.month ?? 0, date.day ?? 0)
+        return MachineSyncDay.dateString(date)
     }
 
     /// `count` consecutive Reporting Days ending with the one that contains `now`, oldest first.
@@ -59,8 +59,7 @@ public struct MachineSyncReportingDay: Codable, Sendable, Equatable {
         let noon = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: 12))!
         return (0..<count).reversed().map { offset in
             let date = calendar.date(byAdding: .day, value: -offset, to: noon)!
-            let components = calendar.dateComponents([.year, .month, .day], from: date)
-            return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+            return MachineSyncDay.dateString(calendar.dateComponents([.year, .month, .day], from: date))
         }
     }
 }
@@ -146,8 +145,10 @@ public enum MachineSyncReader {
                 Self.apply(blob, keys: keys, to: &cache)
             }
             fetched += page.blobs.count
+            let advanced = page.cursor != cache.cursor
             cache.cursor = page.cursor
-            if !page.hasMore { break }
+            // A server that says `hasMore` without moving the cursor would otherwise loop forever.
+            if !page.hasMore || !advanced { break }
         } while true
 
         // `machines` always lists the whole group, so anything missing was forgotten on the server (§6.7).

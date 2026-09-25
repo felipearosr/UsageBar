@@ -72,10 +72,10 @@ See `docs/configuration.md` for the schema.
   - `--cookies --provider <id>` removes browser-cookie cache entries for that provider, including managed Codex account scopes.
   - `--cost` removes local cost-usage scan caches.
   - `--all` clears both cookies and cost caches. `--provider` is cookie-only and cannot be combined with `--cost` or `--all`.
-- `codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]` creates a Machine Sync group (see `docs/machine-sync-protocol.md`).
+- `codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>] [--yes]` creates a Machine Sync group (see `docs/machine-sync-protocol.md`).
   - Generates the Sync Group key locally, registers the group on the server, backfills this Machine's Spend, and prints the Pairing Link. The link is the recovery key: store it somewhere safe.
   - `--token` is needed only when the server's `GET /v1/info` reports `enrollment: required`.
-  - `http://` servers other than loopback print a warning: the bearer credential would travel unencrypted.
+  - `http://` servers other than loopback print a warning (the bearer credential would travel unencrypted) and ask for confirmation; non-interactive runs need `--yes`.
   - Settings live in `sync.json` next to `config.json` (mode `0600`); the app and the CLI share its Machine ID.
 - `codexbar sync pair <pairing-link> [--name <display-name>] [--yes]` joins an existing Sync Group from another Machine.
   - Checks the server and the key (`GET /v1/info`, then `changes`) before saving anything, so a wrong or mistyped link leaves this Machine unpaired.

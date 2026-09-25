@@ -237,7 +237,7 @@ extension CodexBarCLI {
         CodexBar \(version)
 
         Usage:
-          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]
+          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>] [--yes]
                                [--format text|json] [--json] [--json-only] [--pretty]
           codexbar sync pair <pairing-link> [--name <display-name>] [--yes]
                              [--format text|json] [--json] [--json-only] [--pretty]
@@ -252,6 +252,7 @@ extension CodexBarCLI {
           create  Generates the Sync Group key on this Machine, registers the group on the server (with an
                   Enrollment Token if the server requires one), backfills this Machine's Spend, and prints the
                   Pairing Link. Store the link somewhere safe: it is the recovery key for the group.
+                  A plain http:// server that isn't loopback asks first; --yes skips the question.
           pair    Joins the Sync Group in a Pairing Link and backfills this Machine's Spend for every day the
                   server keeps. A codexbar-sync+http:// link to a host that isn't loopback asks first; --yes
                   skips the question.

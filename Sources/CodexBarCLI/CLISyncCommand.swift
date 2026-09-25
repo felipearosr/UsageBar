@@ -30,9 +30,10 @@ extension CodexBarCLI {
         }
         // Checked against a throwaway key so the warning comes before any request.
         if let preview = try? MachineSyncPairingLink(serverURL: server, rootKey: .generate()),
-           preview.cleartextWarning
+           !Self.confirmCleartext(preview, values: values, output: output)
         {
-            Self.writeStderr(Self.syncCleartextWarning(host: preview.host))
+            let message = MachineSyncError.cleartextNotConfirmed(host: preview.host).errorDescription
+            Self.exit(code: .failure, message: message, output: output, kind: .args)
         }
 
         let result: MachineSyncCreateResult
@@ -92,16 +93,10 @@ extension CodexBarCLI {
         guard let rawLink = values.positional.first, !rawLink.isEmpty else {
             Self.exit(code: .failure, message: "Missing <pairing-link>.", output: output, kind: .args)
         }
-        var allowCleartext = values.flags.contains("yes")
-        if let link = try? MachineSyncPairingLink(parsing: rawLink.trimmingCharacters(in: .whitespacesAndNewlines)),
-           link.cleartextWarning
-        {
-            Self.writeStderr(Self.syncCleartextWarning(host: link.host))
-            if !allowCleartext, !output.usesJSONOutput, isatty(STDIN_FILENO) == 1 {
-                Self.writeStderr("Pair over plain http:// anyway? [y/N] ")
-                allowCleartext = Self.isYes(readLine())
-            }
-        }
+        // An unparseable link gets its real error from `pair` below.
+        let allowCleartext = (try? MachineSyncPairingLink(
+            parsing: rawLink.trimmingCharacters(in: .whitespacesAndNewlines)))
+            .map { Self.confirmCleartext($0, values: values, output: output) } ?? false
 
         let result: MachineSyncPairResult
         do {
@@ -192,8 +187,20 @@ extension CodexBarCLI {
         Self.exit(code: .success, output: output)
     }
 
-    private static func isYes(_ answer: String?) -> Bool {
-        ["y", "yes"].contains(answer?.trimmingCharacters(in: .whitespaces).lowercased() ?? "")
+    /// `true` unless `link` is plain http to a host that isn't loopback and the user didn't pass `--yes` or
+    /// answer yes at the prompt (§2). Non-interactive runs without `--yes` are refused.
+    private static func confirmCleartext(
+        _ link: MachineSyncPairingLink,
+        values: ParsedValues,
+        output: CLIOutputPreferences) -> Bool
+    {
+        guard link.cleartextWarning else { return true }
+        writeStderr(self.syncCleartextWarning(host: link.host))
+        if values.flags.contains("yes") { return true }
+        guard !output.usesJSONOutput, isatty(STDIN_FILENO) == 1 else { return false }
+        writeStderr("Continue over plain http:// anyway? [y/N] ")
+        let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        return ["y", "yes"].contains(answer)
     }
 
     private static func uploadedDays(_ outcome: MachineSyncPushOutcome?) -> Int {
@@ -404,6 +411,9 @@ struct SyncCreateOptions: CommanderParsable {
 
     @Option(name: .long("name"), help: "Display name for this Machine (default: hostname)")
     var name: String?
+
+    @Flag(names: [.short("y"), .long("yes")], help: "Use plain http:// to a non-loopback host without asking")
+    var yes: Bool = false
 }
 
 struct SyncPushOptions: CommanderParsable {

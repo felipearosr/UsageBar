@@ -27,7 +27,7 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
         case .enrollmentTokenRequired:
             return "This server requires an Enrollment Token. Pass it with --token."
         case let .cleartextNotConfirmed(host):
-            return "This Pairing Link uses plain http:// to \(host). Pass --yes to pair anyway."
+            return "This Sync Group would use plain http:// to \(host). Pass --yes to continue anyway."
         case let .network(details):
             return "Couldn't reach the Sync Server: \(details)"
         case let .invalidResponse(status):

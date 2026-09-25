@@ -33,6 +33,8 @@ final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
     var enrollment = "none"
     var protocols = [1]
     var retentionDays: Int? = 400
+    /// Misbehave: answer every `changes` with `hasMore: true` and the cursor that was sent.
+    var stuckCursor = false
     /// Server clock: Last Seen is the receive time of a Machine's latest PUT (§6.4).
     var now = MachineSyncTestContext.utc(2026, 9, 24, 12, 30)
 
@@ -187,8 +189,8 @@ final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
                 "limits": self.limits,
                 "machines": machines,
                 "blobs": blobs,
-                "cursor": String(page.last?.seq ?? since),
-                "hasMore": pending.count > page.count,
+                "cursor": self.stuckCursor ? String(since) : String(page.last?.seq ?? since),
+                "hasMore": self.stuckCursor || pending.count > page.count,
             ])
         }
     }
