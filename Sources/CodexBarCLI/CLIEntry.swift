@@ -73,6 +73,8 @@ enum CodexBarCLI {
                 self.runConfigSetAPIKey(invocation.parsedValues)
             case ["cache", "clear"]:
                 self.runCacheClear(invocation.parsedValues)
+            case let path where path.first == "sync":
+                await self.runSync(path: path, values: invocation.parsedValues)
             case ["diagnose"]:
                 let signalMonitor = CLITerminationSignalMonitor { signalNumber in
                     CLITerminationSignalMonitor.terminateActiveHelpersAndReraise(signalNumber)
@@ -105,6 +107,8 @@ enum CodexBarCLI {
         let configSetAPIKeySignature = CommandSignature.describe(ConfigSetAPIKeyOptions())
         let cacheSignature = CommandSignature.describe(CacheOptions())
         let diagnoseSignature = CommandSignature.describe(DiagnoseOptions())
+        let syncCreateSignature = CommandSignature.describe(SyncCreateOptions())
+        let syncPushSignature = CommandSignature.describe(SyncPushOptions())
 
         return [
             CommandDescriptor(
@@ -196,6 +200,24 @@ enum CodexBarCLI {
                         signature: cacheSignature),
                 ],
                 defaultSubcommandName: "clear"),
+            CommandDescriptor(
+                name: "sync",
+                abstract: "Machine Sync: share Spend across your Machines",
+                discussion: nil,
+                signature: CommandSignature(),
+                subcommands: [
+                    CommandDescriptor(
+                        name: "create",
+                        abstract: "Create a Sync Group on a Sync Server and start pushing",
+                        discussion: nil,
+                        signature: syncCreateSignature),
+                    CommandDescriptor(
+                        name: "push",
+                        abstract: "Push this Machine's Spend to its Sync Group",
+                        discussion: nil,
+                        signature: syncPushSignature),
+                ],
+                defaultSubcommandName: "push"),
             CommandDescriptor(
                 name: "diagnose",
                 abstract: "Run provider diagnostic and emit safe JSON export",

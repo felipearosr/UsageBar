@@ -72,6 +72,16 @@ See `docs/configuration.md` for the schema.
   - `--cookies --provider <id>` removes browser-cookie cache entries for that provider, including managed Codex account scopes.
   - `--cost` removes local cost-usage scan caches.
   - `--all` clears both cookies and cost caches. `--provider` is cookie-only and cannot be combined with `--cost` or `--all`.
+- `codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]` creates a Machine Sync group (see `docs/machine-sync-protocol.md`).
+  - Generates the Sync Group key locally, registers the group on the server, pushes this Machine's Spend, and prints the Pairing Link. The link is the recovery key: store it somewhere safe.
+  - `--token` is needed only when the server's `GET /v1/info` reports `enrollment: required`.
+  - `http://` servers other than loopback print a warning: the bearer credential would travel unencrypted.
+  - Settings live in `sync.json` next to `config.json` (mode `0600`); the app and the CLI share its Machine ID.
+- `codexbar sync push` uploads today's and yesterday's UTC Spend Buckets plus the Machine profile, skipping blobs whose content hasn't changed.
+  - Does nothing (and makes no network calls) until `sync create` has run; exits non-zero with a hint.
+  - Takes an exclusive lock on `sync.lock`; a second concurrent push exits 0 without uploading.
+  - Rate limits (`429`), server errors (`5xx`), and network errors back off exponentially from 60 s, capped at 15 minutes.
+  - `--format json` prints `{"status":"pushed|locked|backing_off","uploaded":[...],"unchanged":n,"nextAttemptAt":...}`.
 - `--provider <id|both|all>` (default: enabled providers in config; falls back to defaults when missing).
   - Provider IDs live in the config file (see `docs/configuration.md`).
   - With three or more providers enabled, the default stays scoped to enabled providers; use `--provider all` to query

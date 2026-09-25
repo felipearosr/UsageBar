@@ -41,6 +41,8 @@ extension CodexBarCLI {
             print(Self.cacheHelp(version: version))
         case "diagnose":
             print(Self.diagnoseHelp(version: version))
+        case "sync":
+            print(Self.syncHelp(version: version))
         default:
             print(Self.rootHelp(version: version))
         }
