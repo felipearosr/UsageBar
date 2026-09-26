@@ -135,7 +135,9 @@ enum CLIHTTPStatus {
     case forbidden
     case notFound
     case methodNotAllowed
+    case conflict
     case internalServerError
+    case badGateway
     case gatewayTimeout
     var code: Int {
         switch self {
@@ -144,7 +146,9 @@ enum CLIHTTPStatus {
         case .forbidden: 403
         case .notFound: 404
         case .methodNotAllowed: 405
+        case .conflict: 409
         case .internalServerError: 500
+        case .badGateway: 502
         case .gatewayTimeout: 504
         }
     }
@@ -156,7 +160,9 @@ enum CLIHTTPStatus {
         case .forbidden: "Forbidden"
         case .notFound: "Not Found"
         case .methodNotAllowed: "Method Not Allowed"
+        case .conflict: "Conflict"
         case .internalServerError: "Internal Server Error"
+        case .badGateway: "Bad Gateway"
         case .gatewayTimeout: "Gateway Timeout"
         }
     }

@@ -45,6 +45,7 @@ import {
     StatusMessageState,
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
+import {machinesView, nextPushDelaySecs, planSyncTick} from './machinesync.js';
 
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
@@ -1521,6 +1522,29 @@ class UsageBarIndicator extends PanelMenu.Button {
         this._statusItem.visible = false;
         this.menu.addMenuItem(this._statusItem);
 
+        // Providers | Machines. Shown only while this Machine is in a Sync
+        // Group; otherwise the popover looks exactly as before.
+        this._tabItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        this._tabItem.add_style_class_name('usagebar-tab-item');
+        const tabs = new St.BoxLayout({
+            style_class: 'usagebar-ov-switch usagebar-tabs',
+            x_expand: true,
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        this._tabButtons = new Map();
+        for (const [name, label, edge] of [['providers', 'Providers', 'left'], ['machines', 'Machines', 'right']]) {
+            const button = new St.Button({
+                label,
+                can_focus: true,
+                style_class: `usagebar-ov-switch-button usagebar-tab-button usagebar-ov-switch-${edge}`,
+            });
+            this._tabButtons.set(name, button);
+            tabs.add_child(button);
+        }
+        this._tabItem.add_child(tabs);
+        this._tabItem.visible = false;
+        this.menu.addMenuItem(this._tabItem);
+
         const detailItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         detailItem.add_style_class_name('usagebar-detail-item');
         this._detailBox = new St.BoxLayout({vertical: true, x_expand: true});
@@ -1857,6 +1881,16 @@ class UsageBarIndicator extends PanelMenu.Button {
     setUpdated(text) {
         this._updatedLabel.text = text;
     }
+
+    setTabs(visible, selected) {
+        this._tabItem.visible = visible;
+        for (const [name, button] of this._tabButtons) {
+            if (name === selected)
+                button.add_style_class_name('selected');
+            else
+                button.remove_style_class_name('selected');
+        }
+    }
 });
 
 // ---------- extension ----------
@@ -1878,6 +1912,18 @@ export default class UsageBarExtension extends Extension {
         this._costFetchedAt = 0;
         this._costInFlight = false;
         this._status = {};
+        this._view = 'providers';
+        this._sync = {
+            payload: null,       // last good GET /sync/status answer
+            paired: false,
+            fetchError: null,    // serve itself didn't answer
+            nextPushAt: 0,
+            pushInFlight: false,
+            readInFlight: false,
+            lastReadAt: 0,
+            pushError: null,
+        };
+        this._machinesRenderKey = null;
         this._lastFetchAt = 0;
         this._fetchId = 0;
         this._tickId = 0;
@@ -1985,6 +2031,15 @@ export default class UsageBarExtension extends Extension {
         this._indicator.setAppTheme(DISPLAY.appTheme);
         this._indicator._settingsItem.connect('activate', () => this.openPreferences());
         this._indicator._refreshButton.connect('clicked', () => this._fetchUsage(true));
+        this._indicator._tabButtons.get('providers').connect('clicked', () => {
+            this._view = 'providers';
+            this._render();
+        });
+        this._indicator._tabButtons.get('machines').connect('clicked', () => {
+            this._view = 'machines';
+            this._syncTick();
+            this._render();
+        });
         this._indicator._aboutItem.connect('activate', () => this._showAbout());
         this._indicator._updateItem.connect('activate', () => this._applyUpdate());
         this._indicator._quitItem.connect('activate', () => {
@@ -1999,6 +2054,8 @@ export default class UsageBarExtension extends Extension {
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
+                this._view = 'providers';
+                this._syncTick();
                 if (this._settings.get_boolean('refresh-on-open'))
                     this._fetchUsage();
                 this._fetchCost();
@@ -2075,8 +2132,11 @@ export default class UsageBarExtension extends Extension {
 
         // Countdown/"updated ago" ticker while the menu is open.
         this._tickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, TICK_SECS, () => {
-            if (this._indicator?.menu.isOpen)
+            if (this._indicator?.menu.isOpen) {
+                // Keeps the Machines tab on the push cadence while it is open.
+                this._syncTick();
                 this._render();
+            }
             return GLib.SOURCE_CONTINUE;
         });
     }
@@ -2143,6 +2203,8 @@ export default class UsageBarExtension extends Extension {
         this._costOverviewCache?.clear();
         this._costOverviewCache = null;
         this._status = null;
+        this._sync = null;
+        this._machinesRenderKey = null;
         this._overviewView = null;
         this._popupView = null;
         this._detailRenderKey = null;
@@ -2272,17 +2334,25 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    _fetchJSON(url, cb) {
+    _fetchJSON(url, cb, method = 'GET') {
         const generation = this._generation;
-        const msg = Soup.Message.new('GET', url);
+        const msg = Soup.Message.new(method, url);
         this._session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
             (session, res) => {
                 try {
                     if (generation !== this._generation || !this._indicator)
                         return;
                     const bytes = session.send_and_read_finish(res);
-                    if (msg.get_status() !== Soup.Status.OK)
-                        throw new Error(`HTTP ${msg.get_status()}`);
+                    if (msg.get_status() !== Soup.Status.OK) {
+                        const error = new Error(`HTTP ${msg.get_status()}`);
+                        error.status = msg.get_status();
+                        try {
+                            error.detail = JSON.parse(new TextDecoder().decode(bytes.get_data())).error;
+                        } catch {
+                            // no JSON error body
+                        }
+                        throw error;
+                    }
                     cb(JSON.parse(new TextDecoder().decode(bytes.get_data())), null);
                 } catch (e) {
                     cb(null, e);
@@ -2290,13 +2360,104 @@ export default class UsageBarExtension extends Extension {
             });
     }
 
-    _get(path, cb) {
+    _get(path, cb, method = 'GET') {
         const port = this._supervisor?.port;
         if (!port) {
             cb(null, new Error('serve not running'));
             return;
         }
-        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb);
+        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method);
+    }
+
+    // ----- Machine Sync -----
+    //
+    // Serve does the work: POST /sync/push runs one push cycle (§8.1) and
+    // GET /sync/status answers from its decrypted cache, pulling new blobs
+    // first when asked with ?refresh=1. The cheap cache read on every tick
+    // is how the popover learns whether this Machine is paired at all.
+
+    _machinesTabVisible() {
+        return !!(this._indicator?.menu.isOpen && this._view === 'machines' && this._sync?.paired);
+    }
+
+    _syncPlan() {
+        const sync = this._sync;
+        return planSyncTick({
+            now: Date.now(),
+            paired: sync.paired,
+            tabVisible: this._machinesTabVisible(),
+            nextPushAt: sync.nextPushAt,
+            pushInFlight: sync.pushInFlight,
+            lastReadAt: sync.lastReadAt,
+            refreshedAt: Date.parse(sync.payload?.refreshedAt ?? '') || 0,
+            readInFlight: sync.readInFlight,
+        });
+    }
+
+    _syncTick() {
+        const sync = this._sync;
+        if (!sync || sync.readInFlight || this._syncFixture || !this._supervisor?.port)
+            return;
+        const plan = this._syncPlan();
+        if (plan.push)
+            this._syncPush();
+        this._syncFetchStatus(plan.read);
+    }
+
+    _syncFetchStatus(refresh) {
+        const sync = this._sync;
+        sync.readInFlight = true;
+        if (refresh)
+            sync.lastReadAt = Date.now();
+        this._get(refresh ? '/sync/status?refresh=1' : '/sync/status', (payload, error) => {
+            if (this._sync !== sync)
+                return;
+            sync.readInFlight = false;
+            if (error) {
+                // Serve is down or restarting: keep the last good data.
+                sync.fetchError = error;
+                this._requestRender();
+                return;
+            }
+            const wasPaired = sync.paired;
+            sync.fetchError = null;
+            sync.paired = !!payload?.paired;
+            if (!sync.paired) {
+                sync.payload = null;
+                sync.nextPushAt = 0;
+                sync.lastReadAt = 0;
+            } else {
+                // A cache-only read carries no error of its own; keep the one
+                // from the last failed refresh until a read succeeds.
+                if (!refresh && sync.payload?.error && payload.refreshedAt === sync.payload.refreshedAt)
+                    payload.error = sync.payload.error;
+                sync.payload = payload;
+            }
+            if (!refresh && sync.paired && !wasPaired) {
+                // Just paired (or serve just started): push and read right away.
+                const plan = this._syncPlan();
+                if (plan.push)
+                    this._syncPush();
+                if (plan.read)
+                    this._syncFetchStatus(true);
+            }
+            this._requestRender();
+        });
+    }
+
+    _syncPush() {
+        const sync = this._sync;
+        sync.pushInFlight = true;
+        sync.nextPushAt = Date.now() + nextPushDelaySecs() * 1000;
+        this._get('/sync/push', (_result, error) => {
+            if (this._sync !== sync)
+                return;
+            sync.pushInFlight = false;
+            const message = error ? error.detail ?? error.message : null;
+            if (message && message !== sync.pushError)
+                console.warn(`usagebar: machine sync push failed: ${message}`);
+            sync.pushError = message;
+        }, 'POST');
     }
 
     _scheduleFetch(secs) {
@@ -2307,6 +2468,8 @@ export default class UsageBarExtension extends Extension {
             this._fetchId = 0;
             if (generation !== this._generation)
                 return GLib.SOURCE_REMOVE;
+            // The refresh loop also drives Machine Sync pushes and reads.
+            this._syncTick();
             this._fetchUsage();
             return GLib.SOURCE_REMOVE;
         });
@@ -2555,6 +2718,9 @@ export default class UsageBarExtension extends Extension {
             });
             this._uiSmokeTimeoutIds.push(id);
         };
+        // Shell.Screenshot crashes a nested `gnome-shell --devkit`, so the
+        // devkit runs the smoke with USAGEBAR_UI_SMOKE_SCREENSHOTS=0.
+        const screenshots = GLib.getenv('USAGEBAR_UI_SMOKE_SCREENSHOTS') !== '0';
         const finish = (assertions, error = null) => {
             const failures = assertions.filter(assertion => !assertion.ok);
             const result = {
@@ -2562,6 +2728,11 @@ export default class UsageBarExtension extends Extension {
                 assertions,
                 ...(error ? {error: error.message ?? String(error)} : {}),
             };
+            if (!screenshots) {
+                GLib.file_set_contents(resultPath, JSON.stringify(result, null, 2));
+                console.log(`usagebar-ui-smoke: ${result.ok ? 'PASS' : 'FAIL'}`);
+                return;
+            }
             const screenshotPath = GLib.build_filenamev([
                 GLib.path_get_dirname(resultPath),
                 'cost-dashboard.png',
@@ -2592,6 +2763,29 @@ export default class UsageBarExtension extends Extension {
             }
         };
         const assertion = (name, ok, details = {}) => ({name, ok: Boolean(ok), ...details});
+        // Extra full-stage screenshot next to the result; best-effort.
+        const capture = (fileName, callback) => {
+            if (!screenshots) {
+                callback();
+                return;
+            }
+            try {
+                const stream = Gio.File.new_for_path(GLib.build_filenamev([
+                    GLib.path_get_dirname(resultPath), fileName])).replace(
+                    null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+                new Shell.Screenshot().screenshot(false, stream, (source, res) => {
+                    try {
+                        source.screenshot_finish(res);
+                        stream.close(null);
+                    } catch {
+                        // ignored: only the final screenshot is required
+                    }
+                    callback();
+                });
+            } catch {
+                callback();
+            }
+        };
         const painted = (name, actor) => {
             const [x, y] = actor?.get_transformed_position?.() ?? [0, 0];
             const state = {
@@ -2609,8 +2803,105 @@ export default class UsageBarExtension extends Extension {
                 state.height > 0 && state.paintOpacity > 0 && onStage, {...state, onStage});
         };
 
+        // Machines tab against a fixed GET /sync/status payload: two Machines
+        // active at once, then a failed refresh, then unpaired.
+        const machinesSmoke = (assertions, done) => {
+            const machinesBox = () => this._indicator._detailBox.get_children()
+                .find(child => child._usagebarMachineCards);
+            const iso = new Date().toISOString();
+            const spend = costUSD => ({costUSD, costIncomplete: false, totalTokens: 0, requests: 0});
+            const machine = (id, thisMachine, cost, provider) => ({
+                machineId: id,
+                displayName: id,
+                isThisMachine: thisMachine,
+                active: true,
+                retired: false,
+                lastSeen: iso,
+                today: spend(cost / 3),
+                last30Days: spend(cost),
+                models: [{provider, model: `${id}-model`, spend: spend(cost)}],
+                coverage: {from: '2026-06-25', to: '2026-09-24'},
+            });
+            this._indicator._closeCostPanel();
+            this._syncFixture = true;
+            this._sync.paired = true;
+            this._sync.fetchError = null;
+            this._sync.payload = {
+                paired: true,
+                refreshedAt: iso,
+                status: {
+                    total: {today: spend(10 / 3), last30Days: spend(10)},
+                    errors: [],
+                    machines: [machine('qa-laptop', true, 6, 'claude'), machine('qa-desk', false, 4, 'codex')],
+                },
+            };
+            this._indicator.menu.open();
+            this._indicator._tabButtons.get('machines').emit('clicked', 1);
+            later(400, () => {
+                try {
+                    const box = machinesBox();
+                    const cards = [...(box?._usagebarMachineCards?.values() ?? [])];
+                    assertions.push(painted('Machines tab is painted', this._indicator._tabButtons.get('machines')));
+                    assertions.push(assertion('Machines tab lists both Machines', cards.length === 2,
+                        {actual: cards.length}));
+                    cards.forEach((card, i) => assertions.push(painted(`Machine card ${i + 1} is painted`, card)));
+                    assertions.push(assertion('both Machines show as active', cards.length === 2 &&
+                        cards.every(card => card._usagebarDot.has_style_class_name('usagebar-machine-dot-active'))));
+                    assertions.push(assertion('fresh data is not greyed',
+                        box?._usagebarContent.opacity === 255));
+                } catch (error) {
+                    done(error);
+                    return;
+                }
+                capture('machines-tab.png', () => {
+                    this._sync.payload = {...this._sync.payload, error: "Couldn't reach the Sync Server"};
+                    this._render();
+                    later(200, () => {
+                        try {
+                            const staleBox = machinesBox();
+                            assertions.push(assertion('failed refresh keeps the last good data',
+                                staleBox?._usagebarMachineCards.size === 2));
+                            assertions.push(assertion('stale data is greyed',
+                                staleBox?._usagebarContent.opacity < 255,
+                                {opacity: staleBox?._usagebarContent.opacity}));
+                            assertions.push(assertion('stale data shows a banner', staleBox?.get_children()
+                                .some(child => child.has_style_class_name?.('usagebar-machines-banner'))));
+                        } catch (error) {
+                            done(error);
+                            return;
+                        }
+                        capture('machines-stale.png', () => {
+                            try {
+                                this._sync.paired = false;
+                                this._sync.payload = null;
+                                this._render();
+                                assertions.push(assertion('tab strip is hidden when not paired',
+                                    !this._indicator._tabItem.visible));
+                                assertions.push(assertion('unpairing returns to the Providers tab',
+                                    this._view === 'providers'));
+                                this._indicator.menu.close();
+                                this._syncFixture = false;
+                                done();
+                            } catch (error) {
+                                done(error);
+                            }
+                        });
+                    });
+                });
+            });
+        };
+
         later(800, () => {
             const assertions = [];
+            machinesSmoke(assertions, error => {
+                if (error)
+                    finish(assertions, error);
+                else
+                    costSmoke(assertions);
+            });
+        });
+
+        const costSmoke = assertions => {
             try {
                 const dates = buildCostDateRange(COST_HISTORY_DAYS);
                 const providers = ['claude', 'codex', 'opencodego', 'gemini', 'cursor'];
@@ -2714,7 +3005,7 @@ export default class UsageBarExtension extends Extension {
             } catch (error) {
                 finish(assertions, error);
             }
-        });
+        };
     }
 
     _costOverview(rangeDays = 30) {
@@ -2804,11 +3095,25 @@ export default class UsageBarExtension extends Extension {
             ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
             : 'fetching…');
 
+        const machines = machinesView(this._sync?.payload, {
+            now: Date.now(),
+            fetchError: this._sync?.fetchError,
+        });
+        if (machines.hidden && this._view === 'machines')
+            this._view = 'providers';
+        this._indicator.setTabs(!machines.hidden, this._view);
+
         // A closed menu only needs the panel and state caches refreshed. The
         // retained overview is attached lazily on the next open, so a burst
         // of provider responses cannot build hidden cards or charts.
         if (!this._indicator.menu.isOpen) {
             this._popupDirty = true;
+            return;
+        }
+
+        if (this._view === 'machines') {
+            this._renderMachines(machines);
+            this._popupDirty = false;
             return;
         }
 
@@ -2818,6 +3123,173 @@ export default class UsageBarExtension extends Extension {
         else
             this._renderOverview(rows);
         this._popupDirty = false;
+    }
+
+    // Machines tab: every Machine in the Sync Group with an active dot, its
+    // Spend today and over 30 days, its share, a provider/model breakdown,
+    // and Coverage. Provider cards on the other tab stay this Machine only.
+    _renderMachines(view) {
+        const key = JSON.stringify(view);
+        if (this._popupView === 'machines' && this._machinesRenderKey === key)
+            return;
+        const detail = this._indicator._detailBox;
+        this._indicator._closeCostPanel();
+        this._indicator._tooltip?.hide();
+        this._hideModelTable();
+        for (const child of detail.get_children()) {
+            if (child === this._overviewView?.container)
+                detail.remove_child(child);
+            else
+                child.destroy();
+        }
+
+        const box = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: 'usagebar-machines',
+        });
+        if (view.banner) {
+            const banner = new St.Label({
+                text: `⚠ ${view.banner}`,
+                style_class: 'usagebar-banner usagebar-machines-banner',
+                x_expand: true,
+            });
+            banner.clutter_text.line_wrap = true;
+            box.add_child(banner);
+        }
+
+        // Stale data stays readable but greyed out.
+        const content = new St.BoxLayout({vertical: true, x_expand: true});
+        if (view.stale) {
+            content.add_style_class_name('usagebar-machines-stale');
+            content.opacity = 128; // St CSS has no opacity property
+        }
+        box.add_child(content);
+
+        if (view.loading || (!view.machines.length && !view.banner)) {
+            content.add_child(new St.Label({
+                text: view.loading ? 'Reading Machines…' : 'No Machines have synced yet.',
+                style_class: 'usagebar-dim usagebar-detail-empty',
+            }));
+        }
+
+        if (view.total && view.machines.length) {
+            const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machines-head'});
+            head.add_child(new St.Label({
+                text: 'All Machines',
+                style_class: 'usagebar-card-title',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            head.add_child(new St.Label({
+                text: `Today ${view.total.today} · 30 days ${view.total.last30}`,
+                style_class: 'usagebar-dim',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            content.add_child(head);
+        }
+
+        const refs = new Map();
+        for (const machine of view.machines) {
+            const card = this._buildMachineCard(machine);
+            refs.set(machine.id, card);
+            content.add_child(card);
+        }
+
+        if (view.errors) {
+            content.add_child(new St.Label({
+                text: `${view.errors} synced item${view.errors === 1 ? '' : 's'} couldn't be read.`,
+                style_class: 'usagebar-dim usagebar-machines-note',
+            }));
+        }
+        content.add_child(new St.Label({
+            text: 'Cost on the Providers tab covers this Machine only.',
+            style_class: 'usagebar-dim usagebar-machines-note',
+        }));
+
+        box._usagebarMachineCards = refs;
+        box._usagebarContent = content;
+        detail.add_child(box);
+        this._popupView = 'machines';
+        this._machinesRenderKey = key;
+    }
+
+    _buildMachineCard(machine) {
+        const card = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: 'usagebar-card usagebar-machine-card',
+        });
+        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-head'});
+        const state = machine.retired ? 'retired' : machine.active ? 'active' : 'idle';
+        const dot = new St.Widget({
+            style_class: `usagebar-machine-dot usagebar-machine-dot-${state}`,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        card._usagebarDot = dot;
+        head.add_child(dot);
+        head.add_child(new St.Label({
+            text: machine.name,
+            style_class: 'usagebar-compact-title',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        const tags = [];
+        if (machine.thisMachine)
+            tags.push('this Machine');
+        if (machine.retired)
+            tags.push('retired');
+        else if (machine.active)
+            tags.push('active');
+        head.add_child(new St.Label({
+            text: tags.join(' · '),
+            style_class: 'usagebar-dim usagebar-machine-tags',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        if (machine.share !== null) {
+            head.add_child(new St.Label({
+                text: `${Math.round(machine.share * 100)}%`,
+                style_class: 'usagebar-worst',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        card.add_child(head);
+
+        card.add_child(new St.Label({
+            text: `Today ${machine.today} · 30 days ${machine.last30}`,
+            style_class: 'usagebar-machine-spend',
+        }));
+
+        for (const model of machine.models) {
+            const row = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-model'});
+            const icon = this._providerIcon(model.provider, 12);
+            if (icon)
+                row.add_child(icon);
+            row.add_child(new St.Label({
+                text: model.model,
+                style_class: 'usagebar-dim',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            row.add_child(new St.Label({
+                text: model.spend,
+                style_class: 'usagebar-dim',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            card.add_child(row);
+        }
+        if (machine.moreModels) {
+            card.add_child(new St.Label({
+                text: `+${machine.moreModels} more`,
+                style_class: 'usagebar-dim usagebar-machine-model',
+            }));
+        }
+
+        card.add_child(new St.Label({
+            text: [machine.coverage, machine.lastSeen].filter(Boolean).join(' · '),
+            style_class: 'usagebar-dim usagebar-machine-foot',
+        }));
+        return card;
     }
 
     _detailPayloadKey(row) {

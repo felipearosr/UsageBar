@@ -28,6 +28,10 @@ enum CLIServeRoute: Equatable {
     case health
     case usage(provider: String?)
     case cost(provider: String?, days: Int?)
+    /// This Machine's view of its Sync Group. `refresh` pulls new blobs from the Sync Server first.
+    case syncStatus(refresh: Bool)
+    /// One Machine Sync push cycle (§8.1).
+    case syncPush
 }
 
 enum CLIServeRouteError: Error, Equatable {
@@ -37,6 +41,11 @@ enum CLIServeRouteError: Error, Equatable {
 
 enum CLIServeRouter {
     static func route(method: String, path: String, queryItems: [String: String]) throws -> CLIServeRoute {
+        // Pushing uploads Spend, so it takes POST; everything else only reads.
+        if path == "/sync/push" {
+            guard method.uppercased() == "POST" else { throw CLIServeRouteError.methodNotAllowed }
+            return .syncPush
+        }
         guard method.uppercased() == "GET" else {
             throw CLIServeRouteError.methodNotAllowed
         }
@@ -52,6 +61,8 @@ enum CLIServeRouter {
             return .usage(provider: normalizedProvider)
         case "/cost":
             return .cost(provider: normalizedProvider, days: days)
+        case "/sync/status":
+            return .syncStatus(refresh: ["1", "true"].contains(queryItems["refresh"]?.lowercased() ?? ""))
         default:
             throw CLIServeRouteError.notFound
         }
@@ -91,6 +102,7 @@ private struct ServeRuntime {
     let refreshInterval: TimeInterval
     let requestTimeout: TimeInterval
     let healthVersion: String?
+    let sync: CLIServeSyncCoordinator
 }
 
 private struct ServeResponseRequest: Sendable {
@@ -557,7 +569,8 @@ extension CodexBarCLI {
             costOperations: CLIServeOperationCoordinator(),
             refreshInterval: refreshInterval,
             requestTimeout: requestTimeout,
-            healthVersion: Self.currentVersion())
+            healthVersion: Self.currentVersion(),
+            sync: CLIServeSyncCoordinator())
         let server = CLILocalHTTPServer(host: "127.0.0.1", port: port) { request in
             await Self.handleServeRequest(request, runtime: runtime)
         }
@@ -652,6 +665,13 @@ extension CodexBarCLI {
         switch route {
         case .health:
             return Self.serveHealthResponse(version: runtime.healthVersion)
+        case let .syncStatus(refresh):
+            return await Self.serveSyncStatus(
+                refresh: refresh,
+                environment: Self.serveSyncEnvironment(),
+                coordinator: runtime.sync)
+        case .syncPush:
+            return await Self.serveSyncPush(environment: Self.serveSyncEnvironment(), coordinator: runtime.sync)
         case let .usage(provider):
             let snapshot: CLIServeConfigSnapshot
             let operationKey: String
@@ -1108,7 +1128,7 @@ extension CodexBarCLI {
         self.serveJSON(ServeHealthPayload(status: "ok", version: version))
     }
 
-    private static func serveJSON(
+    static func serveJSON(
         _ payload: some Encodable,
         status: CLIHTTPStatus = .ok,
         usageCacheKeys: [String?]? = nil) -> CLILocalHTTPResponse
@@ -1120,7 +1140,7 @@ extension CodexBarCLI {
             usageCacheKeys: usageCacheKeys)
     }
 
-    private static func serveError(status: CLIHTTPStatus, message: String) -> CLILocalHTTPResponse {
+    static func serveError(status: CLIHTTPStatus, message: String) -> CLILocalHTTPResponse {
         self.serveJSON(ServeErrorPayload(error: message), status: status)
     }
 }

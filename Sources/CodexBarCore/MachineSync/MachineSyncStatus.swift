@@ -90,6 +90,8 @@ public struct MachineSyncCache: Codable, Sendable, Equatable {
     public var version: Int = 1
     public var groupID: String
     public var cursor: String?
+    /// When the last `changes` read finished. Surfaces show older data as stale.
+    public var refreshedAt: Date?
     public var retentionDays: Int?
     public var machines: [String: Machine] = [:]
     /// Retired Machines and when they were retired (group blob `retired`, §5.3).
@@ -162,6 +164,7 @@ public enum MachineSyncReader {
             $0.value.machineID == MachineSyncMachineID.group || listed.contains($0.value.machineID)
         }
         Self.pruneExpiredDays(&cache, now: environment.now())
+        cache.refreshedAt = environment.now()
 
         try environment.store.saveCache(cache)
         return MachineSyncRefreshResult(cache: cache, fetchedBlobs: fetched)

@@ -64,8 +64,9 @@ See `docs/configuration.md` for the schema.
   - Provider config is reloaded for each usage/cost request; cache entries are keyed by the loaded config so provider toggles and source changes do not require restarting `serve`.
   - Transient refresh failures fall back to the last good response for up to ten refresh intervals (minimum five minutes) so polling clients do not flicker between data and errors; disabled when `--refresh-interval 0`.
   - v1 binds to `127.0.0.1` only and rejects non-loopback `Host` headers. It does not expose remote bind, auth, CORS, TLS, or daemon mode.
-  - Endpoints: `GET /health`, `GET /usage`, `GET /usage?provider=<id|both|all>`, `GET /cost`, `GET /cost?provider=<id|both|all>`.
+  - Endpoints: `GET /health`, `GET /usage`, `GET /usage?provider=<id|both|all>`, `GET /cost`, `GET /cost?provider=<id|both|all>`, `GET /sync/status`, `POST /sync/push`.
   - `GET /health` returns `{"status":"ok"}` plus a `version` field with the running build (e.g. `"0.37.2"`) when resolvable; clients can compare it against `codexbar --version` to detect a `serve` process still running an older binary after an update.
+  - Machine Sync: `GET /sync/status` returns `{"paired": false}` when this Machine isn't in a Sync Group. Otherwise it returns `paired`, `status` (the `codexbar sync status --json` payload built from the local cache, absent until the first read), `refreshedAt` (last successful read of the Sync Server), and `error` when this request's read failed. It reads only local files unless `?refresh=1` asks it to pull new blobs first. `POST /sync/push` runs one push cycle and answers like `codexbar sync push --json`, or `409` when not paired and `502` when the push failed. Concurrent refreshes, and concurrent pushes, share one run.
   - Codex usage responses include every visible Codex account, matching the menu bar switcher.
 - `codexbar cache clear` clears local CodexBar caches.
   - `--cookies` removes cached browser-cookie headers from the CodexBar Keychain cache.

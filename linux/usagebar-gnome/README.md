@@ -53,6 +53,18 @@ node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.git
 node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/renderstate.js
 ```
 
+## Machine Sync
+
+Once this Machine is paired (`codexbar sync create` / `codexbar sync pair`),
+the refresh loop asks the `codexbar serve` child to push (`POST /sync/push`,
+about every 150 s ± 20 s) and a Providers | Machines tab strip appears. The
+Machines tab lists every Machine with an active dot, today and 30-day Spend,
+its share, the top provider/model split, and Coverage. It reads the Sync
+Server (`GET /sync/status?refresh=1`) on the push cadence while the tab is
+open, and otherwise only once its data is older than 5 minutes. When a read
+fails or serve stops answering, the last good data stays on screen, greyed,
+under a banner. Unpaired Machines never see the tab strip.
+
 The pure state tests cover idle-render coalescing and cancellation, bounded
 cost-cache invalidation (including empty results), keyed provider-row reuse and
 order changes, positive/negative icon lookup caching, and persistent update
@@ -76,6 +88,9 @@ result, GNOME log, and full-stage PNG screenshot under `/tmp`.
   supervisor (Gio.Subprocess), Soup 3 HTTP client, stale-merge (port of the
   Rust `merge_stale`), panel indicator + popover UI (St widgets), quota
   notifications.
+- `usagebar@felipearosr.github.io/machinesync.js` — Machine Sync push/read
+  cadence and the Machines tab view model (pure; tested in
+  `tests/machinesync.test.mjs`).
 - `usagebar@felipearosr.github.io/prefs.js` — libadwaita preferences
   (thresholds, notifications, per-provider chip visibility).
 - `usagebar@felipearosr.github.io/schemas/` — GSettings schema
