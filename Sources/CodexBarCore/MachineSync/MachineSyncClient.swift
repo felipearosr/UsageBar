@@ -27,6 +27,8 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
     case unreadableRetiredBlob
     /// Another process on this Machine holds the push lock.
     case pushInProgress
+    /// The timezone isn't an IANA identifier this system knows, or the start hour isn't 0-23.
+    case invalidReportingDay
 
     public var errorDescription: String? {
         switch self {
@@ -58,10 +60,34 @@ public enum MachineSyncError: Error, Equatable, LocalizedError {
             return "The Sync Group's retired list can't be read by this version, so it was left unchanged."
         case .pushInProgress:
             return "A push is running on this Machine right now. Try again in a moment."
+        case .invalidReportingDay:
+            return "Invalid Reporting Day: use an IANA timezone (e.g. Europe/Berlin) and a start hour 0-23."
         case let .server(status, code, message, _):
             if let text = Self.text(forCode: code) { return text }
             let fallback = message.map { ": \($0)" } ?? ""
             return "The Sync Server returned HTTP \(status)\(fallback)."
+        }
+    }
+
+    /// Stable, machine-readable name for this error, so surfaces such as the GNOME preferences can explain it in
+    /// their own words. Server errors use the server's code (§6.8), for example `machine_limit`.
+    public var reason: String {
+        switch self {
+        case .notPaired: "not_paired"
+        case .alreadyPaired: "already_paired"
+        case .unsupportedServer: "unsupported_server"
+        case .enrollmentTokenRequired: "enrollment_required"
+        case .cleartextNotConfirmed: "cleartext_not_confirmed"
+        case let .server(status, code, _, _): code ?? "http_\(status)"
+        case .network: "network"
+        case .invalidResponse: "invalid_response"
+        case .machineNotFound: "machine_not_found"
+        case .ambiguousMachine: "ambiguous_machine"
+        case .isThisMachine: "is_this_machine"
+        case .retiredConflict: "retired_conflict"
+        case .unreadableRetiredBlob: "unreadable_retired"
+        case .pushInProgress: "push_in_progress"
+        case .invalidReportingDay: "invalid_reporting_day"
         }
     }
 

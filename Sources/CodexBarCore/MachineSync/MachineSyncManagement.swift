@@ -43,6 +43,22 @@ public enum MachineSyncManager {
         return settings
     }
 
+    // MARK: Reporting Day
+
+    /// Saves how Spend is grouped into days for display (§8.3); `nil` goes back to the system timezone with days
+    /// starting at midnight. Works while unpaired too, so the choice survives leaving and re-pairing.
+    public static func setReportingDay(
+        _ reportingDay: MachineSyncReportingDay?,
+        environment: MachineSyncEnvironment) throws -> MachineSyncSettings
+    {
+        guard reportingDay?.isValid ?? true else { throw MachineSyncError.invalidReportingDay }
+        var settings = try environment.store.loadSettings()
+            ?? MachineSyncSettings(machineID: MachineSyncMachineID.generate())
+        settings.reportingDay = reportingDay
+        try environment.store.saveSettings(settings)
+        return settings
+    }
+
     // MARK: Find
 
     /// Reads the Sync Group and finds the Machine named by `query`: its Machine ID, or else its display name

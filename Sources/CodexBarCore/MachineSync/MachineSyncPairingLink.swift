@@ -20,6 +20,14 @@ public enum MachineSyncPairingLinkError: Error, Equatable, LocalizedError {
         case .invalidRootKey: "The Pairing Link key is not valid. Copy the whole link again."
         }
     }
+
+    /// Machine-readable name: `invalid_address` for a bad server part, `invalid_key` for a bad or missing key.
+    public var reason: String {
+        switch self {
+        case .unsupportedScheme, .unexpectedQuery, .missingHost, .invalidHost, .invalidPort: "invalid_address"
+        case .missingRootKey, .invalidRootKey: "invalid_key"
+        }
+    }
 }
 
 /// `codexbar-sync[+http]://<host>[:<port>][/<base-path>]#<root-key>` (§2): the server address and the

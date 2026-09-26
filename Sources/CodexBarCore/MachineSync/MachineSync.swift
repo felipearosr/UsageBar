@@ -97,12 +97,44 @@ public enum MachineSyncGroupCreator {
         let settings = MachineSyncSettings(
             machineID: existing?.machineID ?? MachineSyncMachineID.generate(),
             displayName: name ?? existing?.displayName ?? environment.hostName,
-            pairingLink: link.link)
+            pairingLink: link.link,
+            reportingDay: existing?.reportingDay)
         try environment.store.saveSettings(settings)
         try environment.store.saveState(MachineSyncPushState(
             groupID: keys.groupIDBase64URL,
             retentionDays: limits.retentionDays ?? info.retentionDays))
         return MachineSyncCreateResult(link: link, limits: limits, settings: settings)
+    }
+}
+
+// MARK: - Server info
+
+/// What `GET /v1/info` says about a server URL the user typed, before any key exists.
+public struct MachineSyncServerInfo: Sendable, Equatable {
+    public let baseURL: String
+    public let host: String
+    public let info: MachineSyncClient.ServerInfo
+    /// Plain `http://` to a host that isn't loopback: creating a group there needs the user's confirmation (§2).
+    public let cleartextWarning: Bool
+
+    public var supported: Bool {
+        self.info.protocols.contains(1)
+    }
+}
+
+public enum MachineSyncServerProbe {
+    /// Asks the server whether it wants an Enrollment Token (§6.2), so a surface shows the token field only when
+    /// it does. Sends nothing but the unauthenticated `GET /v1/info`.
+    public static func info(serverURL: String, environment: MachineSyncEnvironment) async throws
+        -> MachineSyncServerInfo
+    {
+        let link = try MachineSyncPairingLink(serverURL: serverURL, rootKey: .generate())
+        let client = MachineSyncClient(apiBaseURL: link.apiBaseURL, transport: environment.transport)
+        return try await MachineSyncServerInfo(
+            baseURL: link.baseURL,
+            host: link.host,
+            info: client.info(),
+            cleartextWarning: link.cleartextWarning)
     }
 }
 
