@@ -12,6 +12,9 @@ struct ProviderErrorPayload: Encodable, Sendable {
     let code: Int32
     let message: String
     let kind: CLIErrorKind?
+    /// Stable name for the failure where the command has one (Machine Sync: `machine_limit`, `enrollment_expired`,
+    /// ...), so callers can explain it without matching on `message`.
+    var reason: String?
 }
 
 extension CodexBarCLI {
@@ -30,6 +33,7 @@ extension CodexBarCLI {
         message: String,
         code: ExitCode,
         kind: CLIErrorKind,
+        reason: String? = nil,
         pretty: Bool) -> String?
     {
         let payload = ProviderPayload(
@@ -42,7 +46,7 @@ extension CodexBarCLI {
             credits: nil,
             antigravityPlanInfo: nil,
             openaiDashboard: nil,
-            error: ProviderErrorPayload(code: code.rawValue, message: message, kind: kind))
+            error: ProviderErrorPayload(code: code.rawValue, message: message, kind: kind, reason: reason))
         return self.encodeJSON([payload], pretty: pretty)
     }
 
@@ -87,7 +91,8 @@ extension CodexBarCLI {
         code: ExitCode,
         message: String? = nil,
         output: CLIOutputPreferences? = nil,
-        kind: CLIErrorKind = .runtime) -> Never
+        kind: CLIErrorKind = .runtime,
+        reason: String? = nil) -> Never
     {
         if self.shouldPrintExitError(code: code, message: message) {
             if let output, output.usesJSONOutput {
@@ -95,6 +100,7 @@ extension CodexBarCLI {
                     message: message ?? "",
                     code: code,
                     kind: kind,
+                    reason: reason,
                     pretty: output.pretty)
                 if let payload {
                     print(payload)

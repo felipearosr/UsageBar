@@ -20,6 +20,10 @@ extension CodexBarCLI {
             await self.runSyncStatus(values)
         case ["sync", "install-timer"]:
             await self.runSyncInstallTimer(values)
+        case ["sync", "info"]:
+            await self.runSyncInfo(values)
+        case ["sync", "settings"]:
+            self.runSyncSettings(values)
         case ["sync", "link"], ["sync", "rename"], ["sync", "retire"], ["sync", "forget"], ["sync", "leave"]:
             await self.runSyncManage(path[1], values: values)
         default:
@@ -36,8 +40,13 @@ extension CodexBarCLI {
         if let preview = try? MachineSyncPairingLink(serverURL: server, rootKey: .generate()),
            !Self.confirmCleartext(preview, values: values, output: output)
         {
-            let message = MachineSyncError.cleartextNotConfirmed(host: preview.host).errorDescription
-            Self.exit(code: .failure, message: message, output: output, kind: .args)
+            let error = MachineSyncError.cleartextNotConfirmed(host: preview.host)
+            Self.exit(
+                code: .failure,
+                message: error.errorDescription,
+                output: output,
+                kind: .args,
+                reason: error.reason)
         }
 
         let result: MachineSyncCreateResult
@@ -48,20 +57,20 @@ extension CodexBarCLI {
                 displayName: values.options["name"]?.last,
                 environment: Self.syncEnvironment())
         } catch {
-            Self.exit(code: .failure, message: Self.syncErrorMessage(error), output: output, kind: .runtime)
+            Self.syncFail(error, output: output)
         }
 
         // The group exists and the link is saved; a failed first push is retried by the next `sync push`.
-        var pushError: String?
+        var pushError: Error?
         do {
             _ = try await MachineSyncPusher.push(environment: Self.syncEnvironment())
         } catch {
-            pushError = Self.syncErrorMessage(error)
+            pushError = error
         }
 
         switch output.format {
         case .text:
-            print(Self.syncCreateText(result, pushError: pushError))
+            print(Self.syncCreateText(result, pushError: pushError.map(Self.syncErrorMessage)))
         case .json:
             Self.printJSON(
                 SyncCreatePayload(
@@ -69,7 +78,8 @@ extension CodexBarCLI {
                     machineId: result.settings.machineID,
                     displayName: result.settings.displayName,
                     server: result.link.baseURL,
-                    pushError: pushError),
+                    pushError: pushError.map(Self.syncErrorMessage),
+                    pushErrorReason: pushError.flatMap(Self.syncErrorReason)),
                 pretty: output.pretty)
         }
         Self.exit(code: .success, output: output)
@@ -81,7 +91,7 @@ extension CodexBarCLI {
         do {
             outcome = try await MachineSyncPusher.push(environment: Self.syncEnvironment())
         } catch {
-            Self.exit(code: .failure, message: Self.syncErrorMessage(error), output: output, kind: .runtime)
+            Self.syncFail(error, output: output)
         }
         switch output.format {
         case .text:
@@ -94,7 +104,9 @@ extension CodexBarCLI {
 
     static func runSyncPair(_ values: ParsedValues) async {
         let output = CLIOutputPreferences.from(values: values)
-        guard let rawLink = values.positional.first, !rawLink.isEmpty else {
+        // `-` reads the link from stdin, so it never shows up in the process list or shell history.
+        let rawLink = values.positional.first == "-" ? Self.readSyncStdin() : values.positional.first ?? ""
+        guard !rawLink.isEmpty else {
             Self.exit(code: .failure, message: "Missing <pairing-link>.", output: output, kind: .args)
         }
         // An unparseable link gets its real error from `pair` below.
@@ -110,22 +122,25 @@ extension CodexBarCLI {
                 allowCleartext: allowCleartext,
                 environment: Self.syncEnvironment())
         } catch {
-            Self.exit(code: .failure, message: Self.syncErrorMessage(error), output: output, kind: .runtime)
+            Self.syncFail(error, output: output)
         }
 
         // Paired and saved; a failed backfill is finished by the next `sync push`.
         var outcome: MachineSyncPushOutcome?
-        var pushError: String?
+        var pushError: Error?
         do {
             outcome = try await MachineSyncPusher.push(environment: Self.syncEnvironment())
         } catch {
-            pushError = Self.syncErrorMessage(error)
+            pushError = error
         }
         let backfilledDays = Self.uploadedDays(outcome)
 
         switch output.format {
         case .text:
-            print(Self.syncPairText(result, backfilledDays: backfilledDays, pushError: pushError))
+            print(Self.syncPairText(
+                result,
+                backfilledDays: backfilledDays,
+                pushError: pushError.map(Self.syncErrorMessage)))
         case .json:
             Self.printJSON(
                 SyncPairPayload(
@@ -133,7 +148,8 @@ extension CodexBarCLI {
                     displayName: result.settings.displayName,
                     server: result.link.baseURL,
                     backfilledDays: backfilledDays,
-                    pushError: pushError),
+                    pushError: pushError.map(Self.syncErrorMessage),
+                    pushErrorReason: pushError.flatMap(Self.syncErrorReason)),
                 pretty: output.pretty)
         }
         Self.exit(code: .success, output: output)
@@ -146,7 +162,7 @@ extension CodexBarCLI {
         do {
             settings = try environment.store.loadSettings()
         } catch {
-            Self.exit(code: .failure, message: Self.syncErrorMessage(error), output: output, kind: .runtime)
+            Self.syncFail(error, output: output)
         }
         var reportingDay = settings?.reportingDay ?? MachineSyncReportingDay()
         if let timeZone = values.options["timezone"]?.last {
@@ -174,7 +190,7 @@ extension CodexBarCLI {
         do {
             refresh = try await MachineSyncReader.refresh(environment: environment)
         } catch {
-            Self.exit(code: .failure, message: Self.syncErrorMessage(error), output: output, kind: .runtime)
+            Self.syncFail(error, output: output)
         }
         let status = MachineSyncStatus(
             cache: refresh.cache,
@@ -220,6 +236,30 @@ extension CodexBarCLI {
 
     static func syncErrorMessage(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
+
+    /// The `reason` a JSON error carries, for errors that have one.
+    static func syncErrorReason(_ error: Error) -> String? {
+        switch error {
+        case let error as MachineSyncError: error.reason
+        case let error as MachineSyncPairingLinkError: error.reason
+        default: nil
+        }
+    }
+
+    /// Exits with `error`, adding its `reason` to JSON output.
+    static func syncFail(_ error: Error, output: CLIOutputPreferences) -> Never {
+        exit(
+            code: .failure,
+            message: self.syncErrorMessage(error),
+            output: output,
+            kind: .runtime,
+            reason: self.syncErrorReason(error))
+    }
+
+    private static func readSyncStdin() -> String {
+        let data = FileHandle.standardInput.readDataToEndOfFile()
+        return String(bytes: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     static func syncCleartextWarning(host: String) -> String {
@@ -352,6 +392,7 @@ private struct SyncCreatePayload: Encodable {
     let displayName: String?
     let server: String
     let pushError: String?
+    let pushErrorReason: String?
 }
 
 private struct SyncPairPayload: Encodable {
@@ -360,6 +401,7 @@ private struct SyncPairPayload: Encodable {
     let server: String
     let backfilledDays: Int
     let pushError: String?
+    let pushErrorReason: String?
 }
 
 struct SyncPushPayload: Encodable {
@@ -469,7 +511,7 @@ struct SyncPairOptions: CommanderParsable {
     @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
     var pretty: Bool = false
 
-    @Argument(help: "Pairing Link (codexbar-sync://...)")
+    @Argument(help: "Pairing Link (codexbar-sync://...), or - to read it from stdin")
     var link: String = ""
 
     @Option(name: .long("name"), help: "Display name for this Machine (default: hostname)")

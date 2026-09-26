@@ -65,6 +65,19 @@ open, and otherwise only once its data is older than 5 minutes. When a read
 fails or serve stops answering, the last good data stays on screen, greyed,
 under a banner. Unpaired Machines never see the tab strip.
 
+Settings → **Machine Sync** sets it up without a terminal. Unpaired, it offers
+two paths: create a Sync Group (type the server URL; the page asks the server's
+`GET /v1/info` and shows the Enrollment Token field only when the server says
+the token is optional or required; no server is named or suggested) or join
+one by pasting a Pairing Link. Paired, it shows the Sync Server, shows or
+copies the Pairing Link with recovery-key guidance, renames this Machine, sets
+the Reporting Day (timezone and start hour), lists the other Machines with
+Retire and Forget, runs a push on demand, and leaves the group. Every action
+runs a `codexbar sync …` command with `--json-only`; failures carry a `reason`
+(`machine_limit`, `enrollment_expired`, …) that `syncprefs.js` turns into
+plain language. The Pairing Link reaches `codexbar sync pair -` on stdin, never
+in argv, and the page doesn't log.
+
 The pure state tests cover idle-render coalescing and cancellation, bounded
 cost-cache invalidation (including empty results), keyed provider-row reuse and
 order changes, positive/negative icon lookup caching, and persistent update
@@ -93,6 +106,9 @@ result, GNOME log, and full-stage PNG screenshot under `/tmp`.
   `tests/machinesync.test.mjs`).
 - `usagebar@felipearosr.github.io/prefs.js` — libadwaita preferences
   (thresholds, notifications, per-provider chip visibility).
+- `usagebar@felipearosr.github.io/syncpage.js` — the Machine Sync preferences
+  page; `syncprefs.js` holds its CLI invocations and error texts (pure; tested
+  in `tests/syncprefs.test.mjs`).
 - `usagebar@felipearosr.github.io/schemas/` — GSettings schema
   (`org.gnome.shell.extensions.usagebar`); re-run `glib-compile-schemas`
   after editing.

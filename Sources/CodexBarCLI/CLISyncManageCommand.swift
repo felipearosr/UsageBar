@@ -29,7 +29,7 @@ extension CodexBarCLI {
         } catch let error as SyncManageArgumentError {
             Self.exit(code: .failure, message: error.message, output: output, kind: .args)
         } catch {
-            Self.exit(code: .failure, message: Self.syncErrorMessage(error), output: output, kind: .runtime)
+            Self.syncFail(error, output: output)
         }
         Self.exit(code: .success, output: output)
     }
@@ -53,23 +53,24 @@ extension CodexBarCLI {
         let settings = try MachineSyncManager.rename(to: name, environment: environment)
 
         // Push now so other Machines see the new name on their next read; a failed push is retried later.
-        var pushError: String?
+        var pushError: Error?
         if settings.pairingLink != nil {
             do {
                 _ = try await MachineSyncPusher.push(environment: environment)
             } catch {
-                pushError = Self.syncErrorMessage(error)
+                pushError = error
             }
         }
         switch output.format {
         case .text:
-            print(Self.syncRenameText(settings, pushError: pushError))
+            print(Self.syncRenameText(settings, pushError: pushError.map(Self.syncErrorMessage)))
         case .json:
             Self.printJSON(
                 SyncRenamePayload(
                     machineId: settings.machineID,
                     displayName: settings.displayName,
-                    pushError: pushError),
+                    pushError: pushError.map(Self.syncErrorMessage),
+                    pushErrorReason: pushError.flatMap(Self.syncErrorReason)),
                 pretty: output.pretty)
         }
     }
@@ -229,6 +230,7 @@ private struct SyncRenamePayload: Encodable {
     let machineId: String
     let displayName: String?
     let pushError: String?
+    let pushErrorReason: String?
 }
 
 private struct SyncMachinePayload: Encodable {

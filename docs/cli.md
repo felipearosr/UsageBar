@@ -79,6 +79,7 @@ See `docs/configuration.md` for the schema.
   - `http://` servers other than loopback print a warning (the bearer credential would travel unencrypted) and ask for confirmation; non-interactive runs need `--yes`.
   - Settings live in `sync.json` next to `config.json` (mode `0600`); the app and the CLI share its Machine ID.
 - `codexbar sync pair <pairing-link> [--name <display-name>] [--yes]` joins an existing Sync Group from another Machine.
+  - `codexbar sync pair -` reads the link from stdin instead, so it stays out of the process list and shell history.
   - Checks the server and the key (`GET /v1/info`, then `changes`) before saving anything, so a wrong or mistyped link leaves this Machine unpaired.
   - A `codexbar-sync+http://` link to a host that isn't loopback prints a warning and asks for confirmation; non-interactive runs need `--yes`.
   - Then backfills: one `day-*` blob per UTC day with Spend in the local logs, oldest first, going back no further than the server's `retentionDays` (400 days when the server doesn't say). If the backfill fails partway, the next `sync push` finishes it.
@@ -104,6 +105,9 @@ See `docs/configuration.md` for the schema.
   - `CODEXBAR_CONFIG`, `XDG_CONFIG_HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`, when set, are written into the job so it reads the same `sync.json` and the same Codex and Claude logs as the shell that installed it.
   - Each push takes the push lock, so the timer coexists with the desktop app or GNOME extension on the same Machine.
   - `--uninstall` stops the job and deletes only those files; `sync.json` and the Sync Group are untouched.
+- `codexbar sync info --server <url>` asks a Sync Server (`GET /v1/info`, unauthenticated) whether creating a Sync Group needs an Enrollment Token. `--json` prints `server`, `host`, `protocols`, `supported`, `enrollment` (`none`, `optional`, or `required`), `operator`, `retentionDays`, and `cleartextWarning` (plain `http://` to a host that isn't loopback).
+- `codexbar sync settings [--timezone <iana-id|system>] [--day-start <hour>] [--reset-reporting-day]` shows this Machine's local Machine Sync settings and, with the flags, saves its Reporting Day in `sync.json`. An option left out keeps its saved value. `--json` prints `paired`, `machineId`, `displayName`, `server` (the address only, never the Pairing Link), and `reportingDay` (`timeZone`, `startHour`, `effectiveTimeZone`). It makes no network calls.
+- With `--json`, a failing `sync` command's error carries a `reason` next to `message`: the server's error code (`machine_limit`, `enrollment_expired`, `enrollment_invalid`, `enrollment_used`, `group_not_found`, ...) or a client one (`enrollment_required`, `cleartext_not_confirmed`, `already_paired`, `not_paired`, `network`, `invalid_address`, `invalid_key`, ...). `create`, `pair`, and `rename` also add `pushErrorReason` when their follow-up push failed.
 - `codexbar sync link` prints this Machine's Pairing Link on stdout and a warning on stderr: the link is the group key and the recovery key. `--json` prints `{"pairingLink","server"}`.
 - `codexbar sync rename <display-name>` saves a new display name in `sync.json` and pushes `profile` right away so other Machines see it on their next read. Unpaired, it only saves the name for the next `pair`.
 - `codexbar sync retire <machine-id-or-name>` marks another Machine as retired, for example after a reinstall.

@@ -1,6 +1,6 @@
 // UsageBar — extension preferences (opened from the popover's
 // Settings item or `gnome-extensions prefs`). Mirrors the macOS app's
-// Preferences shape: General / Notifications / Providers.
+// Preferences shape: General / Notifications / Providers, plus Machine Sync.
 
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
@@ -12,6 +12,7 @@ import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/ex
 import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
+import {MachineSyncPage} from './syncpage.js';
 
 function findBinary() {
     const explicit = GLib.getenv('CODEXBAR_BIN');
@@ -506,6 +507,9 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             page.add(group);
         }
         window.add(page);
+
+        // --- Machine Sync ---
+        window.add(new MachineSyncPage(window, binary).page);
     }
 
     // Paste-a-cookie section for web-backed providers, with step-by-step

@@ -217,6 +217,8 @@ enum CodexBarCLI {
         let syncMachineSignature = CommandSignature.describe(SyncMachineOptions())
         let syncLeaveSignature = CommandSignature.describe(SyncLeaveOptions())
         let syncInstallTimerSignature = CommandSignature.describe(SyncInstallTimerOptions())
+        let syncInfoSignature = CommandSignature.describe(SyncInfoOptions())
+        let syncSettingsSignature = CommandSignature.describe(SyncSettingsOptions())
         return CommandDescriptor(
             name: "sync",
             abstract: "Machine Sync: share Spend across your Machines",
@@ -273,6 +275,16 @@ enum CodexBarCLI {
                     abstract: "Run `sync push` every ~150 s from a systemd user timer or launchd agent",
                     discussion: nil,
                     signature: syncInstallTimerSignature),
+                CommandDescriptor(
+                    name: "info",
+                    abstract: "Ask a Sync Server whether creating a Sync Group needs an Enrollment Token",
+                    discussion: nil,
+                    signature: syncInfoSignature),
+                CommandDescriptor(
+                    name: "settings",
+                    abstract: "Show this Machine's Machine Sync settings, or set its Reporting Day",
+                    discussion: nil,
+                    signature: syncSettingsSignature),
             ],
             defaultSubcommandName: "push")
     }
