@@ -107,11 +107,6 @@ enum CodexBarCLI {
         let configSetAPIKeySignature = CommandSignature.describe(ConfigSetAPIKeyOptions())
         let cacheSignature = CommandSignature.describe(CacheOptions())
         let diagnoseSignature = CommandSignature.describe(DiagnoseOptions())
-        let syncCreateSignature = CommandSignature.describe(SyncCreateOptions())
-        let syncPushSignature = CommandSignature.describe(SyncPushOptions())
-        let syncPairSignature = CommandSignature.describe(SyncPairOptions())
-        let syncStatusSignature = CommandSignature.describe(SyncStatusOptions())
-        let syncInstallTimerSignature = CommandSignature.describe(SyncInstallTimerOptions())
 
         return [
             CommandDescriptor(
@@ -203,45 +198,83 @@ enum CodexBarCLI {
                         signature: cacheSignature),
                 ],
                 defaultSubcommandName: "clear"),
-            CommandDescriptor(
-                name: "sync",
-                abstract: "Machine Sync: share Spend across your Machines",
-                discussion: nil,
-                signature: CommandSignature(),
-                subcommands: [
-                    CommandDescriptor(
-                        name: "create",
-                        abstract: "Create a Sync Group on a Sync Server and start pushing",
-                        discussion: nil,
-                        signature: syncCreateSignature),
-                    CommandDescriptor(
-                        name: "pair",
-                        abstract: "Join a Sync Group with its Pairing Link and backfill this Machine's Spend",
-                        discussion: nil,
-                        signature: syncPairSignature),
-                    CommandDescriptor(
-                        name: "push",
-                        abstract: "Push this Machine's Spend to its Sync Group",
-                        discussion: nil,
-                        signature: syncPushSignature),
-                    CommandDescriptor(
-                        name: "status",
-                        abstract: "Show every Machine's Spend, Last Seen, and Coverage",
-                        discussion: nil,
-                        signature: syncStatusSignature),
-                    CommandDescriptor(
-                        name: "install-timer",
-                        abstract: "Run `sync push` every ~150 s from a systemd user timer or launchd agent",
-                        discussion: nil,
-                        signature: syncInstallTimerSignature),
-                ],
-                defaultSubcommandName: "push"),
+            self.syncCommandDescriptor(),
             CommandDescriptor(
                 name: "diagnose",
                 abstract: "Run provider diagnostic and emit safe JSON export",
                 discussion: nil,
                 signature: diagnoseSignature),
         ]
+    }
+
+    private static func syncCommandDescriptor() -> CommandDescriptor {
+        let syncCreateSignature = CommandSignature.describe(SyncCreateOptions())
+        let syncPushSignature = CommandSignature.describe(SyncPushOptions())
+        let syncPairSignature = CommandSignature.describe(SyncPairOptions())
+        let syncStatusSignature = CommandSignature.describe(SyncStatusOptions())
+        let syncLinkSignature = CommandSignature.describe(SyncLinkOptions())
+        let syncRenameSignature = CommandSignature.describe(SyncRenameOptions())
+        let syncMachineSignature = CommandSignature.describe(SyncMachineOptions())
+        let syncLeaveSignature = CommandSignature.describe(SyncLeaveOptions())
+        let syncInstallTimerSignature = CommandSignature.describe(SyncInstallTimerOptions())
+        return CommandDescriptor(
+            name: "sync",
+            abstract: "Machine Sync: share Spend across your Machines",
+            discussion: nil,
+            signature: CommandSignature(),
+            subcommands: [
+                CommandDescriptor(
+                    name: "create",
+                    abstract: "Create a Sync Group on a Sync Server and start pushing",
+                    discussion: nil,
+                    signature: syncCreateSignature),
+                CommandDescriptor(
+                    name: "pair",
+                    abstract: "Join a Sync Group with its Pairing Link and backfill this Machine's Spend",
+                    discussion: nil,
+                    signature: syncPairSignature),
+                CommandDescriptor(
+                    name: "push",
+                    abstract: "Push this Machine's Spend to its Sync Group",
+                    discussion: nil,
+                    signature: syncPushSignature),
+                CommandDescriptor(
+                    name: "status",
+                    abstract: "Show every Machine's Spend, Last Seen, and Coverage",
+                    discussion: nil,
+                    signature: syncStatusSignature),
+                CommandDescriptor(
+                    name: "link",
+                    abstract: "Print this Sync Group's Pairing Link",
+                    discussion: nil,
+                    signature: syncLinkSignature),
+                CommandDescriptor(
+                    name: "rename",
+                    abstract: "Change this Machine's display name",
+                    discussion: nil,
+                    signature: syncRenameSignature),
+                CommandDescriptor(
+                    name: "retire",
+                    abstract: "Mark another Machine as gone; its Spend stays in totals",
+                    discussion: nil,
+                    signature: syncMachineSignature),
+                CommandDescriptor(
+                    name: "forget",
+                    abstract: "Delete another Machine and its Spend from the Sync Server",
+                    discussion: nil,
+                    signature: syncMachineSignature),
+                CommandDescriptor(
+                    name: "leave",
+                    abstract: "Unpair this Machine; its Spend stays on the server",
+                    discussion: nil,
+                    signature: syncLeaveSignature),
+                CommandDescriptor(
+                    name: "install-timer",
+                    abstract: "Run `sync push` every ~150 s from a systemd user timer or launchd agent",
+                    discussion: nil,
+                    signature: syncInstallTimerSignature),
+            ],
+            defaultSubcommandName: "push")
     }
 
     // MARK: - Helpers

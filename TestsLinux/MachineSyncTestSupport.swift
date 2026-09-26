@@ -5,7 +5,7 @@ import FoundationNetworking
 #endif
 import Testing
 
-/// In-memory Sync Server speaking just enough of §6 for create, pair, push, and status.
+/// In-memory Sync Server speaking just enough of §6 for create, pair, push, status, and Machine management.
 final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
     struct Failure {
         var status: Int
@@ -30,6 +30,8 @@ final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
     private var _networkFailures = 0
     private var _putFailures: [String: Failure] = [:]
     private var _postFailure: Failure?
+    private var _beforePut: [String: () -> Void] = [:]
+    private var _afterPut: [String: () -> Void] = [:]
     var enrollment = "none"
     var protocols = [1]
     var retentionDays: Int? = 400
@@ -99,6 +101,25 @@ final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
         self.lock.withLock { self._postFailure = failure }
     }
 
+    /// Runs `action` just before the next PUT of blob `name` is applied, as if another Machine wrote first.
+    func beforeNextPut(named name: String, _ action: @escaping () -> Void) {
+        self.lock.withLock { self._beforePut[name] = action }
+    }
+
+    /// Runs `action` just after the next PUT of blob `name` succeeds, as if another Machine wrote right after.
+    func afterNextPut(named name: String, _ action: @escaping () -> Void) {
+        self.lock.withLock { self._afterPut[name] = action }
+    }
+
+    /// ETag of the stored blob, as the server would send it.
+    func etag(machineID: String, name: String) -> String? {
+        self.lock.withLock { self._blobs["\(machineID)/\(name)"].map { Self.etag($0.seq) } }
+    }
+
+    private static func etag(_ seq: Int) -> String {
+        "\"e\(seq)\""
+    }
+
     func failNextWithNetworkError() {
         self.lock.withLock { self._networkFailures += 1 }
     }
@@ -154,8 +175,27 @@ final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
             self.lock.withLock { _ = self._groups.insert(body?["groupId"] ?? "") }
             return try Self.json(request, status: 201, ["limits": self.limits])
         case let ("PUT", putPath) where putPath.contains("/blobs/"):
-            self.lock.withLock { self.write(machineID: parts[4], name: parts[6], body: request.httpBody ?? Data()) }
-            return try Self.json(request, status: 200, ["etag": "\"e1\"", "updatedAt": "2026-09-24T12:00:00Z"])
+            let hook = self.lock.withLock { self._beforePut.removeValue(forKey: parts[6]) }
+            hook?()
+            let etag = self.lock.withLock { () -> String? in
+                let stored = self._blobs["\(parts[4])/\(parts[6])"]
+                if let ifMatch = request.value(forHTTPHeaderField: "If-Match") {
+                    guard let stored, ifMatch == "*" || ifMatch == Self.etag(stored.seq) else { return nil }
+                }
+                self.write(machineID: parts[4], name: parts[6], body: request.httpBody ?? Data())
+                return Self.etag(self._seq)
+            }
+            guard let etag else { return Self.error(request, status: 412, code: "precondition_failed") }
+            let after = self.lock.withLock { self._afterPut.removeValue(forKey: parts[6]) }
+            after?()
+            return try Self.json(request, status: 200, ["etag": etag, "updatedAt": "2026-09-24T12:00:00Z"])
+        case let ("GET", getPath) where getPath.contains("/blobs/"):
+            let stored = self.lock.withLock { self._blobs["\(parts[4])/\(parts[6])"] }
+            guard let stored else { return Self.error(request, status: 404, code: "blob_not_found") }
+            return Self.response(request, status: 200, body: stored.body, headers: ["ETag": Self.etag(stored.seq)])
+        case ("DELETE", _) where parts.count == 5 && parts[3] == "machines":
+            self.deleteMachine(parts[4])
+            return Self.response(request, status: 204, body: Data())
         case let ("GET", changesPath) where changesPath.hasSuffix("/changes"):
             return try self.changes(request)
         default:
@@ -180,7 +220,7 @@ final class FakeSyncServer: ProviderHTTPTransport, @unchecked Sendable {
                 [
                     "machineId": $0.machineID,
                     "name": $0.name,
-                    "etag": "\"e\($0.seq)\"",
+                    "etag": Self.etag($0.seq),
                     "updatedAt": "2026-09-24T12:00:00Z",
                     "body": $0.body.base64EncodedString(),
                 ]
