@@ -2,10 +2,17 @@ import Foundation
 
 public enum WayfinderProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    private static let credentials = ProviderCredentialAdapter(
+        requiresAPIKeyForAPISource: false,
+        environmentProjections: [
+            .enterpriseHost(WayfinderSettingsReader.baseURLEnvironmentKey),
+        ])
 
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .wayfinder,
+            credentials: self.credentials,
+            config: ProviderConfigCapabilities(supportsEnterpriseHost: true),
             metadata: ProviderMetadata(
                 id: .wayfinder,
                 displayName: "Wayfinder",
@@ -18,12 +25,19 @@ public enum WayfinderProviderDescriptor {
                 toggleTitle: "Show Wayfinder usage",
                 cliName: "wayfinder",
                 defaultEnabled: false,
+                widgetSelectable: false,
+                debugLogUnavailableMessage: "Wayfinder debug log not yet implemented",
                 dashboardURL: WayfinderSettingsReader.dashboardURL(environment: [:]).absoluteString,
                 statusPageURL: nil),
             branding: ProviderBranding(
-                iconStyle: .wayfinder,
+                iconStyle: .init(provider: .wayfinder),
                 iconResourceName: "ProviderIcon-wayfinder",
-                color: ProviderColor(red: 16 / 255, green: 163 / 255, blue: 127 / 255)),
+                color: ProviderColor(red: 16 / 255, green: 163 / 255, blue: 127 / 255),
+                confettiPalette: [
+                    ProviderColor(hex: 0x10A37F),
+                    ProviderColor(hex: 0xBD6A13),
+                    ProviderColor(hex: 0x0D0D0D),
+                ]),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Wayfinder savings are reported by its local gateway." }),

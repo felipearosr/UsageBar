@@ -4,6 +4,74 @@ import Testing
 
 @Suite(.serialized)
 struct BedrockUsageStatsTests {
+    @Test(arguments: [true, false])
+    func `cost selection excludes the preceding UTC bucket`(utcMonthHasStarted: Bool) async throws {
+        let registered = URLProtocol.registerClass(BedrockStubURLProtocol.self)
+        defer {
+            if registered { URLProtocol.unregisterClass(BedrockStubURLProtocol.self) }
+            BedrockStubURLProtocol.handler = nil
+        }
+        let calendar = CostUsageBucketTimeZone.calendar(identifier: "Asia/Tokyo")
+        let now = try #require(ISO8601DateFormatter().date(from:
+            utcMonthHasStarted ? "2026-03-01T10:00:00Z" : "2026-02-28T16:00:00Z"))
+        let rows: [(String, String)] = utcMonthHasStarted
+            ? [("2026-02-28", "99.00"), ("2026-03-01", "7.00")] : [("2026-02-28", "99.00")]
+        let data = try JSONSerialization.data(withJSONObject: ["ResultsByTime": rows.map { day, cost in
+            ["TimePeriod": ["Start": day], "Groups": [[
+                "Keys": ["Amazon Bedrock"], "Metrics": ["UnblendedCost": ["Amount": cost, "Unit": "USD"]],
+            ]]] as [String: Any]
+        }])
+        BedrockStubURLProtocol.handler = { request in
+            let url = try #require(request.url)
+            return try (#require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)), data)
+        }
+        let snapshot = try await CostUsageFetcher(calendar: calendar).loadTokenSnapshot(
+            provider: .bedrock,
+            environment: [
+                BedrockSettingsReader.accessKeyIDKey: "AKIATEST",
+                BedrockSettingsReader.secretAccessKeyKey: "testSecret",
+                BedrockSettingsReader.apiURLKey: "https://bedrock.test",
+            ],
+            now: now,
+            historyDays: CostReportingPeriod.monthToDate.days(now: now, calendar: calendar))
+        #expect(snapshot.daily.map(\.date) == (utcMonthHasStarted ? ["2026-03-01"] : []))
+        #expect(snapshot.last30DaysCostUSD == (utcMonthHasStarted ? 7 : nil))
+        #expect(snapshot.last30DaysTokens == nil)
+        #expect(snapshot.historyCoverageIsEstablished == utcMonthHasStarted)
+    }
+
+    @Test
+    func `daily cost history respects the Cost Explorer retention boundary`() throws {
+        let now = try #require(ISO8601DateFormatter().date(from: "2026-04-06T12:00:00Z"))
+        let all = BedrockUsageFetcher.dailyRange(since: .distantPast, until: now)
+        #expect(all.start == "2025-03-01")
+        #expect(all.end == "2026-04-07")
+        let recent = try #require(ISO8601DateFormatter().date(from: "2026-04-03T12:00:00Z"))
+        #expect(BedrockUsageFetcher.dailyRange(since: recent, until: now).start == "2026-04-03")
+        #expect(BedrockUsageFetcher.currentMonthRange(now: now).start == "2026-04-01")
+    }
+
+    @Test(arguments: ["9.223372036854776e18", "1e40"])
+    func `cloudwatch rejects unrepresentable totals without trapping`(literal: String) async throws {
+        let transport = ProviderHTTPTransportHandler { request in
+            let url = try #require(request.url)
+            let response = try #require(HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+            let body = """
+            {"MetricDataResults":[{"Id":"inputTokens","StatusCode":"Complete","Values":[\(literal)]}]}
+            """
+            return (Data(body.utf8), response)
+        }
+        await #expect(throws: BedrockUsageError.cloudWatchParseFailed("invalid metric total")) {
+            try await BedrockCloudWatchUsageFetcher.fetch(
+                credentials: Self.testCredentials,
+                region: "us-east-1",
+                now: Date(timeIntervalSince1970: 1_750_000_000),
+                endpointOverride: "https://cloudwatch.test",
+                transport: transport)
+        }
+    }
+
     @Test
     func `to usage snapshot with budget shows primary window`() {
         let snapshot = BedrockUsageSnapshot(
@@ -331,14 +399,15 @@ struct BedrockUsageStatsTests {
             return responses.next(url: url)
         }
 
-        let snapshot = try await CostUsageFetcher().loadTokenSnapshot(
-            provider: .bedrock,
-            environment: [
-                BedrockSettingsReader.accessKeyIDKey: "AKIATEST",
-                BedrockSettingsReader.secretAccessKeyKey: "testSecret",
-                BedrockSettingsReader.apiURLKey: "https://bedrock.test",
-            ],
-            now: Date(timeIntervalSince1970: 1_765_324_800))
+        let snapshot = try await CostUsageFetcher(calendar: CostUsageBucketTimeZone.calendar(identifier: "UTC"))
+            .loadTokenSnapshot(
+                provider: .bedrock,
+                environment: [
+                    BedrockSettingsReader.accessKeyIDKey: "AKIATEST",
+                    BedrockSettingsReader.secretAccessKeyKey: "testSecret",
+                    BedrockSettingsReader.apiURLKey: "https://bedrock.test",
+                ],
+                now: Date(timeIntervalSince1970: 1_765_324_800))
 
         #expect(snapshot.last30DaysCostUSD == 7.25)
         #expect(snapshot.sessionCostUSD == 7.25)
@@ -683,7 +752,11 @@ private final class BedrockRequestCapture: @unchecked Sendable {
 }
 
 final class BedrockStubURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    private static let _handlerBox = LockIsolated<((URLRequest) throws -> (HTTPURLResponse, Data))?>(nil)
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { Self._handlerBox.value }
+        set { Self._handlerBox.setValue(newValue) }
+    }
 
     override static func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "bedrock.test"

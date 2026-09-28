@@ -4,11 +4,13 @@ import Testing
 @testable import CodexBar
 
 struct MenuCardDeepSeekTests {
-    private static func sampleDeepSeekSummary(now: Date = Date()) -> DeepSeekUsageSummary {
+    private static func sampleDeepSeekSummary(
+        now: Date = Date(), todayCost: Double = 0.0123, hasDailyPoints: Bool = true) -> DeepSeekUsageSummary
+    {
         DeepSeekUsageSummary(
             todayTokens: 123,
             currentMonthTokens: 456,
-            todayCost: 0.0123,
+            todayCost: todayCost,
             currentMonthCost: 0.0456,
             requestCount: 7,
             currentMonthRequestCount: 8,
@@ -18,14 +20,20 @@ struct MenuCardDeepSeekTests {
                 DeepSeekCategoryBreakdown(category: .promptCacheMissToken, tokens: 20, cost: 0.002),
                 DeepSeekCategoryBreakdown(category: .responseToken, tokens: 30, cost: 0.003),
             ],
-            daily: [
+            daily: hasDailyPoints ? [
                 DeepSeekDailyUsage(date: "2026-05-26", totalTokens: 456, cost: 0.0456, requestCount: 8),
-            ],
+            ] : [],
             currency: "CNY",
+            modelCosts: [DeepSeekModelCost(model: "deepseek-chat", cost: 0.0456)],
+            period: .last30Days,
             updatedAt: now)
     }
 
-    private static func makeSnapshot(now: Date, usageSummary: DeepSeekUsageSummary? = nil) -> UsageSnapshot {
+    private static func makeSnapshot(
+        now: Date,
+        usageSummary: DeepSeekUsageSummary? = nil,
+        detailedUsageState: DeepSeekDetailedUsageState? = nil) -> UsageSnapshot
+    {
         DeepSeekUsageSnapshot(
             isAvailable: true,
             currency: "USD",
@@ -33,8 +41,26 @@ struct MenuCardDeepSeekTests {
             grantedBalance: 0,
             toppedUpBalance: 9.32,
             usageSummary: usageSummary,
+            detailedUsageState: detailedUsageState,
             updatedAt: now)
             .toUsageSnapshot()
+    }
+
+    @Test
+    func `usage rows retain fractional cent precision`() {
+        let snapshot = Self.makeSnapshot(
+            now: Date(), usageSummary: Self.sampleDeepSeekSummary(todayCost: 0.0049))
+        #expect(snapshot.details.flatMap(\.rows).first { $0.label == "Today" }?.value == "¥0.0049 · 123 tokens")
+    }
+
+    @Test(arguments: [false, true])
+    func `model spend uses usage currency and survives missing daily data`(hasDailyPoints: Bool) throws {
+        let snapshot = Self.makeSnapshot(
+            now: Date(), usageSummary: Self.sampleDeepSeekSummary(hasDailyPoints: hasDailyPoints))
+        let spend = try #require(snapshot.details.first { $0.title == "Spend" })
+        #expect(spend.rows.map(\.label) == ["deepseek-chat"])
+        #expect(spend.rows.map(\.value) == ["¥0.0456"])
+        #expect((spend.chart != nil) == hasDailyPoints)
     }
 
     @Test
@@ -63,7 +89,6 @@ struct MenuCardDeepSeekTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -85,7 +110,7 @@ struct MenuCardDeepSeekTests {
     }
 
     @Test
-    func `model hides optional deepseek usage when extras disabled`() throws {
+    func `model hides deepseek usage when extras are disabled despite cost summary enabled`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.deepseek])
         let snapshot = Self.makeSnapshot(now: now, usageSummary: Self.sampleDeepSeekSummary(now: now))
@@ -96,7 +121,261 @@ struct MenuCardDeepSeekTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: false,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.providerDetails.isEmpty)
+        #expect(model.usageNotes.isEmpty)
+    }
+
+    @Test
+    func `model shows deepseek usage when cost summary and extras are enabled`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = Self.makeSnapshot(now: now, usageSummary: Self.sampleDeepSeekSummary(now: now))
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .deepseek,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        let details = try #require(model.providerDetails.first)
+        #expect(details.chart?.title == "Daily tokens")
+        #expect(details.chart?.points.map(\.value) == [456])
+        #expect(details.title == "Usage")
+        #expect(details.rows.first { $0.label == "Today" }?.value == "¥0.0123 · 123 tokens")
+        #expect(details.rows.first { $0.label == "Last 30 days" }?.value == "¥0.0456 · 456 tokens")
+        let spend = try #require(model.providerDetails.first { $0.title == "Spend" })
+        #expect(spend.rows.map(\.label) == ["deepseek-chat"])
+        #expect(spend.rows.map(\.value) == ["¥0.0456"])
+    }
+
+    @Test
+    func `model localizes deepseek usage details in simplified chinese`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = Self.makeSnapshot(now: now, usageSummary: Self.sampleDeepSeekSummary(now: now))
+
+        let model = CodexBarLocalizationOverride.$appLanguage.withValue("zh-Hans") {
+            UsageMenuCardView.Model.make(.init(
+                provider: .deepseek,
+                metadata: metadata,
+                snapshot: snapshot,
+                credits: nil,
+                creditsError: nil,
+                dashboardError: nil,
+                tokenSnapshot: nil,
+                tokenError: nil,
+                account: AccountInfo(email: nil, plan: nil),
+                isRefreshing: false,
+                lastError: nil,
+                usageBarsShowUsed: false,
+                resetTimeDisplayStyle: .countdown,
+                tokenCostUsageEnabled: true,
+                showOptionalCreditsAndExtraUsage: true,
+                hidePersonalInfo: false,
+                now: now))
+        }
+
+        let details = try #require(model.providerDetails.first)
+        #expect(details.title == "用量")
+        #expect(details.rows.map(\.label) == [
+            "今日",
+            "近 30 天",
+            "请求",
+            "最常用模型",
+        ])
+        #expect(details.rows[0].value == "¥0.0123 · 123 token 用量")
+        #expect(details.rows[1].value == "¥0.0456 · 456 token 用量")
+        #expect(details.rows[3].value == "deepseek-chat")
+        #expect(details.chart?.title == "每日 token")
+        #expect(details.chart?.unit == "token")
+        let spend = try #require(model.providerDetails.first { $0.title == "花费" })
+        #expect(spend.rows.map(\.label) == ["deepseek-chat"])
+        #expect(spend.rows.map(\.value) == ["¥0.0456"])
+    }
+
+    @Test
+    func `model localizes deepseek balance components in simplified chinese`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = Self.makeSnapshot(now: now)
+
+        let model = CodexBarLocalizationOverride.$appLanguage.withValue("zh-Hans") {
+            UsageMenuCardView.Model.make(.init(
+                provider: .deepseek,
+                metadata: metadata,
+                snapshot: snapshot,
+                credits: nil,
+                creditsError: nil,
+                dashboardError: nil,
+                tokenSnapshot: nil,
+                tokenError: nil,
+                account: AccountInfo(email: nil, plan: nil),
+                isRefreshing: false,
+                lastError: nil,
+                usageBarsShowUsed: false,
+                resetTimeDisplayStyle: .countdown,
+                tokenCostUsageEnabled: false,
+                showOptionalCreditsAndExtraUsage: true,
+                hidePersonalInfo: false,
+                now: now))
+        }
+
+        let balance = try #require(model.metrics.first)
+        #expect(balance.statusText == "$9.32（付费：$9.32 / 赠送：$0.00）")
+    }
+
+    @Test
+    func `model localizes deepseek balance fallback messages in simplified chinese`() {
+        CodexBarLocalizationOverride.$appLanguage.withValue("zh-Hans") {
+            #expect(
+                UsageMenuCardView.Model.localizedDeepSeekBalanceDescription(
+                    "¥0.00 — add credits at platform.deepseek.com")
+                    == "¥0.00 — 请前往 platform.deepseek.com 充值")
+            #expect(
+                UsageMenuCardView.Model.localizedDeepSeekBalanceDescription(
+                    "Balance unavailable for API calls")
+                    == "API 调用余额不可用")
+        }
+    }
+
+    @Test
+    func `model explains unavailable deepseek usage when cost summary is enabled`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = Self.makeSnapshot(now: now)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .deepseek,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.usageNotes == ["Detailed usage unavailable."])
+    }
+
+    @Test
+    func `model shows balance without stale deepseek usage while refreshing`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = Self.makeSnapshot(now: now, usageSummary: Self.sampleDeepSeekSummary(now: now))
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .deepseek,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: true,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.usageNotes.isEmpty)
+        let balance = try #require(model.metrics.first)
+        #expect(balance.title == "Balance")
+        #expect(balance.statusText == "$9.32 (Paid: $9.32 / Granted: $0.00)")
+    }
+
+    @Test
+    func `model explains that detailed usage needs a platform session`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = Self.makeSnapshot(now: now, detailedUsageState: .webSessionRequired)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .deepseek,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.usageNotes == ["Sign in to DeepSeek Platform in Chrome for detailed usage."])
+    }
+
+    @Test
+    func `browser only sign in remains visible when cost summary is disabled`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = DeepSeekUsageSnapshot(
+            hasBalance: false,
+            isAvailable: false,
+            currency: "USD",
+            totalBalance: 0,
+            grantedBalance: 0,
+            toppedUpBalance: 0,
+            detailedUsageState: .webSessionRequired,
+            updatedAt: now)
+            .toUsageSnapshot()
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .deepseek,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -110,12 +389,41 @@ struct MenuCardDeepSeekTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.inlineUsageDashboard == nil)
-        #expect(model.usageNotes.isEmpty)
+        #expect(model.metrics.isEmpty)
+        #expect(model.usageNotes == ["Sign in to DeepSeek Platform in Chrome for detailed usage."])
     }
 
     @Test
-    func `model shows optional deepseek usage when extras enabled`() throws {
+    func `model asks for a profile when multiple deepseek sessions are valid`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.deepseek])
+        let snapshot = Self.makeSnapshot(now: now, detailedUsageState: .profileSelectionRequired)
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .deepseek,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: true,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.usageNotes == ["Select a DeepSeek Chrome profile in Settings."])
+    }
+
+    @Test
+    func `model hides deepseek usage when cost summary is disabled despite extras enabled`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.deepseek])
         let snapshot = Self.makeSnapshot(now: now, usageSummary: Self.sampleDeepSeekSummary(now: now))
@@ -126,7 +434,6 @@ struct MenuCardDeepSeekTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -140,7 +447,8 @@ struct MenuCardDeepSeekTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.inlineUsageDashboard?.accessibilityLabel == "DeepSeek 30 day token usage trend")
-        #expect(model.usageNotes.contains { $0.contains("Today:") })
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.providerDetails.isEmpty)
+        #expect(model.usageNotes.isEmpty)
     }
 }

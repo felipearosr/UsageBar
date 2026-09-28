@@ -32,10 +32,9 @@ public struct CodexBarConfigStore: @unchecked Sendable {
     public func load() throws -> CodexBarConfig? {
         guard self.fileManager.fileExists(atPath: self.fileURL.path) else { return nil }
         let data = try Data(contentsOf: self.fileURL)
-        let decoder = JSONDecoder()
+        guard !data.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0A || $0 == 0x0D }) else { return nil }
         do {
-            let decoded = try decoder.decode(CodexBarConfig.self, from: data)
-            return decoded.normalized()
+            return try CodexBarConfig.decode(from: data).normalized()
         } catch {
             throw CodexBarConfigStoreError.decodeFailed(error.localizedDescription)
         }
@@ -51,21 +50,20 @@ public struct CodexBarConfigStore: @unchecked Sendable {
     }
 
     public func save(_ config: CodexBarConfig) throws {
-        let normalized = config.normalized()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data: Data
+        let data = try self.encodedData(for: config)
+        try self.saveEncodedData(data)
+    }
+
+    public func encodedData(for config: CodexBarConfig) throws -> Data {
         do {
-            data = try encoder.encode(normalized)
+            return try config.normalized().encodedData()
         } catch {
             throw CodexBarConfigStoreError.encodeFailed(error.localizedDescription)
         }
-        let directory = self.fileURL.deletingLastPathComponent()
-        if !self.fileManager.fileExists(atPath: directory.path) {
-            try self.fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        }
-        try data.write(to: self.fileURL, options: [.atomic])
-        try self.applySecurePermissionsIfNeeded()
+    }
+
+    public func saveEncodedData(_ data: Data) throws {
+        try CredentialFileWriter.writePrivate(data, to: self.fileURL)
     }
 
     public func deleteIfPresent() throws {
@@ -113,13 +111,5 @@ public struct CodexBarConfigStore: @unchecked Sendable {
         }
 
         return xdgDefault
-    }
-
-    private func applySecurePermissionsIfNeeded() throws {
-        #if os(macOS) || os(Linux)
-        try self.fileManager.setAttributes([
-            .posixPermissions: NSNumber(value: Int16(0o600)),
-        ], ofItemAtPath: self.fileURL.path)
-        #endif
     }
 }

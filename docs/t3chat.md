@@ -11,6 +11,9 @@ read_when:
 The T3 Chat provider tracks the 4-hour Base and monthly Overage usage buckets from
 [t3.chat](https://t3.chat).
 
+> **Unofficial integration:** T3 Chat does not publish an API for this data. CodexBar reads a cookie-authenticated
+> endpoint used by the website, so the integration may change or stop working without notice.
+
 ## Setup
 
 ### Automatic (recommended)
@@ -51,7 +54,11 @@ GET https://t3.chat/api/trpc/getCustomerData?batch=1&input=...
 ```
 
 The response is JSONL. CodexBar scans each line for the embedded `getCustomerData` tRPC result
-object and decodes it to a `T3ChatCustomerData` struct. No other T3 Chat endpoints are called.
+object in the bundled JavaScript plugin, on both QuickJS and JavaScriptCore. No other T3 Chat endpoints are called.
+
+The request retains the app/CLI web timeout (60 seconds by default), bounded to 1–90 seconds. The
+plugin fetch budget allows the request to finish without the default 20-second plugin watchdog cutting it short.
+Captured browser headers retain their existing allowlist; Cookie and Origin remain bound to the T3 Chat request.
 
 ### Fields mapped to usage windows
 
@@ -107,7 +114,6 @@ data, while `codexbar cost --provider t3chat` is unsupported.
 ## Key files
 
 - `Sources/CodexBarCore/Providers/T3Chat/T3ChatProviderDescriptor.swift` — provider metadata and fetch pipeline
-- `Sources/CodexBarCore/Providers/T3Chat/T3ChatUsageFetcher.swift` — tRPC request, cookie import, and cURL parsing
-- `Sources/CodexBarCore/Providers/T3Chat/T3ChatUsageSnapshot.swift` — response decoding and window mapping
-- `Sources/CodexBar/Providers/T3Chat/T3ChatProviderImplementation.swift` — settings pickers and bindings
+- `Sources/CodexBarCore/Resources/Plugins/t3chat.js` — tRPC request, response decoding, and window mapping
+- `Sources/CodexBar/Providers/Shared/PluginCookieProviderImplementation.swift` — settings pickers and bindings
 - `Sources/CodexBar/Providers/T3Chat/T3ChatSettingsStore.swift` — cookie source and header persistence

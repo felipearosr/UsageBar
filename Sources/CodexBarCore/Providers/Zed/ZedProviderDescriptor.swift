@@ -1,42 +1,73 @@
 import Foundation
+import SweetCookieKit
 
 public enum ZedProviderDescriptor {
-    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    public static let descriptor = Self.spec.makeDescriptor(fetchPlan: Self.fetchPlan())
 
-    static func makeDescriptor() -> ProviderDescriptor {
-        ProviderDescriptor(
-            id: .zed,
-            metadata: ProviderMetadata(
-                id: .zed,
-                displayName: "Zed",
-                sessionLabel: "Edit predictions",
-                weeklyLabel: "Billing cycle",
-                opusLabel: nil,
-                supportsOpus: false,
-                supportsCredits: false,
-                creditsHint: "",
-                toggleTitle: "Show Zed usage",
-                cliName: "zed",
-                defaultEnabled: false,
-                isPrimaryProvider: false,
-                usesAccountFallback: false,
-                dashboardURL: nil,
-                statusPageURL: nil),
-            branding: ProviderBranding(
-                iconStyle: .zed,
-                iconResourceName: "ProviderIcon-zed",
-                color: ProviderColor(red: 8 / 255, green: 78 / 255, blue: 255 / 255)),
-            tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "Zed cost summary is not supported." }),
-            fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto, .api],
-                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in
-                    [ZedLocalFetchStrategy()]
-                })),
-            cli: ProviderCLIConfig(
-                name: "zed",
-                versionDetector: nil))
+    private static var browserCookieOrder: BrowserCookieImportOrder? {
+        #if os(macOS)
+        [.chrome]
+        #else
+        nil
+        #endif
+    }
+
+    public static let spec = PluginProviderSpec(
+        id: .zed,
+        displayName: "Zed",
+        sessionLabel: "Edit predictions",
+        weeklyLabel: "Billing cycle",
+        sharePlanLabels: [
+            "zed free": "Zed Free", "zed pro": "Zed Pro", "zed pro trial": "Zed Pro Trial",
+            "zed student": "Zed Student", "zed business": "Zed Business",
+        ],
+        dashboardURL: nil,
+        color: ProviderColor(hex: 0x084EFF),
+        confetti: [0x084CCF, 0x000000, 0xFFFFFF],
+        widgetColor: ProviderColor(hex: 0x409CFF),
+        noDataMessage: "Zed cost summary is not supported.",
+        presentation: ProviderUsagePresentation(
+            costPresenter: { _ in ProviderCostPresentation(menuCardStyle: .hidden) }),
+        webSource: .init(
+            settingsSection: .init(
+                ZedProviderSettingsKey.self,
+                cookieSettings: { $0 },
+                credentialSettings: { context in
+                    CookieProviderSettings(
+                        cookieSource: context.config?.cookieSource
+                            ?? (context.config?.sanitizedCookieHeader == nil ? .off : .manual),
+                        manualCookieHeader: context.config?.sanitizedCookieHeader)
+                }),
+            browserCookieOrder: Self.browserCookieOrder,
+            mode: .sessionOrAPI,
+            field: .init(
+                id: "zed-cookie",
+                title: "Zed cookie",
+                subtitle: "Paste the Cookie request header from zed.dev.",
+                placeholder: "Cookie: …")))
+
+    private static func fetchPlan() -> ProviderFetchPlan {
+        ProviderFetchPlan(
+            sourceModes: [.auto, .api, .web],
+            pipeline: ProviderFetchPipeline(resolveStrategies: { context in
+                let cookies = context.settings?[ZedProviderSettingsKey.self]?.cookieSource ?? .off
+                if context.sourceMode == .api || (context.sourceMode == .auto && cookies == .off) {
+                    return [ZedLocalFetchStrategy()]
+                }
+                return [ScriptFetchStrategy(
+                    id: "zed.web",
+                    provider: .zed,
+                    bundledPlugin: "zed",
+                    sourceLabel: "web",
+                    kind: .web,
+                    resolveValues: { context in
+                        guard context.settings?[ZedProviderSettingsKey.self]?.cookieSource != nil,
+                              context.settings?[ZedProviderSettingsKey.self]?.cookieSource != .off
+                        else { return nil }
+                        return .init(settings: ["SOURCE": "web"])
+                    },
+                    isEnabled: { _ in true })]
+            }))
     }
 }
 
@@ -48,13 +79,17 @@ struct ZedLocalFetchStrategy: ProviderFetchStrategy {
         true
     }
 
-    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        _ = context
+    func fetch(_: ProviderFetchContext) async throws -> ProviderFetchResult {
         let snapshot = try await ZedStatusProbe().fetch()
-        return self.makeResult(usage: snapshot.toUsageSnapshot(), sourceLabel: "local")
+        return self.makeResult(usage: snapshot, sourceLabel: "local")
     }
 
     func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
         false
     }
+}
+
+public enum ZedProviderSettingsKey: ProviderSettingsSectionKey {
+    public static let providerID = ProviderInstanceID.zed
+    public typealias Section = CookieProviderSettings
 }

@@ -31,7 +31,7 @@ extension StatusItemController {
     private func refreshProviderSelectionRendering() {
         self.updateAnimationState()
         self.updateBlinkingState()
-        let phase: Double? = self.needsMenuBarIconAnimation() ? self.animationPhase : nil
+        let phase: Double? = self.activeLoadingAnimationPhase()
         self.applyIcon(phase: phase)
     }
 
@@ -40,40 +40,36 @@ extension StatusItemController {
         menu: NSMenu? = nil)
     {
         guard self.shouldMergeIcons else { return }
-        let enabledProviders = self.store.enabledProvidersForDisplay()
-        guard enabledProviders.count > 1 else { return }
+        let enabledProviders = self.store.enabledFirstPartyProvidersForDisplay()
+        let switcherProviderIDs = self.switcherProviderIDs(enabledFirstPartyProviders: enabledProviders)
+        guard switcherProviderIDs.count > 1 else { return }
 
-        let includesOverview = !self.settings.resolvedMergedOverviewProviders(
-            activeProviders: enabledProviders,
-            maxVisibleProviders: SettingsStore.mergedOverviewProviderLimit).isEmpty
-        var selections = enabledProviders.map(ProviderSwitcherSelection.provider)
+        let includesOverview = self.includesOverviewTab(enabledProviders: enabledProviders)
+        var selections = switcherProviderIDs.map { ProviderSwitcherSelection.provider($0) }
         if includesOverview {
             selections.insert(.overview, at: 0)
         }
 
-        let current: ProviderSwitcherSelection = if includesOverview,
-                                                    self.settings.mergedMenuLastSelectedWasOverview
-        {
-            .overview
-        } else {
-            .provider(self.navigationResolvedProvider(enabledProviders: enabledProviders) ?? .codex)
-        }
+        let current = self.resolvedSwitcherSelection(
+            enabledProviders: enabledProviders,
+            includesOverview: includesOverview)
         guard let currentIndex = selections.firstIndex(of: current) else { return }
 
         let delta = direction == .next ? 1 : -1
         let nextIndex = (currentIndex + delta + selections.count) % selections.count
         let selection = selections[nextIndex]
-        let menuProvider: UsageProvider = switch selection {
+        let menuProvider: UsageProvider? = switch selection {
         case .overview:
             self.navigationResolvedProvider(enabledProviders: enabledProviders) ?? .codex
-        case let .provider(provider):
-            provider
+        case let .provider(instanceID):
+            instanceID.firstPartyProvider
         }
         self.preservingMergedSwitcherContentCachesDuringInvalidation {
             switch selection {
             case .overview:
                 self.settings.mergedMenuLastSelectedWasOverview = true
-                self.lastMenuProvider = self.navigationResolvedProvider(enabledProviders: enabledProviders) ?? .codex
+                self.lastMenuProvider =
+                    (self.navigationResolvedProvider(enabledProviders: enabledProviders) ?? .codex).instanceID
             case let .provider(provider):
                 self.settings.mergedMenuLastSelectedWasOverview = false
                 self.selectedMenuProvider = provider
@@ -94,7 +90,7 @@ extension StatusItemController {
         if enabledProviders.isEmpty {
             return .codex
         }
-        if let selected = self.selectedMenuProvider, enabledProviders.contains(selected) {
+        if let selected = self.selectedMenuProvider?.firstPartyProvider, enabledProviders.contains(selected) {
             return selected
         }
         return enabledProviders.first(where: { self.store.isProviderAvailable($0) }) ?? enabledProviders.first

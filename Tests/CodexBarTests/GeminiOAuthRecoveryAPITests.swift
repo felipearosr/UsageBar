@@ -1,9 +1,125 @@
-import CodexBarCore
 import Foundation
 import Testing
+@testable import CodexBarCore
 
 @Suite(.serialized)
 struct GeminiOAuthRecoveryAPITests {
+    @Test
+    func `missing gemini cli with antigravity available offers migration guidance`() async throws {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        try env.writeCredentials(
+            accessToken: "old-token",
+            refreshToken: "refresh-token",
+            expiry: Date().addingTimeInterval(-3600),
+            idToken: nil)
+
+        let probe = GeminiStatusProbe(
+            timeout: 1,
+            homeDirectory: env.homeURL.path,
+            dataLoader: { _ in throw URLError(.badURL) },
+            oauthClientResolver: { nil },
+            antigravityAvailability: { true })
+
+        await Self.expectError(.oauthCredentialsUnavailableWithAntigravity) {
+            _ = try await probe.fetch()
+        }
+    }
+
+    @Test
+    func `missing gemini cli without antigravity keeps recovery guidance`() async throws {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        try env.writeCredentials(
+            accessToken: "old-token",
+            refreshToken: "refresh-token",
+            expiry: Date().addingTimeInterval(-3600),
+            idToken: nil)
+
+        let probe = GeminiStatusProbe(
+            timeout: 1,
+            homeDirectory: env.homeURL.path,
+            dataLoader: { _ in throw URLError(.badURL) },
+            oauthClientResolver: { nil },
+            antigravityAvailability: { false })
+
+        await Self.expectError(.apiError(GeminiConsumerTierMigration.oauthRecoveryError)) {
+            _ = try await probe.fetch()
+        }
+    }
+
+    @Test(arguments: ["", "+&=%2B /東京"])
+    func `available gemini cli keeps oauth refresh behavior`(suffix: String) async throws {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        let refreshToken = "refresh-token\(suffix)"
+        let clientID = "cli-client-id\(suffix)"
+        let clientSecret = "cli-client-secret\(suffix)"
+        try env.writeCredentials(
+            accessToken: "old-token",
+            refreshToken: refreshToken,
+            expiry: Date().addingTimeInterval(-3600),
+            idToken: nil)
+
+        let dataLoader = GeminiAPITestHelpers.dataLoader { request in
+            guard let url = request.url, let host = url.host else {
+                throw URLError(.badURL)
+            }
+            switch host {
+            case "oauth2.googleapis.com":
+                let body = try #require(request.httpBody)
+                guard try FormBodyTestSupport.decode(body) == [
+                    "client_id": clientID,
+                    "client_secret": clientSecret,
+                    "refresh_token": refreshToken,
+                    "grant_type": "refresh_token",
+                ]
+                else {
+                    return GeminiAPITestHelpers.response(url: url.absoluteString, status: 400, body: Data())
+                }
+                return GeminiAPITestHelpers.response(
+                    url: url.absoluteString,
+                    status: 200,
+                    body: GeminiAPITestHelpers.jsonData([
+                        "access_token": "new-token",
+                        "expires_in": 3600,
+                    ]))
+            case "cloudresourcemanager.googleapis.com":
+                return GeminiAPITestHelpers.response(
+                    url: url.absoluteString,
+                    status: 200,
+                    body: GeminiAPITestHelpers.jsonData(["projects": []]))
+            case "cloudcode-pa.googleapis.com":
+                if url.path == "/v1internal:loadCodeAssist" {
+                    return GeminiAPITestHelpers.response(
+                        url: url.absoluteString,
+                        status: 200,
+                        body: GeminiAPITestHelpers.loadCodeAssistStandardTierResponse())
+                }
+                return GeminiAPITestHelpers.response(
+                    url: url.absoluteString,
+                    status: 200,
+                    body: GeminiAPITestHelpers.sampleQuotaResponse())
+            default:
+                return GeminiAPITestHelpers.response(url: url.absoluteString, status: 404, body: Data())
+            }
+        }
+        let probe = GeminiStatusProbe(
+            timeout: 1,
+            homeDirectory: env.homeURL.path,
+            dataLoader: dataLoader,
+            oauthClientResolver: {
+                GeminiOAuthConfig.ClientCredentials(
+                    clientID: clientID,
+                    clientSecret: clientSecret)
+            },
+            antigravityAvailability: { true })
+
+        let snapshot = try await probe.fetch()
+
+        #expect(snapshot.accountPlan == "Paid")
+    }
+
     @Test
     func `explicit oauth2 js path overrides installed gemini cli`() async throws {
         let env = try GeminiTestEnvironment()
@@ -245,5 +361,17 @@ struct GeminiOAuthRecoveryAPITests {
             to: bundleDir.appendingPathComponent("chunk-OAUTH.js"),
             atomically: true,
             encoding: .utf8)
+    }
+
+    private static func expectError(
+        _ expected: GeminiStatusProbeError,
+        operation: () async throws -> Void) async
+    {
+        do {
+            try await operation()
+            Issue.record("Expected \(expected)")
+        } catch {
+            #expect(error as? GeminiStatusProbeError == expected)
+        }
     }
 }

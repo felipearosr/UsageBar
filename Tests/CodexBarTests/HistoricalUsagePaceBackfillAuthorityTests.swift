@@ -286,7 +286,7 @@ extension HistoricalUsagePaceTests {
 
     @MainActor
     @Test
-    func `usage store falls back to linear when history disabled or insufficient`() throws {
+    func `usage store falls back to linear when Codex history is insufficient`() throws {
         let suite = "HistoricalUsagePaceTests-usage-store"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
@@ -303,13 +303,12 @@ extension HistoricalUsagePaceTests {
             minimaxCookieStore: InMemoryMiniMaxCookieStore(),
             minimaxAPITokenStore: InMemoryMiniMaxAPITokenStore(),
             kimiTokenStore: InMemoryKimiTokenStore(),
-            kimiK2TokenStore: InMemoryKimiK2TokenStore(),
             augmentCookieStore: InMemoryCookieHeaderStore(),
             ampCookieStore: InMemoryCookieHeaderStore(),
             copilotTokenStore: InMemoryCopilotTokenStore(),
             tokenAccountStore: InMemoryTokenAccountStore())
         settings.historicalTrackingEnabled = true
-        settings.weeklyProgressWorkDays = 5
+        settings.weeklyProgressWorkDays = nil
 
         let planHistoryStore = testPlanUtilizationHistoryStore(
             suiteName: "HistoricalUsagePaceTests-\(UUID().uuidString)")
@@ -340,20 +339,20 @@ extension HistoricalUsagePaceTests {
         ])
         store._setCodexHistoricalDatasetForTesting(twoWeeksDataset)
 
-        let computed = store.weeklyPace(provider: .codex, window: window, now: now)
-        let workdayAware = UsagePace.weekly(
+        let computed = store.weeklyPace(provider: .codex, window: window, dataConfidence: .unknown, now: now)
+        let linear = UsagePace.weekly(
             window: window,
             now: now,
             defaultWindowMinutes: 10080,
-            workDays: 5)
+            workDays: nil)
         #expect(computed != nil)
-        #expect(abs((computed?.deltaPercent ?? 0) - (workdayAware?.deltaPercent ?? 0)) < 0.001)
+        #expect(abs((computed?.deltaPercent ?? 0) - (linear?.deltaPercent ?? 0)) < 0.001)
     }
 
     @MainActor
     @Test
-    func `usage store preserves historical Codex pace when work days are off`() throws {
-        let suite = "HistoricalUsagePaceTests-workdays-off-preserve-history-\(UUID().uuidString)"
+    func `usage store preserves historical Codex pace in Automatic mode`() throws {
+        let suite = "HistoricalUsagePaceTests-workdays-automatic-preserve-history-\(UUID().uuidString)"
         let store = try Self.makeUsageStoreForBackfillTests(
             suite: suite,
             historyFileURL: Self.makeTempURL())
@@ -367,7 +366,7 @@ extension HistoricalUsagePaceTests {
             windowMinutes: 10080,
             resetsAt: resetsAt,
             resetDescription: nil)
-        let dataset = CodexHistoricalDataset(weeks: (0..<4).map { index in
+        let dataset = CodexHistoricalDataset(weeks: (0..<5).map { index in
             HistoricalWeekProfile(
                 resetsAt: resetsAt.addingTimeInterval(-duration * Double(index + 1)),
                 windowMinutes: 10080,
@@ -382,9 +381,14 @@ extension HistoricalUsagePaceTests {
             dataset,
             accountKey: store.codexOwnershipContext().canonicalKey)
 
-        let computed = try #require(store.weeklyPace(provider: .codex, window: window, now: now))
+        let computed = try #require(store.weeklyPace(
+            provider: .codex,
+            window: window,
+            dataConfidence: .unknown,
+            now: now))
 
         #expect(abs(expected.expectedUsedPercent - linear.expectedUsedPercent) > 0.001)
+        #expect(expected.runOutProbability != nil)
         #expect(abs(computed.expectedUsedPercent - expected.expectedUsedPercent) < 0.001)
         #expect(abs(computed.deltaPercent - expected.deltaPercent) < 0.001)
         #expect(computed.etaSeconds == expected.etaSeconds)
@@ -393,44 +397,67 @@ extension HistoricalUsagePaceTests {
     }
 
     @MainActor
-    @Test
-    func `usage store preserves historical Codex pace when work days are configured`() throws {
-        let suite = "HistoricalUsagePaceTests-workdays-preserve-history-\(UUID().uuidString)"
+    @Test(arguments: [4, 5, 7])
+    func `explicit work day schedule overrides historical Codex pace`(workDays: Int) throws {
+        let suite = "HistoricalUsagePaceTests-workdays-override-history-\(workDays)-\(UUID().uuidString)"
         let store = try Self.makeUsageStoreForBackfillTests(
             suite: suite,
             historyFileURL: Self.makeTempURL())
-        store.settings.weeklyProgressWorkDays = 5
+        store.settings.weeklyProgressWorkDays = workDays
 
-        let now = Date(timeIntervalSince1970: 0)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let resetsAt = try #require(calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: 2026,
+            month: 6,
+            day: 14)))
+        let now = try #require(calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: 2026,
+            month: 6,
+            day: 11)))
         let duration = TimeInterval(10080 * 60)
-        let resetsAt = now.addingTimeInterval(duration / 2)
         let window = RateWindow(
             usedPercent: 60,
             windowMinutes: 10080,
             resetsAt: resetsAt,
             resetDescription: nil)
-        let weeks = (0..<4).map { index in
+        let weeks = (0..<5).map { index in
             HistoricalWeekProfile(
                 resetsAt: resetsAt.addingTimeInterval(-duration * Double(index + 1)),
                 windowMinutes: 10080,
-                curve: Self.linearCurve(end: 80))
+                curve: Self.linearCurve(end: 100))
         }
         let dataset = CodexHistoricalDataset(weeks: weeks)
-        let expected = try #require(CodexHistoricalPaceEvaluator.evaluate(
+        let historical = try #require(CodexHistoricalPaceEvaluator.evaluate(
             window: window,
             now: now,
             dataset: dataset))
+        let scheduled = try #require(UsagePace.weekly(
+            window: window,
+            now: now,
+            workDays: workDays,
+            calendar: calendar))
         store._setCodexHistoricalDatasetForTesting(
             dataset,
             accountKey: store.codexOwnershipContext().canonicalKey)
 
-        let computed = try #require(store.weeklyPace(provider: .codex, window: window, now: now))
+        let computed = try #require(store.weeklyPace(
+            provider: .codex,
+            window: window,
+            dataConfidence: .unknown,
+            now: now))
 
-        #expect(abs(computed.expectedUsedPercent - expected.expectedUsedPercent) < 0.001)
-        #expect(abs(computed.deltaPercent - expected.deltaPercent) < 0.001)
-        #expect(computed.etaSeconds == expected.etaSeconds)
-        #expect(computed.willLastToReset == expected.willLastToReset)
-        #expect(computed.runOutProbability == expected.runOutProbability)
+        #expect(historical.runOutProbability != nil)
+        #expect(abs(computed.expectedUsedPercent - scheduled.expectedUsedPercent) < 0.001)
+        #expect(abs(computed.deltaPercent - scheduled.deltaPercent) < 0.001)
+        #expect(computed.etaSeconds == scheduled.etaSeconds)
+        #expect(computed.willLastToReset == scheduled.willLastToReset)
+        #expect(computed.runOutProbability == nil)
+        #expect(computed.speedMultiplierToReset == scheduled.speedMultiplierToReset)
     }
 
     @MainActor
@@ -448,10 +475,208 @@ extension HistoricalUsagePaceTests {
             resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60),
             resetDescription: nil)
 
-        let pace = store.weeklyPace(provider: .zai, window: window, now: now)
+        let pace = store.weeklyPace(provider: .zai, window: window, dataConfidence: .unknown, now: now)
 
         #expect(pace != nil)
         #expect(abs((pace?.deltaPercent ?? 0) - (40 - (3.0 / 7.0 * 100.0))) < 0.001)
+    }
+
+    @MainActor
+    @Test
+    func `menu bar pace text signs the delta and drops windows without pace`() throws {
+        let suite = "HistoricalUsagePaceTests-menu-bar-pace-text-\(UUID().uuidString)"
+        let store = try Self.makeUsageStoreForBackfillTests(
+            suite: suite,
+            historyFileURL: Self.makeTempURL())
+
+        let now = Date(timeIntervalSince1970: 0)
+        // 3 of 7 days elapsed => 42.86% expected. 60% used runs ahead of it, 30% runs behind.
+        let deficit = RateWindow(
+            usedPercent: 60,
+            windowMinutes: 10080,
+            resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60),
+            resetDescription: nil)
+        let reserve = RateWindow(
+            usedPercent: 30,
+            windowMinutes: 10080,
+            resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60),
+            resetDescription: nil)
+        // Barely into the window: below even the 1% menu-token floor, so pace stays unavailable.
+        let tooEarly = RateWindow(
+            usedPercent: 1,
+            windowMinutes: 10080,
+            resetsAt: now.addingTimeInterval(7 * 24 * 60 * 60 - 60 * 60),
+            resetDescription: nil)
+
+        #expect(store
+            .menuBarLayoutPaceText(provider: .zai, window: deficit, dataConfidence: .unknown, now: now) == "+17%")
+        #expect(store
+            .menuBarLayoutPaceText(provider: .zai, window: reserve, dataConfidence: .unknown, now: now) == "-13%")
+        #expect(store
+            .menuBarLayoutPaceText(provider: .zai, window: tooEarly, dataConfidence: .unknown, now: now) == nil)
+        #expect(store.menuBarLayoutPaceText(provider: .zai, window: nil, dataConfidence: .unknown, now: now) == nil)
+    }
+
+    @MainActor
+    @Test
+    func `menu bar pace token shows pace inside the early window band`() throws {
+        let suite = "HistoricalUsagePaceTests-menu-bar-early-window-\(UUID().uuidString)"
+        let store = try Self.makeUsageStoreForBackfillTests(
+            suite: suite,
+            historyFileURL: Self.makeTempURL())
+
+        let now = Date(timeIntervalSince1970: 0)
+        // 4 of 168 hours elapsed => 2.38% expected usage, inside the 1-3% band where the menu-bar
+        // token still shows pace but the menu card keeps the 3% floor.
+        let barelyIntoWindow = RateWindow(
+            usedPercent: 5,
+            windowMinutes: 10080,
+            resetsAt: now.addingTimeInterval(7 * 24 * 60 * 60 - 4 * 60 * 60),
+            resetDescription: nil)
+
+        #expect(store.menuBarLayoutPaceText(
+            provider: .zai,
+            window: barelyIntoWindow,
+            dataConfidence: .unknown,
+            now: now) == nil)
+        #expect(store.weeklyPace(provider: .zai, window: barelyIntoWindow, dataConfidence: .unknown, now: now) == nil)
+        #expect(
+            store.menuBarLayoutPaceText(
+                provider: .zai,
+                window: barelyIntoWindow,
+                dataConfidence: .unknown,
+                now: now,
+                minimumElapsedPercent: 1)
+                == "+3%")
+        let pace = try #require(
+            store.weeklyPace(
+                provider: .zai,
+                window: barelyIntoWindow,
+                dataConfidence: .unknown,
+                now: now,
+                minimumElapsedPercent: 1))
+        #expect(abs(pace.expectedUsedPercent - (4.0 / 168.0 * 100.0)) < 0.001)
+        #expect(abs(pace.deltaPercent - (5 - 4.0 / 168.0 * 100.0)) < 0.001)
+    }
+
+    @MainActor
+    @Test
+    func `weekly menu token uses elapsed progress when learned pace is below its floor`() throws {
+        let store = try Self.makeUsageStoreForBackfillTests(
+            suite: "HistoricalUsagePaceTests-codex-early-learned-pace-\(UUID().uuidString)",
+            historyFileURL: Self.makeTempURL())
+        let now = Date(timeIntervalSince1970: 0)
+        let windowMinutes = 10080
+        let duration = TimeInterval(windowMinutes) * 60
+        let resetsAt = now.addingTimeInterval(duration - 4 * 60 * 60)
+        let window = RateWindow(
+            usedPercent: 5,
+            windowMinutes: windowMinutes,
+            resetsAt: resetsAt,
+            resetDescription: nil)
+        let flatEarlyCurve = (0..<CodexHistoricalDataset.gridPointCount).map { index in
+            let progress = Double(index) / Double(CodexHistoricalDataset.gridPointCount - 1)
+            return progress < 0.1 ? 0 : ((progress - 0.1) / 0.9) * 100
+        }
+        let dataset = CodexHistoricalDataset(weeks: (0..<20).map { index in
+            HistoricalWeekProfile(
+                resetsAt: resetsAt.addingTimeInterval(-duration * Double(index + 1)),
+                windowMinutes: windowMinutes,
+                curve: flatEarlyCurve)
+        })
+        store._setCodexHistoricalDatasetForTesting(
+            dataset,
+            accountKey: store.codexOwnershipContext().canonicalKey)
+
+        #expect(store.weeklyPace(provider: .codex, window: window, dataConfidence: .unknown, now: now) == nil)
+        let pace = try #require(
+            store.weeklyPace(
+                provider: .codex,
+                window: window,
+                dataConfidence: .unknown,
+                now: now,
+                minimumElapsedPercent: 1))
+        #expect(pace.expectedUsedPercent < 1)
+        #expect(store.menuBarLayoutPaceText(
+            provider: .codex,
+            window: window,
+            dataConfidence: .unknown,
+            now: now,
+            minimumElapsedPercent: 1) != nil)
+    }
+
+    @MainActor
+    @Test
+    func `weekly menu token uses the resolved calendar month for elapsed progress`() throws {
+        let store = try Self.makeUsageStoreForBackfillTests(
+            suite: "HistoricalUsagePaceTests-calendar-month-elapsed-\(UUID().uuidString)",
+            historyFileURL: Self.makeTempURL())
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let now = try #require(calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: 2026,
+            month: 2,
+            day: 1,
+            hour: 7)))
+        let resetsAt = try #require(calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: 2026,
+            month: 3,
+            day: 1)))
+        let window = RateWindow(
+            usedPercent: 5,
+            windowMinutes: 30 * 24 * 60,
+            resetsAt: resetsAt,
+            resetDescription: nil)
+
+        let pace = try #require(
+            store.weeklyPace(
+                provider: .notion,
+                window: window,
+                dataConfidence: .unknown,
+                now: now,
+                minimumElapsedPercent: 1))
+        #expect(pace.expectedUsedPercent > 1)
+    }
+
+    @MainActor
+    @Test
+    func `menu bar layout pace opens weekly early but floors session and automatic at three percent`() throws {
+        let (store, controller) = try Self.makeStoreAndControllerForMenuBarPaceTests(
+            suite: "HistoricalUsagePaceTests-menu-bar-early-window-floors-\(UUID().uuidString)")
+        defer { controller.releaseStatusItemsForTesting() }
+        let now = Date(timeIntervalSince1970: 0)
+        // Session window 2 minutes in of 120: 1.67% expected. Weekly window 4 hours in of 7 days:
+        // 2.38% expected, inside the 1-3% band that only the weekly token may open early.
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 5,
+                windowMinutes: 120,
+                resetsAt: now.addingTimeInterval(118 * 60),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 5,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(7 * 24 * 60 * 60 - 4 * 60 * 60),
+                resetDescription: nil),
+            updatedAt: now)
+
+        store._setSnapshotForTesting(snapshot, provider: .zai)
+        store._setErrorForTesting(nil, provider: .zai)
+
+        let data = controller.menuBarLayoutRenderData(
+            provider: .zai,
+            snapshot: snapshot,
+            warningFlash: false,
+            now: now)
+
+        #expect(data.sessionPace == nil)
+        #expect(data.automaticPace == nil)
+        #expect(data.weeklyPace == "+3%")
+        #expect(data.runsOut == nil)
     }
 
     @MainActor
@@ -483,7 +708,7 @@ extension HistoricalUsagePaceTests {
             resetsAt: resetsAt,
             resetDescription: nil)
 
-        let pace = try #require(store.weeklyPace(provider: .zai, window: window, now: now))
+        let pace = try #require(store.weeklyPace(provider: .zai, window: window, dataConfidence: .unknown, now: now))
 
         #expect(abs(pace.expectedUsedPercent - 60) < 0.001)
         #expect(abs(pace.deltaPercent) < 0.001)
@@ -504,7 +729,7 @@ extension HistoricalUsagePaceTests {
             resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60),
             resetDescription: nil)
 
-        let pace = store.weeklyPace(provider: .factory, window: window, now: now)
+        let pace = store.weeklyPace(provider: .factory, window: window, dataConfidence: .unknown, now: now)
 
         #expect(pace == nil)
     }

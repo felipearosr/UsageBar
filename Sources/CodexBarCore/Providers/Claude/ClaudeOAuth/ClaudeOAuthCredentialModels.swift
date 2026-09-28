@@ -157,10 +157,10 @@ extension ClaudeOAuthCredentials {
         ]
 
         if let expiresAt = self.expiresAt {
-            let expiresAtMs = Int(expiresAt.timeIntervalSince1970 * 1000.0)
-            let expiresInSec = Int(expiresAt.timeIntervalSince(now).rounded())
-            metadata["expiresAtMs"] = "\(expiresAtMs)"
-            metadata["expiresInSec"] = "\(expiresInSec)"
+            let expiresAtMs = Int(exactly: (expiresAt.timeIntervalSince1970 * 1000.0).rounded(.towardZero))
+            let expiresInSec = Int(exactly: expiresAt.timeIntervalSince(now).rounded())
+            metadata["expiresAtMs"] = expiresAtMs.map(String.init) ?? "out_of_range"
+            metadata["expiresInSec"] = expiresInSec.map(String.init) ?? "out_of_range"
             metadata["isExpired"] = "\(now >= expiresAt)"
         } else {
             metadata["expiresAtMs"] = "nil"
@@ -254,6 +254,7 @@ public enum ClaudeOAuthCredentialsError: LocalizedError, Sendable {
     case mcpOAuthOnlyKeychain
     case missingAccessToken
     case notFound
+    case keychainAccessRevoked
     case keychainError(Int)
     case readFailed(String)
     case refreshFailed(String)
@@ -275,6 +276,9 @@ public enum ClaudeOAuthCredentialsError: LocalizedError, Sendable {
             return "Claude OAuth access token missing. Run `claude` to authenticate."
         case .notFound:
             return "Claude OAuth credentials not found. Run `claude` to authenticate."
+        case .keychainAccessRevoked:
+            return "Claude Keychain access was revoked by Claude Code's token rotation. "
+                + "Click Refresh to re-grant access, or switch Claude Usage source to CLI/Web."
         case let .keychainError(status):
             #if os(macOS)
             if status == Int(errSecUserCanceled)

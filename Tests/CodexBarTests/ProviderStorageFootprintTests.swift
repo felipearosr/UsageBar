@@ -24,6 +24,12 @@ struct ProviderStorageFootprintTests {
     }
 
     @Test
+    func `global low power mode clamps automatic storage scans to thirty minutes`() {
+        #expect(UsageStore.automaticStorageRefreshInterval(lowPowerModeEnabled: false) == 5 * 60)
+        #expect(UsageStore.automaticStorageRefreshInterval(lowPowerModeEnabled: true) == 30 * 60)
+    }
+
+    @Test
     func `scanner sums nested regular files and skips symlink targets`() throws {
         let root = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -228,7 +234,6 @@ struct ProviderStorageFootprintTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -271,7 +276,6 @@ struct ProviderStorageFootprintTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -339,6 +343,7 @@ struct ProviderStorageFootprintTests {
             settings: settings,
             environmentBase: ["CODEX_HOME": codexHome.path])
         settings.providerStorageFootprintsEnabled = true
+        settings.backgroundWorkLowPowerModePreference = .on
         store.managedCodexAccountsForStorageOverride = []
 
         await store.refreshStorageFootprintsForOverviewNow()

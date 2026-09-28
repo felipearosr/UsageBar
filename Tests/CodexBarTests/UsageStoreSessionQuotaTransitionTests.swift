@@ -665,6 +665,35 @@ struct UsageStoreSessionQuotaTransitionTests {
     }
 
     @Test
+    func `amp subscription quota warnings use pool labels`() {
+        let settings = self.makeSettings(suiteName: "UsageStoreSessionQuotaTransitionTests-warning-amp")
+        settings.refreshFrequency = .manual
+        settings.statusChecksEnabled = false
+        settings.quotaWarningNotificationsEnabled = true
+        settings.quotaWarningThresholds = [50]
+        settings.setQuotaWarningWindowEnabled(.session, enabled: true)
+        settings.setQuotaWarningWindowEnabled(.weekly, enabled: true)
+
+        let notifier = SessionQuotaNotifierSpy()
+        let store = UsageStore(
+            fetcher: UsageFetcher(),
+            browserDetection: BrowserDetection(cacheTTL: 0),
+            settings: settings,
+            sessionQuotaNotifier: notifier)
+
+        func snapshot(used: Double) -> UsageSnapshot {
+            UsageSnapshot(
+                primary: RateWindow(usedPercent: used, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+                secondary: RateWindow(usedPercent: used, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+                updatedAt: Date())
+        }
+        store.handleQuotaWarningTransitions(provider: .amp, snapshot: snapshot(used: 40))
+        store.handleQuotaWarningTransitions(provider: .amp, snapshot: snapshot(used: 55))
+
+        #expect(notifier.quotaWarningPosts.map(\.event.windowDisplayLabel) == ["Other usage", "Orb usage"])
+    }
+
+    @Test
     func `antigravity quota warnings use named session and weekly durations`() {
         let settings = self.makeSettings(suiteName: "UsageStoreSessionQuotaTransitionTests-warning-antigravity")
         settings.refreshFrequency = .manual
@@ -748,7 +777,8 @@ struct UsageStoreSessionQuotaTransitionTests {
         let key = UsageStore.QuotaWarningStateKey(
             provider: .antigravity,
             window: .session,
-            accountDiscriminator: nil)
+            accountDiscriminator: nil,
+            windowID: nil)
         #expect(store.quotaWarningState[key]?.lastRemaining == 20)
         #expect(store.quotaWarningState[key]?.source == .antigravityLegacy)
     }
@@ -792,7 +822,11 @@ struct UsageStoreSessionQuotaTransitionTests {
 
         #expect(notifier.quotaWarningPosts.count == 1)
         #expect(store.quotaWarningState[
-            UsageStore.QuotaWarningStateKey(provider: .codex, window: .session, accountDiscriminator: nil),
+            UsageStore.QuotaWarningStateKey(
+                provider: .codex,
+                window: .session,
+                accountDiscriminator: nil,
+                windowID: nil),
         ] == nil)
     }
 

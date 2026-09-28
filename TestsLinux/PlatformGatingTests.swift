@@ -3,7 +3,7 @@ import Testing
 @testable import CodexBarCLI
 @testable import CodexBarCore
 
-@Suite
+@Suite(.serialized)
 struct PlatformGatingTests {
     @Test
     func `shell probe requests a detached Linux session`() {
@@ -17,6 +17,26 @@ struct PlatformGatingTests {
     @Test
     func ampAutoSource_doesNotRequireWebSupport() {
         #expect(!CodexBarCLI.sourceModeRequiresWebSupport(.auto, provider: .amp))
+    }
+
+    @Test
+    func `ollama manual cookie allows auto and web sources`() {
+        let manualCookieSettings = ProviderSettingsSnapshot.make(
+            ollama: .init(cookieSource: .manual, manualCookieHeader: "__Secure-session=manual"))
+
+        #expect(!CodexBarCLI.sourceModeRequiresWebSupport(
+            .auto,
+            provider: .ollama,
+            settings: manualCookieSettings))
+        #expect(!CodexBarCLI.sourceModeRequiresWebSupport(
+            .web,
+            provider: .ollama,
+            settings: manualCookieSettings))
+        #expect(CodexBarCLI.sourceModeRequiresWebSupport(
+            .web,
+            provider: .ollama,
+            settings: ProviderSettingsSnapshot.make(
+                ollama: .init(cookieSource: .manual, manualCookieHeader: "   "))))
     }
 
     @Test
@@ -34,10 +54,14 @@ struct PlatformGatingTests {
         let cliFetchOverride: ClaudeStatusProbe.FetchOverride = { _, _, _ in
             Self.makeClaudeStatus()
         }
-        let outcome = await ClaudeStatusProbe.withFetchOverrideForTesting(cliFetchOverride) {
-            await ClaudeProviderDescriptor.makeDescriptor().fetchPlan.fetchOutcome(
-                context: context,
-                provider: .claude)
+        let outcome = await ClaudeCLIResolver.withResolvedBinaryPathOverrideForTesting(binaryURL.path) {
+            await ClaudeCLIAuthStatusProbe.withResultOverrideForTesting(true) {
+                await ClaudeStatusProbe.withFetchOverrideForTesting(cliFetchOverride) {
+                    await ClaudeProviderDescriptor.makeDescriptor().fetchPlan.fetchOutcome(
+                        context: context,
+                        provider: .claude)
+                }
+            }
         }
         let result = try outcome.result.get()
 
@@ -99,10 +123,12 @@ struct PlatformGatingTests {
             return Self.makeClaudeStatus()
         }
 
-        let outcome = await ClaudeStatusProbe.withFetchOverrideForTesting(cliFetchOverride) {
-            await ClaudeProviderDescriptor.makeDescriptor().fetchPlan.fetchOutcome(
-                context: context,
-                provider: .claude)
+        let outcome = await ClaudeCLIAuthStatusProbe.withTimeoutOverrideForTesting(20) {
+            await ClaudeStatusProbe.withFetchOverrideForTesting(cliFetchOverride) {
+                await ClaudeProviderDescriptor.makeDescriptor().fetchPlan.fetchOutcome(
+                    context: context,
+                    provider: .claude)
+            }
         }
 
         switch outcome.result {
@@ -121,10 +147,40 @@ struct PlatformGatingTests {
         let expectedStrategyIDs = sourceMode == .auto ? ["claude.web", "claude.cli"] : ["claude.cli"]
         #expect(outcome.attempts.map(\.strategyID) == expectedStrategyIDs)
         #expect(outcome.attempts.allSatisfy { !$0.wasAvailable })
-        #expect(try String(contentsOf: invocationLog, encoding: .utf8) == "auth status --json\n")
+        let invocations = try String(contentsOf: invocationLog, encoding: .utf8)
+        #expect(invocations == "auth status --json\n")
         #else
         #expect(Bool(true))
         #endif
+    }
+
+    @Test
+    func `Claude CLI runtime delegates unavailable auth status to owner executable`() async throws {
+        let invocationLog = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-cli-runtime-invocations-\(UUID().uuidString).log")
+        let binaryURL = try Self.makeClaudeCLI(loggedIn: nil, invocationLog: invocationLog)
+        defer {
+            try? FileManager.default.removeItem(at: binaryURL)
+            try? FileManager.default.removeItem(at: invocationLog)
+        }
+        let context = self.makeClaudeContext(
+            sourceMode: .cli,
+            env: ["CLAUDE_CLI_PATH": binaryURL.path])
+        let cliFetchOverride: ClaudeStatusProbe.FetchOverride = { _, _, _ in
+            Self.makeClaudeStatus()
+        }
+
+        let outcome = await ClaudeStatusProbe.withFetchOverrideForTesting(cliFetchOverride) {
+            await ClaudeProviderDescriptor.makeDescriptor().fetchPlan.fetchOutcome(
+                context: context,
+                provider: .claude)
+        }
+        let result = try outcome.result.get()
+
+        #expect(result.strategyID == "claude.cli")
+        #expect(outcome.attempts.map(\.strategyID) == ["claude.cli"])
+        #expect(outcome.attempts.map(\.wasAvailable) == [true])
+        #expect(try String(contentsOf: invocationLog, encoding: .utf8) == "auth status --json\n")
     }
 
     @Test
@@ -180,6 +236,29 @@ struct PlatformGatingTests {
         #expect(Bool(true))
         #endif
     }
+
+    @Test
+    func `custom pricing test detector is safe on Linux without test markers`() {
+        #if os(Linux)
+        let pricing = CostUsageCustomPricing.load(environment: [:])
+        #expect(pricing.fingerprint == "none" || !pricing.fingerprint.isEmpty)
+        #else
+        #expect(Bool(true))
+        #endif
+    }
+
+    @Test
+    func `OpenCodex usage log URL resolution is safe on Linux without test markers`() {
+        #if os(Linux)
+        // Under test runner, ProcessInfo has test markers, so isRunningTests returns true safely and returns nil without crashing
+        let logURL = OpenCodexUsageLog.usageLogURL(environment: [:])
+        #expect(logURL == nil)
+        let overriddenURL = OpenCodexUsageLog.usageLogURL(environment: ["OPENCODEX_HOME": "/tmp/test"])
+        #expect(overriddenURL?.path == "/tmp/test/usage.jsonl")
+        #else
+        #expect(Bool(true))
+        #endif
+    }
     private func makeClaudeAutoContext(env: [String: String] = [:]) -> ProviderFetchContext {
         self.makeClaudeContext(sourceMode: .auto, env: env)
     }
@@ -208,23 +287,22 @@ struct PlatformGatingTests {
             browserDetection: browserDetection)
     }
 
-    private static func makeClaudeCLI(loggedIn: Bool, invocationLog: URL? = nil) throws -> URL {
+    private static func makeClaudeCLI(loggedIn: Bool?, invocationLog: URL? = nil) throws -> URL {
         if let invocationLog {
             try Data().write(to: invocationLog)
         }
         let binaryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("claude-cli-runtime-\(UUID().uuidString)")
         let recordInvocation = invocationLog.map { "printf '%s\\n' \"$*\" >> '\($0.path)'" } ?? ""
-        let loggedInJSON = loggedIn ? "true" : "false"
+        let authStatusJSON = loggedIn.map { #"{"loggedIn":\#($0)}"# } ?? "not-json"
         let script = """
         #!/bin/sh
         \(recordInvocation)
         if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-          printf '%s\\n' '{"loggedIn":\(loggedInJSON)}'
+          printf '%s\\n' '\(authStatusJSON)'
         fi
         """
-        try Data(script.utf8).write(to: binaryURL)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryURL.path)
+        try FakeExecutable.install(script, at: binaryURL)
         return binaryURL
     }
 

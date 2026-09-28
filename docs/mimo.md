@@ -14,8 +14,12 @@ The Xiaomi MiMo provider tracks your current balance from the Xiaomi MiMo consol
 
 - **Balance display**: Shows total balance plus paid and granted components when MiMo returns them.
 - **Token plan usage**: Shows current token-plan credits while retaining balance as a second metric.
+- **Menu bar layouts**: Balance shows the headline amount without the paid/granted breakdown. Auto % shows balance without a token plan and keeps the percentage when a plan is present.
 - **Cookie-based auth**: Uses browser cookies or a pasted `Cookie:` header.
 - **Near-real-time updates**: Balance usually reflects within a few minutes.
+
+CLI text and cards retain token-plan credit counts beside the real period-end reset. Without a reported date,
+counts remain details rather than appearing as a reset clock. This does not change plan pacing or local fallback.
 
 ## Setup
 
@@ -79,7 +83,11 @@ This fallback is **implicit opt-in**: it only activates when `~/.codexbar/mimo-l
 
 2. Run `mimo-usage --update` once to populate `~/.codexbar/mimo-local-usage.json`. The tracker scans `~/.claude-envs/mimo/.claude/projects/**/*.jsonl` (default path for a `cc-mimo`-style wrapper) and aggregates input, output, cache-read, and cache-creation tokens per time window (today / this week / all time).
 
+   Invalid session records are skipped so valid usage can still refresh the cache.
+
 3. Trigger updates either on each wrapper invocation (recommended — call `mimo-usage --update` post-exec from your MiMo CLI launcher) or via a `launchd` / `cron` job every 5 minutes.
+
+   Overlapping updates use separate temporary files and atomically replace the cache; a failed write leaves the previous cache intact.
 
 4. CodexBar picks up the file on its next refresh. The MiMo card displays `Xiaomi MiMo (local)` with a `Local · <today> · <week> · <lifetime> · <sessions>` summary and the cache's actual update time. Local activity is not rendered as a quota percentage. The `Balance updates / Daily billing finalizes` footer is suppressed for `local` source since neither applies. Because CodexBar only reads this cache (it never regenerates it), a summary whose cache has not refreshed within 12 hours gets a `stale <age>` marker (e.g. `stale 34d`) so a frozen tracker is not misread as live usage — re-run `mimo-usage --update`, or add the scheduled job in step 3, to clear it.
 

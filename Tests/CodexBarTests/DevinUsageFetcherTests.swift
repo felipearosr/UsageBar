@@ -130,15 +130,60 @@ struct DevinUsageFetcherTests {
     @Test
     func `keeps weekly quota when current plan hides daily quota`() throws {
         let response: [String: Any] = [
+            "daily_percentage": 0,
+            "daily_reset_at": "2026-06-11T00:00:00-08:00",
             "weekly_percentage": 25,
             "weekly_reset_at": "2026-06-14T00:00:00-08:00",
             "hide_daily_quota": true,
+            "overage_balance": 12,
         ]
 
         let usage = try DevinUsageParser.parse(response, organization: nil, now: Self.now).toUsageSnapshot()
 
         #expect(usage.primary == nil)
         #expect(usage.secondary?.usedPercent == 25)
+        #expect(usage.secondary?.resetsAt?.timeIntervalSince1970 == 1_781_424_000)
+        #expect(usage.providerCost?.used == 12)
+    }
+
+    @Test(arguments: ["true", "false", "null", "1", "\"true\"", "absent"], [false, true])
+    func `daily visibility applies before current and fallback parsing`(_ flag: String, _ fallback: Bool) throws {
+        var response: [String: Any] = fallback ? [
+            "quota_usage": [
+                "daily_quota": ["used_percent": 0.25, "reset_at": "2026-06-11T00:00:00-08:00"],
+                "weekly_quota": ["used_percent": 0.9, "reset_at": "2026-06-14T00:00:00-08:00"],
+            ],
+        ] : [
+            "daily_percentage": 25,
+            "weekly_percentage": 90,
+            "daily_reset_at": "2026-06-11T00:00:00-08:00",
+            "weekly_reset_at": "2026-06-14T00:00:00-08:00",
+        ]
+        if flag != "absent" {
+            response["hide_daily_quota"] = try JSONSerialization.jsonObject(
+                with: Data(flag.utf8), options: [.fragmentsAllowed])
+        }
+        let data = try JSONSerialization.data(withJSONObject: response)
+        let usage = try DevinUsageParser.parse(data, organization: nil, now: Self.now).toUsageSnapshot()
+
+        #expect(usage.primary?.usedPercent == (flag == "true" ? nil : 25))
+        #expect(usage.primary?.resetsAt?.timeIntervalSince1970 == (flag == "true" ? nil : 1_781_164_800))
+        #expect(usage.secondary?.usedPercent == 90)
+        #expect(usage.secondary?.resetsAt?.timeIntervalSince1970 == 1_781_424_000)
+    }
+
+    @Test
+    func `hidden daily data cannot satisfy missing quota windows`() {
+        #expect(throws: DevinUsageError.self) {
+            try DevinUsageParser.parse(
+                [
+                    "hide_daily_quota": true,
+                    "daily_percentage": 0,
+                    "quota_usage": ["daily_quota": ["used_percent": 25]],
+                ],
+                organization: nil,
+                now: Self.now)
+        }
     }
 
     @Test
@@ -314,33 +359,33 @@ struct DevinUsageFetcherTests {
     #if os(macOS)
     @Test
     func `empty app organization setting preserves imported organization`() async throws {
-        defer { DevinSessionImporter.importSessionOverrideForTesting = nil }
-        DevinSessionImporter.importSessionOverrideForTesting = { _, organizationOverride, _ in
+        try await DevinSessionImporter.withImportSessionOverrideForTesting { _, organizationOverride, _ in
             #expect(organizationOverride == nil)
             return DevinSessionImporter.SessionInfo(
-                accessToken: "auth1_abcdefghijklmnopqrstuvwxyz0123456789",
+                accessToken: "test-access-token",
                 organization: "org/example-org",
                 internalOrganizationID: "org_GQ6LhcfkW1TSinM6",
                 sourceLabel: "Chrome Default")
-        }
-        let stub = ProviderHTTPTransportStub { request in
-            #expect(request.url?.path == "/api/org_GQ6LhcfkW1TSinM6/billing/quota/usage")
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: nil,
-                headerFields: nil)!
-            return (Data(#"{"daily_percentage":0,"weekly_percentage":0}"#.utf8), response)
-        }
+        } operation: {
+            let stub = ProviderHTTPTransportStub { request in
+                #expect(request.url?.path == "/api/org_GQ6LhcfkW1TSinM6/billing/quota/usage")
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil)!
+                return (Data(#"{"daily_percentage":0,"weekly_percentage":0}"#.utf8), response)
+            }
 
-        let snapshot = try await DevinUsageFetcher(browserDetection: BrowserDetection(cacheTTL: 0)).fetch(
-            organizationOverride: "",
-            now: Self.now,
-            transport: stub)
+            let snapshot = try await DevinUsageFetcher(browserDetection: BrowserDetection(cacheTTL: 0)).fetch(
+                organizationOverride: "",
+                now: Self.now,
+                transport: stub)
 
-        #expect(snapshot.organization == "example-org")
-        #expect(snapshot.daily?.usedPercent == 0)
-        #expect(snapshot.weekly?.usedPercent == 0)
+            #expect(snapshot.organization == "example-org")
+            #expect(snapshot.daily?.usedPercent == 0)
+            #expect(snapshot.weekly?.usedPercent == 0)
+        }
     }
 
     @Test
@@ -490,7 +535,7 @@ struct DevinUsageFetcherTests {
     }
 
     @Test
-    func `automatic local storage import does not fall back beyond Chrome`() throws {
+    func `automatic local storage import discovers Brave without Chrome`() throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temp) }
 
@@ -501,7 +546,7 @@ struct DevinUsageFetcherTests {
 
         #expect(detection.hasUsableProfileData(.brave))
         #expect(!detection.hasUsableProfileData(.chrome))
-        #expect(DevinSessionImporter.localStorageBrowsers(browserDetection: detection).isEmpty)
+        #expect(DevinSessionImporter.localStorageBrowsers(browserDetection: detection) == [.brave])
     }
     #endif
 }

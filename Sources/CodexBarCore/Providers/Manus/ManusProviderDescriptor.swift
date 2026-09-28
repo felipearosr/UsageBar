@@ -1,181 +1,60 @@
 import Foundation
 
 public enum ManusProviderDescriptor {
-    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    public static let descriptor: ProviderDescriptor = Self.spec.makeDescriptor(credentials: Self.credentials)
+    public static let spec = PluginProviderSpec(
+        id: .manus,
+        displayName: "Manus",
+        sessionLabel: "Monthly credits",
+        weeklyLabel: "Daily refresh",
+        debugLogUnavailableMessage: "Manus debug log not yet implemented",
+        usesDetailBackedWindow: true,
+        dashboardURL: "https://manus.im",
+        color: .init(hex: 0x34322D),
+        confetti: [0x34322D, 0xF2F0E9, 0x0099FF],
+        widgetColor: .init(hex: 0x181818),
+        noDataMessage: "Manus cost summary is not supported.",
+        presentation: ProviderUsagePresentation(
+            costPresenter: { _ in ProviderCostPresentation(menuCardStyle: .hidden) },
+            menuCard: ProviderMenuCardPresentation(
+                showsPrimaryBalanceDescription: true,
+                showsSecondaryBalanceDescription: true,
+                clearsPrimaryReset: true),
+            menu: ProviderMenuDescriptorPresentation(
+                primaryDescriptionIsDetail: { _ in true },
+                secondaryDescriptionMode: .detailWhenResetDatePresent)),
+        webSource: .init(
+            settingsSection: .init(ManusProviderSettingsKey.self, cookieSettings: ManusProviderSettings.self),
+            browserCookieOrder: ProviderBrowserCookieDefaults.defaultImportOrder,
+            resolveValues: { context in
+                guard context.settings?.manus?.cookieSource != .off else { return nil }
+                let token = ManusSettingsReader.sessionToken(environment: context.env)
+                return .init(secrets: token.map { ["SESSION_TOKEN": $0] } ?? [:])
+            },
+            field: .init(
+                id: "manus-cookie",
+                title: "",
+                subtitle: "",
+                placeholder: "session_id=...\n\nor paste just the session_id value",
+                action: (id: "manus-open-dashboard", title: "Open Manus", url: "https://manus.im")),
+            picker: .init(
+                id: "manus-cookie-source",
+                allowsOff: true,
+                auto: .localized("Automatically imports browser session cookies."),
+                manual: .localized("Paste the %@ value or a full Cookie header.", argument: "session_id"),
+                off: .localized("%@ cookies are disabled.", argument: "Manus")),
+            detailLine: "web",
+            loginURL: "https://manus.im"))
 
-    static func makeDescriptor() -> ProviderDescriptor {
-        ProviderDescriptor(
-            id: .manus,
-            metadata: ProviderMetadata(
-                id: .manus,
-                displayName: "Manus",
-                sessionLabel: "Monthly credits",
-                weeklyLabel: "Daily refresh",
-                opusLabel: nil,
-                supportsOpus: false,
-                supportsCredits: false,
-                creditsHint: "",
-                toggleTitle: "Show Manus usage",
-                cliName: "manus",
-                defaultEnabled: false,
-                isPrimaryProvider: false,
-                usesAccountFallback: false,
-                browserCookieOrder: ProviderBrowserCookieDefaults.defaultImportOrder,
-                dashboardURL: "https://manus.im",
-                statusPageURL: nil),
-            branding: ProviderBranding(
-                iconStyle: .manus,
-                iconResourceName: "ProviderIcon-manus",
-                color: ProviderColor(red: 52 / 255, green: 50 / 255, blue: 45 / 255)),
-            tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "Manus cost summary is not supported." }),
-            fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto, .web],
-                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [ManusWebFetchStrategy()] })),
-            cli: ProviderCLIConfig(
-                name: "manus",
-                aliases: [],
-                versionDetector: nil))
-    }
-}
-
-struct ManusWebFetchStrategy: ProviderFetchStrategy {
-    private enum SessionTokenSource {
-        case manual
-        case cache
-        case browser
-        case environment
-
-        var shouldCacheAfterFetch: Bool {
-            self == .browser
-        }
-    }
-
-    private struct ResolvedSessionToken {
-        let value: String
-        let source: SessionTokenSource
-    }
-
-    let id: String = "manus.web"
-    let kind: ProviderFetchKind = .web
-    private static let log = CodexBarLog.logger(LogCategories.manusWeb)
-
-    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        guard context.settings?.manus?.cookieSource != .off else { return false }
-        if context.settings?.manus?.cookieSource == .manual { return true }
-
-        if let cached = CookieHeaderCache.load(provider: .manus),
-           ManusCookieHeader.token(from: cached.cookieHeader) != nil
-        {
-            return true
-        }
-
-        #if os(macOS)
-        if ManusCookieImporter.hasSession(browserDetection: context.browserDetection) {
-            return true
-        }
-        #endif
-
-        return ManusSettingsReader.sessionToken(environment: context.env) != nil
-    }
-
-    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        let resolvedTokens = try self.resolveSessionTokens(context: context)
-        guard !resolvedTokens.isEmpty else {
-            throw ManusAPIError.missingToken
-        }
-
-        var sawInvalidToken = false
-        for resolved in resolvedTokens {
-            do {
-                let response = try await ManusUsageFetcher.fetchCredits(sessionToken: resolved.value)
-                self.cacheTokenIfNeeded(resolved, sourceLabel: "web")
-                return self.makeResult(
-                    usage: response.toUsageSnapshot(),
-                    sourceLabel: "web")
-            } catch ManusAPIError.invalidToken {
-                sawInvalidToken = true
-                if resolved.source == .cache {
-                    CookieHeaderCache.clear(provider: .manus)
-                }
-                continue
-            }
-        }
-
-        if sawInvalidToken {
-            throw ManusAPIError.invalidToken
-        }
-        throw ManusAPIError.missingToken
-    }
-
-    func shouldFallback(on error: Error, context _: ProviderFetchContext) -> Bool {
-        if case ManusAPIError.missingToken = error { return false }
-        if case ManusAPIError.invalidCookie = error { return false }
-        if case ManusAPIError.invalidToken = error { return false }
-        return true
-    }
-
-    private func resolveSessionTokens(context: ProviderFetchContext) throws -> [ResolvedSessionToken] {
-        guard context.settings?.manus?.cookieSource != .off else { return [] }
-
-        if context.settings?.manus?.cookieSource == .manual {
-            guard let token = ManusCookieHeader.resolveToken(context: context) else {
-                throw ManusAPIError.invalidCookie
-            }
-            return [ResolvedSessionToken(value: token, source: .manual)]
-        }
-
-        var tokens: [ResolvedSessionToken] = []
-
-        if let cached = CookieHeaderCache.load(provider: .manus),
-           let token = ManusCookieHeader.token(from: cached.cookieHeader)
-        {
-            tokens.append(ResolvedSessionToken(value: token, source: .cache))
-        }
-
-        tokens.append(contentsOf: self.resolveBrowserOrEnvironmentTokens(context: context))
-        return self.deduplicated(tokens)
-    }
-
-    private func resolveBrowserOrEnvironmentTokens(context: ProviderFetchContext) -> [ResolvedSessionToken] {
-        guard context.settings?.manus?.cookieSource != .off else { return [] }
-        var tokens: [ResolvedSessionToken] = []
-
-        #if os(macOS)
-        do {
-            let sessions = try ManusCookieImporter.importSessions(browserDetection: context.browserDetection)
-            tokens.append(contentsOf: sessions.compactMap { session in
-                guard let token = session.sessionToken else { return nil }
-                return ResolvedSessionToken(value: token, source: .browser)
-            })
-        } catch {
-            Self.log.debug("No Manus browser session available: \(error.localizedDescription)")
-        }
-        #endif
-
-        if let token = ManusSettingsReader.sessionToken(environment: context.env) {
-            tokens.append(ResolvedSessionToken(value: token, source: .environment))
-        }
-        return self.deduplicated(tokens)
-    }
-
-    private func deduplicated(_ tokens: [ResolvedSessionToken]) -> [ResolvedSessionToken] {
-        var seen: Set<String> = []
-        var deduplicated: [ResolvedSessionToken] = []
-        for token in tokens where !token.value.isEmpty {
-            if seen.insert(token.value).inserted {
-                deduplicated.append(token)
-            }
-        }
-        return deduplicated
-    }
-
-    private func cacheTokenIfNeeded(_ token: ResolvedSessionToken, sourceLabel: String) {
-        guard token.source.shouldCacheAfterFetch else { return }
-        CookieHeaderCache.store(
-            provider: .manus,
-            cookieHeader: "\(ManusCookieHeader.sessionCookieName)=\(token.value)",
-            sourceLabel: sourceLabel)
-    }
+    private static let credentials = ProviderCredentialAdapter(
+        tokenAccountSupport: TokenAccountSupport(
+            title: "Session tokens",
+            subtitle: "Store multiple Manus session_id cookies.",
+            placeholder: "session_id=…",
+            injection: .cookieHeader,
+            requiresManualCookieSource: true,
+            cookieName: ManusCookieHeader.sessionCookieName),
+        authDetector: { environment, _ in
+            ManusSettingsReader.sessionToken(environment: environment) == nil ? [] : ["web"]
+        })
 }

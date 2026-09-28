@@ -1,6 +1,23 @@
 import Foundation
 
 public enum CodexHomeScope {
+    public static func isAppServerProcess(_ pid: Int32) -> Bool {
+        #if canImport(Darwin)
+        guard pid > 0, let arguments = DarwinProcessEnumerator.arguments(pid: pid) else { return false }
+        return self.isAppServer(arguments: arguments)
+        #else
+        return false
+        #endif
+    }
+
+    static func isAppServer(arguments: [String]) -> Bool {
+        guard let executable = arguments.first else { return false }
+        // Provider-specific by design: match the managed Codex daemon's native command.
+        return URL(fileURLWithPath: executable).lastPathComponent == "codex" &&
+            arguments.dropFirst().starts(with: ["app-server"]) &&
+            arguments.contains("--listen") && arguments.contains("unix://")
+    }
+
     public static func normalizedHomePath(
         _ rawPath: String?,
         fileManager: FileManager = .default)
@@ -30,6 +47,7 @@ public enum CodexHomeScope {
         if let raw = env["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
             return URL(fileURLWithPath: raw, isDirectory: true)
         }
+        // Provider-specific by design: `.codex` is the CLI's default on-disk home contract.
         return fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
     }
 

@@ -11,6 +11,24 @@ read_when:
 CodexBar reads AWS Cost Explorer for Bedrock spend and can compare the current month against an optional budget. When
 permitted, it also reads CloudWatch for rolling 14-day Claude token and request totals in the configured region.
 
+## Monitoring charges and refresh frequency
+
+**Monitoring Bedrock spend can add charges to your AWS bill.** AWS currently charges **$0.01 per Cost Explorer API
+request** against the primary billing view, separately from Bedrock inference charges. See the
+[AWS Cost Explorer pricing page](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/pricing/) for current rates.
+For example, 5,000 billed requests cost $50 at that rate. A CodexBar refresh is not a fixed-price unit: monthly spend,
+daily cost history, and paginated responses can make separate requests. Optional CloudWatch activity uses another API
+and is subject to [CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/).
+
+To reduce automatic requests, open **Settings → General → Refreshing** and choose a longer refresh interval or
+**Manual**. This setting applies to all providers. Manual stops the recurring timer; startup, explicit refreshes,
+and **Refresh when the menu opens** can still fetch data. Turn off that option as well to reduce menu-triggered requests.
+Disable AWS Bedrock in Providers to stop its app refreshes; separate CLI invocations can still make billed requests.
+
+The optional monthly budget only changes the displayed progress. It does not cap AWS charges or stop polling.
+The AWS Bedrock provider's Connection settings show these monitoring charges, link to current Cost Explorer pricing,
+and explain how the shared refresh controls reduce requests in both access-key and AWS-profile modes.
+
 ## Authentication
 
 CodexBar supports two authentication modes, selected in Preferences → Providers → AWS Bedrock → Authentication.
@@ -65,7 +83,7 @@ tracking continue unchanged.
 
 - Service: AWS Cost Explorer.
 - Region: `AWS_REGION` or `AWS_DEFAULT_REGION`, defaulting to `us-east-1`.
-- Usage: current-month Bedrock spend and historical daily cost buckets.
+- Usage: current-month Bedrock spend and historical daily cost buckets. Cost Explorer buckets are UTC; shared reporting periods select available date-labeled buckets, and a local date ahead of UTC remains incomplete. The shared All cost period requests the current month plus up to 13 historical months, matching [Cost Explorer’s API history limit](https://docs.aws.amazon.com/cost-management/latest/userguide/ce-api-best-practices.html).
 - Claude activity: rolling 14-day input tokens, output tokens, and requests from the configured region's `AWS/Bedrock`
   CloudWatch metrics. Other model families are excluded.
 - Budget: `CODEXBAR_BEDROCK_BUDGET`, when set to a positive dollar amount.

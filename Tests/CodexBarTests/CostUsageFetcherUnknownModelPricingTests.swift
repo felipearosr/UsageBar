@@ -15,6 +15,7 @@ struct CostUsageFetcherUnknownModelPricingTests {
             provider: .codex,
             now: fixture.day,
             refreshPricingInBackground: false,
+            includePiSessions: false,
             scannerOptions: fixture.options,
             modelsDevClient: ModelsDevClient(transport: CostUsageFetcherModelsDevTransport(
                 data: fixture.refreshedCatalog)))
@@ -22,6 +23,120 @@ struct CostUsageFetcherUnknownModelPricingTests {
         let breakdown = try #require(snapshot.daily.first?.modelBreakdowns?.first)
         #expect(breakdown.modelName == "gpt-new")
         #expect(abs((breakdown.costUSD ?? 0) - 0.00028) < 0.0000001)
+    }
+
+    @Test
+    func `fetcher excludes routed opencode go models from the Codex snapshot`() async throws {
+        let fixture = try UnknownModelPricingFixture()
+        defer { fixture.environment.cleanup() }
+        let qualifiedTurnContext: [String: Any] = [
+            "type": "turn_context",
+            "timestamp": fixture.environment.isoString(for: fixture.day),
+            "payload": ["model": "opencode-go/deepseek-v4-flash"],
+        ]
+        let qualifiedTokenCount: [String: Any] = [
+            "type": "event_msg",
+            "timestamp": fixture.environment.isoString(for: fixture.day.addingTimeInterval(1)),
+            "payload": [
+                "type": "token_count",
+                "info": [
+                    "total_token_usage": [
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 10,
+                    ],
+                ],
+            ],
+        ]
+        _ = try fixture.environment.writeCodexSessionFile(
+            day: fixture.day,
+            filename: "unknown-qualified-model.jsonl",
+            contents: fixture.environment.jsonl([qualifiedTurnContext, qualifiedTokenCount]))
+
+        let snapshot = try await CostUsageFetcher.loadTokenSnapshot(
+            provider: .codex,
+            now: fixture.day,
+            refreshPricingInBackground: false,
+            includePiSessions: false,
+            scannerOptions: fixture.options,
+            modelsDevClient: ModelsDevClient(transport: CostUsageFetcherModelsDevTransport(
+                data: fixture.refreshedCatalog)))
+
+        #expect(!(snapshot.daily
+                .flatMap { $0.modelBreakdowns ?? [] }
+                .contains { $0.modelName == "opencode-go/deepseek-v4-flash" }))
+    }
+
+    @Test
+    func `fetcher reprices a bare claude vendor model after an on demand catalog refresh`() async throws {
+        let fixture = try UnknownModelPricingFixture()
+        defer { fixture.environment.cleanup() }
+        let assistant: [String: Any] = [
+            "type": "assistant",
+            "timestamp": fixture.environment.isoString(for: fixture.day),
+            "message": [
+                "model": "deepseek-v4-flash",
+                "usage": [
+                    "input_tokens": 100,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 10,
+                ],
+            ],
+        ]
+        _ = try fixture.environment.writeClaudeProjectFile(
+            relativePath: "project-a/unknown-vendor-model.jsonl",
+            contents: fixture.environment.jsonl([assistant]))
+
+        let snapshot = try await CostUsageFetcher.loadTokenSnapshot(
+            provider: .claude,
+            now: fixture.day,
+            refreshPricingInBackground: false,
+            includePiSessions: false,
+            scannerOptions: fixture.options,
+            modelsDevClient: ModelsDevClient(transport: CostUsageFetcherModelsDevTransport(
+                data: fixture.refreshedCatalog)))
+
+        let breakdown = try #require(snapshot.daily.first?.modelBreakdowns?.first)
+        #expect(breakdown.modelName == "deepseek-v4-flash")
+        #expect(abs((breakdown.costUSD ?? 0) - 0.0000168) < 0.0000001)
+    }
+
+    @Test
+    func `pricing retry preserves disabled pi session merging`() async throws {
+        let fixture = try UnknownModelPricingFixture()
+        defer { fixture.environment.cleanup() }
+        let piAssistant: [String: Any] = [
+            "type": "message",
+            "timestamp": fixture.environment.isoString(for: fixture.day),
+            "message": [
+                "role": "assistant",
+                "provider": "openai-codex",
+                "model": "openai/gpt-5.4",
+                "timestamp": Int(fixture.day.timeIntervalSince1970 * 1000),
+                "usage": ["input": 50, "output": 10, "totalTokens": 60],
+            ],
+        ]
+        _ = try fixture.environment.writePiSessionFile(
+            relativePath: "2026-04-12T12-00-00-000Z_retry.jsonl",
+            contents: fixture.environment.jsonl([piAssistant]))
+        let piOptions = PiSessionCostScanner.Options(
+            piSessionsRoot: fixture.environment.piSessionsRoot,
+            cacheRoot: fixture.environment.cacheRoot,
+            refreshMinIntervalSeconds: 0)
+
+        let snapshot = try await CostUsageFetcher.loadTokenSnapshot(
+            provider: .codex,
+            now: fixture.day,
+            refreshPricingInBackground: false,
+            includePiSessions: false,
+            scannerOptions: fixture.options,
+            piScannerOptions: piOptions,
+            modelsDevClient: ModelsDevClient(transport: CostUsageFetcherModelsDevTransport(
+                data: fixture.refreshedCatalog)))
+
+        #expect(snapshot.daily.first?.totalTokens == 110)
+        #expect(snapshot.daily.first?.modelBreakdowns?.map(\.modelName) == ["gpt-new"])
     }
 
     @Test
@@ -35,6 +150,7 @@ struct CostUsageFetcherUnknownModelPricingTests {
                 provider: .codex,
                 now: fixture.day,
                 refreshPricingInBackground: true,
+                includePiSessions: false,
                 scannerOptions: fixture.options,
                 modelsDevClient: ModelsDevClient(transport: CostUsageFetcherGatedModelsDevTransport(
                     data: fixture.refreshedCatalog,
@@ -112,13 +228,15 @@ struct CostUsageFetcherUnknownModelPricingTests {
         let options = CostUsageScanner.Options(
             codexSessionsRoot: environment.codexSessionsRoot,
             claudeProjectsRoots: [environment.claudeProjectsRoot],
-            cacheRoot: environment.cacheRoot)
+            cacheRoot: environment.cacheRoot,
+            codexTraceDatabaseURL: environment.root.appendingPathComponent("missing-traces.sqlite"))
         let counter = UnknownModelPricingRequestCounter()
 
         let snapshot = try await CostUsageFetcher.loadTokenSnapshot(
             provider: .codex,
             now: day,
             refreshPricingInBackground: false,
+            includePiSessions: false,
             scannerOptions: options,
             modelsDevClient: ModelsDevClient(transport: CostUsageFetcherCountingModelsDevTransport(counter: counter)))
 
@@ -129,6 +247,53 @@ struct CostUsageFetcherUnknownModelPricingTests {
         #expect(breakdown.costUSD == nil)
         #expect(requestCount == 0)
     }
+
+    @Test(arguments: [false, true])
+    func `local only fetch skips every pricing network refresh`(includePiSessions: Bool) async throws {
+        let fixture = try UnknownModelPricingFixture()
+        defer { fixture.environment.cleanup() }
+        try fixture.writePiSession()
+        let counter = UnknownModelPricingRequestCounter()
+
+        let snapshot = try await CostUsageFetcher.loadTokenSnapshot(
+            provider: .codex,
+            now: fixture.day,
+            allowPricingRefresh: false,
+            refreshPricingInBackground: false,
+            includePiSessions: includePiSessions,
+            scannerOptions: fixture.options,
+            piScannerOptions: fixture.piOptions,
+            modelsDevClient: ModelsDevClient(
+                transport: CostUsageFetcherCountingModelsDevTransport(counter: counter)))
+
+        let breakdown = try #require(snapshot.daily.first?.modelBreakdowns?.first)
+        #expect(breakdown.modelName == "gpt-new")
+        #expect(breakdown.costUSD == nil)
+        #expect(snapshot.sessionTokens == (includePiSessions ? 170 : 110))
+        #expect(snapshot.last30DaysTokens == (includePiSessions ? 170 : 110))
+        #expect(await counter.requestCount == 0)
+    }
+
+    @Test
+    func `foreground pricing scheduling still requests a catalog for native plus pi usage`() async throws {
+        let fixture = try UnknownModelPricingFixture()
+        defer { fixture.environment.cleanup() }
+        try fixture.writePiSession()
+        let counter = UnknownModelPricingRequestCounter()
+
+        // This was the timestamp fixtures' old configuration: foreground is not an opt-out.
+        let snapshot = try await CostUsageFetcher.loadTokenSnapshot(
+            provider: .codex,
+            now: fixture.day,
+            refreshPricingInBackground: false,
+            scannerOptions: fixture.options,
+            piScannerOptions: fixture.piOptions,
+            modelsDevClient: ModelsDevClient(
+                transport: CostUsageFetcherCountingModelsDevTransport(counter: counter)))
+
+        #expect(snapshot.sessionTokens == 170)
+        #expect(await counter.requestCount == 1)
+    }
 }
 
 private struct UnknownModelPricingFixture {
@@ -136,6 +301,29 @@ private struct UnknownModelPricingFixture {
     let day: Date
     let options: CostUsageScanner.Options
     let refreshedCatalog: Data
+
+    var piOptions: PiSessionCostScanner.Options {
+        PiSessionCostScanner.Options(
+            piSessionsRoot: self.environment.piSessionsRoot,
+            cacheRoot: self.environment.cacheRoot,
+            refreshMinIntervalSeconds: 0)
+    }
+
+    func writePiSession() throws {
+        _ = try self.environment.writePiSessionFile(
+            relativePath: "2026-04-12T12-00-00-000Z_pricing.jsonl",
+            contents: self.environment.jsonl([[
+                "type": "message",
+                "timestamp": self.environment.isoString(for: self.day),
+                "message": [
+                    "role": "assistant",
+                    "provider": "openai-codex",
+                    "model": "gpt-new",
+                    "timestamp": Int(self.day.timeIntervalSince1970 * 1000),
+                    "usage": ["input": 50, "output": 10, "totalTokens": 60],
+                ],
+            ]]))
+    }
 
     init() throws {
         let environment = try CostUsageTestEnvironment()
@@ -163,6 +351,24 @@ private struct UnknownModelPricingFixture {
           "openai": {
             "id": "openai",
             "models": { "gpt-new": { "id": "gpt-new", "cost": { "input": 2, "output": 8 } } }
+          },
+          "opencode-go": {
+            "id": "opencode-go",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 0.07, "output": 0.14 }
+              }
+            }
+          },
+          "deepseek": {
+            "id": "deepseek",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 0.14, "output": 0.28 }
+              }
+            }
           },
           "anthropic": {
             "id": "anthropic",
@@ -196,7 +402,8 @@ private struct UnknownModelPricingFixture {
         self.options = CostUsageScanner.Options(
             codexSessionsRoot: environment.codexSessionsRoot,
             claudeProjectsRoots: [environment.claudeProjectsRoot],
-            cacheRoot: environment.cacheRoot)
+            cacheRoot: environment.cacheRoot,
+            codexTraceDatabaseURL: environment.root.appendingPathComponent("missing-traces.sqlite"))
     }
 }
 

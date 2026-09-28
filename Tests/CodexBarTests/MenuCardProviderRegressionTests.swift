@@ -28,6 +28,20 @@ struct MenuCardProviderRegressionTests {
     }
 
     @Test
+    func `command code progress color uses its contrasting brand accent`() {
+        let branding = ProviderDescriptorRegistry.descriptor(for: .commandcode).branding.color
+        let expected = ProviderColor(hex: 0xA04DFD)
+
+        #expect(branding == expected)
+        #expect(UsageMenuCardView.Model.progressColor(for: .commandcode) == Color(
+            red: expected.red,
+            green: expected.green,
+            blue: expected.blue))
+        #expect(Self.contrastRatio(expected, againstLuminance: 0) >= 3)
+        #expect(Self.contrastRatio(expected, againstLuminance: 1) >= 3)
+    }
+
+    @Test
     func `open router model shows daily and weekly key spend`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.openrouter])
@@ -40,7 +54,6 @@ struct MenuCardProviderRegressionTests {
             keyUsage: 0.5,
             keyUsageDaily: 0.12,
             keyUsageWeekly: 0.74,
-            rateLimit: nil,
             updatedAt: now).toUsageSnapshot()
 
         let model = UsageMenuCardView.Model.make(.init(
@@ -49,7 +62,6 @@ struct MenuCardProviderRegressionTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -63,7 +75,53 @@ struct MenuCardProviderRegressionTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.usageNotes == ["Today: $0.12 · This week: $0.74"])
+        let apiKeyRows = try #require(model.providerDetails.first { $0.title == "API key" }?.rows)
+        #expect(apiKeyRows.first { $0.label == "Today" }?.value == "$0.12")
+        #expect(apiKeyRows.first { $0.label == "This week" }?.value == "$0.74")
+    }
+
+    private static func contrastRatio(_ color: ProviderColor, againstLuminance background: Double) -> Double {
+        let components = [color.red, color.green, color.blue].map { component in
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        let foreground = 0.2126 * components[0] + 0.7152 * components[1] + 0.0722 * components[2]
+        return (max(foreground, background) + 0.05) / (min(foreground, background) + 0.05)
+    }
+
+    @Test
+    func `ollama api key model explains browser session quota requirement`() throws {
+        let now = Date()
+        let metadata = try #require(ProviderDefaults.metadata[.ollama])
+        let snapshot = OllamaAPIUsageSnapshot(modelCount: 3, updatedAt: now).toUsageSnapshot()
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .ollama,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            sourceLabel: "api",
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.metrics.isEmpty)
+        #expect(model.placeholder == nil)
+        #expect(model.planText == "API key")
+        #expect(model.usageNotes == [
+            "API key verified. Cloud quotas need browser cookies. Sign in to Ollama.",
+        ])
     }
 
     @Test
@@ -96,7 +154,6 @@ struct MenuCardProviderRegressionTests {
             snapshot: usage.toUsageSnapshot(),
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -110,11 +167,13 @@ struct MenuCardProviderRegressionTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.usageNotes == [
-            "Gateway: ok · 2 models · dry run",
-            "Routed: local: 10 · cloud: 4",
-            "Saved: <$0.01 · 61.5% vs highest-cost route",
-            "Avg decision: 0.1 ms",
+        let rows = try #require(model.providerDetails.first?.rows)
+        #expect(rows.map(\.label) == ["Gateway", "Routed", "Saved", "Avg decision"])
+        #expect(rows.map(\.value) == [
+            "ok · 2 models · dry run",
+            "local: 10 · cloud: 4",
+            "<$0.01 · 61.5% vs highest-cost route",
+            "0.1 ms",
         ])
     }
 
@@ -135,7 +194,6 @@ struct MenuCardProviderRegressionTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,

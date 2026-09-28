@@ -1,6 +1,6 @@
-@testable import CodexBarCore
 import Foundation
 import Testing
+@testable import CodexBarCore
 
 @Suite
 struct SpendBucketMergeLinuxTests {
@@ -59,10 +59,10 @@ struct SpendBucketMergeLinuxTests {
             ])
 
         #expect(merged.map(\.model) == ["a", "b", "a"])
-        #expect(merged.map(\.hourStart) == [
-            try SpendBucketTestEnvironment.utc(2026, 4, 2, 10),
-            try SpendBucketTestEnvironment.utc(2026, 4, 2, 10),
-            try SpendBucketTestEnvironment.utc(2026, 4, 2, 11),
+        #expect(try merged.map(\.hourStart) == [
+            SpendBucketTestEnvironment.utc(2026, 4, 2, 10),
+            SpendBucketTestEnvironment.utc(2026, 4, 2, 10),
+            SpendBucketTestEnvironment.utc(2026, 4, 2, 11),
         ])
     }
 
@@ -79,8 +79,12 @@ struct SpendBucketMergeLinuxTests {
             "message": [
                 "id": "msg_1",
                 "model": "claude-sonnet-4-6",
-                "usage": ["input_tokens": 10, "cache_creation_input_tokens": 0,
-                          "cache_read_input_tokens": 0, "output_tokens": 5],
+                "usage": [
+                    "input_tokens": 10,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 5,
+                ],
             ],
         ]])
         try env.write(root: env.piSessionsRoot, relativePath: "run/2026-04-02T10-00-00-000Z_s.jsonl", lines: [[

@@ -17,6 +17,15 @@ struct BrowserCookieOrderStatusStringTests {
     }
 
     @Test
+    func `claude cookie import prefers chrome without dropping fallback browsers`() throws {
+        let order = try #require(ProviderDefaults.metadata[.claude]?.browserCookieOrder)
+
+        #expect(order.first == .chrome)
+        #expect(order.count == Browser.defaultImportOrder.count)
+        #expect(Set(order) == Set(Browser.defaultImportOrder))
+    }
+
+    @Test
     func `cursor no session includes browser login hint`() {
         let order = ProviderDefaults.metadata[.cursor]?.browserCookieOrder ?? Browser.defaultImportOrder
         let message = CursorStatusProbeError.noSessionCookie.errorDescription ?? ""
@@ -52,7 +61,6 @@ struct BrowserCookieOrderStatusStringTests {
     func `opencode automatic cookies only use chrome and dia`() {
         let order = OpenCodeWebCookieSupport.automaticImportOrder(provider: .opencode)
         #expect(order == ProviderDefaults.metadata[.opencode]?.browserCookieOrder)
-        #expect(order == ProviderBrowserCookieDefaults.opencodeCookieImportOrder)
         #expect(order == [.chrome, .dia])
     }
 
@@ -73,7 +81,6 @@ struct BrowserCookieOrderStatusStringTests {
     @Test
     func `mimo cookie import order supports safari firefox and edge`() {
         let order = ProviderDefaults.metadata[.mimo]?.browserCookieOrder ?? Browser.defaultImportOrder
-        #expect(order == ProviderBrowserCookieDefaults.mimoCookieImportOrder)
         #expect(order == [.safari, .chrome, .chromeBeta, .chromeCanary, .firefox, .edge])
         #expect(order.first == .safari)
         #expect(order.contains(.firefox))
@@ -84,7 +91,29 @@ struct BrowserCookieOrderStatusStringTests {
     @Test
     func `copilot cookie imports default to chrome only`() {
         #expect(ProviderDefaults.metadata[.copilot]?.browserCookieOrder == [.chrome])
-        #expect(ProviderBrowserCookieDefaults.copilotCookieImportOrder == [.chrome])
+    }
+
+    @Test
+    func `mistral cookie import order supports chrome firefox and safari`() {
+        let order = ProviderDefaults.metadata[.mistral]?.browserCookieOrder ?? Browser.defaultImportOrder
+        #expect(order == [.chrome, .firefox, .safari])
+        #expect(order.first == .chrome)
+        #expect(order.contains(.firefox))
+        #expect(!order.contains(.edge))
+        #expect(!order.contains(.arc))
+        #expect(MistralCookieImporter.resolvedImportOrder(nil) == order)
+        #expect(MistralCookieImporter.resolvedImportOrder([]) == order)
+        #expect(MistralCookieImporter.resolvedImportOrder([.firefox]) == [.firefox])
+    }
+
+    @Test
+    func `longcat cookie import order supports chrome and firefox`() {
+        let metadataOrder = ProviderDefaults.metadata[.longcat]?.browserCookieOrder
+
+        #expect(metadataOrder == [.chrome, .firefox])
+        #expect(metadataOrder?.first == .chrome)
+        #expect(metadataOrder?.contains(.firefox) == true)
+        #expect(metadataOrder?.contains(.safari) == false)
     }
     #endif
 }

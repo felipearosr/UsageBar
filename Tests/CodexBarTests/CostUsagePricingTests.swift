@@ -19,6 +19,8 @@ struct CostUsagePricingTests {
         #expect(CostUsagePricing.normalizeCodexModel("openai/gpt-5.6-terra") == "gpt-5.6-terra")
         #expect(CostUsagePricing.normalizeCodexModel("gpt-5.6-luna") == "gpt-5.6-luna")
         #expect(CostUsagePricing.normalizeCodexModel("gpt-5.6") == "gpt-5.6-sol")
+        #expect(CostUsagePricing.normalizeCodexModel("gpt-reserve") == "gpt-5.6-luna")
+        #expect(CostUsagePricing.normalizeCodexModel("openai/gpt-reserve") == "gpt-5.6-luna")
         // Fictitious dated suffixes only exercise normalize stripping (not released snapshot IDs).
         #expect(CostUsagePricing.normalizeCodexModel("gpt-5.6-sol-2099-01-01") == "gpt-5.6-sol")
         #expect(CostUsagePricing.normalizeCodexModel("openai/gpt-5.6-terra-2099-01-01") == "gpt-5.6-terra")
@@ -51,12 +53,122 @@ struct CostUsagePricingTests {
     }
 
     @Test
+    func `codex cost resolves OpenCodex provider qualified models`() throws {
+        let root = try Self.seedModelsDevCache("""
+        {
+          "deepseek": {
+            "id": "deepseek",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 0.14, "output": 0.28 }
+              }
+            }
+          },
+          "kimi-for-coding": {
+            "id": "kimi-for-coding",
+            "models": {
+              "k3": {
+                "id": "k3",
+                "cost": { "input": 0, "output": 0 }
+              }
+            }
+          },
+          "opencode": {
+            "id": "opencode",
+            "models": {
+              "deepseek-v4-flash-free": {
+                "id": "deepseek-v4-flash-free",
+                "cost": { "input": 0, "output": 0 }
+              }
+            }
+          },
+          "opencode-go": {
+            "id": "opencode-go",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 0.07, "output": 0.14 }
+              }
+            }
+          }
+        }
+        """)
+
+        let opencodeGo = CostUsagePricing.codexCostUSD(
+            model: "opencode-go/deepseek-v4-flash",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+        let opencodeFree = CostUsagePricing.codexCostUSD(
+            model: "opencode-free/deepseek-v4-flash-free",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+        let kimi = CostUsagePricing.codexCostUSD(
+            model: "kimi-coding/k3",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+        let deepseek = CostUsagePricing.codexCostUSD(
+            model: "deepseek/deepseek-v4-flash",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+
+        #expect(opencodeGo == (100.0 * 0.07e-6) + (5.0 * 0.14e-6))
+        #expect(opencodeFree == 0)
+        #expect(kimi == 0)
+        #expect(deepseek == (100.0 * 0.14e-6) + (5.0 * 0.28e-6))
+    }
+
+    @Test
+    func `codex cost does not cross charge an unknown provider prefix`() throws {
+        let root = try Self.seedModelsDevCache("""
+        {
+          "openai": {
+            "id": "openai",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 99, "output": 199 }
+              }
+            }
+          },
+          "unlisted-route": {
+            "id": "unlisted-route",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 1, "output": 1 }
+              }
+            }
+          }
+        }
+        """)
+
+        let cost = CostUsagePricing.codexCostUSD(
+            model: "unlisted-route/deepseek-v4-flash",
+            inputTokens: 100,
+            cachedInputTokens: 0,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+
+        #expect(cost == nil)
+    }
+
+    @Test
     func `codex cost supports gpt51 codex max`() {
         let cost = CostUsagePricing.codexCostUSD(
             model: "gpt-5.1-codex-max",
             inputTokens: 100,
             cachedInputTokens: 10,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
         #expect(cost != nil)
     }
 
@@ -66,7 +178,8 @@ struct CostUsagePricingTests {
             model: "gpt-5.3-codex",
             inputTokens: 100,
             cachedInputTokens: 10,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
         #expect(cost != nil)
     }
 
@@ -76,12 +189,14 @@ struct CostUsagePricingTests {
             model: "gpt-5.4-mini-2026-03-17",
             inputTokens: 100,
             cachedInputTokens: 10,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
         let nano = CostUsagePricing.codexCostUSD(
             model: "gpt-5.4-nano",
             inputTokens: 100,
             cachedInputTokens: 10,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
 
         #expect(mini != nil)
         #expect(nano != nil)
@@ -126,6 +241,12 @@ struct CostUsagePricingTests {
             cachedInputTokens: 10,
             outputTokens: 5,
             modelsDevCacheRoot: root)
+        let reserve = CostUsagePricing.codexCostUSD(
+            model: "gpt-reserve",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
         let alias = CostUsagePricing.codexCostUSD(
             model: "gpt-5.6",
             inputTokens: 100,
@@ -133,11 +254,12 @@ struct CostUsagePricingTests {
             outputTokens: 5,
             modelsDevCacheRoot: root)
 
-        // Rates per token: Sol $5/$30 per 1M, Terra $2.50/$15, Luna $1/$6;
+        // Rates per token: Sol $5/$30 per 1M, Terra $2/$12, Luna $0.20/$1.20;
         // cache read is 10% of input. Non-cached input is 90 tokens.
         #expect(sol == (90.0 * 5e-6) + (10.0 * 5e-7) + (5.0 * 3e-5))
-        #expect(terra == (90.0 * 2.5e-6) + (10.0 * 2.5e-7) + (5.0 * 1.5e-5))
-        #expect(luna == (90.0 * 1e-6) + (10.0 * 1e-7) + (5.0 * 6e-6))
+        #expect(terra == (90.0 * 2e-6) + (10.0 * 2e-7) + (5.0 * 1.2e-5))
+        #expect(luna == (90.0 * 2e-7) + (10.0 * 2e-8) + (5.0 * 1.2e-6))
+        #expect(reserve == luna)
         // Unsuffixed gpt-5.6 alias routes to Sol.
         #expect(alias == sol)
     }
@@ -236,6 +358,13 @@ struct CostUsagePricingTests {
     }
 
     @Test
+    func `codex pricing fingerprint records API fast USD definition`() {
+        let fingerprint = CostUsagePricing.codexBuiltInPricingFingerprint()
+
+        #expect(fingerprint.contains("fastPricingDefinition=api-fast-usd-v1"))
+    }
+
+    @Test
     func `codex cost applies gpt56 long context rates`() throws {
         let root = try Self.cacheRoot()
         let sol = CostUsagePricing.codexCostUSD(
@@ -263,8 +392,8 @@ struct CostUsagePricingTests {
         // Long-context (>272K) rates apply to the entire request. Total input contains 10 cached,
         // 20 cache-write, and 271,971 ordinary input tokens.
         #expect(sol == (271_971.0 * 1e-5) + (10.0 * 1e-6) + (20.0 * 1.25e-5) + (10.0 * 4.5e-5))
-        #expect(terra == (271_971.0 * 5e-6) + (10.0 * 5e-7) + (20.0 * 6.25e-6) + (10.0 * 2.25e-5))
-        #expect(luna == (271_971.0 * 2e-6) + (10.0 * 2e-7) + (20.0 * 2.5e-6) + (10.0 * 9e-6))
+        #expect(terra == (271_971.0 * 4e-6) + (10.0 * 4e-7) + (20.0 * 5e-6) + (10.0 * 1.8e-5))
+        #expect(luna == (271_971.0 * 4e-7) + (10.0 * 4e-8) + (20.0 * 5e-7) + (10.0 * 1.8e-6))
     }
 
     @Test
@@ -284,63 +413,119 @@ struct CostUsagePricingTests {
     }
 
     @Test
-    func `codex priority cost supports gpt56 tiers`() {
+    func `codex API fast cost matches brief gpt56 scenarios`() throws {
+        let root = try Self.cacheRoot()
         let sol = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.6-sol",
-            inputTokens: 100,
-            cachedInputTokens: 20,
-            outputTokens: 10)
+            inputTokens: 100_000,
+            cachedInputTokens: 20000,
+            outputTokens: 20000,
+            modelsDevCacheRoot: root)
         let terra = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.6-terra",
-            inputTokens: 100,
-            cachedInputTokens: 20,
-            outputTokens: 10)
+            inputTokens: 100_000,
+            cachedInputTokens: 20000,
+            outputTokens: 20000,
+            modelsDevCacheRoot: root)
         let luna = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.6-luna",
-            inputTokens: 100,
-            cachedInputTokens: 20,
-            outputTokens: 10)
+            inputTokens: 100_000,
+            cachedInputTokens: 20000,
+            outputTokens: 20000,
+            modelsDevCacheRoot: root)
 
-        // Priority is 2x short-context rates (Sol input $10/1M, etc.).
-        #expect(sol == (80.0 * 1e-5) + (20.0 * 1e-6) + (10.0 * 6e-5))
-        #expect(terra == (80.0 * 5e-6) + (20.0 * 5e-7) + (10.0 * 3e-5))
-        #expect(luna == (80.0 * 2e-6) + (20.0 * 2e-7) + (10.0 * 1.2e-5))
+        // Public API Fast rates are 2x Standard for GPT-5.6.
+        let expectedSol = 2.02
+        let expectedTerra = 0.808
+        let expectedLuna = 0.0808
+        #expect(abs((sol ?? 0) - expectedSol) < 1e-12)
+        #expect(abs((terra ?? 0) - expectedTerra) < 1e-12)
+        #expect(abs((luna ?? 0) - expectedLuna) < 1e-12)
     }
 
     @Test
-    func `codex priority cost uses explicit cache write rates`() {
+    func `codex priority cost multiplies standard cache write rates`() throws {
+        let root = try Self.cacheRoot()
         let sol = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.6-sol",
             inputTokens: 100,
             cachedInputTokens: 10,
             cacheWriteInputTokens: 20,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
         let terra = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.6-terra",
             inputTokens: 100,
             cachedInputTokens: 10,
             cacheWriteInputTokens: 20,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
         let luna = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.6-luna",
             inputTokens: 100,
             cachedInputTokens: 10,
             cacheWriteInputTokens: 20,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
         let modelWithoutCacheWriteSupport = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.5",
             inputTokens: 100,
             cachedInputTokens: 10,
             cacheWriteInputTokens: 20,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
 
-        #expect(sol == (70.0 * 1e-5) + (10.0 * 1e-6) + (20.0 * 1.25e-5) + (5.0 * 6e-5))
-        #expect(terra == (70.0 * 5e-6) + (10.0 * 5e-7) + (20.0 * 6.25e-6) + (5.0 * 3e-5))
-        #expect(luna == (70.0 * 2e-6) + (10.0 * 2e-7) + (20.0 * 2.5e-6) + (5.0 * 1.2e-5))
-        // A model without an explicit Priority cache-write price keeps the legacy input-rate fold.
-        #expect(
-            modelWithoutCacheWriteSupport ==
-                (90.0 * 1.25e-5) + (10.0 * 1.25e-6) + (5.0 * 7.5e-5))
+        let solInput = 70.0 * 5e-6
+        let solCached = 10.0 * 5e-7
+        let solWrite = 20.0 * 6.25e-6
+        let solOutput = 5.0 * 3e-5
+        let expectedSol: Double = (solInput + solCached + solWrite + solOutput) * 2
+        let terraInput = 70.0 * 2e-6
+        let terraCached = 10.0 * 2e-7
+        let terraWrite = 20.0 * 2.5e-6
+        let terraOutput = 5.0 * 1.2e-5
+        let expectedTerra: Double = (terraInput + terraCached + terraWrite + terraOutput) * 2
+        let lunaInput = 70.0 * 2e-7
+        let lunaCached = 10.0 * 2e-8
+        let lunaWrite = 20.0 * 2.5e-7
+        let lunaOutput = 5.0 * 1.2e-6
+        let expectedLuna: Double = (lunaInput + lunaCached + lunaWrite + lunaOutput) * 2
+        #expect(abs((sol ?? 0) - expectedSol) < 1e-12)
+        #expect(abs((terra ?? 0) - expectedTerra) < 1e-12)
+        #expect(abs((luna ?? 0) - expectedLuna) < 1e-12)
+        // A legacy model without a Standard cache-write price folds writes into uncached input.
+        let legacyInput = 90.0 * 1.25e-5
+        let legacyCached = 10.0 * 1.25e-6
+        let legacyOutput = 5.0 * 7.5e-5
+        let expectedLegacy: Double = legacyInput + legacyCached + legacyOutput
+        #expect(abs((modelWithoutCacheWriteSupport ?? 0) - expectedLegacy) < 1e-12)
+    }
+
+    @Test
+    func `codex priority cost multiplies models dev standard pricing`() throws {
+        let root = try Self.seedModelsDevCache("""
+        {
+          "openai": {
+            "id": "openai",
+            "models": {
+              "gpt-5.6-sol": {
+                "id": "gpt-5.6-sol",
+                "cost": { "input": 5, "output": 30, "cache_read": 0.5, "cache_write": 6.25 }
+              }
+            }
+          }
+        }
+        """)
+
+        let cost = CostUsagePricing.codexPriorityCostUSD(
+            model: "gpt-5.6-sol",
+            inputTokens: 100_000,
+            cachedInputTokens: 20000,
+            outputTokens: 20000,
+            modelsDevCacheRoot: root)
+
+        // The brief's Standard total is $1.01; API Fast is 2x for GPT-5.6.
+        #expect(abs((cost ?? 0) - 2.02) < 1e-12)
     }
 
     @Test
@@ -429,22 +614,26 @@ struct CostUsagePricingTests {
     }
 
     @Test
-    func `codex priority cost applies model specific fast rates`() {
+    func `codex priority cost applies model specific fast rates`() throws {
+        let root = try Self.cacheRoot()
         let gpt54 = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.4",
             inputTokens: 100,
             cachedInputTokens: 20,
-            outputTokens: 10)
+            outputTokens: 10,
+            modelsDevCacheRoot: root)
         let gpt55 = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.5",
             inputTokens: 100,
             cachedInputTokens: 20,
-            outputTokens: 10)
+            outputTokens: 10,
+            modelsDevCacheRoot: root)
         let gpt54Mini = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.4-mini",
             inputTokens: 100,
             cachedInputTokens: 20,
-            outputTokens: 10)
+            outputTokens: 10,
+            modelsDevCacheRoot: root)
 
         #expect(gpt54 == (80.0 * 5e-6) + (20.0 * 5e-7) + (10.0 * 3e-5))
         #expect(gpt55 == (80.0 * 1.25e-5) + (20.0 * 1.25e-6) + (10.0 * 7.5e-5))
@@ -487,22 +676,26 @@ struct CostUsagePricingTests {
     }
 
     @Test
-    func `codex priority cost counts only input tokens toward the limit`() {
+    func `codex priority cost counts only input tokens toward the limit`() throws {
+        let root = try Self.cacheRoot()
         let eligible = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.5",
             inputTokens: 200_000,
             cachedInputTokens: 100_000,
-            outputTokens: 10)
+            outputTokens: 10,
+            modelsDevCacheRoot: root)
         let boundary = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.5",
             inputTokens: 272_000,
             cachedInputTokens: 0,
-            outputTokens: 10)
+            outputTokens: 10,
+            modelsDevCacheRoot: root)
         let overLimit = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.5",
             inputTokens: 272_001,
             cachedInputTokens: 0,
-            outputTokens: 10)
+            outputTokens: 10,
+            modelsDevCacheRoot: root)
 
         #expect(eligible == (100_000.0 * 1.25e-5) + (100_000.0 * 1.25e-6) + (10.0 * 7.5e-5))
         #expect(boundary != nil)
@@ -510,12 +703,14 @@ struct CostUsagePricingTests {
     }
 
     @Test
-    func `codex priority cost remains available at priority input boundary`() {
+    func `codex priority cost remains available at priority input boundary`() throws {
+        let root = try Self.cacheRoot()
         let gpt55 = CostUsagePricing.codexPriorityCostUSD(
             model: "gpt-5.5",
             inputTokens: 272_000,
             cachedInputTokens: 0,
-            outputTokens: 10)
+            outputTokens: 10,
+            modelsDevCacheRoot: root)
 
         #expect(gpt55 == (272_000.0 * 1.25e-5) + (10.0 * 7.5e-5))
     }
@@ -560,6 +755,77 @@ struct CostUsagePricingTests {
 
         #expect(atBoundary == (272_000.0 * 5e-6) + (10.0 * 3e-5))
         #expect(aboveBoundary == (272_001.0 * 1e-5) + (10.0 * 4.5e-5))
+    }
+
+    @Test
+    func `codex aggregate pricing uses safe base rates and rejects aggregates above thresholds`() throws {
+        let emptyRoot = try Self.cacheRoot()
+        let bundledBelowThreshold = CostUsagePricing.codexCostUSD(
+            aggregate: true,
+            model: "gpt-5.6-sol",
+            inputTokens: 200_000,
+            cachedInputTokens: 0,
+            outputTokens: 100,
+            modelsDevCacheRoot: emptyRoot)
+        let bundledAtThreshold = CostUsagePricing.codexCostUSD(
+            aggregate: true,
+            model: "gpt-5.6-sol",
+            inputTokens: 272_000,
+            cachedInputTokens: 0,
+            outputTokens: 100,
+            modelsDevCacheRoot: emptyRoot)
+        let bundledAboveThreshold = CostUsagePricing.codexCostUSD(
+            aggregate: true,
+            model: "gpt-5.6-sol",
+            inputTokens: 400_000,
+            cachedInputTokens: 0,
+            outputTokens: 100,
+            modelsDevCacheRoot: emptyRoot)
+        let linear = CostUsagePricing.codexCostUSD(
+            aggregate: true,
+            model: "gpt-5.4-mini",
+            inputTokens: 400_000,
+            cachedInputTokens: 100_000,
+            outputTokens: 100,
+            modelsDevCacheRoot: emptyRoot)
+        let catalogThresholdRoot = try Self.seedModelsDevCache("""
+        {
+          "openai": {
+            "id": "openai",
+            "models": {
+              "aggregate-threshold-model": {
+                "id": "aggregate-threshold-model",
+                "cost": {
+                  "input": 5,
+                  "output": 30,
+                  "context_over_200k": { "input": 10, "output": 45 }
+                }
+              }
+            }
+          }
+        }
+        """)
+        let catalogAtThreshold = CostUsagePricing.codexCostUSD(
+            aggregate: true,
+            model: "aggregate-threshold-model",
+            inputTokens: 200_000,
+            cachedInputTokens: 0,
+            outputTokens: 100,
+            modelsDevCacheRoot: catalogThresholdRoot)
+        let catalogAboveThreshold = CostUsagePricing.codexCostUSD(
+            aggregate: true,
+            model: "aggregate-threshold-model",
+            inputTokens: 200_001,
+            cachedInputTokens: 0,
+            outputTokens: 100,
+            modelsDevCacheRoot: catalogThresholdRoot)
+
+        #expect(bundledBelowThreshold == (200_000.0 * 5e-6) + (100.0 * 30e-6))
+        #expect(bundledAtThreshold == (272_000.0 * 5e-6) + (100.0 * 30e-6))
+        #expect(bundledAboveThreshold == nil)
+        #expect(linear == (300_000.0 * 7.5e-7) + (100_000.0 * 7.5e-8) + (100.0 * 4.5e-6))
+        #expect(catalogAtThreshold == (200_000.0 * 5e-6) + (100.0 * 30e-6))
+        #expect(catalogAboveThreshold == nil)
     }
 
     @Test
@@ -848,7 +1114,8 @@ extension CostUsagePricingTests {
             inputTokens: 10,
             cacheReadInputTokens: 0,
             cacheCreationInputTokens: 0,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
         #expect(cost != nil)
     }
 
@@ -859,7 +1126,8 @@ extension CostUsagePricingTests {
             inputTokens: 10,
             cacheReadInputTokens: 0,
             cacheCreationInputTokens: 0,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
         #expect(cost != nil)
     }
 
@@ -870,7 +1138,8 @@ extension CostUsagePricingTests {
             inputTokens: 10,
             cacheReadInputTokens: 0,
             cacheCreationInputTokens: 0,
-            outputTokens: 5)
+            outputTokens: 5,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
         let expected = (10.0 * 5e-6) + (5.0 * 2.5e-5)
         #expect(cost == expected)
     }
@@ -1045,7 +1314,8 @@ extension CostUsagePricingTests {
             inputTokens: 100,
             cacheReadInputTokens: 500,
             cacheCreationInputTokens: 0,
-            outputTokens: 40)
+            outputTokens: 40,
+            modelsDevCatalog: ModelsDevCatalog(providers: [:]))
         #expect(cost == nil)
     }
 
@@ -1091,6 +1361,164 @@ extension CostUsagePricingTests {
         #expect(cost == expected)
     }
 
+    @Test
+    func `claude cost prices bare first-party model IDs from vendor catalogs`() throws {
+        let root = try Self.seedModelsDevCache("""
+        {
+          "anthropic": {
+            "id": "anthropic",
+            "models": {
+              "claude-sonnet-4-6": {
+                "id": "claude-sonnet-4-6",
+                "cost": { "input": 3, "output": 15 }
+              },
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 99, "output": 199 }
+              }
+            }
+          },
+          "openai": {
+            "id": "openai",
+            "models": {
+              "claude-sonnet-4-6": {
+                "id": "claude-sonnet-4-6",
+                "cost": { "input": 1, "output": 2 }
+              }
+            }
+          },
+          "deepseek": {
+            "id": "deepseek",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 0.14, "output": 0.28 }
+              }
+            }
+          },
+          "opencode-go": {
+            "id": "opencode-go",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 0.07, "output": 0.14 }
+              }
+            }
+          }
+        }
+        """)
+
+        let bare = CostUsagePricing.claudeCostUSD(
+            model: "deepseek-v4-flash",
+            inputTokens: 100,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+        let prefixed = CostUsagePricing.claudeCostUSD(
+            model: "opencode-go/deepseek-v4-flash",
+            inputTokens: 100,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+        let anthropic = CostUsagePricing.claudeCostUSD(
+            model: "claude-sonnet-4-6",
+            inputTokens: 10,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+
+        #expect(bare == (100.0 * 0.14e-6) + (5.0 * 0.28e-6))
+        #expect(prefixed == (100.0 * 0.07e-6) + (5.0 * 0.14e-6))
+        #expect(anthropic == (10.0 * 3e-6) + (5.0 * 15e-6))
+        #expect(CostUsagePricing.claudeModelsDevPricingTargets(for: "deepseek-v4-flash").first?.providerID
+            == "deepseek")
+        #expect(CostUsagePricing.claudeModelsDevPricingTargets(for: "claude-sonnet-4-6").first?.providerID
+            == "anthropic")
+        #expect(Set(CostUsagePricing.claudeFirstPartyModelsDevProviderIDs).isSuperset(of: [
+            "anthropic",
+            "openai",
+            "google",
+            "moonshot",
+            "kimi-for-coding",
+            "minimax",
+            "deepseek",
+        ]))
+    }
+
+    @Test
+    func `claude cost rejects an ambiguous bare model catalog collision`() throws {
+        let root = try Self.seedModelsDevCache("""
+        {
+          "openai": {
+            "id": "openai",
+            "models": {
+              "shared-model": {
+                "id": "shared-model",
+                "cost": { "input": 1, "output": 2 }
+              }
+            }
+          },
+          "google": {
+            "id": "google",
+            "models": {
+              "shared-model": {
+                "id": "shared-model",
+                "cost": { "input": 3, "output": 4 }
+              }
+            }
+          }
+        }
+        """)
+
+        let cost = CostUsagePricing.claudeCostUSD(
+            model: "shared-model",
+            inputTokens: 100,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+
+        #expect(cost == nil)
+    }
+
+    @Test
+    func `claude cost does not cross charge a prefixed route onto first-party rates`() throws {
+        let root = try Self.seedModelsDevCache("""
+        {
+          "deepseek": {
+            "id": "deepseek",
+            "models": {
+              "deepseek-v4-flash": {
+                "id": "deepseek-v4-flash",
+                "cost": { "input": 0.14, "output": 0.28 }
+              }
+            }
+          }
+        }
+        """)
+
+        let cost = CostUsagePricing.claudeCostUSD(
+            model: "opencode-go/deepseek-v4-flash",
+            inputTokens: 100,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+        let unknownRoute = CostUsagePricing.claudeCostUSD(
+            model: "unknown-route/deepseek-v4-flash",
+            inputTokens: 100,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 5,
+            modelsDevCacheRoot: root)
+
+        #expect(cost == nil)
+        #expect(unknownRoute == nil)
+    }
+
     private static func seedModelsDevCache(_ json: String) throws -> URL {
         let root = try Self.cacheRoot()
         let catalog = try JSONDecoder().decode(ModelsDevCatalog.self, from: Data(json.utf8))
@@ -1111,5 +1539,103 @@ extension CostUsagePricingTests {
             .appendingPathComponent("codexbar-pricing-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    // MARK: - Historical pricing (date-aware, issue #2671)
+
+    @Test
+    func `GPT-5_6 Terra and Luna use explicit July 2026 boundary dates`() throws {
+        let root = try Self.cacheRoot()
+        // Assert against absolute dates, not the shared cutoff constant.
+        let beforeCutoff = Date(timeIntervalSince1970: 1_785_369_599) // 2026-07-29T23:59:59Z
+        let afterCutoff = Date(timeIntervalSince1970: 1_785_369_601) // 2026-07-30T00:00:01Z
+
+        let terraOld = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-terra",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: beforeCutoff,
+            modelsDevCacheRoot: root)
+        let terraNew = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-terra",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: afterCutoff,
+            modelsDevCacheRoot: root)
+        let lunaOld = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-luna",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: beforeCutoff,
+            modelsDevCacheRoot: root)
+        let lunaNew = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-luna",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: afterCutoff,
+            modelsDevCacheRoot: root)
+
+        // Pre-cutoff Terra: input $2.5/M, cacheRead $0.25/M, output $15/M.
+        #expect(terraOld == (90.0 * 2.5e-6) + (10.0 * 2.5e-7) + (5.0 * 1.5e-5))
+        // Post-cutoff Terra (current): input $2/M, cacheRead $0.20/M, output $12/M.
+        #expect(terraNew == (90.0 * 2e-6) + (10.0 * 2e-7) + (5.0 * 1.2e-5))
+        // Historical Terra is more expensive than current Terra.
+        #expect((terraOld ?? 0) > (terraNew ?? 0))
+
+        // Pre-cutoff Luna: input $1/M, cacheRead $0.10/M, output $6/M.
+        #expect(lunaOld == (90.0 * 1e-6) + (10.0 * 1e-7) + (5.0 * 6e-6))
+        // Post-cutoff Luna (current): input $0.20/M, cacheRead $0.02/M, output $1.20/M.
+        #expect(lunaNew == (90.0 * 2e-7) + (10.0 * 2e-8) + (5.0 * 1.2e-6))
+        // Historical Luna is more expensive than current Luna.
+        #expect((lunaOld ?? 0) > (lunaNew ?? 0))
+    }
+
+    @Test
+    func `GPT-5_6 Sol pricing is unchanged across explicit July 2026 boundary dates`() throws {
+        let root = try Self.cacheRoot()
+        let beforeCutoff = Date(timeIntervalSince1970: 1_785_369_599)
+        let afterCutoff = Date(timeIntervalSince1970: 1_785_369_601)
+
+        let solOld = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-sol",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: beforeCutoff,
+            modelsDevCacheRoot: root)
+        let solNew = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-sol",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: afterCutoff,
+            modelsDevCacheRoot: root)
+        // Sol was not in the rate cut; both sides should produce the same cost.
+        #expect(solOld == solNew)
+    }
+
+    @Test
+    func `historical pricing does not activate without a pricingDate`() throws {
+        let root = try Self.cacheRoot()
+        let terraNil = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-terra",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: nil,
+            modelsDevCacheRoot: root)
+        let terraNew = CostUsagePricing.codexCostUSD(
+            model: "gpt-5.6-terra",
+            inputTokens: 100,
+            cachedInputTokens: 10,
+            outputTokens: 5,
+            pricingDate: Date(timeIntervalSince1970: 1_785_369_601),
+            modelsDevCacheRoot: root)
+        // No date → current rates (same as post-cutoff).
+        #expect(terraNil == terraNew)
     }
 }

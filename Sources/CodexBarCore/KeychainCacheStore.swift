@@ -22,6 +22,8 @@ public enum KeychainCacheStore {
     public enum LoadResult<Entry> {
         case found(Entry)
         case missing
+        /// The cache requires repair or is backing off after a failed no-UI write.
+        case interactionRequired
         case temporarilyUnavailable
         case invalid
     }
@@ -41,10 +43,13 @@ public enum KeychainCacheStore {
     private static let log = CodexBarLog.logger(LogCategories.keychainCache)
     private static let cacheService = "com.steipete.codexbar.cache"
     private static let cacheLabel = "CodexBar Cache"
-    private nonisolated(unsafe) static var globalServiceOverride: String?
     @TaskLocal private static var serviceOverride: String?
+    @TaskLocal private static var forceImplicitTestStore = false
+    @TaskLocal private static var forceRealKeychainPath = false
     #if DEBUG
     @TaskLocal private static var operationRecorder: OperationRecorder?
+    @TaskLocal static var taskInteractionRequiredNowOverride: Date?
+    @TaskLocal static var taskInteractionRequiredRetryIntervalOverride: TimeInterval?
 
     enum Operation: Equatable, Sendable {
         case load
@@ -82,6 +87,12 @@ public enum KeychainCacheStore {
     private nonisolated(unsafe) static var testStore: [TestStoreKey: Data]?
     private nonisolated(unsafe) static var implicitTestStore: [TestStoreKey: Data] = [:]
     private nonisolated(unsafe) static var testStoreRefCount = 0
+    // Repeated legacy ACL validation can accumulate Security.framework allocations. Share a cooldown
+    // across reads and failed replacements, while allowing fresh data to repair our own cache item.
+    private static let interactionRequiredCacheLock = NSLock()
+    private nonisolated(unsafe) static var interactionRequiredRetryDates:
+        [TestStoreKey: (retryDate: Date, repairAttempted: Bool)] = [:]
+    private static let interactionRequiredRetryInterval: TimeInterval = 5 * 60
 
     public static func load<Entry: Codable>(
         key: Key,
@@ -95,19 +106,42 @@ public enum KeychainCacheStore {
             return self.loadResultForKeychainReadFailure(status: status, key: key)
         }
         #endif
-        if let testResult = loadFromTestStore(key: key, as: type) {
+        if !self.forceRealKeychainPath,
+           let testResult = loadFromTestStore(key: key, as: type),
+           !self.prefersDisabledAccessMemoryStoreOverTestStore
+        {
             return testResult
+        }
+        if self.shouldUseDisabledAccessMemoryStore(for: key.category) {
+            return self.loadFromDisabledAccessMemory(key: key, as: type)
         }
         guard self.canUseRealKeychain else { return .missing }
         #if os(macOS)
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: self.serviceName,
-            kSecAttrAccount as String: key.account,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecReturnData as String: true,
-        ]
-        KeychainNoUIQuery.apply(to: &query)
+        guard self.interactionRequiredRetryDate(for: key) == nil else { return .interactionRequired }
+        // Requesting secret bytes can surface a legacy ACL prompt even when the query carries
+        // `kSecUseAuthenticationUIFail`. Probe attributes and the item reference first, then ask
+        // for data only when the decrypt ACL already trusts this exact executable without UI.
+        switch KeychainAccessPreflight.checkGenericPassword(
+            service: self.serviceName,
+            account: key.account)
+        {
+        case .allowed:
+            break
+        case .interactionRequired:
+            self.log.info("Keychain cache item is unavailable without interaction (\(key.account))")
+            self.cacheInteractionRequired(for: key)
+            return .interactionRequired
+        case .temporarilyUnavailable:
+            self.log.info("Keychain cache temporarily unavailable (\(key.account)), will retry on next access")
+            return .temporarilyUnavailable
+        case .notFound:
+            return .missing
+        case let .failure(status):
+            return self.loadResultForKeychainReadFailure(status: OSStatus(status), key: key)
+        }
+        var query = self.itemQuery(for: key)
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnData as String] = true
 
         var result: AnyObject?
         let status = KeychainSecurity.copyMatching(query as CFDictionary, &result)
@@ -117,12 +151,11 @@ public enum KeychainCacheStore {
                 self.log.error("Keychain cache item was empty (\(key.account))")
                 return .invalid
             }
-            let decoder = Self.makeDecoder()
-            guard let decoded = try? decoder.decode(Entry.self, from: data) else {
+            let decoded = Self.decode(data, as: type)
+            if case .invalid = decoded {
                 self.log.error("Failed to decode keychain cache (\(key.account))")
-                return .invalid
             }
-            return .found(decoded)
+            return decoded
         default:
             return self.loadResultForKeychainReadFailure(status: status, key: key)
         }
@@ -146,8 +179,14 @@ public enum KeychainCacheStore {
             return false
         }
         #endif
-        if let stored = self.storeInTestStore(key: key, entry: entry) {
+        if !self.forceRealKeychainPath,
+           !self.prefersDisabledAccessMemoryStoreOverTestStore,
+           let stored = self.storeInTestStore(key: key, entry: entry)
+        {
             return stored
+        }
+        if self.shouldUseDisabledAccessMemoryStore(for: key.category) {
+            return self.storeInDisabledAccessMemory(key: key, entry: entry)
         }
         guard self.canUseRealKeychain else { return false }
         #if os(macOS)
@@ -157,22 +196,41 @@ public enum KeychainCacheStore {
             return false
         }
 
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: self.serviceName,
-            kSecAttrAccount as String: key.account,
-        ]
-        KeychainNoUIQuery.apply(to: &query)
-
-        let updateStatus = KeychainSecurity.update(
-            query as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return true
+        let query = self.itemQuery(for: key)
+        let preflight: KeychainAccessPreflight.Outcome = if self.interactionRequiredRetryDate(for: key) != nil {
+            .interactionRequired
+        } else {
+            KeychainAccessPreflight.checkGenericPassword(service: self.serviceName, account: key.account)
         }
-        if updateStatus != errSecItemNotFound {
-            self.log.error("Keychain cache update failed (\(key.account)): \(updateStatus)")
+        switch preflight {
+        case .allowed, .notFound:
+            break
+        case .interactionRequired:
+            // Decrypt authorization is not required to delete our own stale cache. Never discard it on a read:
+            // replace only when fresh data is available, and bound retries if no-UI deletion is refused.
+            guard self.cacheInteractionRequired(for: key, attemptingRepair: true),
+                  self.clearResultForKeychainDeleteStatus(
+                      KeychainSecurity.delete(query as CFDictionary), key: key, preserveRepair: true) != .failed
+            else { return false }
+        case .temporarilyUnavailable:
+            self.log.info("Keychain cache store temporarily unavailable (\(key.account)); skipping")
             return false
+        case let .failure(status):
+            self.log.error("Keychain cache store preflight failed (\(key.account)): \(status)")
+            return false
+        }
+
+        if case .allowed = preflight {
+            let updateStatus = KeychainSecurity.update(
+                query as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary)
+            if updateStatus == errSecSuccess {
+                return true
+            }
+            if updateStatus != errSecItemNotFound {
+                self.log.error("Keychain cache update failed (\(key.account)): \(updateStatus)")
+                return false
+            }
         }
 
         var addQuery = query
@@ -183,9 +241,23 @@ public enum KeychainCacheStore {
             addQuery[kSecAttrAccess as String] = access
         }
 
-        let addStatus = KeychainSecurity.add(addQuery as CFDictionary, nil)
+        var addStatus = KeychainSecurity.add(addQuery as CFDictionary, nil)
+        if addStatus == errSecDuplicateItem {
+            // Another first-party process may have inserted the same cache item after our missing preflight.
+            // Revalidate its ACL before resolving the benign race with an update.
+            guard case .allowed = KeychainAccessPreflight.checkGenericPassword(
+                service: self.serviceName,
+                account: key.account)
+            else { return false }
+            addStatus = KeychainSecurity.update(
+                query as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary)
+        }
         if addStatus != errSecSuccess {
-            self.log.error("Keychain cache add failed (\(key.account)): \(addStatus)")
+            self.cacheInteractionRequired(for: key, attemptingRepair: true)
+            self.log.error("Keychain cache write failed (\(key.account)): \(addStatus)")
+        } else {
+            self.invalidateCachedPreflight(for: key)
         }
         return addStatus == errSecSuccess
         #else
@@ -207,17 +279,20 @@ public enum KeychainCacheStore {
             return self.clearResultForKeychainDeleteStatus(status, key: key)
         }
         #endif
-        if let removed = self.clearTestStore(key: key) {
+        if !self.forceRealKeychainPath,
+           !self.prefersDisabledAccessMemoryStoreOverTestStore,
+           let removed = self.clearTestStore(key: key)
+        {
             return removed ? .removed : .missing
+        }
+        if self.shouldUseDisabledAccessMemoryStore(for: key.category) {
+            return self.clearDisabledAccessMemory(key: key) ? .removed : .missing
         }
         guard self.canUseRealKeychain else { return .failed }
         #if os(macOS)
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: self.serviceName,
-            kSecAttrAccount as String: key.account,
-        ]
-        KeychainNoUIQuery.apply(to: &query)
+        if self.interactionRequiredRetryDate(for: key) != nil,
+           !self.cacheInteractionRequired(for: key, attemptingRepair: true) { return .failed }
+        let query = self.itemQuery(for: key)
         return self.clearResultForKeychainDeleteStatus(KeychainSecurity.delete(query as CFDictionary), key: key)
         #else
         return .failed
@@ -239,8 +314,14 @@ public enum KeychainCacheStore {
             return self.keysResultForKeychainStatus(status, category: category, result: nil)
         }
         #endif
-        if let keys = self.keysFromTestStore(category: category) {
+        if !self.forceRealKeychainPath,
+           !self.prefersDisabledAccessMemoryStoreOverTestStore,
+           let keys = self.keysFromTestStore(category: category)
+        {
             return .found(keys)
+        }
+        if self.shouldUseDisabledAccessMemoryStore(for: category) {
+            return .found(self.keysFromDisabledAccessMemory(category: category))
         }
         guard self.canUseRealKeychain else { return .failed }
         #if os(macOS)
@@ -260,10 +341,6 @@ public enum KeychainCacheStore {
         #endif
     }
 
-    static func setServiceOverrideForTesting(_ service: String?) {
-        self.globalServiceOverride = service
-    }
-
     public static func withServiceOverrideForTesting<T>(
         _ service: String?,
         operation: () throws -> T) rethrows -> T
@@ -275,6 +352,7 @@ public enum KeychainCacheStore {
 
     public static func withServiceOverrideForTesting<T>(
         _ service: String?,
+        isolation _: isolated (any Actor)? = #isolation,
         operation: () async throws -> T) async rethrows -> T
     {
         try await self.$serviceOverride.withValue(service) {
@@ -291,11 +369,36 @@ public enum KeychainCacheStore {
         }
     }
 
+    static func withImplicitTestStoreForTesting<T>(
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$forceImplicitTestStore.withValue(true) {
+            try operation()
+        }
+    }
+
+    static func withImplicitTestStoreForTesting<T>(
+        isolation _: isolated (any Actor)? = #isolation,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$forceImplicitTestStore.withValue(true) {
+            try await operation()
+        }
+    }
+
     public static var currentServiceOverrideForTesting: String? {
         self.serviceOverride
     }
 
     #if DEBUG
+    static func withRealKeychainPathForTesting<T>(
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$forceRealKeychainPath.withValue(true) {
+            try operation()
+        }
+    }
+
     static func withOperationRecorderForTesting<T>(
         _ recorder: OperationRecorder?,
         operation: () throws -> T) rethrows -> T
@@ -334,6 +437,15 @@ public enum KeychainCacheStore {
     {
         try self.$loadFailureStatusOverride.withValue(status) {
             try operation()
+        }
+    }
+
+    public static func withLoadFailureStatusOverrideForTesting<T>(
+        _ status: OSStatus?,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$loadFailureStatusOverride.withValue(status) {
+            try await operation()
         }
     }
 
@@ -391,11 +503,103 @@ public enum KeychainCacheStore {
     }
 
     private static var serviceName: String {
-        serviceOverride ?? self.globalServiceOverride ?? self.cacheService
+        serviceOverride ?? self.cacheService
     }
 
     private static var canUseRealKeychain: Bool {
         !KeychainAccessGate.isDisabled
+    }
+
+    /// When persistent cookie-cache access is unavailable, keep an in-process cache so session
+    /// reconciliation can still succeed without treating every refresh as a session change.
+    /// Unit tests keep using the isolated test stores instead, unless a test explicitly opts in.
+    private static func shouldUseDisabledAccessMemoryStore(for category: String) -> Bool {
+        #if DEBUG
+        if self.disabledAccessMemoryStoreEnabledForTesting == true ||
+            self.bundledAdHocProcessOverrideForTesting == true
+        {
+            return category == "cookie"
+        }
+        if KeychainTestSafety.isRunningUnderTests(
+            processName: ProcessInfo.processInfo.processName,
+            environment: ProcessInfo.processInfo.environment)
+        {
+            return false
+        }
+        #endif
+        // Unbundled processes (no .app ancestor: `swift build` binaries, dev CLI
+        // runs) must never touch the shared cache item. Creating it would freeze
+        // a trusted-application ACL onto an ephemeral unsigned binary — after
+        // which the real app prompts forever — and reading someone else's item
+        // raises the login-keychain password dialog. They get a process-local
+        // in-memory cache instead.
+        if self.isUnbundledProcess {
+            return true
+        }
+        guard category == "cookie" else { return false }
+        return KeychainAccessGate.isExplicitlyDisabled || self.isBundledAdHocProcess
+    }
+
+    /// True when the running executable has no `.app` bundle ancestor.
+    static let isUnbundledProcess: Bool = {
+        #if os(macOS)
+        if let executableURL = Self.runningExecutableURLForCacheAccess,
+           Self.appBundleURL(containing: executableURL) != nil
+        {
+            return false
+        }
+        return true
+        #else
+        // No app bundles (or real keychain) exist off macOS; the memory store is
+        // the only sensible backing there anyway.
+        return true
+        #endif
+    }()
+
+    #if DEBUG
+    @TaskLocal private static var disabledAccessMemoryStoreEnabledForTesting: Bool?
+
+    static func withDisabledAccessMemoryStoreForTesting<T>(
+        _ enabled: Bool,
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$disabledAccessMemoryStoreEnabledForTesting.withValue(enabled) {
+            try operation()
+        }
+    }
+
+    static func withDisabledAccessMemoryStoreForTesting<T>(
+        _ enabled: Bool,
+        isolation _: isolated (any Actor)? = #isolation,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$disabledAccessMemoryStoreEnabledForTesting.withValue(enabled) {
+            try await operation()
+        }
+    }
+
+    static func resetDisabledAccessMemoryStoreForTesting() {
+        self.clearDisabledAccessMemoryStore()
+    }
+    #endif
+
+    /// Drops the in-process fallback used when persistent cookie-cache access is unavailable.
+    static func clearDisabledAccessMemoryStore() {
+        self.disabledAccessMemoryLock.lock()
+        self.disabledAccessMemoryStore.removeAll()
+        self.disabledAccessMemoryLock.unlock()
+    }
+
+    private static let disabledAccessMemoryLock = NSLock()
+    private nonisolated(unsafe) static var disabledAccessMemoryStore: [TestStoreKey: Data] = [:]
+
+    private static var prefersDisabledAccessMemoryStoreOverTestStore: Bool {
+        #if DEBUG
+        self.disabledAccessMemoryStoreEnabledForTesting == true ||
+            self.bundledAdHocProcessOverrideForTesting == true
+        #else
+        false
+        #endif
     }
 
     #if DEBUG
@@ -410,6 +614,12 @@ public enum KeychainCacheStore {
     }
     #endif
 
+    private static func decode<Entry: Codable>(_ data: Data?, as type: Entry.Type) -> LoadResult<Entry> {
+        guard let data else { return .missing }
+        guard let decoded = try? self.makeDecoder().decode(type, from: data) else { return .invalid }
+        return .found(decoded)
+    }
+
     private static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -423,6 +633,16 @@ public enum KeychainCacheStore {
     }
 
     #if os(macOS)
+    private static func itemQuery(for key: Key) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: self.serviceName,
+            kSecAttrAccount as String: key.account,
+        ]
+        KeychainNoUIQuery.apply(to: &query)
+        return query
+    }
+
     static func loadResultForKeychainReadFailure<Entry>(
         status: OSStatus,
         key: Key) -> LoadResult<Entry>
@@ -440,12 +660,13 @@ public enum KeychainCacheStore {
         }
     }
 
-    static func clearResultForKeychainDeleteStatus(_ status: OSStatus, key: Key) -> ClearResult {
+    static func clearResultForKeychainDeleteStatus(
+        _ status: OSStatus, key: Key, preserveRepair: Bool = false) -> ClearResult
+    {
         switch status {
-        case errSecSuccess:
-            return .removed
-        case errSecItemNotFound:
-            return .missing
+        case errSecSuccess, errSecItemNotFound:
+            self.invalidateCachedPreflight(for: key, preserveRepair: preserveRepair)
+            return status == errSecSuccess ? .removed : .missing
         case errSecInteractionNotAllowed:
             self.log.info("Keychain cache delete temporarily unavailable (\(key.account))")
             return .failed
@@ -479,40 +700,6 @@ public enum KeychainCacheStore {
         }
     }
 
-    static func trustedApplicationPathsForCacheAccess(
-        bundleURL: URL = Bundle.main.bundleURL,
-        executableURL: URL? = Bundle.main.executableURL,
-        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> [String]
-    {
-        var paths: [String] = []
-        func append(_ path: String) {
-            guard !path.isEmpty, fileExists(path), !paths.contains(path) else { return }
-            paths.append(path)
-        }
-
-        let appBundle = self.appBundleURL(containing: bundleURL)
-            ?? executableURL.flatMap(self.appBundleURL(containing:))
-        if let appBundle {
-            append(appBundle.path)
-            append(appBundle.appendingPathComponent("Contents/Helpers/CodexBarCLI").path)
-        }
-        if let executableURL {
-            append(executableURL.path)
-        }
-        return paths
-    }
-
-    private static func appBundleURL(containing url: URL) -> URL? {
-        var current = url.standardizedFileURL
-        while current.path != "/" {
-            if current.pathExtension == "app" {
-                return current
-            }
-            current.deleteLastPathComponent()
-        }
-        return nil
-    }
-
     private static func cacheAccessControl() -> SecAccess? {
         let trustedPaths = self.trustedApplicationPathsForCacheAccess()
         guard !trustedPaths.isEmpty else { return nil }
@@ -544,7 +731,7 @@ public enum KeychainCacheStore {
         CFArray,
         UnsafeMutablePointer<SecAccess?>?) -> OSStatus
 
-    private static func createTrustedApplication(path: String) -> (OSStatus, SecTrustedApplication?) {
+    static func createTrustedApplication(path: String) -> (OSStatus, SecTrustedApplication?) {
         guard let symbol = self.securitySymbol(named: "SecTrustedApplicationCreateFromPath") else {
             return (errSecInternalComponent, nil)
         }
@@ -585,15 +772,12 @@ public enum KeychainCacheStore {
     {
         self.testStoreLock.lock()
         defer { self.testStoreLock.unlock() }
-        guard let store = self.testStore ?? (self.shouldUseImplicitTestStore ? self.implicitTestStore : nil)
+        guard let store = self.forceImplicitTestStore
+            ? self.implicitTestStore
+            : self.testStore ?? (self.shouldUseImplicitTestStore ? self.implicitTestStore : nil)
         else { return nil }
         let testKey = TestStoreKey(service: self.serviceName, account: key.account)
-        guard let data = store[testKey] else { return .missing }
-        let decoder = Self.makeDecoder()
-        guard let decoded = try? decoder.decode(Entry.self, from: data) else {
-            return .invalid
-        }
-        return .found(decoded)
+        return Self.decode(store[testKey], as: type)
     }
 
     private static func storeInTestStore(key: Key, entry: some Codable) -> Bool? {
@@ -602,9 +786,12 @@ public enum KeychainCacheStore {
         let encoder = Self.makeEncoder()
         guard let data = try? encoder.encode(entry) else { return false }
         let testKey = TestStoreKey(service: self.serviceName, account: key.account)
-        if var store = self.testStore {
-            store[testKey] = data
-            self.testStore = store
+        if self.forceImplicitTestStore {
+            self.implicitTestStore[testKey] = data
+            return true
+        }
+        if self.testStore != nil {
+            self.testStore?[testKey] = data
             return true
         }
         if self.shouldUseImplicitTestStore {
@@ -618,10 +805,11 @@ public enum KeychainCacheStore {
         self.testStoreLock.lock()
         defer { self.testStoreLock.unlock() }
         let testKey = TestStoreKey(service: self.serviceName, account: key.account)
-        if var store = self.testStore {
-            let removed = store.removeValue(forKey: testKey) != nil
-            self.testStore = store
-            return removed
+        if self.forceImplicitTestStore {
+            return self.implicitTestStore.removeValue(forKey: testKey) != nil
+        }
+        if self.testStore != nil {
+            return self.testStore?.removeValue(forKey: testKey) != nil
         }
         if self.shouldUseImplicitTestStore {
             return self.implicitTestStore.removeValue(forKey: testKey) != nil
@@ -632,9 +820,50 @@ public enum KeychainCacheStore {
     private static func keysFromTestStore(category: String) -> [Key]? {
         self.testStoreLock.lock()
         defer { self.testStoreLock.unlock() }
-        guard let store = self.testStore ?? (self.shouldUseImplicitTestStore ? self.implicitTestStore : nil)
+        guard let store = self.forceImplicitTestStore
+            ? self.implicitTestStore
+            : self.testStore ?? (self.shouldUseImplicitTestStore ? self.implicitTestStore : nil)
         else { return nil }
         return store.keys
+            .filter { $0.service == self.serviceName }
+            .compactMap { self.key(fromAccount: $0.account, category: category) }
+            .sorted { $0.identifier < $1.identifier }
+    }
+
+    private static func loadFromDisabledAccessMemory<Entry: Codable>(
+        key: Key,
+        as type: Entry.Type) -> LoadResult<Entry>
+    {
+        self.disabledAccessMemoryLock.lock()
+        defer { self.disabledAccessMemoryLock.unlock() }
+        let memoryKey = TestStoreKey(service: self.serviceName, account: key.account)
+        return Self.decode(self.disabledAccessMemoryStore[memoryKey], as: type)
+    }
+
+    private static func storeInDisabledAccessMemory(key: Key, entry: some Codable) -> Bool {
+        let encoder = Self.makeEncoder()
+        guard let data = try? encoder.encode(entry) else { return false }
+        self.disabledAccessMemoryLock.lock()
+        defer { self.disabledAccessMemoryLock.unlock() }
+        let memoryKey = TestStoreKey(service: self.serviceName, account: key.account)
+        self.disabledAccessMemoryStore[memoryKey] = data
+        self.log.debug("Cookie cache stored in process memory", metadata: [
+            "account": key.account,
+        ])
+        return true
+    }
+
+    private static func clearDisabledAccessMemory(key: Key) -> Bool {
+        self.disabledAccessMemoryLock.lock()
+        defer { self.disabledAccessMemoryLock.unlock() }
+        let memoryKey = TestStoreKey(service: self.serviceName, account: key.account)
+        return self.disabledAccessMemoryStore.removeValue(forKey: memoryKey) != nil
+    }
+
+    private static func keysFromDisabledAccessMemory(category: String) -> [Key] {
+        self.disabledAccessMemoryLock.lock()
+        defer { self.disabledAccessMemoryLock.unlock() }
+        return self.disabledAccessMemoryStore.keys
             .filter { $0.service == self.serviceName }
             .compactMap { self.key(fromAccount: $0.account, category: category) }
             .sorted { $0.identifier < $1.identifier }
@@ -649,17 +878,72 @@ public enum KeychainCacheStore {
     }
 }
 
+extension KeychainCacheStore {
+    private static func invalidateCachedPreflight(for key: Key, preserveRepair: Bool = false) {
+        KeychainAccessPreflight.invalidateGenericPasswordChecks(service: self.serviceName)
+        guard !preserveRepair else { return }
+        self.interactionRequiredCacheLock.withLock {
+            _ = self.interactionRequiredRetryDates.removeValue(forKey: .init(
+                service: self.serviceName, account: key.account))
+        }
+    }
+
+    static func interactionRequiredRetryDate(for key: Key) -> Date? {
+        self.interactionRequiredCacheLock.withLock {
+            let cacheKey = TestStoreKey(service: self.serviceName, account: key.account)
+            guard let retryDate = self.interactionRequiredRetryDates[cacheKey]?.retryDate else { return nil }
+            guard self.interactionRequiredNow < retryDate else {
+                self.interactionRequiredRetryDates.removeValue(forKey: cacheKey)
+                return nil
+            }
+            return retryDate
+        }
+    }
+
+    @discardableResult
+    fileprivate static func cacheInteractionRequired(for key: Key, attemptingRepair: Bool = false) -> Bool {
+        self.interactionRequiredCacheLock.withLock {
+            let cacheKey = TestStoreKey(service: self.serviceName, account: key.account)
+            let deadline = self.interactionRequiredNow.addingTimeInterval(self.currentInteractionRequiredRetryInterval)
+            var state = self.interactionRequiredRetryDates[cacheKey] ?? (deadline, false)
+            if state.retryDate <= self.interactionRequiredNow { state = (deadline, false) }
+            guard !attemptingRepair || !state.repairAttempted else { return false }
+            state.repairAttempted = state.repairAttempted || attemptingRepair
+            self.interactionRequiredRetryDates[cacheKey] = state
+            return true
+        }
+    }
+
+    private static var interactionRequiredNow: Date {
+        #if DEBUG
+        if let override = self.taskInteractionRequiredNowOverride {
+            return override
+        }
+        #endif
+        return Date()
+    }
+
+    private static var currentInteractionRequiredRetryInterval: TimeInterval {
+        #if DEBUG
+        if let override = self.taskInteractionRequiredRetryIntervalOverride {
+            return override
+        }
+        #endif
+        return self.interactionRequiredRetryInterval
+    }
+}
+
 extension KeychainCacheStore.Key {
-    public static func cookie(provider: UsageProvider, scopeIdentifier: String? = nil) -> Self {
+    public static func cookie(provider instanceID: ProviderInstanceID, scopeIdentifier: String? = nil) -> Self {
         let identifier: String = if let scopeIdentifier, !scopeIdentifier.isEmpty {
-            "\(provider.rawValue).\(scopeIdentifier)"
+            "\(instanceID.rawValue).\(scopeIdentifier)"
         } else {
-            provider.rawValue
+            instanceID.rawValue
         }
         return Self(category: "cookie", identifier: identifier)
     }
 
-    public static func oauth(provider: UsageProvider) -> Self {
-        Self(category: "oauth", identifier: provider.rawValue)
+    public static func oauth(provider instanceID: ProviderInstanceID) -> Self {
+        Self(category: "oauth", identifier: instanceID.rawValue)
     }
 }

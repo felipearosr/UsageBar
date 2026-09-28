@@ -1,0 +1,53 @@
+---
+summary: "LongCat provider cookie sources, quota requests, and snapshot mapping."
+read_when:
+  - Debugging LongCat usage or stale zero quotas
+  - Updating LongCat cookie handling or web requests
+  - Adjusting LongCat quota or fuel-pack mapping
+---
+
+# LongCat provider
+
+LongCat reads quota data from an authenticated `longcat.chat` web session. It does not require an API key.
+
+## Data sources
+
+- A manual cookie header can be entered in Settings → Providers → LongCat or supplied through
+  `LONGCAT_MANUAL_COOKIE`.
+- Automatic mode can import supported browser cookies during a user-initiated refresh.
+
+The bundled `longcat.ts` plugin owns requests, session-error classification, and quota mapping on QuickJS and
+JavaScriptCore. The host keeps imported cookies opaque, groups them per browser profile, and selects cookies separately
+for each request URL, including same-origin HTTPS redirects. It retains path-scoped duplicate names and honors
+host-only scope, Secure, and expiry. Cross-origin redirects are rejected.
+
+Automatic imports try Chrome before Firefox and run only during a user-initiated app refresh. LongCat does not read or
+write a persistent session cache. Background refreshes and the CLI require a manual/environment cookie. Manual settings
+take precedence over the environment; Off disables environment cookies too. Profiles advance only for missing cookies
+or an invalid session, so network and parse errors do not silently switch accounts.
+
+## Request sequence
+
+1. `GET /api/v1/user-current` is required and validates the session while providing the account name.
+2. `POST /api/pay/quota/metering/token-packs/summary` provides the primary live token-pack quota. This probe is
+   best-effort because some browser cookies are scoped to other API paths.
+3. `GET /api/lc-platform/v1/tokenUsage` is required only when the summary has no active lot with a positive total.
+4. `GET /api/lc-platform/v1/pending-fuel-packages` is best-effort and runs in both primary-quota paths.
+
+The legacy `tokenUsage` response can report stale zeros for token-pack accounts, so it is only a fallback (#2670).
+
+## Snapshot mapping
+
+An active `currentLot` maps `totalToken` to the primary total and `consumedToken` to primary used tokens. When no
+usable lot exists, the legacy token-usage aggregate supplies total, used, and remaining quota. Pending fuel packages
+are summed into the secondary window, with their nearest expiry used as its reset time.
+
+Fuel-pack expiry accepts Unix seconds or milliseconds, ISO 8601 timestamps with or without fractional seconds,
+and the console's legacy date-and-time format.
+
+Token counts are displayed as quota details, not reset clocks. Fuel-pack counts remain visible alongside their expiry
+when one is reported.
+
+Large finite token counts remain displayable without integer overflow. Nonfinite quota or fuel-pack totals are omitted
+independently, and malformed or unrepresentable response codes fail parsing instead of terminating the app.
+Unrepresentable expiry dates retain quota details without displaying a reset countdown.

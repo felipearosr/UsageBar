@@ -6,6 +6,11 @@ public enum WindsurfProviderDescriptor {
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .windsurf,
+            settingsSection: .init(WindsurfProviderSettingsKey.self, cookieSettings: { settings in
+                CookieProviderSettings(
+                    cookieSource: settings.cookieSource,
+                    manualCookieHeader: settings.manualCookieHeader)
+            }),
             metadata: ProviderMetadata(
                 id: .windsurf,
                 displayName: "Windsurf",
@@ -18,14 +23,24 @@ public enum WindsurfProviderDescriptor {
                 toggleTitle: "Show Windsurf usage",
                 cliName: "windsurf",
                 defaultEnabled: false,
+                widgetSelectable: false,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
+                sharePlanLabels: [
+                    "free": "Free", "pro": "Pro", "team": "Teams", "teams": "Teams",
+                    "enterprise": "Enterprise", "ultimate": "Ultimate",
+                ],
                 dashboardURL: "https://windsurf.com/subscription/usage",
                 statusPageURL: nil),
             branding: ProviderBranding(
-                iconStyle: .windsurf,
+                iconStyle: .init(provider: .windsurf),
                 iconResourceName: "ProviderIcon-windsurf",
-                color: ProviderColor(red: 52 / 255, green: 232 / 255, blue: 187 / 255)),
+                color: ProviderColor(red: 52 / 255, green: 232 / 255, blue: 187 / 255),
+                confettiPalette: [
+                    ProviderColor(hex: 0x000000),
+                    ProviderColor(hex: 0x09B6A2),
+                    ProviderColor(hex: 0x34E8BB),
+                ]),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Windsurf cost summary is not supported." }),

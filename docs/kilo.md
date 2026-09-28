@@ -16,7 +16,7 @@ Kilo supports API and CLI-backed auth. Source mode can be `auto`, `api`, or `cli
    - Calls `https://app.kilo.ai/api/trpc`.
 2. CLI session (`cli`)
    - Reads `~/.local/share/kilo/auth.json` and uses `kilo.access`.
-   - Requires a valid CLI login (`kilo login`).
+   - Requires a valid CLI login (`kilo auth login`).
 3. Auto (`auto`)
    - Tries API first.
    - Falls back to CLI only when API credentials are missing or unauthorized (401/403).
@@ -30,11 +30,12 @@ Kilo supports API and CLI-backed auth. Source mode can be `auto`, `api`, or `cli
 ## CLI output notes
 - Kilo text output splits identity into `Plan:` and `Activity:` lines.
 - Auto-mode failures include ordered fallback-attempt details in text mode.
+- Large finite credit balances remain displayable; an overflowed credit total omits that usage window.
 
 ## Troubleshooting
 - Missing API token: set `KILO_API_KEY` or provider `apiKey`.
-- Missing CLI session file: run `kilo login` to create `~/.local/share/kilo/auth.json`.
-- Unauthorized API token (401/403): refresh `KILO_API_KEY` or rerun `kilo login`.
+- Missing CLI session file: run `kilo auth login` to create `~/.local/share/kilo/auth.json`.
+- Unauthorized API token (401/403): refresh `KILO_API_KEY` or rerun `kilo auth login`.
 
 ## Organizations
 
@@ -44,6 +45,8 @@ CodexBar can show usage for any Kilo organization the API key belongs to.
   organizations**.
 - Toggle the organizations you want to display alongside Personal. Personal is
   always shown.
+- Organization refreshes apply only to the configuration that started them. Changing credentials, source, or organization selections discards older results and errors; a current refresh still removes selections that are no longer available.
+- The resolved credential is checked again before publication, so replacing or removing CLI `auth.json` during discovery also invalidates the old response.
 - When at least one organization is enabled, the menu renders one Kilo card per
   enabled scope.
 - The CodexBar fetcher sends the standard `X-KILOCODE-ORGANIZATIONID` header on

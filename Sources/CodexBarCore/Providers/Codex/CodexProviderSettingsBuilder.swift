@@ -6,19 +6,22 @@ public struct CodexProviderSettingsBuilderInput: Sendable {
     public let manualCookieHeader: String?
     public let reconciliationSnapshot: CodexAccountReconciliationSnapshot
     public let resolvedActiveSource: CodexResolvedActiveSource
+    public let allowExternalOAuthSources: Bool
 
     public init(
         usageDataSource: CodexUsageDataSource,
         cookieSource: ProviderCookieSource,
         manualCookieHeader: String?,
         reconciliationSnapshot: CodexAccountReconciliationSnapshot,
-        resolvedActiveSource: CodexResolvedActiveSource)
+        resolvedActiveSource: CodexResolvedActiveSource,
+        allowExternalOAuthSources: Bool = false)
     {
         self.usageDataSource = usageDataSource
         self.cookieSource = cookieSource
         self.manualCookieHeader = manualCookieHeader
         self.reconciliationSnapshot = reconciliationSnapshot
         self.resolvedActiveSource = resolvedActiveSource
+        self.allowExternalOAuthSources = allowExternalOAuthSources
     }
 }
 
@@ -26,10 +29,21 @@ public enum CodexKnownOwnerCatalog {
     public static func candidates(
         from snapshot: CodexAccountReconciliationSnapshot) -> [CodexDashboardKnownOwnerCandidate]
     {
-        var candidates = snapshot.storedAccounts.map { account in
-            CodexDashboardKnownOwnerCandidate(
-                identity: snapshot.runtimeIdentity(for: account),
-                normalizedEmail: CodexIdentityResolver.normalizeEmail(snapshot.runtimeEmail(for: account)))
+        var candidates = snapshot.storedAccounts.flatMap { account in
+            let normalizedEmail = CodexIdentityResolver.normalizeEmail(snapshot.runtimeEmail(for: account))
+            let remoteIdentity = snapshot.managedRemoteIdentity(for: account)
+            let runtimeIdentity = snapshot.runtimeIdentity(for: account)
+            var managedCandidates = [CodexDashboardKnownOwnerCandidate(
+                identity: remoteIdentity,
+                normalizedEmail: normalizedEmail)]
+            if runtimeIdentity != .unresolved,
+               !CodexIdentityMatcher.matches(runtimeIdentity, remoteIdentity)
+            {
+                managedCandidates.append(CodexDashboardKnownOwnerCandidate(
+                    identity: runtimeIdentity,
+                    normalizedEmail: normalizedEmail))
+            }
+            return managedCandidates
         }
 
         if let liveSystemAccount = snapshot.liveSystemAccount {
@@ -77,6 +91,12 @@ public enum CodexProviderSettingsBuilder {
         case let .profileHome(path):
             snapshot.profileHomeAccount(path: path) == nil
         }
+        let managedWorkspaceAccountID: String? = switch input.resolvedActiveSource.resolvedSource {
+        case .liveSystem, .profileHome:
+            nil
+        case .managedAccount:
+            input.reconciliationSnapshot.activeStoredAccount?.effectiveWorkspaceAccountID
+        }
 
         return ProviderSettingsSnapshot.CodexProviderSettings(
             usageDataSource: input.usageDataSource,
@@ -88,6 +108,8 @@ public enum CodexProviderSettingsBuilder {
                 && snapshot.activeStoredAccount == nil,
             profileAccountTargetUnavailable: profileAccountTargetUnavailable,
             openAIWebCacheScope: openAIWebCacheScope,
-            dashboardAuthorityKnownOwners: CodexKnownOwnerCatalog.candidates(from: snapshot))
+            dashboardAuthorityKnownOwners: CodexKnownOwnerCatalog.candidates(from: snapshot),
+            allowExternalOAuthSources: input.allowExternalOAuthSources,
+            managedWorkspaceAccountID: managedWorkspaceAccountID)
     }
 }

@@ -44,32 +44,6 @@ struct StatusItemBalanceDisplayTests {
     }
 
     @Test
-    func `menu bar display text uses crossmodel balance currency`() {
-        let settings = self.makeSettings(
-            suiteName: "StatusItemBalanceDisplayTests-crossmodel-eur-balance",
-            provider: .crossmodel)
-        settings.setMenuBarMetricPreference(.automatic, for: .crossmodel)
-        let (store, controller) = self.makeStoreAndController(settings: settings)
-        defer { controller.releaseStatusItemsForTesting() }
-        let snapshot = CrossModelUsageSnapshot(
-            currency: "EUR",
-            balance: 8.059489,
-            uncollected: 0,
-            daily: nil,
-            weekly: nil,
-            monthly: nil,
-            updatedAt: Date())
-            .toUsageSnapshot()
-
-        store._setSnapshotForTesting(snapshot, provider: .crossmodel)
-        store._setErrorForTesting(nil, provider: .crossmodel)
-
-        let displayText = controller.menuBarDisplayText(for: .crossmodel, snapshot: snapshot)
-
-        #expect(displayText == "€8.06")
-    }
-
-    @Test
     func `menu bar display text uses zen balance when open code has no subscription`() {
         let settings = self.makeSettings(
             suiteName: "StatusItemBalanceDisplayTests-opencodego-zen-only",
@@ -240,6 +214,222 @@ struct StatusItemBalanceDisplayTests {
         let displayText = controller.menuBarDisplayText(for: .deepseek, snapshot: snapshot)
 
         #expect(displayText == "$9.32")
+    }
+
+    @Test(arguments: [MenuBarLayoutToken.resetCountdown, .resetAbsolute])
+    func `custom DeepSeek menu bar layouts use compact balance in status item and preview`(
+        token: MenuBarLayoutToken)
+    {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-deepseek-custom-layout",
+            provider: .deepseek)
+        let layout = MenuBarLayout(lines: [[token]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 0,
+                windowMinutes: nil,
+                resetsAt: nil,
+                resetDescription: "¥2.23 (Paid: ¥2.23 / Granted: ¥0.00)"),
+            secondary: nil,
+            updatedAt: Date())
+
+        store._setSnapshotForTesting(snapshot, provider: .deepseek)
+        store._setErrorForTesting(nil, provider: .deepseek)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .deepseek,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .deepseek,
+            settings: settings,
+            store: store)
+            .liveData(provider: .deepseek, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: nil,
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automatic?.resetDescription == "¥2.23")
+            #expect(rendered.attributedTitle.string == "¥2.23")
+        }
+    }
+
+    @Test
+    func `custom non DeepSeek menu bar layouts keep automatic reset detail in status item and preview`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-cursor-custom-layout",
+            provider: .cursor)
+        let layout = MenuBarLayout(lines: [[.resetCountdown]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let detail = "Monthly allocation detail"
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 27,
+                windowMinutes: 30 * 24 * 60,
+                resetsAt: nil,
+                resetDescription: detail),
+            secondary: nil,
+            updatedAt: Date())
+
+        store._setSnapshotForTesting(snapshot, provider: .cursor)
+        store._setErrorForTesting(nil, provider: .cursor)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .cursor,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .cursor,
+            settings: settings,
+            store: store)
+            .liveData(provider: .cursor, snapshot: snapshot)
+
+        #expect(statusItemData.automatic?.resetDescription == detail)
+        #expect(previewData.automatic?.resetDescription == detail)
+    }
+
+    @Test(arguments: [false, true])
+    func `DeepSeek layout normalization preserves automatic window metadata`(isPlaceholder: Bool) throws {
+        let resetsAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let window = RateWindow(
+            usedPercent: 37.5,
+            windowMinutes: 1440,
+            resetsAt: resetsAt,
+            resetDescription: "¥2.23 (Paid: ¥2.23 / Granted: ¥0.00)",
+            nextRegenPercent: 6.25,
+            isSyntheticPlaceholder: isPlaceholder)
+        let snapshot = UsageSnapshot(primary: window, secondary: nil, updatedAt: Date())
+
+        let normalized = try #require(MenuBarLayoutAutomaticWindowDisplayNormalizer.normalized(
+            provider: .deepseek,
+            snapshot: snapshot,
+            window: window))
+
+        #expect(normalized.usedPercent == window.usedPercent)
+        #expect(normalized.windowMinutes == window.windowMinutes)
+        #expect(normalized.resetsAt == window.resetsAt)
+        #expect(normalized.resetDescription == "¥2.23")
+        #expect(normalized.nextRegenPercent == window.nextRegenPercent)
+        #expect(normalized.isSyntheticPlaceholder == window.isSyntheticPlaceholder)
+        #expect(MenuBarLayoutAutomaticWindowDisplayNormalizer.normalized(
+            provider: .cursor,
+            snapshot: snapshot,
+            window: window) == window)
+    }
+
+    @Test
+    func `menu bar display text uses DeepInfra available balance`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-deepinfra-balance",
+            provider: .deepinfra)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = UsageSnapshot(
+            primary: .init(
+                usedPercent: 0,
+                windowMinutes: nil,
+                resetsAt: nil,
+                resetDescription: "$12.34 available · $1.25 spent this month"),
+            secondary: nil,
+            updatedAt: Date(),
+            identity: .init(providerID: .deepinfra, accountEmail: nil, accountOrganization: nil, loginMethod: nil),
+            dataConfidence: .exact)
+
+        store._setSnapshotForTesting(snapshot, provider: .deepinfra)
+        store._setErrorForTesting(nil, provider: .deepinfra)
+
+        #expect(controller.menuBarDisplayText(for: .deepinfra, snapshot: snapshot) == "$12.34")
+    }
+
+    @Test
+    func `DeepInfra card shows balance text without an inferred percentage bar`() throws {
+        let now = Date()
+        let snapshot = UsageSnapshot(
+            primary: .init(
+                usedPercent: 0,
+                windowMinutes: nil,
+                resetsAt: nil,
+                resetDescription: "$95.81 available · $3.94 spent this month"),
+            secondary: nil,
+            updatedAt: now,
+            identity: .init(providerID: .deepinfra, accountEmail: nil, accountOrganization: nil, loginMethod: nil),
+            dataConfidence: .exact)
+        let metadata = try #require(ProviderDefaults.metadata[.deepinfra])
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .deepinfra,
+            metadata: metadata,
+            snapshot: snapshot,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: nil, plan: nil),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            hidePersonalInfo: false,
+            now: now))
+
+        let balance = try #require(model.metrics.first)
+        #expect(balance.title == "Balance")
+        #expect(balance.statusText == "$95.81 available · $3.94 spent this month")
+        #expect(balance.detailText == nil)
+        #expect(balance.resetText == nil)
+    }
+
+    @Test
+    func `menu bar display text marks DeepInfra amount owed`() {
+        let snapshot = UsageSnapshot(
+            primary: .init(
+                usedPercent: 100,
+                windowMinutes: nil,
+                resetsAt: nil,
+                resetDescription: "$2.75 owed · $3.00 spent this month"),
+            secondary: nil,
+            updatedAt: Date(),
+            identity: .init(providerID: .deepinfra, accountEmail: nil, accountOrganization: nil, loginMethod: nil),
+            dataConfidence: .exact)
+
+        #expect(MenuBarLayoutBalanceResolver.balance(provider: .deepinfra, snapshot: snapshot) == "-$2.75")
+    }
+
+    @Test
+    func `menu bar display text keeps DeepInfra balance when suspended`() {
+        let snapshot = UsageSnapshot(
+            primary: .init(
+                usedPercent: 100,
+                windowMinutes: nil,
+                resetsAt: nil,
+                resetDescription: "Suspended: Payment review · $4.00 available · $3.00 spent this month"),
+            secondary: nil,
+            updatedAt: Date(),
+            identity: .init(providerID: .deepinfra, accountEmail: nil, accountOrganization: nil, loginMethod: nil),
+            dataConfidence: .exact)
+
+        #expect(MenuBarLayoutBalanceResolver.balance(provider: .deepinfra, snapshot: snapshot) == "$4.00")
     }
 
     @Test
@@ -414,29 +604,6 @@ struct StatusItemBalanceDisplayTests {
 
         #expect(snapshot.identity?.loginMethod == "API spend: €1.2345 this month")
         #expect(displayText == "€1.2345")
-    }
-
-    @Test
-    func `menu bar display text uses kimi k2 api key credits`() {
-        let settings = self.makeSettings(
-            suiteName: "StatusItemBalanceDisplayTests-kimik2-credits",
-            provider: .kimik2)
-        let (store, controller) = self.makeStoreAndController(settings: settings)
-        defer { controller.releaseStatusItemsForTesting() }
-        let snapshot = KimiK2UsageSummary(
-            consumed: 75,
-            remaining: 1234.5,
-            averageTokens: nil,
-            updatedAt: Date()).toUsageSnapshot()
-
-        store._setSnapshotForTesting(snapshot, provider: .kimik2)
-        store._setErrorForTesting(nil, provider: .kimik2)
-
-        let displayText = controller.menuBarDisplayText(for: .kimik2, snapshot: snapshot)
-
-        #expect(snapshot.primary == nil)
-        #expect(snapshot.identity?.loginMethod == "Credits: 1234.5 left")
-        #expect(displayText == "1234.5")
     }
 
     @Test
@@ -664,6 +831,22 @@ struct StatusItemBalanceDisplayTests {
     }
 
     @Test
+    func `high contrast button title embeds image and metric in attributed content`() throws {
+        let image = NSImage(size: NSSize(width: 18, height: 18))
+        image.isTemplate = true
+
+        let title = StatusItemController.highContrastButtonTitle(image: image, title: " 42%")
+
+        #expect(title.string == "\u{FFFC} 42%")
+        let attachment = try #require(title.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment)
+        #expect(attachment.image === image)
+        #expect(attachment.bounds.width == 18)
+        #expect(attachment.bounds.height == 18)
+        #expect(title.attribute(.font, at: 1, effectiveRange: nil) is NSFont)
+        #expect(title.attribute(.foregroundColor, at: 1, effectiveRange: nil) as? NSColor == .labelColor)
+    }
+
+    @Test
     func `debug bundle identity updates status item accessibility`() {
         #expect(StatusItemController.isDebugApp(bundleIdentifier: "com.steipete.codexbar.debug"))
         #expect(!StatusItemController.isDebugApp(bundleIdentifier: "com.steipete.codexbar"))
@@ -673,11 +856,11 @@ struct StatusItemBalanceDisplayTests {
     }
 
     private func makeSettings(suiteName: String, provider: UsageProvider) -> SettingsStore {
-        let settings = testSettingsStore(suiteName: suiteName)
+        let settings = testSettingsStore(suiteName: suiteName, userDefaults: InMemoryUserDefaults())
         settings.statusChecksEnabled = false
         settings.refreshFrequency = .manual
         settings.mergeIcons = true
-        settings.selectedMenuProvider = provider
+        settings.selectedMenuProvider = provider.instanceID
         settings.menuBarDisplayMode = .both
         settings.usageBarsShowUsed = true
 
@@ -709,7 +892,6 @@ struct StatusItemBalanceDisplayTests {
             usedPercent: 75.32,
             keyLimit: 20,
             keyUsage: 5,
-            rateLimit: nil,
             updatedAt: Date()).toUsageSnapshot()
     }
 
@@ -755,5 +937,724 @@ struct StatusItemBalanceDisplayTests {
             manageURL: "https://app.kiro.dev/account/usage",
             resetsAt: Date(),
             updatedAt: Date()).toUsageSnapshot()
+    }
+}
+
+extension StatusItemBalanceDisplayTests {
+    @Test
+    func `Codex direct layout lanes suppress exhausted windows after reset in status item and preview`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-codex-direct-lane-expired",
+            provider: .codex)
+        let layout = MenuBarLayout(lines: [[.lanePercent(lane: .primary), .lanePercent(lane: .secondary)]])
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 100,
+                windowMinutes: 300,
+                resetsAt: Date(timeIntervalSince1970: 1),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 40,
+                windowMinutes: 10080,
+                resetsAt: Date().addingTimeInterval(3600),
+                resetDescription: nil),
+            updatedAt: Date())
+
+        store._setSnapshotForTesting(snapshot, provider: .codex)
+        store._setErrorForTesting(nil, provider: .codex)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .codex,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .codex,
+            settings: settings,
+            store: store)
+            .liveData(provider: .codex, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            #expect(data.primary == nil)
+            #expect(data.secondary?.usedPercent == 40)
+        }
+    }
+
+    @Test
+    func `Codex direct primary lane preserves binding weekly cap in status item and preview`() throws {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-codex-direct-lane-cap",
+            provider: .codex)
+        let layout = MenuBarLayout(lines: [[.lanePercent(lane: .primary)]])
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let now = Date()
+        let weeklyReset = now.addingTimeInterval(4 * 24 * 3600)
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 1,
+                windowMinutes: 300,
+                resetsAt: now.addingTimeInterval(3 * 3600),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 100,
+                windowMinutes: 10080,
+                resetsAt: weeklyReset,
+                resetDescription: nil),
+            updatedAt: now)
+
+        store._setSnapshotForTesting(snapshot, provider: .codex)
+        store._setErrorForTesting(nil, provider: .codex)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .codex,
+            snapshot: snapshot,
+            warningFlash: false,
+            now: now)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .codex,
+            settings: settings,
+            store: store)
+            .liveData(provider: .codex, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let primary = try #require(data.primary)
+            #expect(primary.usedPercent == 100)
+            #expect(primary.resetsAt == weeklyReset)
+        }
+    }
+
+    @Test
+    func `stored Mistral icon and percent layout preserves selected monthly plan`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-mistral-custom-layout-monthly-plan",
+            provider: .mistral)
+        settings.setMenuBarMetricPreference(.monthlyPlan, for: .mistral)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = MistralUsageSnapshot(
+            totalCost: 1.2345,
+            currency: "EUR",
+            currencySymbol: "€",
+            totalInputTokens: 10000,
+            totalOutputTokens: 5000,
+            totalCachedTokens: 0,
+            modelCount: 2,
+            startDate: nil,
+            endDate: nil,
+            updatedAt: Date())
+            .toUsageSnapshot()
+            .with(extraRateWindows: [
+                NamedRateWindow(
+                    id: "mistral-monthly-plan",
+                    title: "Monthly Plan",
+                    window: RateWindow(
+                        usedPercent: 42,
+                        windowMinutes: nil,
+                        resetsAt: nil,
+                        resetDescription: nil)),
+            ])
+
+        store._setSnapshotForTesting(snapshot, provider: .mistral)
+        store._setErrorForTesting(nil, provider: .mistral)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .mistral,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .mistral,
+            settings: settings,
+            store: store)
+            .liveData(provider: .mistral, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automatic?.usedPercent == 42)
+            #expect(data.automaticText == nil)
+            #expect(rendered.attributedTitle.string.hasSuffix("42%"))
+            #expect(rendered.accessibilityLabel.contains("42%"))
+        }
+    }
+
+    @Test
+    func `stored Mistral icon and percent layout uses api spend in status item and preview`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-mistral-custom-layout",
+            provider: .mistral)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = MistralUsageSnapshot(
+            totalCost: 1.2345,
+            currency: "EUR",
+            currencySymbol: "€",
+            totalInputTokens: 10000,
+            totalOutputTokens: 5000,
+            totalCachedTokens: 0,
+            modelCount: 2,
+            startDate: nil,
+            endDate: nil,
+            updatedAt: Date()).toUsageSnapshot()
+
+        store._setSnapshotForTesting(snapshot, provider: .mistral)
+        store._setErrorForTesting(nil, provider: .mistral)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .mistral,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .mistral,
+            settings: settings,
+            store: store)
+            .liveData(provider: .mistral, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automatic == nil)
+            #expect(rendered.attributedTitle.string.hasSuffix("€1.2345"))
+            #expect(rendered.accessibilityLabel.contains("€1.2345"))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `stored DeepSeek icon and percent layout shows balance in status item and preview`(showUsed: Bool) {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-deepseek-layout-balance",
+            provider: .deepseek)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = DeepSeekUsageSnapshot(
+            isAvailable: true,
+            currency: "CNY",
+            totalBalance: 100,
+            grantedBalance: 0,
+            toppedUpBalance: 100,
+            updatedAt: Date()).toUsageSnapshot()
+
+        store._setSnapshotForTesting(snapshot, provider: .deepseek)
+        store._setErrorForTesting(nil, provider: .deepseek)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .deepseek,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .deepseek,
+            settings: settings,
+            store: store)
+            .liveData(provider: .deepseek, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: showUsed,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automaticText == "¥100.00")
+            #expect(rendered.attributedTitle.string.hasSuffix("¥100.00"))
+            #expect(rendered.accessibilityLabel.contains("¥100.00"))
+        }
+    }
+
+    @Test
+    func `balance reset fallbacks render once beside automatic balance and remain in reset only layouts`() {
+        let settings = self.makeSettings(suiteName: "StatusItemBalanceDisplayTests-balance-reset", provider: .deepseek)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = DeepSeekUsageSnapshot(
+            isAvailable: true,
+            currency: "CNY",
+            totalBalance: 100,
+            grantedBalance: 0,
+            toppedUpBalance: 100,
+            updatedAt: Date()).toUsageSnapshot()
+        store._setSnapshotForTesting(snapshot, provider: .deepseek)
+        for lines: [[MenuBarLayoutToken]] in [
+            [[.percent(window: .automatic), .separatorDot, .resetCountdown]],
+            [[.resetAbsolute, .separatorDot, .percent(window: .automatic)]],
+            [[.percent(window: .automatic)], [.resetCountdown]],
+            [[.resetCountdown]],
+            [[.resetAbsolute]],
+        ] {
+            let layout = MenuBarLayout(lines: lines)
+            settings.setMenuBarLayout(layout, for: nil)
+            let statusData = controller.menuBarLayoutRenderData(
+                provider: .deepseek, snapshot: snapshot, warningFlash: false)
+            let previewData = MenuBarLayoutPreview(
+                layout: layout, provider: .deepseek, settings: settings, store: store)
+                .liveData(provider: .deepseek, snapshot: snapshot)
+            for data in [statusData, previewData] {
+                let rendered = MenuBarLayoutRenderer().render(
+                    layout: layout,
+                    data: data,
+                    icon: nil,
+                    options: MenuBarLayoutRenderOptions(
+                        size: .regular,
+                        highContrast: false,
+                        showUsed: false,
+                        conditionals: [],
+                        appearanceName: "aqua",
+                        isDebugApp: false,
+                        now: Date()))
+                #expect(rendered.attributedTitle.string == "¥100.00")
+                #expect(rendered.accessibilityLabel.components(separatedBy: "¥100.00").count == 2)
+            }
+        }
+    }
+
+    @Test
+    func `stored DeepSeek icon and percent layout shows zero balance instead of percent`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-deepseek-layout-zero-balance",
+            provider: .deepseek)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = DeepSeekUsageSnapshot(
+            isAvailable: false,
+            currency: "USD",
+            totalBalance: 0,
+            grantedBalance: 0,
+            toppedUpBalance: 0,
+            updatedAt: Date()).toUsageSnapshot()
+
+        store._setSnapshotForTesting(snapshot, provider: .deepseek)
+        store._setErrorForTesting(nil, provider: .deepseek)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .deepseek,
+            snapshot: snapshot,
+            warningFlash: false)
+
+        let rendered = MenuBarLayoutRenderer().render(
+            layout: layout,
+            data: statusItemData,
+            icon: NSImage(size: NSSize(width: 16, height: 16)),
+            options: MenuBarLayoutRenderOptions(
+                size: .regular,
+                highContrast: false,
+                showUsed: true,
+                conditionals: [],
+                appearanceName: "aqua",
+                isDebugApp: false,
+                now: Date()))
+
+        #expect(statusItemData.automaticText == "$0.00")
+        #expect(rendered.attributedTitle.string.hasSuffix("$0.00"))
+    }
+
+    @Test
+    func `stored DeepInfra icon and percent layout shows balance in status item and preview`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-deepinfra-layout-balance",
+            provider: .deepinfra)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = UsageSnapshot(
+            primary: .init(
+                usedPercent: 0,
+                windowMinutes: nil,
+                resetsAt: nil,
+                resetDescription: "$42.00 available · $3.00 spent this month"),
+            secondary: nil,
+            updatedAt: Date(),
+            identity: .init(providerID: .deepinfra, accountEmail: nil, accountOrganization: nil, loginMethod: nil),
+            dataConfidence: .exact)
+
+        store._setSnapshotForTesting(snapshot, provider: .deepinfra)
+        store._setErrorForTesting(nil, provider: .deepinfra)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .deepinfra,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .deepinfra,
+            settings: settings,
+            store: store)
+            .liveData(provider: .deepinfra, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automaticText == "$42.00")
+            #expect(rendered.attributedTitle.string.hasSuffix("$42.00"))
+        }
+    }
+
+    @Test
+    func `stored DeepInfra layout with spending limit keeps billing cycle percent`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-deepinfra-layout-spending-limit",
+            provider: .deepinfra)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = UsageSnapshot(
+            primary: .init(
+                usedPercent: 0,
+                windowMinutes: nil,
+                resetsAt: nil,
+                resetDescription: "$42.00 available · $5.00 spent this month"),
+            secondary: nil,
+            providerCost: .init(used: 5, limit: 20, currencyCode: "USD", period: "Billing cycle", updatedAt: Date()),
+            updatedAt: Date(),
+            identity: .init(providerID: .deepinfra, accountEmail: nil, accountOrganization: nil, loginMethod: nil),
+            dataConfidence: .exact)
+
+        store._setSnapshotForTesting(snapshot, provider: .deepinfra)
+        store._setErrorForTesting(nil, provider: .deepinfra)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .deepinfra,
+            snapshot: snapshot,
+            warningFlash: false)
+
+        let previewData = MenuBarLayoutPreview(
+            layout: layout, provider: .deepinfra, settings: settings, store: store)
+            .liveData(provider: .deepinfra, snapshot: snapshot)
+        #expect(previewData.automaticText == nil)
+        #expect(previewData.automatic?.usedPercent == 25)
+
+        let rendered = MenuBarLayoutRenderer().render(
+            layout: layout,
+            data: statusItemData,
+            icon: NSImage(size: NSSize(width: 16, height: 16)),
+            options: MenuBarLayoutRenderOptions(
+                size: .regular,
+                highContrast: false,
+                showUsed: true,
+                conditionals: [],
+                appearanceName: "aqua",
+                isDebugApp: false,
+                now: Date()))
+
+        #expect(statusItemData.automatic?.resetDescription == nil)
+        #expect(statusItemData.automaticText == nil)
+        #expect(rendered.attributedTitle.string.hasSuffix("25%"))
+    }
+
+    @Test
+    func `stored Moonshot icon and percent layout shows balance in status item and preview`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-moonshot-layout-balance",
+            provider: .moonshot)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = UsageSnapshot(
+            primary: nil,
+            secondary: nil,
+            updatedAt: Date(),
+            identity: ProviderIdentitySnapshot(
+                providerID: .moonshot,
+                accountEmail: nil,
+                accountOrganization: nil,
+                loginMethod: "Balance: $49.58 · $0.42 in deficit"))
+
+        store._setSnapshotForTesting(snapshot, provider: .moonshot)
+        store._setErrorForTesting(nil, provider: .moonshot)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .moonshot,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .moonshot,
+            settings: settings,
+            store: store)
+            .liveData(provider: .moonshot, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automatic == nil)
+            #expect(data.automaticText == "$49.58")
+            #expect(rendered.attributedTitle.string.hasSuffix("$49.58"))
+        }
+    }
+
+    @Test(arguments: [
+        (UsageProvider.poe, "Balance: 512 points", "512 points"),
+        (UsageProvider.typesafe, "Balance: $4.98", "$4.98"),
+    ])
+    func `stored balance-only icon and percent layout shows balance in status item and preview`(
+        provider: UsageProvider,
+        loginMethod: String,
+        balance: String)
+    {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-\(provider.rawValue)-layout-balance",
+            provider: provider)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = UsageSnapshot(
+            primary: nil,
+            secondary: nil,
+            updatedAt: Date(),
+            identity: ProviderIdentitySnapshot(
+                providerID: provider.instanceID,
+                accountEmail: nil,
+                accountOrganization: nil,
+                loginMethod: loginMethod))
+
+        store._setSnapshotForTesting(snapshot, provider: provider)
+        store._setErrorForTesting(nil, provider: provider)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: provider,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: provider,
+            settings: settings,
+            store: store)
+            .liveData(provider: provider, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automatic == nil)
+            #expect(data.automaticText == balance)
+            #expect(rendered.attributedTitle.string.hasSuffix(balance))
+        }
+    }
+
+    @Test
+    func `stored OpenCode Go zen-only layout shows balance in status item and preview`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-opencodego-layout-zen-balance",
+            provider: .opencodego)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = OpenCodeGoUsageSnapshot(
+            isBalanceOnly: true,
+            hasMonthlyUsage: false,
+            rollingUsagePercent: 0,
+            weeklyUsagePercent: 0,
+            monthlyUsagePercent: 0,
+            rollingResetInSec: 0,
+            weeklyResetInSec: 0,
+            monthlyResetInSec: 0,
+            zenBalanceUSD: 25,
+            updatedAt: Date()).toUsageSnapshot()
+
+        store._setSnapshotForTesting(snapshot, provider: .opencodego)
+        store._setErrorForTesting(nil, provider: .opencodego)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .opencodego,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .opencodego,
+            settings: settings,
+            store: store)
+            .liveData(provider: .opencodego, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automatic == nil)
+            #expect(data.automaticText == "$25.00")
+            #expect(rendered.attributedTitle.string.hasSuffix("$25.00"))
+        }
+    }
+
+    @Test
+    func `stored OpenRouter layout without key limit shows balance in status item and preview`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-openrouter-layout-balance",
+            provider: .openrouter)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = OpenRouterUsageSnapshot(
+            totalCredits: 50,
+            totalUsage: 37.66,
+            balance: 12.34,
+            usedPercent: 75.32,
+            keyLimit: nil,
+            updatedAt: Date()).toUsageSnapshot()
+
+        store._setSnapshotForTesting(snapshot, provider: .openrouter)
+        store._setErrorForTesting(nil, provider: .openrouter)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .openrouter,
+            snapshot: snapshot,
+            warningFlash: false)
+        let previewData = MenuBarLayoutPreview(
+            layout: layout,
+            provider: .openrouter,
+            settings: settings,
+            store: store)
+            .liveData(provider: .openrouter, snapshot: snapshot)
+
+        for data in [statusItemData, previewData] {
+            let rendered = MenuBarLayoutRenderer().render(
+                layout: layout,
+                data: data,
+                icon: NSImage(size: NSSize(width: 16, height: 16)),
+                options: MenuBarLayoutRenderOptions(
+                    size: .regular,
+                    highContrast: false,
+                    showUsed: true,
+                    conditionals: [],
+                    appearanceName: "aqua",
+                    isDebugApp: false,
+                    now: Date()))
+
+            #expect(data.automatic == nil)
+            #expect(data.automaticText == "$12.34")
+            #expect(rendered.attributedTitle.string.hasSuffix("$12.34"))
+        }
+    }
+
+    @Test
+    func `stored OpenRouter layout with key limit keeps percent instead of balance`() {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-openrouter-layout-key-limit",
+            provider: .openrouter)
+        let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
+        settings.setMenuBarLayout(layout, for: nil)
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = OpenRouterUsageSnapshot(
+            totalCredits: 50,
+            totalUsage: 37.66,
+            balance: 12.34,
+            usedPercent: 75.32,
+            keyLimit: 20,
+            keyUsage: 5,
+            updatedAt: Date()).toUsageSnapshot()
+
+        store._setSnapshotForTesting(snapshot, provider: .openrouter)
+        store._setErrorForTesting(nil, provider: .openrouter)
+
+        let statusItemData = controller.menuBarLayoutRenderData(
+            provider: .openrouter,
+            snapshot: snapshot,
+            warningFlash: false)
+
+        let rendered = MenuBarLayoutRenderer().render(
+            layout: layout,
+            data: statusItemData,
+            icon: NSImage(size: NSSize(width: 16, height: 16)),
+            options: MenuBarLayoutRenderOptions(
+                size: .regular,
+                highContrast: false,
+                showUsed: true,
+                conditionals: [],
+                appearanceName: "aqua",
+                isDebugApp: false,
+                now: Date()))
+
+        #expect(statusItemData.automatic != nil)
+        #expect(statusItemData.automaticText == nil)
+        #expect(rendered.attributedTitle.string.hasSuffix("25%"))
     }
 }

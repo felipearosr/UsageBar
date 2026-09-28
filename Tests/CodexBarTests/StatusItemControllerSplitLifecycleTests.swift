@@ -6,6 +6,34 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct StatusItemControllerSplitLifecycleTests {
+    @Test
+    func `placement bounds cover the widest display regardless of arrangement`() {
+        let small = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let wide = CGRect(x: 0, y: 0, width: 3840, height: 2160)
+        let layouts = [
+            [small, wide.offsetBy(dx: -3840, dy: 0)],
+            [small, wide.offsetBy(dx: 1440, dy: 0)],
+            [small, wide.offsetBy(dx: 0, dy: 900)],
+            [wide, wide.offsetBy(dx: 3840, dy: 0)],
+        ]
+        for frames in layouts {
+            let bound = MenuBarStatusItemPlacementPreflight.currentMaximumPreferredPosition(screenFrames: frames)
+            #expect(bound == 3840)
+            #expect(!MenuBarStatusItemPlacementPreflight.shouldClearPreferredPosition(
+                2500, maximumPreferredPosition: bound))
+            #expect(MenuBarStatusItemPlacementPreflight.shouldClearPreferredPosition(
+                6247, maximumPreferredPosition: bound))
+        }
+    }
+
+    @Test
+    func `missing displays retain finite positive saved positions`() {
+        let bound = MenuBarStatusItemPlacementPreflight.currentMaximumPreferredPosition(screenFrames: [])
+        #expect(bound == nil)
+        #expect(!MenuBarStatusItemPlacementPreflight.shouldClearPreferredPosition(
+            20000, maximumPreferredPosition: bound))
+    }
+
     private func disableMenuCardsForTesting() {
         StatusItemController.menuCardRenderingEnabled = false
         StatusItemController.setMenuRefreshEnabledForTesting(false)
@@ -124,7 +152,7 @@ struct StatusItemControllerSplitLifecycleTests {
         defer { controller.releaseStatusItemsForTesting() }
 
         let menus = try [UsageProvider.codex, .claude].map { provider in
-            try #require(controller.providerMenus[provider])
+            try #require(controller.providerMenus[provider.instanceID])
         }
         let keys = menus.map(ObjectIdentifier.init)
         for (menu, key) in zip(menus, keys) {
@@ -209,6 +237,9 @@ struct StatusItemControllerSplitLifecycleTests {
         #expect(controller.statusItem.button?.accessibilityTitle() == "CodexBar")
         #expect(codexButton.accessibilityTitle() == "CodexBar")
         #expect(claudeButton.accessibilityTitle() == "CodexBar")
+        #expect(controller.statusItem.button?.toolTip == nil)
+        #expect(codexButton.toolTip == nil)
+        #expect(claudeButton.toolTip == nil)
     }
 
     @Test
@@ -404,6 +435,43 @@ struct StatusItemControllerSplitLifecycleTests {
         #expect(!MenuBarStatusItemPlacementPreflight.prepare(defaults: defaults, autosaveName: "codexbar-merged"))
 
         #expect(defaults.double(forKey: key) == 42)
+    }
+
+    @Test(arguments: [Double.nan, .infinity, -.infinity], [Double?.none, .some(3000)])
+    func `status item placement preflight clears nonfinite positions`(
+        position: Double,
+        maximumPreferredPosition: Double?) throws
+    {
+        let suite = "StatusItemControllerSplitLifecycleTests-placement-nonfinite-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = MenuBarStatusItemPlacementPreflight.preferredPositionKey(autosaveName: "codexbar-codex")
+        let legacyKey = MenuBarStatusItemPlacementPreflight.preferredPositionKey(autosaveName: "Item-1")
+        let unrelatedKey = MenuBarStatusItemPlacementPreflight.preferredPositionKey(autosaveName: "Item-0")
+        defaults.set(position, forKey: key)
+        defaults.set(position, forKey: legacyKey)
+        defaults.set(42, forKey: unrelatedKey)
+        #expect(try #require(defaults.object(forKey: key) as? NSNumber).doubleValue.isFinite == false)
+
+        #expect(MenuBarStatusItemPlacementPreflight.prepare(
+            defaults: defaults,
+            autosaveName: "codexbar-codex",
+            legacyDefaultItemIndex: 1,
+            maximumPreferredPosition: maximumPreferredPosition))
+
+        #expect(defaults.object(forKey: key) == nil)
+        #expect(defaults.object(forKey: legacyKey) == nil)
+        #expect(defaults.double(forKey: unrelatedKey) == 42)
+    }
+
+    @Test(arguments: [42.0, 2500.0], [Double?.none, .some(3000)])
+    func `status item placement preflight preserves finite positions without requiring a display bound`(
+        position: Double,
+        maximumPreferredPosition: Double?)
+    {
+        #expect(!MenuBarStatusItemPlacementPreflight.shouldClearPreferredPosition(
+            NSNumber(value: position),
+            maximumPreferredPosition: maximumPreferredPosition))
     }
 
     @Test

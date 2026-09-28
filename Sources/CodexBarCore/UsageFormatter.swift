@@ -107,10 +107,10 @@ public enum UsageFormatter {
     }
 
     public static func resetCountdownDescription(from date: Date, now: Date = .init()) -> String {
-        let seconds = max(0, date.timeIntervalSince(now))
-        if seconds < 1 { return "now" }
-
-        let totalMinutes = max(1, Int(ceil(seconds / 60.0)))
+        guard let totalMinutes = self.resetCountdownMinutes(from: date, now: now) else {
+            return self.localized("Unknown")
+        }
+        if totalMinutes == 0 { return "now" }
         let days = totalMinutes / (24 * 60)
         let hours = (totalMinutes / 60) % 24
         let minutes = totalMinutes % 60
@@ -125,6 +125,12 @@ public enum UsageFormatter {
             return "in \(hours)h"
         }
         return "in \(totalMinutes)m"
+    }
+
+    private static func resetCountdownMinutes(from date: Date, now: Date) -> Int? {
+        let seconds = date.timeIntervalSince(now)
+        guard let minutes = Int(exactly: ceil(seconds / 60)) else { return nil }
+        return seconds < 1 ? 0 : max(1, minutes)
     }
 
     public static func resetDescription(from date: Date, now: Date = .init()) -> String {
@@ -147,7 +153,7 @@ public enum UsageFormatter {
         style: ResetTimeDisplayStyle,
         now: Date = .init()) -> String?
     {
-        if let date = window.resetsAt {
+        if let date = window.resetsAt, self.resetCountdownMinutes(from: date, now: now) != nil {
             if style == .countdown {
                 let countdown = self.resetCountdownDescription(from: date, now: now)
                 if countdown == "now" {
@@ -165,11 +171,12 @@ public enum UsageFormatter {
         if let desc = window.resetDescription {
             let trimmed = desc.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
-            if trimmed.lowercased().hasPrefix("resets in ") {
-                return self.localized("Resets in %@", String(trimmed.dropFirst("Resets in ".count)))
+            let lowercased = trimmed.lowercased()
+            for prefix in ["resets in ", "reset in "] where lowercased.hasPrefix(prefix) {
+                return self.localized("Resets in %@", String(trimmed.dropFirst(prefix.count)))
             }
-            if trimmed.lowercased().hasPrefix("resets ") {
-                return self.localized("Resets %@", String(trimmed.dropFirst("Resets ".count)))
+            for prefix in ["resets ", "reset "] where lowercased.hasPrefix(prefix) {
+                return self.localized("Resets %@", String(trimmed.dropFirst(prefix.count)))
             }
             return self.localized("Resets %@", trimmed)
         }
@@ -178,7 +185,10 @@ public enum UsageFormatter {
 
     public static func updatedString(from date: Date, now: Date = .init()) -> String {
         let delta = now.timeIntervalSince(date)
-        if abs(delta) < 60 {
+        guard let elapsedSeconds = Int(exactly: delta.rounded(.towardZero)) else {
+            return self.localized("Updated absolute %@", self.localized("Unknown"))
+        }
+        if elapsedSeconds > -60, elapsedSeconds < 60 {
             return self.localized("Updated just now")
         }
         if let hours = Calendar.current.dateComponents([.hour], from: date, to: now).hour, hours < 24 {
@@ -188,7 +198,7 @@ public enum UsageFormatter {
             rel.unitsStyle = .abbreviated
             return self.localized("Updated relative %@", rel.localizedString(for: date, relativeTo: now))
             #else
-            let seconds = max(0, Int(now.timeIntervalSince(date)))
+            let seconds = max(0, elapsedSeconds)
             if seconds < 3600 {
                 let minutes = max(1, seconds / 60)
                 return self.localized("Updated %@m ago", String(minutes))
@@ -204,7 +214,11 @@ public enum UsageFormatter {
     }
 
     public static func creditsString(from value: Double) -> String {
-        self.localized("%@ left", self.creditsNumberString(from: value))
+        self.remainingString(from: self.creditsNumberString(from: value))
+    }
+
+    public static func remainingString(from formattedValue: String) -> String {
+        self.localized("%@ left", formattedValue)
     }
 
     public static func creditsNumberString(from value: Double) -> String {
@@ -224,6 +238,83 @@ public enum UsageFormatter {
         return String(format: "%.2f", value)
     }
 
+    /// Formats a USD value into a target currency code with exchange rate conversion applied.
+    public static func convertedCostString(_ usdValue: Double, targetCurrency: String) -> String {
+        let converted = Self.convertedCost(
+            usdValue,
+            preferredCurrency: targetCurrency,
+            providerCurrency: "USD")
+        return self.currencyString(converted.value, currencyCode: converted.currencyCode)
+    }
+
+    /// Formats a value from one currency into another via USD pivot conversion.
+    /// Useful when displaying provider costs that are denominated in non-USD currencies
+    /// (e.g., Anthropic extra usage returned in GBP) under the user's preferred currency.
+    public static func convertedCostString(
+        _ value: Double,
+        fromCurrency: String,
+        targetCurrency: String) -> String
+    {
+        guard let converted = CurrencyExchange.shared.convert(
+            amount: value,
+            from: fromCurrency,
+            to: targetCurrency)
+        else {
+            return self.currencyString(value, currencyCode: fromCurrency)
+        }
+        return self.currencyString(converted, currencyCode: targetCurrency)
+    }
+
+    /// Resolves the effective currency code for cost display given user preference
+    /// and an optional provider currency. Returns the provider currency when preference
+    /// is "auto", otherwise returns the explicit preference.
+    public static func effectiveCurrencyCode(
+        preferred: String,
+        providerCurrency: String?) -> String
+    {
+        guard preferred != "auto", !preferred.isEmpty else {
+            return providerCurrency ?? "USD"
+        }
+        return preferred
+    }
+
+    /// Formats a cost value with smart currency conversion.
+    /// - When `preferredCurrency` is "auto", renders in `providerCurrency` (or USD fallback) without conversion.
+    /// - When `preferredCurrency` is an explicit code, converts from `providerCurrency` to the target.
+    public static func convertedCostString(
+        _ value: Double,
+        preferredCurrency: String,
+        providerCurrency: String?) -> String
+    {
+        let converted = Self.convertedCost(
+            value,
+            preferredCurrency: preferredCurrency,
+            providerCurrency: providerCurrency)
+        return Self.currencyString(converted.value, currencyCode: converted.currencyCode)
+    }
+
+    /// Resolves and converts a numeric cost while preserving its source currency
+    /// when the requested exchange rate is unavailable.
+    public static func convertedCost(
+        _ value: Double,
+        preferredCurrency: String,
+        providerCurrency: String?) -> (value: Double, currencyCode: String)
+    {
+        let sourceCurrency = providerCurrency ?? "USD"
+        let targetCurrency = Self.effectiveCurrencyCode(
+            preferred: preferredCurrency,
+            providerCurrency: providerCurrency)
+        guard targetCurrency != sourceCurrency,
+              let converted = CurrencyExchange.shared.convert(
+                  amount: value,
+                  from: sourceCurrency,
+                  to: targetCurrency)
+        else {
+            return (value, sourceCurrency)
+        }
+        return (converted, targetCurrency)
+    }
+
     /// Formats a USD value with proper negative handling and thousand separators.
     /// Uses Swift's modern FormatStyle API (iOS 15+/macOS 12+) for robust, locale-aware formatting.
     public static func usdString(_ value: Double) -> String {
@@ -233,13 +324,7 @@ public enum UsageFormatter {
     public static let costEstimateHint = "Estimated from local logs · may differ from your bill"
 
     public static func costEstimateHint(provider: UsageProvider) -> String {
-        switch provider {
-        case .claude:
-            "Estimated from local Claude logs at API rates; token totals include cache read/write tokens " +
-                "and may differ from Claude Code /status."
-        default:
-            self.costEstimateHint
-        }
+        ProviderDescriptorRegistry.descriptor(for: provider).tokenCost.estimateDisclaimer
     }
 
     /// Formats a currency value with the specified currency code.
@@ -260,12 +345,13 @@ public enum UsageFormatter {
     }
 
     public static func tokenCountString(_ value: Int) -> String {
-        let absValue = abs(value)
+        let absValue = value.magnitude
         let sign = value < 0 ? "-" : ""
 
-        let units: [(threshold: Int, divisor: Double, suffix: String)] = [
-            (1_000_000_000, 1_000_000_000, "B"),
-            (1_000_000, 1_000_000, "M"),
+        // Promote at the point where whole lower units would round to 1000.
+        let units: [(threshold: UInt, divisor: Double, suffix: String)] = [
+            (999_500_000, 1_000_000_000, "B"),
+            (999_500, 1_000_000, "M"),
             (1000, 1000, "K"),
         ]
 
@@ -368,6 +454,7 @@ public enum UsageFormatter {
     public static func modelDisplayName(_ raw: String) -> String {
         var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return raw }
+        if cleaned == "codex-auto-review" { return "Codex Auto Review" }
         if CostUsagePricing.isCodexUnattributedModel(cleaned) { return "Unknown model" }
 
         let patterns = [
@@ -436,5 +523,26 @@ public enum UsageFormatter {
             return cleaned.prefix(1).uppercased() + cleaned.dropFirst()
         }
         return cleaned
+    }
+}
+
+extension UsageFormatter {
+    static func compactResetDescription(_ date: Date?, now: Date = Date()) -> String? {
+        guard let date else { return nil }
+        let interval = date.timeIntervalSince(now)
+        guard interval > 0 else { return "Expired" }
+
+        let hours = Int(interval / 3600)
+        let minutes = Int((interval.truncatingRemainder(dividingBy: 3600)) / 60)
+
+        if hours >= 24 {
+            let days = hours / 24
+            let remainingHours = hours % 24
+            return "Resets in \(days)d \(remainingHours)h"
+        } else if hours > 0 {
+            return "Resets in \(hours)h \(minutes)m"
+        } else {
+            return "Resets in \(minutes)m"
+        }
     }
 }

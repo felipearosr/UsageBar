@@ -42,7 +42,7 @@ extension ClaudeOAuthCredentialsStore {
     }
 
     /// Attempts a Claude keychain read via `/usr/bin/security` when the experimental reader is enabled.
-    /// - Important: `interaction` is diagnostics context only and does not gate CLI execution.
+    /// The external reader follows the stored prompt policy because `security` can prompt.
     static func loadFromClaudeKeychainViaSecurityCLIIfEnabled(
         interaction: ProviderInteraction,
         readStrategy: ClaudeOAuthKeychainReadStrategy = ClaudeOAuthKeychainReadStrategyPreference.current())
@@ -92,6 +92,11 @@ extension ClaudeOAuthCredentialsStore {
         -> Data?
     {
         guard self.shouldPreferSecurityCLIKeychainRead(readStrategy: readStrategy) else { return nil }
+        // `/usr/bin/security` is not constrained by Security.framework's no-UI flags. Keep the ownership gate at
+        // the process-launch boundary so no caller can bypass it by selecting the experimental reader.
+        guard self.keychainAccessAllowed else { return nil }
+        let mode = ClaudeOAuthKeychainPromptPreference.storedMode()
+        guard mode == .always || mode == .onlyOnUserAction && interaction == .userInitiated else { return nil }
         let interactionMetadata = interaction == .userInitiated ? "user" : "background"
 
         do {
@@ -102,7 +107,7 @@ extension ClaudeOAuthCredentialsStore {
             let stderrLength: Int
             let durationMs: Double
             #if DEBUG
-            if let override = self.taskSecurityCLIReadOverride ?? self.securityCLIReadOverride {
+            if let override = self.taskSecurityCLIReadOverride {
                 switch override {
                 case let .data(data):
                     output = data ?? Data()
@@ -357,7 +362,16 @@ extension ClaudeOAuthCredentialsStore {
         guard !keychainAccessDisabled || self.isolatedSecurityCLIKeychainPath(environment: environment) != nil else {
             return false
         }
-        guard ClaudeOAuthKeychainPromptPreference.effectiveMode(readStrategy: readStrategy) != .never else {
+        let promptMode = ClaudeOAuthKeychainPromptPreference.effectiveMode(readStrategy: readStrategy)
+        guard promptMode != .never else {
+            return false
+        }
+        // A Security.framework query configured as "no UI" can still display a legacy Keychain ACL dialog.
+        // Respect the user-action-only policy before background discovery touches Claude Code credentials.
+        guard readStrategy != .securityFramework
+            || promptMode != .onlyOnUserAction
+            || interaction == .userInitiated
+        else {
             return false
         }
         let payload: Data? = switch readStrategy {
@@ -371,5 +385,21 @@ extension ClaudeOAuthCredentialsStore {
         }
         guard let payload else { return false }
         return ClaudeOAuthCredentials.isMcpOAuthOnlyPayload(data: payload)
+    }
+
+    static func shouldBlockSelectedProfileForMcpOnlyClaudeKeychain(
+        interaction: ProviderInteraction,
+        readStrategy: ClaudeOAuthKeychainReadStrategy = ClaudeOAuthKeychainReadStrategyPreference.current(),
+        keychainAccessDisabled: Bool = KeychainAccessGate.isDisabled,
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool
+    {
+        // The global Keychain item has no profile identity. It can diagnose a missing selected profile,
+        // but cannot veto an OAuth credentials file attributable to that profile.
+        guard !self.hasSelectedProfileOAuthCredentialsFile(environment: environment) else { return false }
+        return self.isMcpOAuthOnlyClaudeKeychainPayloadPresent(
+            interaction: interaction,
+            readStrategy: readStrategy,
+            keychainAccessDisabled: keychainAccessDisabled,
+            environment: environment)
     }
 }

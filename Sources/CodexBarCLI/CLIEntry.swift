@@ -18,11 +18,21 @@ import FoundationNetworking
 @main
 enum CodexBarCLI {
     static func main() async {
+        if CodexBarCoreResourceSmoke.isRequested() {
+            #if canImport(Darwin)
+            Darwin.exit(CodexBarCoreResourceSmoke.run())
+            #elseif canImport(Glibc)
+            Glibc.exit(CodexBarCoreResourceSmoke.run())
+            #elseif canImport(Musl)
+            Musl.exit(CodexBarCoreResourceSmoke.run())
+            #endif
+        }
         self.configureLinuxTimeZoneIfNeeded()
 
         let rawArgv = Array(CommandLine.arguments.dropFirst())
         let argv = Self.effectiveArgv(rawArgv)
         let outputPreferences = CLIOutputPreferences.from(argv: argv)
+        let errorOutputPreferences: CLIOutputPreferences? = argv.first == "dashboard" ? nil : outputPreferences
 
         // Fast path: global help/version before building descriptors.
         if let helpIndex = argv.firstIndex(where: { $0 == "-h" || $0 == "--help" }) {
@@ -38,41 +48,28 @@ enum CodexBarCLI {
         do {
             let invocation = try program.resolve(argv: argv)
             Self.bootstrapLogging(path: invocation.path, values: invocation.parsedValues)
+            UserProviderPluginRegistry.refresh()
             switch invocation.path {
-            case ["cards"]:
-                let signalMonitor = CLITerminationSignalMonitor { signalNumber in
-                    CLITerminationSignalMonitor.terminateActiveHelpersAndReraise(signalNumber)
-                }
-                defer { signalMonitor.cancel() }
-                await self.runCards(invocation.parsedValues)
-            case ["usage"]:
-                let signalMonitor = CLITerminationSignalMonitor { signalNumber in
-                    CLITerminationSignalMonitor.terminateActiveHelpersAndReraise(signalNumber)
-                }
-                defer { signalMonitor.cancel() }
-                await self.runUsage(invocation.parsedValues)
+            case ["cards"], ["usage"]:
+                await self.runUsageDisplay(path: invocation.path, values: invocation.parsedValues)
             case ["cost"]:
                 await self.runCost(invocation.parsedValues)
             case ["sessions", "list"]:
                 await self.runSessions(invocation.parsedValues)
             case ["sessions", "focus"]:
                 await self.runSessionsFocus(invocation.parsedValues)
+            case ["dashboard"]:
+                await self.runDashboard(invocation.parsedValues)
             case ["serve"]:
                 await self.runServe(invocation.parsedValues)
-            case ["config", "validate"]:
-                self.runConfigValidate(invocation.parsedValues)
-            case ["config", "dump"]:
-                self.runConfigDump(invocation.parsedValues)
-            case ["config", "providers"]:
-                self.runConfigProviders(invocation.parsedValues)
-            case ["config", "enable"]:
-                self.runConfigSetProviderEnabled(invocation.parsedValues, enabled: true)
-            case ["config", "disable"]:
-                self.runConfigSetProviderEnabled(invocation.parsedValues, enabled: false)
-            case ["config", "set-api-key"]:
-                self.runConfigSetAPIKey(invocation.parsedValues)
+            case let path where path.first == "config":
+                self.runConfig(path: path, values: invocation.parsedValues)
+            case let path where path.first == "hooks":
+                await self.runHooks(path: path, values: invocation.parsedValues)
             case ["cache", "clear"]:
                 self.runCacheClear(invocation.parsedValues)
+            case ["cookie", "refresh"]:
+                await self.runCookieRefreshWithTermination(invocation.parsedValues)
             case let path where path.first == "sync":
                 await self.runSync(path: path, values: invocation.parsedValues)
             case ["diagnose"]:
@@ -81,6 +78,10 @@ enum CodexBarCLI {
                 }
                 defer { signalMonitor.cancel() }
                 await self.runDiagnose(invocation.parsedValues)
+            case ["guard"]:
+                await self.runGuard(invocation.parsedValues)
+            case let path where path.first == "plugins":
+                await self.runPlugins(path: path, values: invocation.parsedValues)
             default:
                 Self.exit(
                     code: .failure,
@@ -89,26 +90,94 @@ enum CodexBarCLI {
                     kind: .args)
             }
         } catch let error as CommanderProgramError {
-            Self.exit(code: .failure, message: error.description, output: outputPreferences, kind: .args)
+            let exitCode: ExitCode = argv.first == "guard" ? .usage : .failure
+            Self.exit(code: exitCode, message: error.description, output: errorOutputPreferences, kind: .args)
         } catch {
-            Self.exit(code: .failure, message: error.localizedDescription, output: outputPreferences, kind: .runtime)
+            Self.exit(
+                code: .failure,
+                message: error.localizedDescription,
+                output: errorOutputPreferences,
+                kind: .runtime)
         }
     }
 
-    private static func commandDescriptors() -> [CommandDescriptor] {
-        let cardsSignature = CommandSignature.describe(CardsOptions())
-        let usageSignature = CommandSignature.describe(UsageOptions())
-        let costSignature = CommandSignature.describe(CostOptions())
+    private static func runUsageDisplay(path: [String], values: ParsedValues) async {
+        let signalMonitor = CLITerminationSignalMonitor { signalNumber in
+            CLITerminationSignalMonitor.terminateActiveHelpersAndReraise(signalNumber)
+        }
+        defer { signalMonitor.cancel() }
+        switch path {
+        case ["cards"]:
+            await self.runCards(values)
+        default:
+            await self.runUsage(values)
+        }
+    }
+
+    private static func runCookieRefreshWithTermination(_ values: ParsedValues) async {
+        let signalMonitor = CLITerminationSignalMonitor { signalNumber in
+            CLITerminationSignalMonitor.terminateActiveHelpersAndReraise(signalNumber)
+        }
+        defer { signalMonitor.cancel() }
+        await self.runCookieRefresh(values)
+    }
+
+    private static func hooksCommandDescriptor() -> CommandDescriptor {
+        let hooksSignature = CommandSignature.describe(HooksOptions())
+        let hooksTestSignature = CommandSignature.describe(HooksTestOptions()).flattened()
+        let hooksWatchSignature = CommandSignature.describe(HooksWatchOptions()).flattened()
+
+        return CommandDescriptor(
+            name: "hooks",
+            abstract: "Run external commands on quota/provider events",
+            discussion: nil,
+            signature: CommandSignature(),
+            subcommands: [
+                CommandDescriptor(
+                    name: "list",
+                    abstract: "List configured hooks",
+                    discussion: nil,
+                    signature: hooksSignature),
+                CommandDescriptor(
+                    name: "enable",
+                    abstract: "Enable hooks",
+                    discussion: nil,
+                    signature: hooksSignature),
+                CommandDescriptor(
+                    name: "disable",
+                    abstract: "Disable hooks",
+                    discussion: nil,
+                    signature: hooksSignature),
+                CommandDescriptor(
+                    name: "test",
+                    abstract: "Fire matching hooks for an event",
+                    discussion: nil,
+                    signature: hooksTestSignature),
+                CommandDescriptor(
+                    name: "watch",
+                    abstract: "Poll providers and fire hooks on quota/status changes",
+                    discussion: nil,
+                    signature: hooksWatchSignature),
+            ],
+            defaultSubcommandName: "list")
+    }
+
+    static func commandDescriptors() -> [CommandDescriptor] {
+        let cardsSignature = CommandSignature.describe(CardsOptions()).flattened()
+        let usageSignature = CommandSignature.describe(UsageOptions()).flattened()
+        let costSignature = CommandSignature.describe(CostOptions()).flattened()
         let sessionsSignature = CommandSignature.describe(SessionsOptions())
         let sessionsFocusSignature = CommandSignature.describe(SessionsFocusOptions())
         let serveSignature = CommandSignature.describe(ServeOptions())
-        let configSignature = CommandSignature.describe(ConfigOptions())
-        let configProviderToggleSignature = CommandSignature.describe(ConfigProviderToggleOptions())
-        let configSetAPIKeySignature = CommandSignature.describe(ConfigSetAPIKeyOptions())
-        let cacheSignature = CommandSignature.describe(CacheOptions())
-        let diagnoseSignature = CommandSignature.describe(DiagnoseOptions())
+        let configSignature = CommandSignature.describe(ConfigOptions()).flattened()
+        let configDumpSignature = CommandSignature.describe(ConfigDumpOptions()).flattened()
+        let configProviderToggleSignature = CommandSignature.describe(ConfigProviderToggleOptions()).flattened()
+        let configSetAPIKeySignature = CommandSignature.describe(ConfigSetAPIKeyOptions()).flattened()
+        let cacheSignature = CommandSignature.describe(CacheOptions()).flattened()
+        let diagnoseSignature = CommandSignature.describe(DiagnoseOptions()).flattened()
+        let guardSignature = CommandSignature.describe(GuardOptions()).flattened()
 
-        return [
+        var descriptors = [
             CommandDescriptor(
                 name: "cards",
                 abstract: "Print usage as a terminal card grid",
@@ -120,19 +189,24 @@ enum CodexBarCLI {
                 discussion: nil,
                 signature: usageSignature),
             CommandDescriptor(
+                name: "guard",
+                abstract: "Exit non-zero when a provider lacks quota headroom (for gating scripts)",
+                discussion: nil,
+                signature: guardSignature),
+            CommandDescriptor(
                 name: "cost",
                 abstract: "Print local cost usage as text or JSON",
                 discussion: nil,
                 signature: costSignature),
             CommandDescriptor(
                 name: "sessions",
-                abstract: "List live Codex and Claude Code sessions",
+                abstract: "List live Codex, Claude Code, pi, and OMP sessions",
                 discussion: nil,
                 signature: CommandSignature(),
                 subcommands: [
                     CommandDescriptor(
                         name: "list",
-                        abstract: "List live Codex and Claude Code sessions",
+                        abstract: "List live Codex, Claude Code, pi, and OMP sessions",
                         discussion: nil,
                         signature: sessionsSignature),
                     CommandDescriptor(
@@ -144,9 +218,10 @@ enum CodexBarCLI {
                 defaultSubcommandName: "list"),
             CommandDescriptor(
                 name: "serve",
-                abstract: "Serve usage and cost JSON over localhost HTTP",
+                abstract: "Serve usage, cost, and dashboard JSON over HTTP",
                 discussion: nil,
                 signature: serveSignature),
+            Self.dashboardCommandDescriptor(),
             CommandDescriptor(
                 name: "config",
                 abstract: "Config utilities",
@@ -162,7 +237,7 @@ enum CodexBarCLI {
                         name: "dump",
                         abstract: "Print normalized config JSON",
                         discussion: nil,
-                        signature: configSignature),
+                        signature: configDumpSignature),
                     CommandDescriptor(
                         name: "providers",
                         abstract: "List provider enablement",
@@ -183,8 +258,10 @@ enum CodexBarCLI {
                         abstract: "Store a provider API key",
                         discussion: nil,
                         signature: configSetAPIKeySignature),
+                    Self.preferencesCommandDescriptor(),
                 ],
                 defaultSubcommandName: "validate"),
+            Self.hooksCommandDescriptor(),
             CommandDescriptor(
                 name: "cache",
                 abstract: "Cache management",
@@ -198,13 +275,62 @@ enum CodexBarCLI {
                         signature: cacheSignature),
                 ],
                 defaultSubcommandName: "clear"),
-            self.syncCommandDescriptor(),
+            Self.cookieCommandDescriptor(),
+            Self.syncCommandDescriptor(),
             CommandDescriptor(
                 name: "diagnose",
                 abstract: "Run provider diagnostic and emit safe JSON export",
                 discussion: nil,
                 signature: diagnoseSignature),
         ]
+        descriptors.append(Self.pluginsCommandDescriptor())
+        return descriptors
+    }
+
+    private static func pluginsCommandDescriptor() -> CommandDescriptor {
+        CommandDescriptor(
+            name: "plugins",
+            abstract: "List or fetch user-installed provider plugins",
+            discussion: nil,
+            signature: CommandSignature(),
+            subcommands: [
+                CommandDescriptor(
+                    name: "list",
+                    abstract: "List discovered local plugins",
+                    discussion: nil,
+                    signature: CommandSignature()),
+                CommandDescriptor(
+                    name: "fetch",
+                    abstract: "Fetch one plugin, interactively approving network access when needed",
+                    discussion: nil,
+                    signature: CommandSignature.describe(PluginFetchOptions())),
+            ],
+            defaultSubcommandName: "list")
+    }
+
+    private static func dashboardCommandDescriptor() -> CommandDescriptor {
+        CommandDescriptor(
+            name: "dashboard",
+            abstract: "Print a dashboard-v1 snapshot as JSON",
+            discussion: nil,
+            signature: CommandSignature.describe(DashboardOptions()))
+    }
+
+    private static func cookieCommandDescriptor() -> CommandDescriptor {
+        CommandDescriptor(
+            name: "cookie",
+            abstract: "Cookie management",
+            discussion: nil,
+            signature: CommandSignature(),
+            subcommands: [
+                CommandDescriptor(
+                    name: "refresh",
+                    abstract: "Re-import browser cookie for a provider",
+                    discussion: "Clears the provider cookie cache and re-imports through its browser-backed " +
+                        "web strategy. Prompt-capable browsers require --allow-keychain-prompt.",
+                    signature: CommandSignature.describe(CookieOptions())),
+            ],
+            defaultSubcommandName: "refresh")
     }
 
     private static func syncCommandDescriptor() -> CommandDescriptor {

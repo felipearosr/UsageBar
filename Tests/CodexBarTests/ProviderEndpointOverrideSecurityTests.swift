@@ -82,15 +82,6 @@ struct ProviderEndpointOverrideSecurityTests {
         let insecureURL = "http://attacker.test/v1"
 
         do {
-            _ = try await OpenRouterUsageFetcher.fetchUsage(
-                apiKey: "openrouter-test",
-                environment: ["OPENROUTER_API_URL": insecureURL])
-            Issue.record("Expected OpenRouterSettingsError.invalidEndpointOverride")
-        } catch {
-            #expect(error as? OpenRouterSettingsError == .invalidEndpointOverride("OPENROUTER_API_URL"))
-        }
-
-        do {
             _ = try await CodebuffUsageFetcher.fetchUsage(
                 apiKey: "codebuff-test",
                 environment: ["CODEBUFF_API_URL": insecureURL])
@@ -106,16 +97,6 @@ struct ProviderEndpointOverrideSecurityTests {
             Issue.record("Expected GroqSettingsError.invalidEndpointOverride")
         } catch {
             #expect(error as? GroqSettingsError == .invalidEndpointOverride(GroqSettingsReader.apiURLEnvironmentKey))
-        }
-
-        do {
-            _ = try await ElevenLabsUsageFetcher.fetchUsage(
-                apiKey: "elevenlabs-test",
-                environment: [ElevenLabsSettingsReader.apiURLEnvironmentKey: insecureURL])
-            Issue.record("Expected ElevenLabsSettingsError.invalidEndpointOverride")
-        } catch {
-            #expect(error as? ElevenLabsSettingsError == .invalidEndpointOverride(
-                ElevenLabsSettingsReader.apiURLEnvironmentKey))
         }
     }
 

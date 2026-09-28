@@ -5,31 +5,52 @@ import SweetCookieKit
 
 #if os(macOS)
 enum WindsurfDevinSessionImporter {
-    nonisolated(unsafe) static var importSessionsOverrideForTesting:
-        ((BrowserDetection, ((String) -> Void)?) -> [SessionInfo])?
-    nonisolated(unsafe) static var importPreferredSessionsOverrideForTesting:
-        ((BrowserDetection, ((String) -> Void)?) -> [SessionInfo])?
-    nonisolated(unsafe) static var importFallbackSessionsOverrideForTesting:
-        ((BrowserDetection, ((String) -> Void)?) -> [SessionInfo])?
+    #if DEBUG
+    final class ImportSessionsOverrideStore: @unchecked Sendable {
+        let importSessions: (BrowserDetection, ((String) -> Void)?) -> [SessionInfo]
+
+        init(importSessions: @escaping (BrowserDetection, ((String) -> Void)?) -> [SessionInfo]) {
+            self.importSessions = importSessions
+        }
+    }
+
+    @TaskLocal private static var taskImportSessionsOverrideStore: ImportSessionsOverrideStore?
+    @TaskLocal private static var taskImportPreferredSessionsOverrideStore: ImportSessionsOverrideStore?
+    @TaskLocal private static var taskImportFallbackSessionsOverrideStore: ImportSessionsOverrideStore?
+
+    static func withImportSessionsOverrideForTesting<T>(
+        _ override: ((BrowserDetection, ((String) -> Void)?) -> [SessionInfo])?,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$taskImportSessionsOverrideStore.withValue(override.map(ImportSessionsOverrideStore.init)) {
+            try await operation()
+        }
+    }
+
+    static func withImportPreferredSessionsOverrideForTesting<T>(
+        _ override: ((BrowserDetection, ((String) -> Void)?) -> [SessionInfo])?,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$taskImportPreferredSessionsOverrideStore.withValue(
+            override.map(ImportSessionsOverrideStore.init))
+        {
+            try await operation()
+        }
+    }
+
+    static func withImportFallbackSessionsOverrideForTesting<T>(
+        _ override: ((BrowserDetection, ((String) -> Void)?) -> [SessionInfo])?,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$taskImportFallbackSessionsOverrideStore.withValue(
+            override.map(ImportSessionsOverrideStore.init))
+        {
+            try await operation()
+        }
+    }
+    #endif
     static let defaultPreferredBrowsers: [Browser] = [.chrome]
-    static let fallbackBrowsers: [Browser] = [
-        .chromeBeta,
-        .chromeCanary,
-        .edge,
-        .edgeBeta,
-        .edgeCanary,
-        .brave,
-        .braveBeta,
-        .braveNightly,
-        .vivaldi,
-        .arc,
-        .arcBeta,
-        .arcCanary,
-        .dia,
-        .chatgptAtlas,
-        .chromium,
-        .helium,
-    ]
+    static let fallbackBrowsers = ChromiumLocalStorageDiscovery.defaultBrowsers.filter { $0 != .chrome }
 
     struct SessionInfo: Equatable {
         let session: WindsurfDevinSessionAuth
@@ -40,9 +61,11 @@ enum WindsurfDevinSessionImporter {
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil) -> [SessionInfo]
     {
-        if let override = self.importSessionsOverrideForTesting {
+        #if DEBUG
+        if let override = self.taskImportSessionsOverrideStore?.importSessions {
             return override(browserDetection, logger)
         }
+        #endif
 
         let log: (String) -> Void = { msg in logger?("[windsurf-storage] \(msg)") }
         let preferredSessions = self.importSessions(
@@ -70,9 +93,11 @@ enum WindsurfDevinSessionImporter {
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil) -> [SessionInfo]
     {
-        if let override = self.importPreferredSessionsOverrideForTesting {
+        #if DEBUG
+        if let override = self.taskImportPreferredSessionsOverrideStore?.importSessions {
             return override(browserDetection, logger)
         }
+        #endif
         let log: (String) -> Void = { msg in logger?("[windsurf-storage] \(msg)") }
         return self.importSessions(
             browserDetection: browserDetection,
@@ -84,9 +109,11 @@ enum WindsurfDevinSessionImporter {
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil) -> [SessionInfo]
     {
-        if let override = self.importFallbackSessionsOverrideForTesting {
+        #if DEBUG
+        if let override = self.taskImportFallbackSessionsOverrideStore?.importSessions {
             return override(browserDetection, logger)
         }
+        #endif
         let log: (String) -> Void = { msg in logger?("[windsurf-storage] \(msg)") }
         return self.importSessions(
             browserDetection: browserDetection,
@@ -143,11 +170,6 @@ enum WindsurfDevinSessionImporter {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    struct LocalStorageCandidate {
-        let label: String
-        let url: URL
-    }
-
     struct LocalStorageSnapshot: Equatable {
         let storage: [String: String]
         let sourceSuffix: String?
@@ -168,7 +190,7 @@ enum WindsurfDevinSessionImporter {
         logger: @escaping (String) -> Void) -> [SessionInfo]
     {
         var sessions: [SessionInfo] = []
-        let candidates = self.chromeLocalStorageCandidates(
+        let candidates = ChromiumLocalStorageDiscovery.candidates(
             browserDetection: browserDetection,
             browsers: browsers)
         if !candidates.isEmpty {
@@ -186,48 +208,6 @@ enum WindsurfDevinSessionImporter {
         }
 
         return self.deduplicateSessions(sessions)
-    }
-
-    static func chromeLocalStorageCandidates(
-        browserDetection: BrowserDetection,
-        browsers: [Browser]) -> [LocalStorageCandidate]
-    {
-        let installedBrowsers = browsers.browsersWithProfileData(using: browserDetection)
-        let roots = ChromiumProfileLocator
-            .roots(for: installedBrowsers, homeDirectories: BrowserCookieClient.defaultHomeDirectories())
-            .map { (url: $0.url, labelPrefix: $0.labelPrefix) }
-
-        var candidates: [LocalStorageCandidate] = []
-        for root in roots {
-            candidates.append(contentsOf: self.chromeProfileLocalStorageDirs(
-                root: root.url,
-                labelPrefix: root.labelPrefix))
-        }
-        return candidates
-    }
-
-    private static func chromeProfileLocalStorageDirs(root: URL, labelPrefix: String) -> [LocalStorageCandidate] {
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles])
-        else { return [] }
-
-        let profileDirs = entries.filter { url in
-            guard let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory), isDir else {
-                return false
-            }
-            let name = url.lastPathComponent
-            return name == "Default" || name.hasPrefix("Profile ") || name.hasPrefix("user-")
-        }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-
-        return profileDirs.compactMap { dir in
-            let levelDBURL = dir.appendingPathComponent("Local Storage").appendingPathComponent("leveldb")
-            guard FileManager.default.fileExists(atPath: levelDBURL.path) else { return nil }
-            let label = "\(labelPrefix) \(dir.lastPathComponent)"
-            return LocalStorageCandidate(label: label, url: levelDBURL)
-        }
     }
 
     private static func readLocalStorageSnapshots(

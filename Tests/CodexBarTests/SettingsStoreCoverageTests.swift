@@ -132,13 +132,59 @@ struct SettingsStoreCoverageTests {
 
         let initial = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
         #expect(initial.agentSessionsEnabled == false)
+        #expect(initial.agentSessionLabelStyle == .project)
         #expect(defaults.object(forKey: "agentSessionsEnabled") == nil)
+        #expect(defaults.object(forKey: "agentSessionLabelStyle") == nil)
 
         initial.agentSessionsEnabled = true
+        initial.agentSessionLabelStyle = .descriptiveAndProject
         #expect(defaults.object(forKey: "agentSessionsEnabled") as? Bool == true)
+        #expect(defaults.string(forKey: "agentSessionLabelStyle") == "descriptiveAndProject")
 
         let reloaded = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
         #expect(reloaded.agentSessionsEnabled)
+        #expect(reloaded.agentSessionLabelStyle == .descriptiveAndProject)
+    }
+
+    @Test
+    func `background low power mode defaults off persists and drives effective web saver`() throws {
+        let suite = "SettingsStoreCoverageTests-background-low-power"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let configStore = testConfigStore(suiteName: suite)
+
+        let initial = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(initial.backgroundWorkLowPowerModePreference == .off)
+        #expect(initial.backgroundWorkLowPowerModeEnabled == false)
+        #expect(defaults.string(forKey: "backgroundWorkLowPowerModePreference") == "off")
+        #expect(initial.effectiveOpenAIWebBatterySaverEnabled == false)
+
+        let revision = initial.backgroundWorkSettingsRevision
+        initial.backgroundWorkLowPowerModePreference = .on
+
+        #expect(initial.backgroundWorkSettingsRevision == revision + 1)
+        #expect(initial.effectiveOpenAIWebBatterySaverEnabled)
+
+        let reloaded = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded.backgroundWorkLowPowerModeEnabled)
+        #expect(reloaded.effectiveOpenAIWebBatterySaverEnabled)
+
+        reloaded.backgroundWorkLowPowerModePreference = .off
+        reloaded.openAIWebBatterySaverEnabled = true
+        #expect(reloaded.effectiveOpenAIWebBatterySaverEnabled)
+    }
+
+    @Test
+    func `background low power mode migrates legacy enabled flag to on preference`() throws {
+        let suite = "SettingsStoreCoverageTests-background-low-power-migration"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(true, forKey: "backgroundWorkLowPowerModeEnabled")
+        let configStore = testConfigStore(suiteName: suite)
+
+        let migrated = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(migrated.backgroundWorkLowPowerModePreference == .on)
+        #expect(defaults.string(forKey: "backgroundWorkLowPowerModePreference") == "on")
     }
 
     @Test
@@ -323,7 +369,7 @@ struct SettingsStoreCoverageTests {
 
         let snapshot = settings.claudeSettingsSnapshot(tokenOverride: nil)
 
-        #expect(snapshot.usageDataSource == .auto)
+        #expect(snapshot.usageDataSource == .oauth)
         #expect(snapshot.cookieSource == .off)
         #expect(snapshot.manualCookieHeader?.isEmpty == true)
     }
@@ -335,7 +381,7 @@ struct SettingsStoreCoverageTests {
 
         let snapshot = settings.claudeSettingsSnapshot(tokenOverride: nil)
 
-        #expect(snapshot.usageDataSource == .auto)
+        #expect(snapshot.usageDataSource == .web)
         #expect(snapshot.cookieSource == .manual)
         #expect(snapshot.manualCookieHeader == "sessionKey=sk-ant-session-token")
     }
@@ -473,28 +519,11 @@ struct SettingsStoreCoverageTests {
     }
 
     @Test
-    func `ensure token loaders execute`() {
+    func `unconfigured credentials are immediately empty`() {
         let settings = Self.makeSettingsStore()
 
-        settings.ensureZaiAPITokenLoaded()
-        settings.ensureSyntheticAPITokenLoaded()
-        settings.ensureCodexCookieLoaded()
-        settings.ensureClaudeCookieLoaded()
-        settings.ensureCursorCookieLoaded()
-        settings.ensureOpenCodeCookieLoaded()
-        settings.ensureFactoryCookieLoaded()
-        settings.ensureMiniMaxCookieLoaded()
-        settings.ensureMiniMaxAPITokenLoaded()
-        settings.ensureKimiAuthTokenLoaded()
-        settings.ensureKimiK2APITokenLoaded()
-        settings.ensureAugmentCookieLoaded()
-        settings.ensureAmpCookieLoaded()
-        settings.ensureOllamaCookieLoaded()
-        settings.ensureCopilotAPITokenLoaded()
-        settings.ensureTokenAccountsLoaded()
-
         #expect(settings.zaiAPIToken.isEmpty)
-        #expect(settings.syntheticAPIToken.isEmpty)
+        #expect(settings[providerConfig: .synthetic, field: .apiKey].isEmpty)
     }
 
     @Test
@@ -816,6 +845,67 @@ struct SettingsStoreCoverageTests {
         #expect(reloaded4.weeklyProgressWorkDays == nil)
     }
 
+    @Test
+    func `workday tick appearance defaults to subtle and persists valid choices`() throws {
+        let suite = "SettingsStoreCoverageTests-workday-tick-appearance"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let configStore = testConfigStore(suiteName: suite)
+
+        let fresh = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(fresh.workdayTickAppearance == .subtle)
+
+        fresh.workdayTickAppearance = .highContrast
+        #expect(defaults.string(forKey: "workdayTickAppearance") == WorkdayTickAppearance.highContrast.rawValue)
+
+        let reloaded = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded.workdayTickAppearance == .highContrast)
+
+        defaults.set("unknown", forKey: "workdayTickAppearance")
+        let invalid = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(invalid.workdayTickAppearance == .subtle)
+    }
+
+    @Test
+    func `preferred currency defaults to USD and persists an explicit selection`() {
+        let suite = "SettingsStoreCoverageTests-preferred-currency"
+        let defaults = InMemoryUserDefaults()
+        let configStore = testConfigStore(suiteName: suite)
+
+        let fresh = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(fresh.preferredCurrencyCode == "USD")
+
+        fresh.preferredCurrencyCode = "GBP"
+        let reloaded = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloaded.preferredCurrencyCode == "GBP")
+
+        reloaded.preferredCurrencyCode = "AED"
+        let reloadedAED = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+        #expect(reloadedAED.preferredCurrencyCode == "AED")
+
+        for code in ["NZD", "SEK", "NOK", "DKK", "PLN", "BRL", "MXN", "ZAR", "THB", "IDR", "VND", "UAH"] {
+            reloadedAED.preferredCurrencyCode = code
+            let reloadedCurrency = Self.makeSettingsStore(userDefaults: defaults, configStore: configStore)
+            #expect(reloadedCurrency.preferredCurrencyCode == code)
+        }
+    }
+
+    @Test
+    func `preferred currency picker matches every supported exchange currency`() {
+        let codes = PreferredCurrencyOption.codes
+        #expect(codes.first == "auto")
+        #expect(Array(codes.dropFirst()) == CurrencyExchange.supportedCurrencies)
+        #expect(Set(codes).count == codes.count)
+        #expect(codes.dropFirst().map { PreferredCurrencyOption.label(for: $0) } == [
+            "USD ($)", "GBP (£)", "EUR (€)", "CZK (Kč)", "CNY (¥)", "JPY (¥)", "KRW (₩)", "CAD ($)",
+            "AUD ($)", "HKD ($)", "TWD (NT$)", "SGD ($)", "INR (₹)", "CHF (Fr.)", "AED (د.إ)", "TRY (₺)",
+            "NZD ($)", "SEK (kr)", "NOK (kr)", "DKK (kr)", "PLN (zł)", "BRL (R$)", "MXN ($)", "ZAR (R)",
+            "THB (฿)", "IDR (Rp)", "VND (₫)", "UAH (₴)",
+        ])
+        #expect(PreferredCurrencyOption.label(for: "auto") == L("currency_auto"))
+        #expect(PreferredCurrencyOption.label(for: "XYZ") == "XYZ")
+    }
+
     private static func makeSettingsStore(
         suiteName: String = "SettingsStoreCoverageTests",
         antigravityOAuthCredentialsStore: AntigravityOAuthCredentialsStore = AntigravityOAuthCredentialsStore())
@@ -850,7 +940,6 @@ struct SettingsStoreCoverageTests {
             minimaxCookieStore: InMemoryMiniMaxCookieStore(),
             minimaxAPITokenStore: InMemoryMiniMaxAPITokenStore(),
             kimiTokenStore: InMemoryKimiTokenStore(),
-            kimiK2TokenStore: InMemoryKimiK2TokenStore(),
             augmentCookieStore: InMemoryCookieHeaderStore(),
             ampCookieStore: InMemoryCookieHeaderStore(),
             copilotTokenStore: InMemoryCopilotTokenStore(),

@@ -2,8 +2,11 @@ import CodexBarCore
 import Foundation
 
 extension SettingsStore {
-    func costSummaryShowsInlineDashboard(for provider: UsageProvider) -> Bool {
-        self.isCostUsageEffectivelyEnabled(for: provider) &&
+    func costSummaryShowsInline(for provider: UsageProvider) -> Bool {
+        // Provider-specific by design: Codex's local ledger can enable its summary without the global scanner.
+        let isEnabled = self.costUsageEnabled ||
+            (provider == .codex && self.codexLocalSessionCostLedgerEnabled)
+        return isEnabled &&
             self.costSummaryDisplayStyle.showsInlineSummary
     }
 
@@ -20,8 +23,13 @@ extension SettingsStore {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let environment = ProcessInfo.processInfo.environment
             let hasSources = await Task.detached(priority: .utility) {
-                Self.hasAnyTokenCostUsageSources()
+                let processContexts = await LocalAgentSessionScanner().piSessionProcessContexts(
+                    environment: environment)
+                return Self.hasAnyTokenCostUsageSources(
+                    env: environment,
+                    processContexts: processContexts)
             }.value
             guard hasSources else { return }
             guard UserDefaults.standard.object(forKey: "tokenCostUsageEnabled") == nil else { return }
@@ -32,8 +40,11 @@ extension SettingsStore {
     nonisolated static func hasAnyTokenCostUsageSources(
         env: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
-        homeDirectory: URL? = nil) -> Bool
+        homeDirectory: URL? = nil,
+        workingDirectory: URL? = nil,
+        processContexts: [PiSessionProcessContext] = []) -> Bool
     {
+        // Provider-specific by design: Codex, Claude, and Pi-family stores can auto-enable token cost.
         let home = homeDirectory ?? fileManager.homeDirectoryForCurrentUser
 
         func hasAnyJsonl(in root: URL) -> Bool {
@@ -67,28 +78,33 @@ extension SettingsStore {
                 .appendingPathComponent("archived_sessions", isDirectory: true)
         }()
 
-        if hasAnyJsonl(in: codexRoot) { return true }
-        if let archivedCodexRoot, hasAnyJsonl(in: archivedCodexRoot) { return true }
+        if hasAnyJsonl(in: codexRoot) {
+            return true
+        }
+        if let archivedCodexRoot, hasAnyJsonl(in: archivedCodexRoot) {
+            return true
+        }
 
-        let claudeRoots: [URL] = {
-            if let env = env["CLAUDE_CONFIG_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !env.isEmpty
-            {
-                return env.split(separator: ",").map { part in
-                    let raw = String(part).trimmingCharacters(in: .whitespacesAndNewlines)
-                    let url = URL(fileURLWithPath: raw)
-                    if url.lastPathComponent == "projects" {
-                        return url
-                    }
-                    return url.appendingPathComponent("projects", isDirectory: true)
-                }
-            }
+        var piEnvironment = env
+        if piEnvironment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            piEnvironment["HOME"] = home.path
+        }
+        let piBaseDirectory = workingDirectory ?? URL(
+            fileURLWithPath: fileManager.currentDirectoryPath,
+            isDirectory: true)
+        let piRoots = PiFamilySessionRootResolver.costSessionRootURLs(
+            environment: piEnvironment,
+            baseDirectory: piBaseDirectory,
+            processContexts: processContexts)
+        if piRoots.contains(where: hasAnyJsonl(in:)) {
+            return true
+        }
 
-            return [
-                home.appendingPathComponent(".config/claude/projects", isDirectory: true),
-                home.appendingPathComponent(".claude/projects", isDirectory: true),
-            ] + ClaudeDesktopProjectsLocator.roots(homeDirectory: home, fileManager: fileManager)
-        }()
+        let claudeRoots = ClaudeConfigPaths.costProjectsRoots(
+            environment: env,
+            homeDirectory: home,
+            fileManager: fileManager,
+            workingDirectory: workingDirectory)
 
         return claudeRoots.contains(where: hasAnyJsonl(in:))
     }

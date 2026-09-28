@@ -64,6 +64,7 @@ public enum BinaryLocator {
         fileManager: FileManager = .default,
         home: String = NSHomeDirectory()) -> String?
     {
+        // Provider-specific by design: This named resolver supplies Claude's actual CLI executable name.
         self.resolveBinary(
             name: "claude",
             overrideKey: "CLAUDE_CLI_PATH",
@@ -72,6 +73,31 @@ public enum BinaryLocator {
             commandV: commandV,
             aliasResolver: aliasResolver,
             wellKnownPaths: self.claudeWellKnownPaths(home: home),
+            fileManager: fileManager,
+            home: home)
+    }
+
+    public static func resolveArkcliBinary(
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        loginPATH: [String]? = LoginShellPathCache.shared.current,
+        commandV: (String, String?, TimeInterval, FileManager) -> String? = ShellCommandLocator.commandV,
+        aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = ShellCommandLocator
+            .resolveAlias,
+        fileManager: FileManager = .default,
+        home: String = NSHomeDirectory()) -> String?
+    {
+        self.resolveBinary(
+            name: "arkcli",
+            overrideKey: "ARKCLI_PATH",
+            env: env,
+            loginPATH: loginPATH,
+            commandV: commandV,
+            aliasResolver: aliasResolver,
+            wellKnownPaths: [
+                "\(home)/.local/bin/arkcli",
+                "/opt/homebrew/bin/arkcli",
+                "/usr/local/bin/arkcli",
+            ],
             fileManager: fileManager,
             home: home)
     }
@@ -100,7 +126,12 @@ public enum BinaryLocator {
         fileManager: FileManager = .default,
         home: String = NSHomeDirectory()) -> String?
     {
-        self.resolveBinary(
+        // Background refreshes must not discover and launch another agy when
+        // an explicit override disables the configured CLI source.
+        if let override = env["ANTIGRAVITY_CLI_PATH"] {
+            return fileManager.isExecutableFile(atPath: override) ? override : nil
+        }
+        return self.resolveBinary(
             name: "agy",
             overrideKey: "ANTIGRAVITY_CLI_PATH",
             env: env,
@@ -126,6 +157,7 @@ public enum BinaryLocator {
         fileManager: FileManager = .default,
         home: String = NSHomeDirectory()) -> String?
     {
+        // Provider-specific by design: This named resolver supplies Codex's actual CLI executable name.
         self.resolveBinary(
             name: "codex",
             overrideKey: "CODEX_CLI_PATH",
@@ -168,6 +200,7 @@ public enum BinaryLocator {
         {
             return override
         }
+        // Provider-specific by design: This named resolver supplies Gemini's actual CLI executable name.
         return self.resolveBinary(
             name: "gemini",
             overrideKey: "GEMINI_CLI_PATH",
@@ -188,6 +221,7 @@ public enum BinaryLocator {
         fileManager: FileManager = .default,
         home: String = NSHomeDirectory()) -> String?
     {
+        // Provider-specific by design: This named resolver supplies Grok's actual CLI executable name.
         self.resolveBinary(
             name: "grok",
             overrideKey: "GROK_CLI_PATH",
@@ -209,6 +243,7 @@ public enum BinaryLocator {
         fileManager: FileManager = .default,
         home: String = NSHomeDirectory()) -> String?
     {
+        // Provider-specific by design: This named resolver supplies Amp's actual CLI executable name.
         self.resolveBinary(
             name: "amp",
             overrideKey: "AMP_CLI_PATH",
@@ -293,8 +328,33 @@ public enum BinaryLocator {
             home: home)
     }
 
+    public static func resolveKiroCLIBinary(
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        loginPATH: [String]? = LoginShellPathCache.shared.current,
+        commandV: (String, String?, TimeInterval, FileManager) -> String? = ShellCommandLocator.commandV,
+        aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = ShellCommandLocator
+            .resolveAlias,
+        fileManager: FileManager = .default,
+        home: String = NSHomeDirectory()) -> String?
+    {
+        self.resolveBinary(
+            name: "kiro-cli",
+            overrideKey: "KIRO_CLI_PATH",
+            env: env,
+            loginPATH: loginPATH,
+            commandV: commandV,
+            aliasResolver: aliasResolver,
+            wellKnownPaths: [
+                "\(home)/.local/bin/kiro-cli",
+                "/opt/homebrew/bin/kiro-cli",
+                "/usr/local/bin/kiro-cli",
+            ],
+            fileManager: fileManager,
+            home: home)
+    }
+
     // swiftlint:disable function_parameter_count
-    private static func resolveBinary(
+    static func resolveBinary(
         name: String,
         overrideKey: String,
         env: [String: String],
@@ -359,17 +419,11 @@ public enum BinaryLocator {
         }
 
         // 6) Minimal fallback
-        let fallback = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-        if let pathHit = self.find(
+        return self.find(
             name,
-            in: fallback,
+            in: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"],
             fileManager: fileManager,
             launchCandidateFilter: launchCandidateFilter)
-        {
-            return pathHit
-        }
-
-        return nil
     }
 
     private static func find(
@@ -540,7 +594,7 @@ public enum CodexLaunchPreflight {
             bytes == [0xCA, 0xFE, 0xBA, 0xBF]
     }
 
-    private static func spctlAssessment(path: String, timeout: TimeInterval = 2.0) -> GatekeeperAssessment? {
+    private static func spctlAssessment(path: String, timeout: TimeInterval = 5.0) -> GatekeeperAssessment? {
         let spctlPath = "/usr/sbin/spctl"
         guard FileManager.default.isExecutableFile(atPath: spctlPath) else { return nil }
 
@@ -715,42 +769,6 @@ public enum ShellCommandLocator {
         return nil
     }
 
-    /// Thread-safe buffer for collecting pipe output from a readability handler.
-    private final class CapturedData: @unchecked Sendable {
-        private let lock = NSLock()
-        private var data = Data()
-
-        func append(_ other: Data) {
-            self.lock.lock()
-            self.data.append(other)
-            self.lock.unlock()
-        }
-
-        func drain() -> Data {
-            self.lock.lock()
-            let result = self.data
-            self.lock.unlock()
-            return result
-        }
-    }
-
-    /// Idempotent one-shot flag — `fire()` returns true exactly once.
-    /// Used to make `DispatchGroup.leave()` safe to attempt from multiple paths.
-    private final class OnceFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var fired = false
-
-        func fire() -> Bool {
-            self.lock.lock()
-            defer { self.lock.unlock() }
-            if self.fired {
-                return false
-            }
-            self.fired = true
-            return true
-        }
-    }
-
     private static func makeCloseOnExecPipe() -> (read: Int32, write: Int32)? {
         var fds: (read: Int32, write: Int32) = (-1, -1)
         #if os(Linux)
@@ -775,7 +793,6 @@ public enum ShellCommandLocator {
         return fds
     }
 
-    // swiftlint:disable cyclomatic_complexity
     /// Runs a shell command, draining both stdout and stderr concurrently so that
     /// verbose shell init scripts (oh-my-zsh, nvm, pyenv, etc.) cannot deadlock on
     /// a full pipe buffer.  The child is launched via `posix_spawn` with
@@ -897,45 +914,26 @@ public enum ShellCommandLocator {
             return nil
         }
 
-        // Track EOF on each pipe so we can wait for full drain instead of sleeping.
-        // The readability handler fires with empty data when every writer end is
-        // closed (i.e. the child *and* any inheriting background helpers are gone).
-        let drainGroup = DispatchGroup()
-        drainGroup.enter()
-        drainGroup.enter()
-        let stdoutDone = OnceFlag()
-        let stderrDone = OnceFlag()
+        // Retain one overflow byte so discovery rejects oversized output instead of parsing a truncated path.
+        let maxOutputBytes = ProcessPipeCapture.defaultMaxBytes
+        let stdoutCapture = ProcessPipeCapture(
+            handle: FileHandle(fileDescriptor: stdoutFds.read, closeOnDealloc: true),
+            maxBytes: maxOutputBytes + 1)
+        let stderrCapture = ProcessPipeCapture(
+            handle: FileHandle(fileDescriptor: stderrFds.read, closeOnDealloc: true),
+            maxBytes: 0)
 
-        let stdoutCollector = CapturedData()
-        let stdoutHandle = FileHandle(fileDescriptor: stdoutFds.read, closeOnDealloc: true)
-        stdoutHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                handle.readabilityHandler = nil
-                if stdoutDone.fire() {
-                    drainGroup.leave()
-                }
-            } else {
-                stdoutCollector.append(data)
-            }
-        }
-
-        let stderrHandle = FileHandle(fileDescriptor: stderrFds.read, closeOnDealloc: true)
-        stderrHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                handle.readabilityHandler = nil
-                if stderrDone.fire() {
-                    drainGroup.leave()
-                }
-            }
-        }
-
-        // Adopt the already-spawned session so cleanup can also discover helpers
-        // that escape into a new process group while retaining our output pipes.
+        // Snapshot pipe identities before the readers can reach EOF and close their descriptors.
         let process = SpawnedProcessGroup.adopt(
             pid: pid,
             outputFileDescriptors: [stdoutFds.read, stderrFds.read])
+        stdoutCapture.start()
+        stderrCapture.start()
+        defer {
+            stdoutCapture.stop()
+            stderrCapture.stop()
+        }
+
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
             usleep(10000)
@@ -943,14 +941,6 @@ public enum ShellCommandLocator {
 
         if process.isRunning {
             process.terminateSynchronously()
-            stdoutHandle.readabilityHandler = nil
-            stderrHandle.readabilityHandler = nil
-            if stdoutDone.fire() {
-                drainGroup.leave()
-            }
-            if stderrDone.fire() {
-                drainGroup.leave()
-            }
             return nil
         }
 
@@ -958,25 +948,10 @@ public enum ShellCommandLocator {
         // including session-escaped helpers that still hold our output pipes open.
         process.terminateSynchronously()
 
-        // Wait for both pipes to deliver EOF so no buffered bytes are lost.
-        // Bounded so a stuck handler can't hang the caller indefinitely.
-        if drainGroup.wait(timeout: .now() + 0.4) != .success {
-            process.terminateSynchronously(grace: 0)
-        }
-        if drainGroup.wait(timeout: .now() + 0.6) != .success {
-            stdoutHandle.readabilityHandler = nil
-            stderrHandle.readabilityHandler = nil
-            if stdoutDone.fire() {
-                drainGroup.leave()
-            }
-            if stderrDone.fire() {
-                drainGroup.leave()
-            }
-        }
-        return stdoutCollector.drain()
+        let data = stdoutCapture.finishSynchronously(timeout: 1)
+        guard stdoutCapture.reachedEOF, data.count <= maxOutputBytes else { return nil }
+        return data
     }
-
-    // swiftlint:enable cyclomatic_complexity
 
     private static func runShellCapture(_ shell: String?, _ timeout: TimeInterval, _ command: String) -> String? {
         let shellPath = (shell?.isEmpty == false) ? shell! : "/bin/zsh"

@@ -17,7 +17,6 @@ struct MenuCardRefreshTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -45,7 +44,7 @@ struct MenuCardRefreshTests {
                 secondary: nil,
                 updatedAt: updatedAt,
                 identity: ProviderIdentitySnapshot(
-                    providerID: provider,
+                    providerID: provider.instanceID,
                     accountEmail: nil,
                     accountOrganization: nil,
                     loginMethod: "Pro"))

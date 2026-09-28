@@ -13,6 +13,7 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
     @Binding var isEnabled: Bool
     let subtitle: String
     let model: UsageMenuCardView.Model
+    let usageItems: [ProviderUsageItemDescriptor]
     let openAIWebDiagnostic: String?
     let settingsPickers: [ProviderSettingsPickerDescriptor]
     let settingsToggles: [ProviderSettingsToggleDescriptor]
@@ -33,6 +34,7 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
         isEnabled: Binding<Bool>,
         subtitle: String,
         model: UsageMenuCardView.Model,
+        usageItems: [ProviderUsageItemDescriptor] = [],
         openAIWebDiagnostic: String?,
         settingsPickers: [ProviderSettingsPickerDescriptor],
         settingsToggles: [ProviderSettingsToggleDescriptor],
@@ -52,6 +54,7 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
         self._isEnabled = isEnabled
         self.subtitle = subtitle
         self.model = model
+        self.usageItems = usageItems
         self.openAIWebDiagnostic = openAIWebDiagnostic
         self.settingsPickers = settingsPickers
         self.settingsToggles = settingsToggles
@@ -71,6 +74,18 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
         L(UsageMenuCardView.popupMetricTitle(provider: provider, metric: metric))
     }
 
+    static func versionText(provider: UsageProvider, store: UsageStore) -> String? {
+        let context = ProviderPresentationContext(
+            provider: provider,
+            settings: store.settings,
+            store: store,
+            metadata: store.metadata(for: provider))
+        let presentation = ProviderCatalog.implementation(for: provider)?.presentation(context: context)
+            ?? ProviderPresentation(detailLine: ProviderPresentation.standardDetailLine)
+        guard presentation.showsVersionInSettings else { return nil }
+        return store.version(for: provider) ?? L("not detected")
+    }
+
     static func metricInlinePresentation(
         _ metric: UsageMenuCardView.Model.Metric) -> ProviderMetricInlinePresentation
     {
@@ -86,8 +101,9 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
         else {
             return nil
         }
-        guard provider == .openrouter || provider == .mimo || provider == .moonshot || provider == .poe else {
-            return (label: L("Plan"), value: rawPlan)
+        let presentation = ProviderDescriptorRegistry.descriptor(for: provider).presentation.planRow
+        guard presentation.stripsBalancePrefix else {
+            return (label: L(presentation.label), value: rawPlan)
         }
 
         let prefix = "Balance:"
@@ -95,13 +111,10 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
             let valueStart = rawPlan.index(rawPlan.startIndex, offsetBy: prefix.count)
             let trimmedValue = rawPlan[valueStart...].trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedValue.isEmpty {
-                return (label: L("Balance"), value: trimmedValue)
+                return (label: L(presentation.balancePrefixedLabel), value: trimmedValue)
             }
         }
-        if provider == .mimo {
-            return (label: L("Plan"), value: rawPlan)
-        }
-        return (label: L("Balance"), value: rawPlan)
+        return (label: L(presentation.label), value: rawPlan)
     }
 
     private var menuBarSettingsPickers: [ProviderSettingsPickerDescriptor] {
@@ -126,6 +139,7 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
                     provider: self.provider,
                     store: self.store,
                     isEnabled: self.isEnabled,
+                    versionText: Self.versionText(provider: self.provider, store: self.store),
                     model: self.model)
             }
 
@@ -134,9 +148,17 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
                     provider: self.provider,
                     model: self.model,
                     openAIWebDiagnostic: self.openAIWebDiagnostic,
-                    isEnabled: self.isEnabled)
+                    isEnabled: self.isEnabled,
+                    isRefreshing: self.store.refreshingProviders.contains(self.provider.instanceID))
             } header: {
                 Text(L("Usage"))
+            }
+
+            if !self.usageItems.isEmpty {
+                ProviderUsageItemVisibilitySettingsView(
+                    provider: self.provider,
+                    settings: self.store.settings,
+                    items: self.usageItems)
             }
 
             if let errorDisplay {
@@ -150,6 +172,10 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
                         onCopy: { self.onCopyError(errorDisplay.full) })
                 }
             }
+
+            ProviderMenuBarPercentWindowSettingsView(
+                provider: self.provider,
+                settings: self.store.settings)
 
             if !self.menuBarSettingsPickers.isEmpty {
                 Section {
@@ -192,6 +218,8 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
                 self.supplementarySettingsContent
             }
 
+            ProviderAccentColorSettingsView(provider: self.provider, settings: self.store.settings)
+
             ProviderQuotaWarningSettingsView(provider: self.provider, settings: self.store.settings)
 
             if !self.settingsToggles.isEmpty {
@@ -210,7 +238,43 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
 }
 
 @MainActor
-private struct ProviderDetailHeaderRow: View {
+struct ProviderUsageItemVisibilitySettingsView: View {
+    let provider: UsageProvider
+    @Bindable var settings: SettingsStore
+    let items: [ProviderUsageItemDescriptor]
+
+    var body: some View {
+        Section {
+            ForEach(self.items) { item in
+                Toggle(
+                    isOn: Binding(
+                        get: { self.settings.isUsageItemVisible(item.id, for: self.provider) },
+                        set: { isVisible in
+                            self.settings.setUsageItemVisible(
+                                isVisible,
+                                itemID: item.id,
+                                for: self.provider)
+                        })) {
+                    Text(item.title)
+                }
+                .toggleStyle(.checkbox)
+            }
+
+            Button(L("Restore Defaults")) {
+                self.settings.restoreDefaultUsageItemVisibility(for: self.provider)
+            }
+            .disabled(self.settings.hiddenUsageItemIDs(for: self.provider).isEmpty)
+        } header: {
+            Text(L("Visible usage items"))
+        } footer: {
+            SettingsSectionFooter(L(
+                "Choose which usage rows appear in this provider's menu, Settings preview, and Overview."))
+        }
+    }
+}
+
+@MainActor
+struct ProviderDetailHeaderRow: View {
     let provider: UsageProvider
     @Bindable var store: UsageStore
     @Binding var isEnabled: Bool
@@ -254,7 +318,9 @@ private struct ProviderDetailHeaderRow: View {
         let first = lines[0]
         let rest = lines.dropFirst().joined(separator: "\n")
         let tail = rest.trimmingCharacters(in: .whitespacesAndNewlines)
-        if tail.isEmpty { return String(first) }
+        if tail.isEmpty {
+            return String(first)
+        }
         return "\(first) • \(tail)"
     }
 }
@@ -281,15 +347,18 @@ private struct ProviderDetailBrandIcon: View {
 }
 
 @MainActor
-private struct ProviderDetailInfoRows: View {
+struct ProviderDetailInfoRows: View {
     let provider: UsageProvider
     @Bindable var store: UsageStore
     let isEnabled: Bool
+    let versionText: String?
     let model: UsageMenuCardView.Model
 
     var body: some View {
         ProviderDetailInfoRow(label: L("Source"), value: self.store.sourceLabel(for: self.provider))
-        ProviderDetailInfoRow(label: L("Version"), value: self.store.version(for: self.provider) ?? L("not detected"))
+        if let versionText {
+            ProviderDetailInfoRow(label: L("Version"), value: versionText)
+        }
         ProviderDetailInfoRow(label: L("Updated"), value: self.updatedText)
 
         if let status = self.store.status(for: self.provider) {
@@ -300,8 +369,9 @@ private struct ProviderDetailInfoRows: View {
             ProviderDetailInfoRow(label: L("Account"), value: self.model.email)
         }
 
+        // Provider-specific by design: Kiro reports an auth method as a separate identity field, not a plan.
         if self.provider == .kiro,
-           let authMethod = self.store.snapshot(for: self.provider)?.loginMethod(for: .kiro),
+           let authMethod = self.store.snapshot(for: self.provider.instanceID)?.loginMethod(for: .kiro),
            !authMethod.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             ProviderDetailInfoRow(label: L("Auth"), value: authMethod)
@@ -316,10 +386,10 @@ private struct ProviderDetailInfoRows: View {
     }
 
     private var updatedText: String {
-        if let updated = self.store.snapshot(for: self.provider)?.updatedAt {
+        if let updated = self.store.snapshot(for: self.provider.instanceID)?.updatedAt {
             return UsageFormatter.updatedString(from: updated)
         }
-        if self.store.refreshingProviders.contains(self.provider) {
+        if self.store.refreshingProviders.contains(self.provider.instanceID) {
             return L("Refreshing")
         }
         if self.store.unavailableMessage(for: self.provider) != nil {
@@ -350,6 +420,7 @@ struct ProviderMetricsInlineView: View {
     let model: UsageMenuCardView.Model
     let openAIWebDiagnostic: String?
     let isEnabled: Bool
+    let isRefreshing: Bool
 
     struct InfoRow: Identifiable, Equatable {
         enum ID: Hashable {
@@ -360,6 +431,36 @@ struct ProviderMetricsInlineView: View {
         let id: ID
         let label: String
         let value: String
+    }
+
+    struct ContentState: Equatable {
+        let hasMetrics: Bool
+        let hasUsageNotes: Bool
+        let hasProviderCost: Bool
+        let hasInfoRows: Bool
+        let hasTokenUsage: Bool
+        let hasResetCredits: Bool
+        let hasProviderDetails: Bool
+
+        init(model: UsageMenuCardView.Model, infoRows: [InfoRow]) {
+            self.hasMetrics = !model.metrics.isEmpty
+            self.hasUsageNotes = !model.usageNotes.isEmpty
+            self.hasProviderCost = model.providerCost?.showsInProviderDetails == true
+            self.hasInfoRows = !infoRows.isEmpty
+            self.hasTokenUsage = model.tokenUsage != nil
+            self.hasResetCredits = model.limitResetCredits != nil
+            self.hasProviderDetails = !model.providerDetails.isEmpty
+        }
+
+        var showsPlaceholder: Bool {
+            !self.hasMetrics &&
+                !self.hasUsageNotes &&
+                !self.hasProviderCost &&
+                !self.hasInfoRows &&
+                !self.hasTokenUsage &&
+                !self.hasResetCredits &&
+                !self.hasProviderDetails
+        }
     }
 
     static func infoRows(
@@ -377,14 +478,10 @@ struct ProviderMetricsInlineView: View {
     }
 
     var body: some View {
-        let hasMetrics = !self.model.metrics.isEmpty
-        let hasUsageNotes = !self.model.usageNotes.isEmpty
         let infoRows = Self.infoRows(for: self.model, openAIWebDiagnostic: self.openAIWebDiagnostic)
-        let hasProviderCost = self.model.providerCost != nil
-        let hasTokenUsage = self.model.tokenUsage != nil
-        let hasResetCredits = self.model.codexResetCredits != nil
+        let contentState = ContentState(model: self.model, infoRows: infoRows)
 
-        if !hasMetrics, !hasUsageNotes, !hasProviderCost, infoRows.isEmpty, !hasTokenUsage, !hasResetCredits {
+        if contentState.showsPlaceholder {
             Text(self.placeholderText)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -396,7 +493,7 @@ struct ProviderMetricsInlineView: View {
                     progressColor: self.model.progressColor)
             }
 
-            if hasUsageNotes {
+            if contentState.hasUsageNotes {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(self.model.usageNotes.enumerated()), id: \.offset) { _, note in
                         Text(note)
@@ -412,28 +509,56 @@ struct ProviderMetricsInlineView: View {
                 ProviderDetailInfoRow(label: row.label, value: row.value)
             }
 
-            if let resetCredits = self.model.codexResetCredits {
-                ProviderCodexResetCreditsInlineRow(presentation: resetCredits)
+            if let resetCredits = self.model.limitResetCredits {
+                ProviderLimitResetCreditsInlineRow(presentation: resetCredits)
             }
 
-            if let providerCost = self.model.providerCost {
+            if let providerCost = self.model.providerCost, providerCost.showsInProviderDetails {
                 ProviderMetricInlineCostRow(
                     section: providerCost,
                     progressColor: self.model.progressColor)
             }
 
             if let tokenUsage = self.model.tokenUsage {
-                ProviderMetricInlineTextRow(title: L("Cost"), value: tokenUsage.sessionLine)
+                ProviderMetricInlineTextRow(
+                    title: UsageMenuCardView.Model.tokenUsageHeader(provider: self.model.provider),
+                    value: tokenUsage.sessionLine)
                 ProviderMetricInlineTextRow(title: "", value: tokenUsage.monthLine)
+                if ProviderDescriptorRegistry.descriptor(for: self.model.provider).tokenCost.showsHintInProviderDetails,
+                   let hint = tokenUsage.hintLine,
+                   !hint.isEmpty
+                {
+                    ProviderMetricInlineTextRow(title: "", value: hint)
+                }
+            }
+
+            if contentState.hasProviderDetails {
+                ProviderDetailSectionsContent(
+                    sections: self.model.providerDetails,
+                    chartColor: self.model.progressColor)
             }
         }
     }
 
     private var placeholderText: String {
-        if !self.isEnabled {
+        Self.placeholderText(
+            isEnabled: self.isEnabled,
+            isRefreshing: self.isRefreshing,
+            modelPlaceholder: self.model.placeholder)
+    }
+
+    static func placeholderText(
+        isEnabled: Bool,
+        isRefreshing: Bool,
+        modelPlaceholder: String?) -> String
+    {
+        if !isEnabled {
             return L("Disabled — no recent data")
         }
-        return self.model.placeholder.map(L) ?? L("No usage yet")
+        if isRefreshing {
+            return L("Refreshing")
+        }
+        return modelPlaceholder.map(L) ?? L("No usage yet")
     }
 }
 
@@ -456,15 +581,19 @@ private struct ProviderMetricInlineRow: View {
                         .foregroundStyle(.secondary)
                 }
             case .progress:
+                let presentation = self.metric.linePresentation(title: self.title)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(self.title)
+                    Text(presentation.titleText)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
+                        .layoutPriority(1)
                     Spacer(minLength: 8)
-                    Text(self.metric.percentLabel)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                    if let resetText = presentation.resetText {
+                        Text(resetText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
 
                 UsageProgressBar(
@@ -474,37 +603,16 @@ private struct ProviderMetricInlineRow: View {
                     pacePercent: self.metric.pacePercent,
                     paceOnTop: self.metric.paceOnTop,
                     warningMarkerPercents: self.metric.warningMarkerPercents,
-                    workdayMarkerPercents: self.metric.workdayMarkerPercents)
+                    workdayMarkerPercents: self.metric.workdayMarkerPercents,
+                    workdayTickAppearance: self.metric.workdayTickAppearance)
                     .frame(maxWidth: .infinity)
 
-                let hasLeftDetail = self.metric.detailLeftText?.isEmpty == false
-                let hasRightDetail = self.metric.detailRightText?.isEmpty == false
-                let resetText = self.metric.resetText ?? ""
-                if hasLeftDetail || hasRightDetail || !resetText.isEmpty {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        if let leftDetail = self.metric.detailLeftText, !leftDetail.isEmpty {
-                            Text(leftDetail)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        if let rightDetail = self.metric.detailRightText, !rightDetail.isEmpty {
-                            Text(rightDetail)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        } else if !resetText.isEmpty {
-                            Text(resetText)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if hasRightDetail, !resetText.isEmpty {
-                    Text(resetText)
+                if let metaText = presentation.metaText {
+                    Text(metaText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
                 if let detail = self.metric.detailText, !detail.isEmpty {
@@ -518,8 +626,8 @@ private struct ProviderMetricInlineRow: View {
     }
 }
 
-private struct ProviderCodexResetCreditsInlineRow: View {
-    let presentation: CodexResetCreditsPresentation
+private struct ProviderLimitResetCreditsInlineRow: View {
+    let presentation: LimitResetCreditsPresentation
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

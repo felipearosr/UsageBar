@@ -54,6 +54,7 @@ public struct ClaudeAccountIdentity: Sendable {
 
 public enum ClaudeStatusProbeError: LocalizedError, Sendable {
     case claudeNotInstalled
+    case authenticationFailed(String)
     case parseFailed(String)
     case timedOut
 
@@ -61,6 +62,8 @@ public enum ClaudeStatusProbeError: LocalizedError, Sendable {
         switch self {
         case .claudeNotInstalled:
             "Claude CLI is not installed or not on PATH."
+        case let .authenticationFailed(message):
+            message
         case let .parseFailed(msg):
             "Could not parse Claude usage: \(msg)"
         case .timedOut:
@@ -78,16 +81,26 @@ public struct ClaudeStatusProbe: Sendable {
     public var claudeBinary: String = "claude"
     public var timeout: TimeInterval = 20.0
     public var keepCLISessionsAlive: Bool = false
-    private static let log = CodexBarLog.logger(LogCategories.claudeProbe)
+    public var environment: [String: String] = ProcessInfo.processInfo.environment
+    // Claude's interactive process binds account state at launch. Cross-refresh reuse is permitted only because the
+    // session actor also requires the hashed config-root + active-account scope to match.
+    static let accountScopedSessionReuseEnabled = true
+    private static let log = CodexBarLog.logger(LogCategories.provider(.claude, scope: "probe"))
     #if DEBUG
     public typealias FetchOverride = @Sendable (String, TimeInterval, Bool) async throws -> ClaudeStatusSnapshot
     @TaskLocal static var fetchOverride: FetchOverride?
     #endif
 
-    public init(claudeBinary: String = "claude", timeout: TimeInterval = 20.0, keepCLISessionsAlive: Bool = false) {
+    public init(
+        claudeBinary: String = "claude",
+        timeout: TimeInterval = 20.0,
+        keepCLISessionsAlive: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment)
+    {
         self.claudeBinary = claudeBinary
         self.timeout = timeout
         self.keepCLISessionsAlive = keepCLISessionsAlive
+        self.environment = environment
     }
 
     #if DEBUG
@@ -115,29 +128,45 @@ public struct ClaudeStatusProbe: Sendable {
     #endif
 
     public func fetch() async throws -> ClaudeStatusSnapshot {
-        let resolved = Self.resolvedBinaryPath(binaryName: self.claudeBinary)
+        let resolved = Self.resolvedBinaryPath(binaryName: self.claudeBinary, environment: self.environment)
         guard let resolved, Self.isBinaryAvailable(resolved) else {
             throw ClaudeStatusProbeError.claudeNotInstalled
         }
 
         // Run commands sequentially through a shared Claude session to avoid warm-up churn.
         let timeout = self.timeout
-        let keepAlive = self.keepCLISessionsAlive
+        let keepAlive = Self.shouldKeepCLISessionAlive(requested: self.keepCLISessionsAlive)
+        let accountScope = ClaudeAccountProfile.sessionScope(environment: self.environment)
         #if DEBUG
         if let override = Self.fetchOverride {
             return try await override(resolved, timeout, keepAlive)
         }
         #endif
         do {
-            var usage = try await Self.capture(subcommand: "/usage", binary: resolved, timeout: timeout)
+            var usage = try await Self.capture(
+                subcommand: "/usage",
+                binary: resolved,
+                accountScope: accountScope,
+                timeout: timeout,
+                environment: self.environment)
             if !Self.usageOutputLooksRelevant(usage) {
                 Self.log.debug("Claude CLI /usage looked like startup output; retrying once")
-                usage = try await Self.capture(subcommand: "/usage", binary: resolved, timeout: max(timeout, 14))
+                usage = try await Self.capture(
+                    subcommand: "/usage",
+                    binary: resolved,
+                    accountScope: accountScope,
+                    timeout: max(timeout, 14),
+                    environment: self.environment)
             }
             // `/status` only enriches a valid usage snapshot with identity. Terminal usage errors and loading stalls
             // cannot be repaired by it, so fail now instead of paying for another interactive CLI round trip.
             try Self.validateUsageBeforeStatusProbe(usage)
-            let status = try? await Self.capture(subcommand: "/status", binary: resolved, timeout: min(timeout, 12))
+            let status = try? await Self.capture(
+                subcommand: "/status",
+                binary: resolved,
+                accountScope: accountScope,
+                timeout: min(timeout, 12),
+                environment: self.environment)
             let snap = try Self.parse(text: usage, statusText: status)
 
             Self.log.info("Claude CLI scrape ok", metadata: [
@@ -146,27 +175,35 @@ public struct ClaudeStatusProbe: Sendable {
                 "opusPercentLeft": "\(snap.opusPercentLeft ?? -1)",
             ])
             if !keepAlive {
-                await Self.resetTransientCLISessionAndCleanupProbeArtifacts()
+                await Self.resetTransientCLISessionAndCleanupProbeArtifacts(environment: self.environment)
             }
             return snap
         } catch {
             if !keepAlive {
-                await Self.resetTransientCLISessionAndCleanupProbeArtifacts()
+                await Self.resetTransientCLISessionAndCleanupProbeArtifacts(environment: self.environment)
             }
             throw error
         }
     }
 
-    private static func resetTransientCLISessionAndCleanupProbeArtifacts() async {
+    private static func resetTransientCLISessionAndCleanupProbeArtifacts(environment: [String: String]) async {
         await ClaudeCLISession.current.reset()
-        let removed = ClaudeProbeSessionArtifactCleaner.cleanupProbeSessionArtifacts()
+        let removed = ClaudeProbeSessionArtifactCleaner.cleanupProbeSessionArtifacts(environment: environment)
         guard !removed.isEmpty else { return }
         Self.log.debug("Claude probe session artifacts removed", metadata: ["count": "\(removed.count)"])
+    }
+
+    static func shouldKeepCLISessionAlive(requested: Bool) -> Bool {
+        requested && self.accountScopedSessionReuseEnabled
     }
 }
 
 extension ClaudeStatusProbe {
     // MARK: - Parsing helpers
+
+    private static func cleanCapture(_ text: String) -> String {
+        ClaudeCLIScreen.render(text, preservePlainReports: true)
+    }
 
     private struct LabelSearchContext {
         let lines: [String]
@@ -186,8 +223,8 @@ extension ClaudeStatusProbe {
     }
 
     public static func parse(text: String, statusText: String? = nil) throws -> ClaudeStatusSnapshot {
-        let clean = TextParsing.stripANSICodes(text)
-        let statusClean = statusText.map(TextParsing.stripANSICodes)
+        let clean = Self.cleanCapture(text)
+        let statusClean = statusText.map(Self.cleanCapture)
         guard !clean.isEmpty else { throw ClaudeStatusProbeError.timedOut }
 
         let shouldDump = ProcessInfo.processInfo.environment["DEBUG_CLAUDE_DUMP"] == "1"
@@ -198,7 +235,7 @@ extension ClaudeStatusProbe {
                 reason: "usageError: \(usageError)",
                 usage: clean,
                 status: statusText)
-            throw ClaudeStatusProbeError.parseFailed(usageError)
+            throw self.usageProbeError(message: usageError)
         }
 
         let latestUsagePanel = self.trimToLatestUsagePanel(clean)
@@ -231,7 +268,7 @@ extension ClaudeStatusProbe {
         // Only apply the fallback when the corresponding label exists in the rendered panel; enterprise accounts
         // may omit the weekly panel entirely, and we should treat that as "unavailable" rather than guessing.
         let weeklyModels = Set(labelContext.lines.compactMap(self.weeklyModelName).map(self.normalizedForLabelSearch))
-        let hasAllModelsWeeklyLabel = weeklyModels.contains("allmodels")
+        let hasAllModelsWeeklyLabel = weeklyModels.contains(where: self.isAllModelsWeeklyModel)
         let opusModels = Set(opusLabels.compactMap(self.weeklyModelName).map(self.normalizedForLabelSearch))
         let hasOpusLabel = !weeklyModels.isDisjoint(with: opusModels)
 
@@ -242,7 +279,7 @@ extension ClaudeStatusProbe {
             }
         }
 
-        let identity = Self.parseIdentity(usageText: clean, statusText: statusClean)
+        let identity = Self.extractIdentity(usageText: clean, statusText: statusClean)
 
         guard let sessionPct else {
             Self.dumpIfNeeded(
@@ -286,8 +323,8 @@ extension ClaudeStatusProbe {
     }
 
     public static func parseIdentity(usageText: String?, statusText: String?) -> ClaudeAccountIdentity {
-        let usageClean = usageText.map(TextParsing.stripANSICodes) ?? ""
-        let statusClean = statusText.map(TextParsing.stripANSICodes)
+        let usageClean = usageText.map(Self.cleanCapture) ?? ""
+        let statusClean = statusText.map(Self.cleanCapture)
         return self.extractIdentity(usageText: usageClean, statusText: statusClean)
     }
 
@@ -299,7 +336,12 @@ extension ClaudeStatusProbe {
         guard let resolved, self.isBinaryAvailable(resolved) else {
             throw ClaudeStatusProbeError.claudeNotInstalled
         }
-        let statusText = try await Self.capture(subcommand: "/status", binary: resolved, timeout: timeout)
+        let statusText = try await Self.capture(
+            subcommand: "/status",
+            binary: resolved,
+            accountScope: ClaudeAccountProfile.sessionScope(environment: environment),
+            timeout: timeout,
+            environment: environment)
         return Self.parseIdentity(usageText: nil, statusText: statusText)
     }
 
@@ -315,17 +357,19 @@ extension ClaudeStatusProbe {
             // Use a more robust capture configuration than the standard `/status` scrape:
             // - Avoid the short idle-timeout which can terminate the session while CLI auth checks are still running.
             // - We intentionally do not parse output here; success is "the command ran without timing out".
-            _ = try await ClaudeCLISession.shared.capture(
+            _ = try await ClaudeCLISession.current.capture(
                 subcommand: "/status",
                 binary: resolved,
+                accountScope: ClaudeAccountProfile.sessionScope(environment: environment),
                 timeout: timeout,
+                environment: environment,
                 idleTimeout: nil,
                 stopOnSubstrings: [],
                 settleAfterStop: 0.8,
                 sendEnterEvery: 0.8)
-            await ClaudeCLISession.shared.reset()
+            await ClaudeCLISession.current.reset()
         } catch {
-            await ClaudeCLISession.shared.reset()
+            await ClaudeCLISession.current.reset()
             throw error
         }
     }
@@ -338,6 +382,17 @@ extension ClaudeStatusProbe {
     }
 
     private static func extractPercent(labelSubstring: String, context: LabelSearchContext) -> Int? {
+        // Prefer an exact label match; only fall back to a fuzzy (garbled-capture) match when no exact
+        // copy yields a value, so a clean row always wins over a corrupted duplicate regardless of order.
+        self.extractPercent(labelSubstring: labelSubstring, context: context, allowFuzzy: false)
+            ?? self.extractPercent(labelSubstring: labelSubstring, context: context, allowFuzzy: true)
+    }
+
+    private static func extractPercent(
+        labelSubstring: String,
+        context: LabelSearchContext,
+        allowFuzzy: Bool) -> Int?
+    {
         let lines = context.lines
         let label = self.normalizedForLabelSearch(labelSubstring)
         for (idx, line) in lines.enumerated() {
@@ -346,7 +401,8 @@ extension ClaudeStatusProbe {
                 line: line,
                 normalizedLine: normalizedLine,
                 labelSubstring: labelSubstring,
-                normalizedLabel: label)
+                normalizedLabel: label,
+                allowFuzzy: allowFuzzy)
             else { continue }
 
             // Claude's usage panel can take a moment to render percentages (especially on enterprise accounts),
@@ -356,7 +412,8 @@ extension ClaudeStatusProbe {
                 if self.crossesLabelBoundary(
                     line: candidate,
                     labelSubstring: labelSubstring,
-                    normalizedLabel: label)
+                    normalizedLabel: label,
+                    allowFuzzy: allowFuzzy)
                 {
                     break
                 }
@@ -369,7 +426,7 @@ extension ClaudeStatusProbe {
     }
 
     private static func usageOutputLooksRelevant(_ text: String) -> Bool {
-        let normalized = TextParsing.stripANSICodes(text).lowercased().filter { !$0.isWhitespace }
+        let normalized = Self.cleanCapture(text).lowercased().filter { !$0.isWhitespace }
         return normalized.contains("currentsession")
             || normalized.contains("currentweek")
             || normalized.contains("loadingusage")
@@ -378,9 +435,9 @@ extension ClaudeStatusProbe {
     }
 
     private static func validateUsageBeforeStatusProbe(_ text: String) throws {
-        let clean = TextParsing.stripANSICodes(text)
+        let clean = Self.cleanCapture(text)
         if let usageError = self.extractUsageError(text: clean) {
-            throw ClaudeStatusProbeError.parseFailed(usageError)
+            throw self.usageProbeError(message: usageError)
         }
 
         let latestUsagePanel = self.trimToLatestUsagePanel(clean)
@@ -410,7 +467,7 @@ extension ClaudeStatusProbe {
         for (index, line) in context.lines.enumerated() {
             guard let modelName = self.weeklyModelName(from: line) else { continue }
             let normalizedModel = self.normalizedForLabelSearch(modelName)
-            guard normalizedModel != "allmodels", !normalizedModel.isEmpty else { continue }
+            guard !normalizedModel.isEmpty, !self.isAllModelsWeeklyModel(normalizedModel) else { continue }
 
             let window = context.lines.dropFirst(index).prefix(14)
             var percentLeft: Int?
@@ -610,15 +667,17 @@ extension ClaudeStatusProbe {
             appearing open `claude` once, choose “Yes, proceed”, then retry.
             """
         }
-        if lower.contains("token_expired") || lower.contains("token has expired") {
+        let failureLine = self.usageFailureLine(text: text)?.lowercased() ?? ""
+        if failureLine.contains("token_expired") || failureLine.contains("token has expired") {
             return "Claude CLI token expired. Run `claude login` to refresh."
         }
-        if lower.contains("authentication_error") {
+        if failureLine.contains("authentication_error") {
             return "Claude CLI authentication error. Run `claude login`."
         }
-        if lower.contains("rate_limit_error")
-            || lower.contains("rate limited")
-            || compact.contains("ratelimited")
+        let compactFailureLine = failureLine.filter { !$0.isWhitespace }
+        if failureLine.contains("rate_limit_error")
+            || failureLine.contains("rate limited")
+            || compactFailureLine.contains("ratelimited")
         {
             return "Claude CLI usage endpoint is rate limited right now. Please try again later."
         }
@@ -634,8 +693,48 @@ extension ClaudeStatusProbe {
         return nil
     }
 
+    private static func usageFailureLine(text: String) -> String? {
+        let pattern = #"failed\s*to\s*load\s*usage\s*data[^\r\n]*"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.matches(in: text, range: range).last,
+              let matchRange = Range(match.range, in: text)
+        else { return nil }
+        return String(text[matchRange])
+    }
+
+    private static func usageProbeError(message: String) -> ClaudeStatusProbeError {
+        let lower = message.lowercased()
+        let authenticationMarkers = [
+            "authentication_error",
+            "permission_error",
+            "token_expired",
+            "token expired",
+            "token has expired",
+            "oauth account information not found",
+            "does not have access to claude code",
+            "run /login",
+            "run `claude login`",
+            "run claude login",
+            "api error: 401",
+            "api error: 403",
+            "forbidden",
+            "invalid api key",
+            "invalid_api_key",
+            "invalid credential",
+            "not authenticated",
+            "not authorized",
+            "token revoked",
+            "unauthorized",
+        ]
+        if authenticationMarkers.contains(where: { lower.contains($0) }) {
+            return .authenticationFailed(message)
+        }
+        return .parseFailed(message)
+    }
+
     private static func isUsageStillLoading(text: String) -> Bool {
-        let normalized = TextParsing.stripANSICodes(text).lowercased().filter { !$0.isWhitespace }
+        let normalized = Self.cleanCapture(text).lowercased().filter { !$0.isWhitespace }
         guard normalized.contains("loadingusage") else { return false }
         return !self.usageCaptureHasSessionValue(normalized) && self.allPercents(text).isEmpty
     }
@@ -701,6 +800,16 @@ extension ClaudeStatusProbe {
     }
 
     private static func extractReset(labelSubstring: String, context: LabelSearchContext) -> String? {
+        // Exact match wins over a garbled duplicate, mirroring extractPercent's candidate selection.
+        self.extractReset(labelSubstring: labelSubstring, context: context, allowFuzzy: false)
+            ?? self.extractReset(labelSubstring: labelSubstring, context: context, allowFuzzy: true)
+    }
+
+    private static func extractReset(
+        labelSubstring: String,
+        context: LabelSearchContext,
+        allowFuzzy: Bool) -> String?
+    {
         let lines = context.lines
         let label = self.normalizedForLabelSearch(labelSubstring)
         for (idx, line) in lines.enumerated() {
@@ -709,7 +818,8 @@ extension ClaudeStatusProbe {
                 line: line,
                 normalizedLine: normalizedLine,
                 labelSubstring: labelSubstring,
-                normalizedLabel: label)
+                normalizedLabel: label,
+                allowFuzzy: allowFuzzy)
             else { continue }
 
             let window = lines.dropFirst(idx).prefix(14)
@@ -717,7 +827,8 @@ extension ClaudeStatusProbe {
                 if self.crossesLabelBoundary(
                     line: candidate,
                     labelSubstring: labelSubstring,
-                    normalizedLabel: label)
+                    normalizedLabel: label,
+                    allowFuzzy: allowFuzzy)
                 {
                     break
                 }
@@ -733,19 +844,29 @@ extension ClaudeStatusProbe {
         line: String,
         normalizedLine: String,
         labelSubstring: String,
-        normalizedLabel: String) -> Bool
+        normalizedLabel: String,
+        allowFuzzy: Bool = false) -> Bool
     {
         guard let expectedModel = self.weeklyModelName(from: labelSubstring) else {
             return normalizedLine.contains(normalizedLabel)
         }
         guard let actualModel = self.weeklyModelName(from: line) else { return false }
-        return self.normalizedForLabelSearch(actualModel) == self.normalizedForLabelSearch(expectedModel)
+        let expectedNormalized = self.normalizedForLabelSearch(expectedModel)
+        let actualNormalized = self.normalizedForLabelSearch(actualModel)
+        // When looking up the all-models weekly bucket, tolerate garbled TUI captures ("all modls")
+        // so the Weekly percent/reset are still recovered even if the clean copy never survived. The
+        // fuzzy match is opt-in so callers can prefer an exact copy before accepting a corrupted one.
+        if allowFuzzy, self.isAllModelsWeeklyModel(expectedNormalized) {
+            return self.isAllModelsWeeklyModel(actualNormalized)
+        }
+        return actualNormalized == expectedNormalized
     }
 
     private static func crossesLabelBoundary(
         line: String,
         labelSubstring: String,
-        normalizedLabel: String) -> Bool
+        normalizedLabel: String,
+        allowFuzzy: Bool = false) -> Bool
     {
         let normalizedLine = self.normalizedForLabelSearch(line)
         guard normalizedLine.hasPrefix("current") else { return false }
@@ -753,7 +874,12 @@ extension ClaudeStatusProbe {
             return !normalizedLine.contains(normalizedLabel)
         }
         guard let actualModel = self.weeklyModelName(from: line) else { return true }
-        return self.normalizedForLabelSearch(actualModel) != self.normalizedForLabelSearch(expectedModel)
+        let expectedNormalized = self.normalizedForLabelSearch(expectedModel)
+        let actualNormalized = self.normalizedForLabelSearch(actualModel)
+        if allowFuzzy, self.isAllModelsWeeklyModel(expectedNormalized) {
+            return !self.isAllModelsWeeklyModel(actualNormalized)
+        }
+        return actualNormalized != expectedNormalized
     }
 
     private static func weeklyModelName(from line: String) -> String? {
@@ -767,6 +893,42 @@ extension ClaudeStatusProbe {
               let modelRange = Range(match.range(at: 1), in: line)
         else { return nil }
         return String(line[modelRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Recognizes the "all models" weekly bucket even when the TUI capture dropped or duplicated a
+    /// character (e.g. "all modls"). Claude renders `/usage` as a redrawing TUI, so the same
+    /// "Current week (all models)" line can be captured mid-repaint; without tolerant matching that
+    /// garbled copy escapes the all-models filter and is surfaced as a bogus second weekly row
+    /// ("all modls only") beside the real Weekly limit. Genuine model-scoped names (Opus, Sonnet,
+    /// Fable, …) are far outside this edit-distance window.
+    private static func isAllModelsWeeklyModel(_ normalizedModel: String) -> Bool {
+        normalizedModel == "allmodels" || self.editDistance(normalizedModel, "allmodels") <= 2
+    }
+
+    /// Levenshtein distance. Inputs here are short normalized model tokens, so the naive
+    /// single-row implementation is more than fast enough.
+    private static func editDistance(_ lhs: String, _ rhs: String) -> Int {
+        let a = Array(lhs.unicodeScalars)
+        let b = Array(rhs.unicodeScalars)
+        if a.isEmpty {
+            return b.count
+        }
+        if b.isEmpty {
+            return a.count
+        }
+        var row = Array(0...b.count)
+        for i in 1...a.count {
+            var previousDiagonal = row[0]
+            row[0] = i
+            for j in 1...b.count {
+                let deletion = row[j] + 1
+                let insertion = row[j - 1] + 1
+                let substitution = previousDiagonal + (a[i - 1] == b[j - 1] ? 0 : 1)
+                previousDiagonal = row[j]
+                row[j] = Swift.min(deletion, insertion, substitution)
+            }
+        }
+        return row[b.count]
     }
 
     private static func extractReset(labelSubstrings: [String], context: LabelSearchContext) -> String? {
@@ -788,21 +950,6 @@ extension ClaudeStatusProbe {
 
     private static func normalizedForLabelSearch(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains))
-    }
-
-    /// Capture all "Reset"/"Resets" strings to surface in the menu.
-    private static func allResets(_ text: String) -> [String] {
-        let pat = #"\bResets?\b[^\r\n]*"#
-        guard let regex = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) else { return [] }
-        let nsrange = NSRange(text.startIndex..<text.endIndex, in: text)
-        var results: [String] = []
-        regex.enumerateMatches(in: text, options: [], range: nsrange) { match, _, _ in
-            guard let match,
-                  let r = Range(match.range(at: 0), in: text) else { return }
-            let raw = String(text[r]).trimmingCharacters(in: .whitespacesAndNewlines)
-            results.append(self.cleanResetLine(raw))
-        }
-        return results
     }
 
     private static func cleanResetLine(_ raw: String) -> String {
@@ -1225,6 +1372,9 @@ extension ClaudeStatusProbe {
         if let code, code.lowercased().contains("token") {
             return "\(hint). Run `claude login` to refresh."
         }
+        if type == "authentication_error" || type == "permission_error" {
+            return "Claude CLI authentication error: \(hint). Run `claude login`."
+        }
         return "Claude CLI error: \(hint)"
     }
 
@@ -1299,7 +1449,13 @@ extension ClaudeStatusProbe {
     }
 
     /// Run claude CLI inside a PTY so we can respond to interactive permission prompts.
-    private static func capture(subcommand: String, binary: String, timeout: TimeInterval) async throws -> String {
+    private static func capture(
+        subcommand: String,
+        binary: String,
+        accountScope: String,
+        timeout: TimeInterval,
+        environment: [String: String]) async throws -> String
+    {
         let stopOnSubstrings = subcommand == "/usage"
             ? [
                 "Failed to load usage data",
@@ -1320,7 +1476,9 @@ extension ClaudeStatusProbe {
             return try await ClaudeCLISession.current.capture(
                 subcommand: subcommand,
                 binary: binary,
+                accountScope: accountScope,
                 timeout: timeout,
+                environment: environment,
                 idleTimeout: idleTimeout,
                 stopOnSubstrings: stopOnSubstrings,
                 stopWhenNormalized: stopWhenNormalized,

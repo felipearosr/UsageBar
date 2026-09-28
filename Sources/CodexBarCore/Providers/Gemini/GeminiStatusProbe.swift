@@ -105,6 +105,7 @@ public enum GeminiStatusProbeError: LocalizedError, Sendable, Equatable {
     case notLoggedIn
     case unsupportedAuthType(String)
     case consumerTierDeprecated
+    case oauthCredentialsUnavailableWithAntigravity
     case parseFailed(String)
     case timedOut
     case apiError(String)
@@ -119,6 +120,8 @@ public enum GeminiStatusProbeError: LocalizedError, Sendable, Equatable {
             "Gemini \(authType) auth not supported. Use Google account (OAuth) instead."
         case .consumerTierDeprecated:
             GeminiConsumerTierMigration.deprecationError
+        case .oauthCredentialsUnavailableWithAntigravity:
+            GeminiConsumerTierMigration.localAntigravityHandoffError
         case let .parseFailed(msg):
             "Could not parse Gemini usage: \(msg)"
         case .timedOut:
@@ -172,10 +175,17 @@ public enum GeminiUserTierId: String, Sendable {
 }
 
 public struct GeminiStatusProbe: Sendable {
+    private struct OAuthRecoveryContext: Sendable {
+        let oauthClientResolver: @Sendable () -> GeminiOAuthConfig.ClientCredentials?
+        let antigravityAvailability: @Sendable () -> Bool
+    }
+
     public var timeout: TimeInterval = 10.0
     public var homeDirectory: String
     public var dataLoader: @Sendable (URLRequest) async throws -> (Data, URLResponse)
-    private static let log = CodexBarLog.logger(LogCategories.geminiProbe)
+    private var oauthClientResolver: @Sendable () -> GeminiOAuthConfig.ClientCredentials?
+    private var antigravityAvailability: @Sendable () -> Bool
+    private static let log = CodexBarLog.logger(LogCategories.provider(.gemini, scope: "probe"))
     private static let quotaEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
     private static let loadCodeAssistEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
     private static let projectsEndpoint = "https://cloudresourcemanager.googleapis.com/v1/projects"
@@ -191,6 +201,22 @@ public struct GeminiStatusProbe: Sendable {
         self.timeout = timeout
         self.homeDirectory = homeDirectory
         self.dataLoader = dataLoader
+        self.oauthClientResolver = { Self.extractOAuthCredentials() }
+        self.antigravityAvailability = { GeminiConsumerTierMigration.isAntigravityAvailable() }
+    }
+
+    init(
+        timeout: TimeInterval = 10.0,
+        homeDirectory: String = NSHomeDirectory(),
+        dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = Self.defaultDataLoader,
+        oauthClientResolver: @escaping @Sendable () -> GeminiOAuthConfig.ClientCredentials?,
+        antigravityAvailability: @escaping @Sendable () -> Bool)
+    {
+        self.timeout = timeout
+        self.homeDirectory = homeDirectory
+        self.dataLoader = dataLoader
+        self.oauthClientResolver = oauthClientResolver
+        self.antigravityAvailability = antigravityAvailability
     }
 
     /// Reads the current Gemini auth type from settings.json
@@ -227,7 +253,9 @@ public struct GeminiStatusProbe: Sendable {
         let snap = try await Self.fetchViaAPI(
             timeout: self.timeout,
             homeDirectory: self.homeDirectory,
-            dataLoader: self.dataLoader)
+            dataLoader: self.dataLoader,
+            oauthClientResolver: self.oauthClientResolver,
+            antigravityAvailability: self.antigravityAvailability)
 
         Self.log.info("Gemini API fetch ok", metadata: [
             "dailyPercentLeft": "\(snap.dailyPercentLeft ?? -1)",
@@ -240,7 +268,9 @@ public struct GeminiStatusProbe: Sendable {
     private static func fetchViaAPI(
         timeout: TimeInterval,
         homeDirectory: String,
-        dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) async throws
+        dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse),
+        oauthClientResolver: @escaping @Sendable () -> GeminiOAuthConfig.ClientCredentials?,
+        antigravityAvailability: @escaping @Sendable () -> Bool) async throws
         -> GeminiStatusSnapshot
     {
         let creds = try Self.loadCredentials(homeDirectory: homeDirectory)
@@ -273,7 +303,10 @@ public struct GeminiStatusProbe: Sendable {
                 refreshToken: refreshToken,
                 timeout: timeout,
                 homeDirectory: homeDirectory,
-                dataLoader: dataLoader)
+                dataLoader: dataLoader,
+                recoveryContext: OAuthRecoveryContext(
+                    oauthClientResolver: oauthClientResolver,
+                    antigravityAvailability: antigravityAvailability))
             idToken = (try? Self.loadCredentials(homeDirectory: homeDirectory).idToken) ?? idToken
         }
         guard let accessToken else {
@@ -288,6 +321,7 @@ public struct GeminiStatusProbe: Sendable {
         let caStatus = try await Self.loadCodeAssistStatus(
             accessToken: accessToken,
             timeout: timeout,
+            hostedDomain: claims.hostedDomain,
             dataLoader: dataLoader)
 
         // Determine the project ID to use for quota fetching.
@@ -332,6 +366,16 @@ public struct GeminiStatusProbe: Sendable {
 
         guard httpResponse.statusCode == 200 else {
             try GeminiStatusProbeError.throwIfConsumerTierDeprecated(data: data)
+            // The quota 403 (`SUBSCRIPTION_REQUIRED`) carries no migration wording; only treat it as the
+            // consumer shutdown when loadCodeAssist flagged this client as unsupported AND the account is
+            // not on a licensed tier. Standard/Enterprise subscriptions are outside the shutdown, so their
+            // 403s stay generic even if Google lists the consumer tier as ineligible for every CLI caller.
+            if httpResponse.statusCode == 403,
+               caStatus.isConsumerClientUnsupported,
+               caStatus.tier != .standard
+            {
+                throw GeminiStatusProbeError.consumerTierDeprecated
+            }
             throw GeminiStatusProbeError.apiError("HTTP \(httpResponse.statusCode)")
         }
 
@@ -393,17 +437,24 @@ public struct GeminiStatusProbe: Sendable {
         return nil
     }
 
-    private struct CodeAssistStatus {
+    fileprivate struct CodeAssistStatus {
         let tier: GeminiUserTierId?
         let projectId: String?
         let paidTierName: String?
+        /// Google listed the consumer tier under `ineligibleTiers` with `UNSUPPORTED_CLIENT`.
+        let isConsumerClientUnsupported: Bool
 
-        static let empty = CodeAssistStatus(tier: nil, projectId: nil, paidTierName: nil)
+        static let empty = CodeAssistStatus(
+            tier: nil,
+            projectId: nil,
+            paidTierName: nil,
+            isConsumerClientUnsupported: false)
     }
 
     private static func loadCodeAssistStatus(
         accessToken: String,
         timeout: TimeInterval,
+        hostedDomain: String?,
         dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) async throws
         -> CodeAssistStatus
     {
@@ -449,47 +500,7 @@ public struct GeminiStatusProbe: Sendable {
             return .empty
         }
 
-        let rawProjectId: String? = {
-            if let project = json["cloudaicompanionProject"] as? String {
-                return project
-            }
-            if let project = json["cloudaicompanionProject"] as? [String: Any] {
-                if let projectId = project["id"] as? String {
-                    return projectId
-                }
-                if let projectId = project["projectId"] as? String {
-                    return projectId
-                }
-            }
-            return nil
-        }()
-        let trimmedProjectId = rawProjectId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let projectId = trimmedProjectId?.isEmpty == true ? nil : trimmedProjectId
-        if let projectId {
-            Self.log.info("loadCodeAssist: project detected", metadata: ["projectId": projectId])
-        }
-
-        let tierId = (json["currentTier"] as? [String: Any])?["id"] as? String
-        let paidTierName = Self.parsePaidTierName(from: json)
-
-        guard let tierId else {
-            Self.log.warning("loadCodeAssist: no currentTier.id in response", metadata: [
-                "json": "\(json)",
-            ])
-            return CodeAssistStatus(tier: nil, projectId: projectId, paidTierName: paidTierName)
-        }
-
-        guard let tier = GeminiUserTierId(rawValue: tierId) else {
-            Self.log.warning("loadCodeAssist: unknown tier ID", metadata: ["tierId": tierId])
-            return CodeAssistStatus(tier: nil, projectId: projectId, paidTierName: paidTierName)
-        }
-
-        Self.log.info("loadCodeAssist: success", metadata: [
-            "tier": tierId,
-            "projectId": projectId ?? "nil",
-            "paidTierName": paidTierName ?? "nil",
-        ])
-        return CodeAssistStatus(tier: tier, projectId: projectId, paidTierName: paidTierName)
+        return try Self.makeCodeAssistStatus(from: json, hostedDomain: hostedDomain)
     }
 
     private struct OAuthCredentials {
@@ -804,7 +815,8 @@ public struct GeminiStatusProbe: Sendable {
         refreshToken: String,
         timeout: TimeInterval,
         homeDirectory: String,
-        dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) async throws
+        dataLoader: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse),
+        recoveryContext: OAuthRecoveryContext) async throws
         -> String
     {
         guard let url = URL(string: tokenRefreshEndpoint) else {
@@ -816,18 +828,20 @@ public struct GeminiStatusProbe: Sendable {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = timeout
 
-        guard let oauthCreds = Self.extractOAuthCredentials() else {
+        guard let oauthCreds = recoveryContext.oauthClientResolver() else {
             Self.log.error("Could not extract OAuth credentials from Gemini CLI")
+            if recoveryContext.antigravityAvailability() {
+                throw GeminiStatusProbeError.oauthCredentialsUnavailableWithAntigravity
+            }
             throw GeminiStatusProbeError.apiError(GeminiConsumerTierMigration.oauthRecoveryError)
         }
 
-        let body = [
-            "client_id=\(oauthCreds.clientId)",
-            "client_secret=\(oauthCreds.clientSecret)",
-            "refresh_token=\(refreshToken)",
-            "grant_type=refresh_token",
-        ].joined(separator: "&")
-        request.httpBody = body.data(using: .utf8)
+        request.httpBody = FormURLEncoding.body([
+            ("client_id", oauthCreds.clientID),
+            ("client_secret", oauthCreds.clientSecret),
+            ("refresh_token", refreshToken),
+            ("grant_type", "refresh_token"),
+        ])
 
         let (data, response) = try await dataLoader(request)
 
@@ -856,7 +870,7 @@ public struct GeminiStatusProbe: Sendable {
         return newAccessToken
     }
 
-    private static func updateStoredCredentials(_ refreshResponse: [String: Any], homeDirectory: String) throws {
+    static func updateStoredCredentials(_ refreshResponse: [String: Any], homeDirectory: String) throws {
         let credsURL = URL(fileURLWithPath: homeDirectory + Self.credentialsPath)
 
         guard let existingCreds = try? Data(contentsOf: credsURL),
@@ -877,7 +891,7 @@ public struct GeminiStatusProbe: Sendable {
         }
 
         let updatedData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted])
-        try updatedData.write(to: credsURL, options: .atomic)
+        try CredentialFileWriter.writePrivate(updatedData, to: credsURL)
     }
 
     private static func loadCredentials(homeDirectory: String) throws -> OAuthCredentials {
@@ -939,10 +953,6 @@ public struct GeminiStatusProbe: Sendable {
             hostedDomain: json["hd"] as? String)
     }
 
-    private static func extractEmailFromToken(_ idToken: String?) -> String? {
-        self.extractClaimsFromToken(idToken).email
-    }
-
     private struct QuotaBucket: Decodable {
         let remainingFraction: Double?
         let resetTime: String?
@@ -981,7 +991,7 @@ public struct GeminiStatusProbe: Sendable {
         let quotas = modelQuotaMap
             .sorted { $0.key < $1.key }
             .map { modelId, info in
-                let resetDate = info.resetString.flatMap { Self.parseResetTime($0) }
+                let resetDate = ISO8601DateParser.parse(info.resetString)
                 return GeminiModelQuota(
                     modelId: modelId,
                     percentLeft: info.fraction * 100,
@@ -998,19 +1008,8 @@ public struct GeminiStatusProbe: Sendable {
             accountPlan: nil)
     }
 
-    private static func parseResetTime(_ isoString: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-        if let date = formatter.date(from: isoString) {
-            return date
-        }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: isoString)
-    }
-
     private static func formatResetTime(_ isoString: String) -> String {
-        guard let resetDate = parseResetTime(isoString) else {
+        guard let resetDate = ISO8601DateParser.parse(isoString) else {
             return "Resets soon"
         }
 
@@ -1094,20 +1093,24 @@ public struct GeminiStatusProbe: Sendable {
 }
 
 extension GeminiStatusProbe {
-    fileprivate static func extractOAuthCredentials() -> OAuthClientCredentials? {
+    fileprivate static func extractOAuthCredentials() -> GeminiOAuthConfig.ClientCredentials? {
         if let resolved = GeminiOAuthConfig.environmentClient() {
-            return OAuthClientCredentials(clientId: resolved.clientID, clientSecret: resolved.clientSecret)
+            return resolved
         }
         if let path = GeminiOAuthConfig.configuredOAuth2JSPath,
            let credentials = Self.parseOAuthCredentials(fromFile: path)
         {
-            return credentials
+            return GeminiOAuthConfig.ClientCredentials(
+                clientID: credentials.clientId,
+                clientSecret: credentials.clientSecret)
         }
         if let credentials = Self.discoverOAuthCredentialsFromInstalledCLI() {
-            return OAuthClientCredentials(clientId: credentials.clientID, clientSecret: credentials.clientSecret)
+            return credentials
         }
         if let credentials = Self.discoverOAuthCredentialsFromKnownInstallPaths() {
-            return credentials
+            return GeminiOAuthConfig.ClientCredentials(
+                clientID: credentials.clientId,
+                clientSecret: credentials.clientSecret)
         }
         return nil
     }
@@ -1284,8 +1287,83 @@ extension GeminiStatusProbe {
             return nil
         }
     }
+}
 
-    private static func parsePaidTierName(from json: [String: Any]) -> String? {
+// MARK: - loadCodeAssist response parsing
+
+extension GeminiStatusProbe {
+    /// Turns a successful `loadCodeAssist` body into a `CodeAssistStatus`, throwing when Google's response
+    /// says this client can no longer serve the account.
+    fileprivate static func makeCodeAssistStatus(
+        from json: [String: Any],
+        hostedDomain: String?) throws -> CodeAssistStatus
+    {
+        let rawProjectId: String? = {
+            if let project = json["cloudaicompanionProject"] as? String {
+                return project
+            }
+            if let project = json["cloudaicompanionProject"] as? [String: Any] {
+                if let projectId = project["id"] as? String {
+                    return projectId
+                }
+                if let projectId = project["projectId"] as? String {
+                    return projectId
+                }
+            }
+            return nil
+        }()
+        let trimmedProjectId = rawProjectId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectId = trimmedProjectId?.isEmpty == true ? nil : trimmedProjectId
+        if let projectId {
+            Self.log.info("loadCodeAssist: project detected", metadata: ["projectId": projectId])
+        }
+
+        let tierId = (json["currentTier"] as? [String: Any])?["id"] as? String
+        let paidTierName = Self.parsePaidTierName(from: json)
+        let isConsumerClientUnsupported = Self.isConsumerClientUnsupported(
+            in: json,
+            paidTierName: paidTierName,
+            hostedDomain: hostedDomain)
+
+        guard let tierId else {
+            // Google answers the consumer shutdown with HTTP 200: no `currentTier`, and the consumer tier
+            // listed under `ineligibleTiers` with `UNSUPPORTED_CLIENT`.
+            if isConsumerClientUnsupported {
+                Self.log.info("loadCodeAssist: consumer client unsupported, no current tier")
+                throw GeminiStatusProbeError.consumerTierDeprecated
+            }
+            Self.log.warning("loadCodeAssist: no currentTier.id in response", metadata: [
+                "json": "\(json)",
+            ])
+            return CodeAssistStatus(
+                tier: nil,
+                projectId: projectId,
+                paidTierName: paidTierName,
+                isConsumerClientUnsupported: false)
+        }
+
+        guard let tier = GeminiUserTierId(rawValue: tierId) else {
+            Self.log.warning("loadCodeAssist: unknown tier ID", metadata: ["tierId": tierId])
+            return CodeAssistStatus(
+                tier: nil,
+                projectId: projectId,
+                paidTierName: paidTierName,
+                isConsumerClientUnsupported: isConsumerClientUnsupported)
+        }
+
+        Self.log.info("loadCodeAssist: success", metadata: [
+            "tier": tierId,
+            "projectId": projectId ?? "nil",
+            "paidTierName": paidTierName ?? "nil",
+        ])
+        return CodeAssistStatus(
+            tier: tier,
+            projectId: projectId,
+            paidTierName: paidTierName,
+            isConsumerClientUnsupported: isConsumerClientUnsupported)
+    }
+
+    fileprivate static func parsePaidTierName(from json: [String: Any]) -> String? {
         guard let paidTier = json["paidTier"] as? [String: Any],
               let rawName = paidTier["name"] as? String
         else {
@@ -1293,6 +1371,36 @@ extension GeminiStatusProbe {
         }
         let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Whether Google's `loadCodeAssist` response says this client can no longer serve the account.
+    ///
+    /// Two signals outrank the ineligible-tier listing, and gating them here keeps both the deprecation
+    /// throw and the quota-403 mapping off accounts the June 2026 shutdown does not cover:
+    /// - A named paid tier: `resolveAccountPlan` treats `paidTier.name` as authoritative even without
+    ///   `currentTier`, and Google's consumer shutdown response carries no `paidTier` at all.
+    /// - An `hd` claim: Workspace and education accounts stay on Gemini, and `resolveAccountPlan` reads
+    ///   `free-tier` plus a hosted domain as Workspace — a mapping this earlier branch would otherwise
+    ///   pre-empt without ever seeing the claim.
+    fileprivate static func isConsumerClientUnsupported(
+        in json: [String: Any],
+        paidTierName: String?,
+        hostedDomain: String?) -> Bool
+    {
+        paidTierName == nil && hostedDomain == nil && self.hasUnsupportedClientIneligibleTier(in: json)
+    }
+
+    /// `ineligibleTiers[].reasonCode == "UNSUPPORTED_CLIENT"` (or its message) is Google's explicit
+    /// consumer-tier shutdown signal inside an otherwise successful `loadCodeAssist` response.
+    private static func hasUnsupportedClientIneligibleTier(in json: [String: Any]) -> Bool {
+        guard let ineligibleTiers = json["ineligibleTiers"] as? [[String: Any]] else { return false }
+        // `tierId` is intentionally ignored: any UNSUPPORTED_CLIENT entry means *this client* is
+        // unsupported, whichever tier Google attached the reason to.
+        return ineligibleTiers.contains { entry in
+            [entry["reasonCode"], entry["reasonMessage"]]
+                .compactMap { $0 as? String }
+                .contains(where: GeminiStatusProbeError.isConsumerTierDeprecationSignal)
+        }
     }
 }
 

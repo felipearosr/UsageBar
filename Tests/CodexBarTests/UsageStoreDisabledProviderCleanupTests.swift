@@ -314,6 +314,7 @@ struct UsageStoreDisabledProviderCleanupTests {
         }
 
         store.scheduleTokenRefreshForTesting()
+        let originalSequence = try #require(store.tokenRefreshSequenceTask)
         await codexGate.waitUntilStarted()
         try Self.setProvider(.codex, enabled: false, settings: settings)
         store.clearDisabledProviderState(enabledProviders: [.claude])
@@ -323,16 +324,13 @@ struct UsageStoreDisabledProviderCleanupTests {
         try Self.setProvider(.codex, enabled: true, settings: settings)
         store.scheduleTokenRefreshForTesting()
         await claudeGate.resume()
-
-        for _ in 0..<200
-            where store.tokenSnapshot(for: .codex)?.sessionTokens != 190 || claudeLoads != 2
-        {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await originalSequence.value
+        await store.tokenRefreshSequenceTask?.value
 
         #expect(store.tokenSnapshot(for: .codex)?.sessionTokens == 190)
         #expect(codexLoads == 2)
         #expect(claudeLoads == 1)
+        #expect(store.tokenRefreshSequenceTask == nil)
     }
 
     @Test
@@ -381,7 +379,8 @@ struct UsageStoreDisabledProviderCleanupTests {
             await gate.suspend()
             return (
                 snapshot: Self.tokenSnapshot(tokens: 710, historyDays: historyDays, updatedAt: now),
-                lastRefreshAt: now)
+                lastRefreshAt: now,
+                staleSnapshotUpdatedAt: nil)
         }
 
         store.hydrateCachedTokenSnapshots()
@@ -448,11 +447,19 @@ struct UsageStoreDisabledProviderCleanupTests {
             components: [],
             updatedAt: Date())
         store.quotaWarningState[
-            UsageStore.QuotaWarningStateKey(provider: .kilo, window: .session, accountDiscriminator: nil),
+            UsageStore.QuotaWarningStateKey(
+                provider: .kilo,
+                window: .session,
+                accountDiscriminator: nil,
+                windowID: nil),
         ] =
             UsageStore.QuotaWarningState(lastRemaining: 20, firedThresholds: [50], source: .primary)
         store.quotaWarningState[
-            UsageStore.QuotaWarningStateKey(provider: .codex, window: .session, accountDiscriminator: nil),
+            UsageStore.QuotaWarningStateKey(
+                provider: .codex,
+                window: .session,
+                accountDiscriminator: nil,
+                windowID: nil),
         ] =
             UsageStore.QuotaWarningState(lastRemaining: 80, firedThresholds: [20], source: .primary)
         store.predictivePaceWarningNotifiedKeys = [
@@ -477,7 +484,11 @@ struct UsageStoreDisabledProviderCleanupTests {
         #expect(store.kiloScopeSnapshots.isEmpty)
         #expect(store.providerStorageFootprints[.kilo] == nil)
         #expect(store.quotaWarningState[
-            UsageStore.QuotaWarningStateKey(provider: .kilo, window: .session, accountDiscriminator: nil),
+            UsageStore.QuotaWarningStateKey(
+                provider: .kilo,
+                window: .session,
+                accountDiscriminator: nil,
+                windowID: nil),
         ] == nil)
         #expect(store.predictivePaceWarningNotifiedKeys.allSatisfy { $0.provider != .kilo })
         #expect(store.lastTokenFetchAt[.kilo] == nil)
@@ -485,7 +496,11 @@ struct UsageStoreDisabledProviderCleanupTests {
 
         #expect(store.lastKnownResetSnapshots[.codex]?.primary?.usedPercent == 12)
         #expect(store.quotaWarningState[
-            UsageStore.QuotaWarningStateKey(provider: .codex, window: .session, accountDiscriminator: nil),
+            UsageStore.QuotaWarningStateKey(
+                provider: .codex,
+                window: .session,
+                accountDiscriminator: nil,
+                windowID: nil),
         ] != nil)
         #expect(store.predictivePaceWarningNotifiedKeys.contains { $0.provider == .codex })
     }
@@ -642,7 +657,6 @@ struct UsageStoreDisabledProviderCleanupTests {
             minimaxCookieStore: InMemoryMiniMaxCookieStore(),
             minimaxAPITokenStore: InMemoryMiniMaxAPITokenStore(),
             kimiTokenStore: InMemoryKimiTokenStore(),
-            kimiK2TokenStore: InMemoryKimiK2TokenStore(),
             augmentCookieStore: InMemoryCookieHeaderStore(),
             ampCookieStore: InMemoryCookieHeaderStore(),
             copilotTokenStore: InMemoryCopilotTokenStore(),
@@ -652,11 +666,16 @@ struct UsageStoreDisabledProviderCleanupTests {
     }
 
     private static func makeUsageStore(settings: SettingsStore) -> UsageStore {
-        UsageStore(
+        let store = UsageStore(
             fetcher: UsageFetcher(environment: [:]),
             browserDetection: BrowserDetection(cacheTTL: 0),
             settings: settings,
+            startupBehavior: .testing,
             environmentBase: [:])
+        store._test_codexCostCatchUpStatusOverride = { _ in
+            CostUsageFetcher.CodexScanCatchUpStatus(pending: false, progressKey: "isolated-complete")
+        }
+        return store
     }
 
     private static func setOnlyProvider(

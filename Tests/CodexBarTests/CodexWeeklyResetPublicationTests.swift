@@ -5,6 +5,299 @@ import Testing
 
 @MainActor
 extension CodexAccountScopedRefreshTests {
+    @Test(arguments: [false, true])
+    func `persisted stale baseline recovers after delayed reset confirmation across relaunch`(
+        rollingBoundary: Bool) async throws
+    {
+        let suite = "CodexWeeklyResetPublicationTests-persisted-delayed-confirmation-\(rollingBoundary)"
+        let email = "persisted-delayed-confirmation@example.com"
+        let settings = self.makeSettingsStore(suite: suite)
+        settings.refreshFrequency = .manual
+        settings.codexCookieSource = .off
+        settings._test_liveSystemCodexAccount = self.liveAccount(
+            email: email,
+            identity: .providerAccount(id: "acct-persisted-delayed-confirmation"))
+        defer { settings._test_liveSystemCodexAccount = nil }
+
+        let now = Date()
+        let priorBoundary = now.addingTimeInterval(2 * 24 * 60 * 60)
+        let nextBoundary = rollingBoundary
+            ? now.addingTimeInterval(7 * 24 * 60 * 60 - 301)
+            : priorBoundary.addingTimeInterval(7 * 24 * 60 * 60)
+        let creditExpiry = nextBoundary.addingTimeInterval(24 * 60 * 60)
+        let prior = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 81,
+            weeklyReset: priorBoundary,
+            updatedAt: now.addingTimeInterval(-360),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-360),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let initialLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0,
+            weeklyReset: nextBoundary,
+            updatedAt: now.addingTimeInterval(-300),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-300),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let confirmedLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0,
+            weeklyReset: nextBoundary.addingTimeInterval(rollingBoundary ? 1 : 0),
+            updatedAt: now.addingTimeInterval(-299),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-299),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let laterLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: rollingBoundary ? 0 : 0.4,
+            weeklyReset: nextBoundary.addingTimeInterval(rollingBoundary ? 300 : 0),
+            updatedAt: now,
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now,
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-weekly-delayed-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: snapshotURL) }
+        let snapshotStore = FileCodexAccountUsageSnapshotStore(fileURL: snapshotURL)
+
+        let seedStore = self.makeCodexWeeklyPublicationStore(
+            settings: settings,
+            suite: suite,
+            snapshotStore: snapshotStore)
+        self.installContextualCodexProvider(on: seedStore, sourceLabel: "oauth", kind: .oauth) { _ in prior }
+        await seedStore.refreshProvider(.codex, allowDisabled: true)
+
+        let firstLowLoader = SequencedCodexSnapshotLoader(steps: [
+            .success(initialLow),
+            .success(confirmedLow),
+        ])
+        let firstLowStore = self.makeCodexWeeklyPublicationStore(
+            settings: settings,
+            suite: suite,
+            snapshotStore: snapshotStore)
+        let refreshedCredits = CreditsSnapshot(remaining: 17, events: [], updatedAt: now)
+        var creditsLoadCount = 0
+        firstLowStore._test_codexCreditsLoaderOverride = {
+            creditsLoadCount += 1
+            return refreshedCredits
+        }
+        defer {
+            firstLowStore._test_codexCreditsLoaderOverride = nil
+            firstLowStore.cancelCodexPlanHistoryBackfill()
+        }
+        self.installContextualCodexProvider(on: firstLowStore, sourceLabel: "oauth", kind: .oauth) { _ in
+            try await firstLowLoader.load()
+        }
+        var candidateAfterUsage: CodexWeeklyResetPublicationCandidate?
+        var candidateAfterCredits: CodexWeeklyResetPublicationCandidate?
+        await CodexWeeklyResetConfirmation.$observationDateOverride.withValue(initialLow.updatedAt) {
+            await firstLowStore.refreshCodexAccountScopedState(allowDisabled: true) { phase in
+                switch phase {
+                case .usage:
+                    candidateAfterUsage = firstLowStore.codexAccountSnapshots.first?.weeklyResetCandidate
+                case .credits:
+                    candidateAfterCredits = firstLowStore.codexAccountSnapshots.first?.weeklyResetCandidate
+                default:
+                    break
+                }
+            }
+        }
+
+        #expect(creditsLoadCount == 1)
+        let admittedCandidate = try #require(candidateAfterUsage)
+        #expect(firstLowStore.snapshots[.codex]?.updatedAt == prior.updatedAt)
+        let persistedCandidate = try #require(snapshotStore.load(
+            for: settings.codexVisibleAccountProjection.visibleAccounts).first)
+        #expect(persistedCandidate.snapshot?.updatedAt == prior.updatedAt)
+        #expect(persistedCandidate.credits?.remaining == refreshedCredits.remaining)
+        #expect(persistedCandidate.weeklyResetCandidate?.snapshot.updatedAt == confirmedLow.updatedAt)
+        #expect(persistedCandidate.weeklyResetCandidate?.createdAt == initialLow.updatedAt)
+        let retainedCandidate = try #require(candidateAfterCredits)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        #expect(try encoder.encode(retainedCandidate) == encoder.encode(admittedCandidate))
+
+        let laterLoader = SequencedCodexSnapshotLoader(steps: [.success(laterLow)])
+        let relaunchedStore = self.makeCodexWeeklyPublicationStore(
+            settings: settings,
+            suite: suite,
+            snapshotStore: snapshotStore)
+        #expect(relaunchedStore.snapshots[.codex] == nil)
+        #expect(relaunchedStore.codexAccountSnapshots.first?.snapshot?.updatedAt == prior.updatedAt)
+        self.installContextualCodexProvider(on: relaunchedStore, sourceLabel: "oauth", kind: .oauth) { _ in
+            try await laterLoader.load()
+        }
+
+        await CodexWeeklyResetConfirmation.$observationDateOverride.withValue(laterLow.updatedAt) {
+            await relaunchedStore.refreshProvider(.codex, allowDisabled: true)
+        }
+
+        #expect(await laterLoader.callCount == 1)
+        #expect(relaunchedStore.snapshots[.codex]?.updatedAt == laterLow.updatedAt)
+        #expect(relaunchedStore.snapshots[.codex]?.secondary?.usedPercent == laterLow.secondary?.usedPercent)
+        #expect(relaunchedStore.snapshots[.codex]?.secondary?.resetsAt == laterLow.secondary?.resetsAt)
+        #expect(relaunchedStore.codexAccountSnapshots.first?.weeklyResetCandidate == nil)
+        let persistedFresh = try #require(snapshotStore.load(
+            for: settings.codexVisibleAccountProjection.visibleAccounts).first)
+        #expect(persistedFresh.snapshot?.updatedAt == laterLow.updatedAt)
+        #expect(persistedFresh.weeklyResetCandidate == nil)
+    }
+
+    @Test
+    func `expired reset evidence is removed across relaunch when provider time stalls`() async throws {
+        let suite = "CodexWeeklyResetPublicationTests-expired-stalled-relaunch"
+        let email = "expired-stalled-relaunch@example.com"
+        let settings = self.makeSettingsStore(suite: suite)
+        settings.refreshFrequency = .manual
+        settings.codexCookieSource = .off
+        settings._test_liveSystemCodexAccount = self.liveAccount(
+            email: email,
+            identity: .providerAccount(id: "acct-expired-stalled-relaunch"))
+        defer { settings._test_liveSystemCodexAccount = nil }
+
+        let now = Date()
+        let priorBoundary = now.addingTimeInterval(2 * 24 * 60 * 60)
+        let nextBoundary = priorBoundary.addingTimeInterval(7 * 24 * 60 * 60)
+        let expiry = nextBoundary.addingTimeInterval(24 * 60 * 60)
+        let previous = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 81,
+            weeklyReset: priorBoundary,
+            updatedAt: now.addingTimeInterval(-2000),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-2000),
+                expiresAt: expiry),
+            dataConfidence: .exact)
+        let stalled = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0,
+            weeklyReset: nextBoundary,
+            updatedAt: now.addingTimeInterval(-1900),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-1900),
+                expiresAt: expiry),
+            dataConfidence: .exact)
+        let candidate = CodexWeeklyResetPublicationCandidate(
+            firstObservedAt: stalled.updatedAt,
+            createdAt: now.addingTimeInterval(-1801),
+            snapshot: stalled)
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-weekly-expired-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: snapshotURL) }
+        let snapshotStore = FileCodexAccountUsageSnapshotStore(fileURL: snapshotURL)
+        let account = try #require(settings.codexVisibleAccountProjection.visibleAccounts.first)
+        snapshotStore.store([CodexAccountUsageSnapshot(
+            account: account,
+            snapshot: previous,
+            error: nil,
+            sourceLabel: "oauth",
+            weeklyResetCandidate: candidate)])
+
+        let store = self.makeCodexWeeklyPublicationStore(
+            settings: settings,
+            suite: suite,
+            snapshotStore: snapshotStore)
+        #expect(store.codexAccountSnapshots.first?.weeklyResetCandidate?.createdAt == candidate.createdAt)
+        let admission = await UsageStore.codexOutcomeAdmittedForPublication(
+            initialOutcome: codexWeeklyFetchOutcome(stalled),
+            previousSnapshot: previous,
+            previousSourceLabel: "oauth",
+            missingWindowBackfillSnapshot: nil,
+            pendingCandidate: candidate,
+            observedAt: now,
+            fetchConfirmation: {
+                ProviderFetchOutcome(
+                    result: .failure(TestRefreshError(message: "confirmation unavailable")),
+                    attempts: [])
+            })
+        #expect(admission.outcome == nil)
+        let persistenceDecision = store.persistCodexWeeklyResetPublicationCandidate(
+            admission.pendingCandidate,
+            expectedGuard: store.freshCodexAccountScopedRefreshGuard(),
+            previousSnapshot: previous)
+        #expect(persistenceDecision == .storeRequested)
+
+        #expect(store.codexAccountSnapshots.count == 1)
+        #expect(store.codexAccountSnapshots.first?.weeklyResetCandidate == nil)
+        let persisted = try #require(snapshotStore.load(
+            for: settings.codexVisibleAccountProjection.visibleAccounts).first)
+        #expect(persisted.weeklyResetCandidate == nil)
+        #expect(persisted.snapshot?.updatedAt == previous.updatedAt)
+    }
+
+    @Test
+    func `persisting an active reset candidate keeps other accounts cached`() throws {
+        let suite = "CodexWeeklyResetPublicationTests-candidate-preserves-siblings"
+        let email = "candidate-owner@example.com"
+        let settings = self.makeSettingsStore(suite: suite)
+        settings.refreshFrequency = .manual
+        settings.codexCookieSource = .off
+        settings._test_liveSystemCodexAccount = self.liveAccount(
+            email: email,
+            identity: .providerAccount(id: "acct-candidate-owner"))
+        defer { settings._test_liveSystemCodexAccount = nil }
+
+        let owner = try #require(settings.codexVisibleAccountProjection.visibleAccounts.first)
+        let sibling = CodexVisibleAccount(
+            id: "cached-sibling-account",
+            email: "sibling@example.com",
+            workspaceLabel: "Sibling Workspace",
+            workspaceAccountID: "acct-cached-sibling",
+            authFingerprint: "sibling-auth-fingerprint",
+            storedAccountID: nil,
+            selectionSource: owner.selectionSource,
+            isActive: false,
+            isLive: false,
+            canReauthenticate: false,
+            canRemove: false)
+        let now = Date()
+        let ownerSnapshot = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 81,
+            weeklyReset: now.addingTimeInterval(2 * 24 * 60 * 60),
+            updatedAt: now)
+        let siblingSnapshot = self.codexWeeklySnapshot(
+            email: "sibling@example.com",
+            weeklyUsedPercent: 42,
+            weeklyReset: now.addingTimeInterval(3 * 24 * 60 * 60),
+            updatedAt: now)
+        let siblingRow = CodexAccountUsageSnapshot(
+            account: sibling,
+            snapshot: siblingSnapshot,
+            error: nil,
+            sourceLabel: "cached-sibling")
+        let snapshotStore = RecordingCodexAccountUsageSnapshotStore(initialSnapshots: [siblingRow])
+        let store = self.makeCodexWeeklyPublicationStore(
+            settings: settings,
+            suite: suite,
+            snapshotStore: snapshotStore)
+        store.codexAccountSnapshots = [siblingRow]
+        let candidate = CodexWeeklyResetPublicationCandidate(
+            firstObservedAt: now,
+            createdAt: now,
+            snapshot: ownerSnapshot)
+
+        #expect(store.persistCodexWeeklyResetPublicationCandidate(
+            candidate, expectedGuard: nil, previousSnapshot: ownerSnapshot) == .missingExpectedGuard)
+        #expect(store.codexAccountSnapshots.count == 1)
+        let persistenceDecision = store.persistCodexWeeklyResetPublicationCandidate(
+            candidate,
+            expectedGuard: store.freshCodexAccountScopedRefreshGuard(),
+            previousSnapshot: ownerSnapshot)
+        #expect(persistenceDecision == .storeRequested)
+
+        #expect(store.codexAccountSnapshots.count == 2)
+        #expect(store.codexAccountSnapshots.first { $0.id == sibling.id }?.snapshot?.secondary?.usedPercent == 42)
+        #expect(store.codexAccountSnapshots.first { $0.id == owner.id }?.weeklyResetCandidate?.createdAt == now)
+        #expect(Set(snapshotStore.storedSnapshots.map(\.id)) == Set([owner.id, sibling.id]))
+    }
+
     @Test
     func `single refresh persists provider snapshot for startup confirmation`() async throws {
         let suite = "CodexWeeklyResetPublicationTests-single-startup-hydration"
@@ -326,7 +619,7 @@ extension CodexAccountScopedRefreshTests {
         defer { settings._test_liveSystemCodexAccount = nil }
 
         let now = Date()
-        let priorBoundary = now.addingTimeInterval(2 * 24 * 60 * 60)
+        let priorBoundary = now.addingTimeInterval(-50)
         let nextBoundary = priorBoundary.addingTimeInterval(7 * 24 * 60 * 60)
         let prior = self.codexWeeklySnapshot(
             email: email,
@@ -366,6 +659,300 @@ extension CodexAccountScopedRefreshTests {
         #expect(store.lastKnownResetSnapshots[.codex]?.updatedAt == confirmedLow.updatedAt)
         #expect(recorder.count == 1)
         #expect(recorder.usedPercents == [0.7])
+    }
+
+    @Test
+    func `unchanged boundary low publishes only on a later refresh`() async {
+        let suite = "CodexWeeklyResetPublicationTests-unchanged-boundary-low"
+        let email = "unchanged-boundary-low@example.com"
+        let settings = self.makeSettingsStore(suite: suite)
+        settings.refreshFrequency = .manual
+        settings.codexCookieSource = .off
+        settings._test_liveSystemCodexAccount = self.liveAccount(
+            email: email,
+            identity: .providerAccount(id: "acct-unchanged-boundary-low"))
+        defer { settings._test_liveSystemCodexAccount = nil }
+
+        let now = Date()
+        let boundary = now.addingTimeInterval(6 * 24 * 60 * 60)
+        let creditExpiry = boundary.addingTimeInterval(24 * 60 * 60)
+        let prior = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 72,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-180),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-180),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let initialLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0.2,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-120),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-120),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let confirmedLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0.7,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-119),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-119),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let laterLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0.8,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-50),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-50),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let loader = SequencedCodexSnapshotLoader(steps: [
+            .success(initialLow),
+            .success(confirmedLow),
+            .success(laterLow),
+        ])
+        let store = self.makeCodexWeeklyPublicationStore(settings: settings, suite: suite)
+        _ = await self.seedCodexWeeklyPublicationState(
+            store: store,
+            settings: settings,
+            snapshot: prior,
+            error: nil)
+        store.lastSourceLabels[.codex] = "oauth"
+        self.installContextualCodexProvider(on: store, sourceLabel: "oauth", kind: .oauth) { _ in
+            try await loader.load()
+        }
+        let recorder = CodexWeeklyPublicationEventRecorder(email: email)
+        defer { recorder.invalidate() }
+
+        await CodexWeeklyResetConfirmation.$observationDateOverride.withValue(initialLow.updatedAt) {
+            await store.refreshProvider(.codex, allowDisabled: true)
+        }
+
+        #expect(await loader.callCount == 2)
+        #expect(store.snapshots[.codex]?.updatedAt == prior.updatedAt)
+        #expect(store.snapshots[.codex]?.secondary?.usedPercent == 72)
+        #expect(store.codexAccountSnapshots.first?.weeklyResetCandidate?.snapshot.updatedAt == confirmedLow.updatedAt)
+        #expect(recorder.usedPercents.isEmpty)
+
+        await CodexWeeklyResetConfirmation.$observationDateOverride.withValue(laterLow.updatedAt) {
+            await store.refreshProvider(.codex, allowDisabled: true)
+        }
+
+        #expect(await loader.callCount == 3)
+        #expect(store.snapshots[.codex]?.updatedAt == laterLow.updatedAt)
+        #expect(store.snapshots[.codex]?.secondary?.usedPercent == 0.8)
+        #expect(store.lastKnownResetSnapshots[.codex]?.updatedAt == laterLow.updatedAt)
+        #expect(store.codexAccountSnapshots.first?.weeklyResetCandidate == nil)
+        #expect(store.weeklyLimitResetDetectorStates.values.first?.pendingLowConfirmation == true)
+        #expect(recorder.usedPercents.isEmpty)
+    }
+
+    @Test
+    func `newer identityless backfill does not erase unchanged boundary evidence`() async throws {
+        let email = "backfill-evidence@example.com"
+        let now = Date()
+        let boundary = now.addingTimeInterval(6 * 24 * 60 * 60)
+        let creditExpiry = boundary.addingTimeInterval(24 * 60 * 60)
+        let previous = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 72,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-180),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-180),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let backfill = UsageSnapshot(
+            primary: nil,
+            secondary: RateWindow(
+                usedPercent: 72,
+                windowMinutes: 7 * 24 * 60,
+                resetsAt: boundary,
+                resetDescription: nil),
+            updatedAt: now.addingTimeInterval(-150))
+        let initial = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0.2,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-120),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-120),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let confirmation = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0.7,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-119),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-119),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+
+        let firstAdmission = await UsageStore.codexOutcomeAdmittedForPublication(
+            initialOutcome: codexWeeklyFetchOutcome(initial),
+            previousSnapshot: previous,
+            previousSourceLabel: "oauth",
+            missingWindowBackfillSnapshot: backfill,
+            observedAt: initial.updatedAt,
+            fetchConfirmation: { codexWeeklyFetchOutcome(confirmation) })
+        let candidate = try #require(firstAdmission.pendingCandidate)
+        #expect(firstAdmission.outcome == nil)
+
+        let later = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0.8,
+            weeklyReset: boundary,
+            updatedAt: now.addingTimeInterval(-50),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-50),
+                expiresAt: creditExpiry),
+            dataConfidence: .exact)
+        let admitted = await UsageStore.codexOutcomeAdmittedForPublication(
+            initialOutcome: codexWeeklyFetchOutcome(later),
+            previousSnapshot: previous,
+            previousSourceLabel: "oauth",
+            missingWindowBackfillSnapshot: backfill,
+            pendingCandidate: candidate,
+            observedAt: later.updatedAt,
+            fetchConfirmation: { codexWeeklyFetchOutcome(later) })
+        let admittedOutcome = try #require(admitted.outcome)
+        let result = try admittedOutcome.result.get()
+
+        #expect(result.usage.updatedAt == later.updatedAt)
+        #expect(result.usage.secondary?.usedPercent == 0.8)
+        #expect(result.usage.accountEmail(for: .codex) == email)
+    }
+
+    @Test
+    func `expired delayed candidate stays discarded when immediate confirmation fails`() async throws {
+        let email = "expired-candidate@example.com"
+        let now = Date()
+        let priorBoundary = now.addingTimeInterval(2 * 24 * 60 * 60)
+        let nextBoundary = priorBoundary.addingTimeInterval(7 * 24 * 60 * 60)
+        let expiry = nextBoundary.addingTimeInterval(24 * 60 * 60)
+        let previous = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 80,
+            weeklyReset: priorBoundary,
+            updatedAt: now.addingTimeInterval(-2000),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-2000),
+                expiresAt: expiry),
+            dataConfidence: .exact)
+        let initial = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0,
+            weeklyReset: nextBoundary,
+            updatedAt: now.addingTimeInterval(-1900),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-1900),
+                expiresAt: expiry),
+            dataConfidence: .exact)
+        let confirmation = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0,
+            weeklyReset: nextBoundary,
+            updatedAt: now.addingTimeInterval(-1899),
+            resetCredits: codexAvailableResetCredits(
+                capturedAt: now.addingTimeInterval(-1899),
+                expiresAt: expiry),
+            dataConfidence: .exact)
+        let candidate = try #require(CodexWeeklyResetConfirmation.evaluateDelayedCandidateCreation(
+            previous: previous,
+            initial: initial,
+            confirmation: confirmation,
+            sourceEvidence: .allExactOAuth,
+            observedAt: initial.updatedAt).candidate)
+        let expiredLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0.5,
+            weeklyReset: nextBoundary,
+            updatedAt: now,
+            resetCredits: codexAvailableResetCredits(capturedAt: now, expiresAt: expiry),
+            dataConfidence: .exact)
+
+        let admission = await UsageStore.codexOutcomeAdmittedForPublication(
+            initialOutcome: codexWeeklyFetchOutcome(expiredLow),
+            previousSnapshot: previous,
+            previousSourceLabel: "oauth",
+            missingWindowBackfillSnapshot: nil,
+            pendingCandidate: candidate,
+            fetchConfirmation: {
+                ProviderFetchOutcome(
+                    result: .failure(TestRefreshError(message: "confirmation unavailable")),
+                    attempts: [])
+            })
+
+        #expect(admission.outcome == nil)
+        #expect(admission.pendingCandidate == nil)
+    }
+
+    @Test
+    func `matching weekly lows before the prior reset remain private`() async throws {
+        let suite = "CodexWeeklyResetPublicationTests-early-rolling-boundary"
+        let email = "early-rolling-boundary@example.com"
+        let settings = self.makeSettingsStore(suite: suite)
+        settings.refreshFrequency = .manual
+        settings.codexCookieSource = .off
+        settings._test_liveSystemCodexAccount = self.liveAccount(
+            email: email,
+            identity: .providerAccount(id: "acct-early-rolling-boundary"))
+        defer { settings._test_liveSystemCodexAccount = nil }
+
+        let formatter = ISO8601DateFormatter()
+        let previousCapturedAt = try #require(formatter.date(from: "2026-07-28T03:09:20Z"))
+        let previousReset = try #require(formatter.date(from: "2026-08-02T10:17:56Z"))
+        let initialCapturedAt = try #require(formatter.date(from: "2026-07-28T03:59:23Z"))
+        let initialReset = try #require(formatter.date(from: "2026-08-04T03:59:21Z"))
+        let prior = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 100,
+            weeklyReset: previousReset,
+            updatedAt: previousCapturedAt)
+        let initialLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0,
+            weeklyReset: initialReset,
+            updatedAt: initialCapturedAt)
+        let confirmedLow = self.codexWeeklySnapshot(
+            email: email,
+            weeklyUsedPercent: 0,
+            weeklyReset: initialReset.addingTimeInterval(30),
+            updatedAt: initialCapturedAt.addingTimeInterval(30))
+        let loader = SequencedCodexSnapshotLoader(steps: [
+            .success(initialLow),
+            .success(confirmedLow),
+        ])
+        let store = self.makeCodexWeeklyPublicationStore(settings: settings, suite: suite)
+        let priorRevision = await self.seedCodexWeeklyPublicationState(
+            store: store,
+            settings: settings,
+            snapshot: prior)
+        self.installContextualCodexProvider(on: store) { _ in try await loader.load() }
+        let recorder = CodexWeeklyPublicationEventRecorder(email: email)
+        defer { recorder.invalidate() }
+
+        await store.refreshProvider(.codex, allowDisabled: true)
+
+        #expect(await loader.callCount == 2)
+        #expect(store.snapshots[.codex]?.updatedAt == prior.updatedAt)
+        #expect(store.snapshots[.codex]?.secondary?.usedPercent == 100)
+        #expect(store.lastKnownResetSnapshots[.codex]?.updatedAt == prior.updatedAt)
+        #expect(store.lastKnownResetSnapshots[.codex]?.secondary?.usedPercent == 100)
+        #expect(store.errors[.codex] == "prior error")
+        #expect(store.lastSourceLabels[.codex] == "prior-source")
+        #expect(store.lastFetchAttempts[.codex]?.count == 1)
+        #expect(store.lastFetchAttempts[.codex]?.first?.strategyID == "prior-strategy")
+        #expect(store.lastFetchAttempts[.codex]?.first?.errorDescription == "prior diagnostic")
+        #expect(store.planUtilizationHistoryRevision == priorRevision)
+        #expect(recorder.usedPercents.isEmpty)
     }
 
     @Test(arguments: CodexRejectedConfirmationCase.allCases)
@@ -457,7 +1044,7 @@ extension CodexAccountScopedRefreshTests {
         defer { settings._test_liveSystemCodexAccount = nil }
 
         let now = Date()
-        let priorBoundary = now.addingTimeInterval(2 * 24 * 60 * 60)
+        let priorBoundary = now.addingTimeInterval(-50)
         let nextBoundary = priorBoundary.addingTimeInterval(7 * 24 * 60 * 60)
         let prior = self.codexWeeklySnapshot(
             email: email,
@@ -570,9 +1157,9 @@ extension CodexAccountScopedRefreshTests {
         let suite = "CodexWeeklyResetPublicationTests-stacked-response-email-mismatch"
         let targetID = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         let siblingID = try #require(UUID(uuidString: "66666666-7777-8888-9999-AAAAAAAAAAAA"))
-        let targetHome = FileManager.default.temporaryDirectory
+        let targetHome = CodexCredentialFixtures.root
             .appendingPathComponent("codex-stacked-mismatch-target-\(UUID().uuidString)", isDirectory: true)
-        let siblingHome = FileManager.default.temporaryDirectory
+        let siblingHome = CodexCredentialFixtures.root
             .appendingPathComponent("codex-stacked-mismatch-sibling-\(UUID().uuidString)", isDirectory: true)
         let target = try self.makeManagedCodexWeeklyPublicationAccount(
             id: targetID,
@@ -640,9 +1227,9 @@ extension CodexAccountScopedRefreshTests {
 
         let suspiciousID = try #require(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-303030303030"))
         let siblingID = try #require(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-313131313131"))
-        let suspiciousHome = FileManager.default.temporaryDirectory
+        let suspiciousHome = CodexCredentialFixtures.root
             .appendingPathComponent("codex-weekly-suspicious-\(UUID().uuidString)", isDirectory: true)
-        let siblingHome = FileManager.default.temporaryDirectory
+        let siblingHome = CodexCredentialFixtures.root
             .appendingPathComponent("codex-weekly-sibling-\(UUID().uuidString)", isDirectory: true)
         let suspiciousAccount = try self.makeManagedCodexWeeklyPublicationAccount(
             id: suspiciousID,
@@ -863,6 +1450,38 @@ extension CodexAccountScopedRefreshTests {
         #expect(store.planUtilizationHistoryRevision == expectation.historyRevision)
         #expect(recorder.usedPercents.isEmpty)
     }
+}
+
+private func codexAvailableResetCredits(
+    id: String = "weekly-reset-credit",
+    capturedAt: Date,
+    expiresAt: Date) -> CodexRateLimitResetCreditsSnapshot
+{
+    CodexRateLimitResetCreditsSnapshot(
+        credits: [CodexRateLimitResetCredit(
+            id: id,
+            resetType: "codex_rate_limits",
+            status: .available,
+            grantedAt: capturedAt.addingTimeInterval(-24 * 60 * 60),
+            expiresAt: expiresAt,
+            redeemStartedAt: nil,
+            redeemedAt: nil,
+            title: nil,
+            description: nil)],
+        availableCount: 1,
+        updatedAt: capturedAt)
+}
+
+private func codexWeeklyFetchOutcome(_ snapshot: UsageSnapshot) -> ProviderFetchOutcome {
+    ProviderFetchOutcome(
+        result: .success(ProviderFetchResult(
+            usage: snapshot,
+            credits: nil,
+            dashboard: nil,
+            sourceLabel: "oauth",
+            strategyID: "weekly-reset-test",
+            strategyKind: .oauth)),
+        attempts: [])
 }
 
 private struct FinalStackedResetExpectation {

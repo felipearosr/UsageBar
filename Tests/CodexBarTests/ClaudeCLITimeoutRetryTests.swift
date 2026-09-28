@@ -92,7 +92,7 @@ struct ClaudeCLITimeoutRetryTests {
         }
 
         await #expect(throws: ClaudeStatusProbeError.self) {
-            try await self.withNoOAuthCredentials {
+            try await self.withLoggedInCLIWithoutOAuth {
                 try await ClaudeCLIResolver.withResolvedBinaryPathOverrideForTesting("/usr/bin/true") {
                     try await ClaudeStatusProbe.withFetchOverrideForTesting(fetchOverride) {
                         try await fetcher.loadLatestUsage(model: "sonnet")
@@ -134,7 +134,7 @@ struct ClaudeCLITimeoutRetryTests {
                 rawText: "probe raw")
         }
 
-        let snapshot = try await self.withNoOAuthCredentials {
+        let snapshot = try await self.withLoggedInCLIWithoutOAuth {
             try await self.withClaudeWebStub(handler: { request in
                 webRequests.record(request.url?.path ?? "<missing>")
                 throw URLError(.userAuthenticationRequired)
@@ -183,7 +183,7 @@ struct ClaudeCLITimeoutRetryTests {
                 rawText: "probe raw")
         }
 
-        let snapshot = try await self.withNoOAuthCredentials {
+        let snapshot = try await self.withLoggedInCLIWithoutOAuth {
             try await ClaudeCLIResolver.withResolvedBinaryPathOverrideForTesting("/usr/bin/true") {
                 try await ClaudeStatusProbe.withFetchOverrideForTesting(fetchOverride) {
                     try await fetcher.loadLatestUsage(model: "sonnet")
@@ -327,7 +327,7 @@ struct ClaudeCLITimeoutRetryTests {
         #expect(ClaudeCLIRateLimitGate.currentBlockedUntil() == nil)
     }
 
-    private func withNoOAuthCredentials<T>(operation: () async throws -> T) async rethrows -> T {
+    private func withLoggedInCLIWithoutOAuth<T>(operation: () async throws -> T) async rethrows -> T {
         let missingCredentialsURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-claude-creds-\(UUID().uuidString).json")
         return try await KeychainCacheStore.withServiceOverrideForTesting("rat-107-\(UUID().uuidString)") {
@@ -341,7 +341,9 @@ struct ClaudeCLITimeoutRetryTests {
                                 data: nil,
                                 fingerprint: nil)
                             {
-                                try await operation()
+                                try await ClaudeCLIAuthStatusProbe.withResultOverrideForTesting(true) {
+                                    try await operation()
+                                }
                             }
                         }
                     }
