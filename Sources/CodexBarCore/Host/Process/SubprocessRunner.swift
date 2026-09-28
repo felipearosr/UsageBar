@@ -11,6 +11,7 @@ public enum SubprocessRunnerError: LocalizedError, Sendable {
     case binaryNotFound(String)
     case launchFailed(String)
     case timedOut(String)
+    case outputTooLarge(String)
     case nonZeroExit(code: Int32, stderr: String)
 
     public var errorDescription: String? {
@@ -21,6 +22,8 @@ public enum SubprocessRunnerError: LocalizedError, Sendable {
             return "Failed to launch process: \(details)"
         case let .timedOut(label):
             return "Command timed out: \(label)"
+        case let .outputTooLarge(label):
+            return "Command produced too much output: \(label)"
         case let .nonZeroExit(code, stderr):
             let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
@@ -73,40 +76,8 @@ public enum SubprocessRunner {
         guard timeout.isFinite else {
             return .seconds(Int.max)
         }
-        let nanoseconds = max(0, min(timeout * 1_000_000_000, Double(Int.max)))
-        return .nanoseconds(Int(nanoseconds))
-    }
-
-    private final class ProcessTermination: @unchecked Sendable {
-        private let lock = NSLock()
-        private var status: Int32?
-        private var continuation: CheckedContinuation<Int32, Never>?
-
-        func resolve(_ status: Int32) {
-            let continuation: CheckedContinuation<Int32, Never>?
-            self.lock.lock()
-            self.status = status
-            continuation = self.continuation
-            self.continuation = nil
-            self.lock.unlock()
-            continuation?.resume(returning: status)
-        }
-
-        func wait() async -> Int32 {
-            await withCheckedContinuation { continuation in
-                let status: Int32?
-                self.lock.lock()
-                status = self.status
-                if status == nil {
-                    self.continuation = continuation
-                }
-                self.lock.unlock()
-
-                if let status {
-                    continuation.resume(returning: status)
-                }
-            }
-        }
+        let nanoseconds = max(0, timeout * 1_000_000_000).rounded(.towardZero)
+        return .nanoseconds(Int(exactly: nanoseconds) ?? Int.max)
     }
 
     /// Terminates a process and its process group, escalating from SIGTERM to SIGKILL.
@@ -176,6 +147,9 @@ public enum SubprocessRunner {
         arguments: [String],
         environment: [String: String],
         timeout: TimeInterval,
+        // Preserve the legacy bounded-prefix capture when omitted. Structured-output callers can opt into
+        // fail-closed rejection by supplying an explicit limit.
+        maxOutputBytes: Int? = nil,
         standardInput: Any? = nil,
         currentDirectoryURL: URL? = nil,
         acceptsNonZeroExit: Bool = false,
@@ -202,8 +176,12 @@ public enum SubprocessRunner {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         process.standardInput = standardInput
-        let stdoutCapture = ProcessPipeCapture(pipe: stdoutPipe)
-        let stderrCapture = ProcessPipeCapture(pipe: stderrPipe)
+        let normalizedMaxOutputBytes = maxOutputBytes.map { max(0, $0) }
+        let captureMaxBytes = normalizedMaxOutputBytes.map { limit in
+            limit == Int.max ? Int.max : limit + 1
+        } ?? ProcessPipeCapture.defaultMaxBytes
+        let stdoutCapture = ProcessPipeCapture(pipe: stdoutPipe, maxBytes: captureMaxBytes)
+        let stderrCapture = ProcessPipeCapture(pipe: stderrPipe, maxBytes: captureMaxBytes)
 
         let termination = ProcessTermination()
         process.terminationHandler = { process in
@@ -276,8 +254,18 @@ public enum SubprocessRunner {
 
             async let stdoutData = stdoutCapture.finish(timeout: .seconds(1))
             async let stderrData = stderrCapture.finish(timeout: .seconds(1))
-            let stdout = await ProcessPipeCapture.decodeUTF8(stdoutData)
-            let stderr = await ProcessPipeCapture.decodeUTF8(stderrData)
+            let capturedStdout = await stdoutData
+            let capturedStderr = await stderrData
+            if let normalizedMaxOutputBytes,
+               capturedStdout.count > normalizedMaxOutputBytes || capturedStderr.count > normalizedMaxOutputBytes
+            {
+                self.log.warning(
+                    "Subprocess output exceeded memory limit",
+                    metadata: ["label": label, "binary": binaryName])
+                throw SubprocessRunnerError.outputTooLarge(label)
+            }
+            let stdout = ProcessPipeCapture.decodeUTF8(capturedStdout)
+            let stderr = ProcessPipeCapture.decodeUTF8(capturedStderr)
 
             if exitCode != 0, !acceptsNonZeroExit {
                 let duration = Date().timeIntervalSince(start)

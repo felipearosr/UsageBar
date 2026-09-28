@@ -1,6 +1,6 @@
-import CodexBarCore
 import Foundation
 import Testing
+@testable import CodexBarCore
 
 struct AgentSessionParserTests {
     @Test
@@ -9,13 +9,53 @@ struct AgentSessionParserTests {
         let records = AgentPSOutputParser.parse(output)
         let agents = AgentPSOutputParser.agentProcesses(from: records)
 
-        #expect(records.count == 9)
-        #expect(agents.map(\ .pid) == [102, 201])
+        #expect(records.count == 18)
+        #expect(agents.map(\ .pid) == [102, 201, 501, 502, 509])
         #expect(AgentPSOutputParser.provider(for: agents[0]) == .claude)
         #expect(AgentPSOutputParser.source(for: agents[0]) == .desktopApp)
         #expect(AgentPSOutputParser.provider(for: agents[1]) == .codex)
         #expect(agents[1].command.hasSuffix("strange argv here"))
         #expect(AgentPSOutputParser.hasCodexAppServer(in: records))
+        #expect(AgentPSOutputParser.provider(for: agents[2]) == .pi)
+        #expect(AgentPSOutputParser.piDialect(for: agents[2]) == .omp)
+        #expect(AgentPSOutputParser.source(for: agents[2]) == .cli)
+        #expect(AgentPSOutputParser.provider(for: agents[3]) == .pi)
+        #expect(AgentPSOutputParser.piDialect(for: agents[3]) == .omp)
+        #expect(AgentPSOutputParser.source(for: agents[3]) == .cli)
+        #expect(AgentPSOutputParser.provider(for: agents[4]) == .pi)
+        #expect(AgentPSOutputParser.piDialect(for: agents[4]) == .pi)
+        let unrelatedBun = try #require(records.first { $0.pid == 507 })
+        let unrelatedNpm = try #require(records.first { $0.pid == 508 })
+        #expect(AgentPSOutputParser.provider(for: unrelatedBun) == nil)
+        #expect(AgentPSOutputParser.provider(for: unrelatedNpm) == nil)
+        for helperPID in [503, 504, 505, 506] {
+            let helper = try #require(records.first { $0.pid == helperPID })
+            #expect(AgentPSOutputParser.provider(for: helper) == nil)
+            #expect(AgentPSOutputParser.source(for: helper) == .cli)
+        }
+    }
+
+    @Test
+    func `chatgpt bundled codex app server is recognized without becoming a live agent`() {
+        let records = AgentPSOutputParser.parse("""
+        4234 1 Mon Jul 6 09:03:00 2026 /Applications/ChatGPT.app/Contents/Resources/codex \
+        -c features.code_mode_host=true app-server --analytics-default-enabled
+        20409 1 Mon Jul 6 09:04:00 2026 /Applications/ChatGPT.app/Contents/Resources/codex-code-mode-host
+        """)
+
+        #expect(records.count == 2)
+        #expect(AgentPSOutputParser.agentProcesses(from: records).isEmpty)
+        #expect(AgentPSOutputParser.hasCodexAppServer(in: records))
+    }
+
+    @Test
+    func `pi dialects use stable Codable raw values`() throws {
+        let provider = try JSONEncoder().encode(AgentSession.Provider.pi)
+        let dialects = try JSONEncoder().encode([AgentSession.Dialect.pi, .omp])
+
+        #expect(String(data: provider, encoding: .utf8) == "\"pi\"")
+        #expect(String(data: dialects, encoding: .utf8) == "[\"pi\",\"omp\"]")
+        #expect(try JSONDecoder().decode(AgentSession.Provider.self, from: provider) == .pi)
     }
 
     @Test
@@ -72,3 +112,109 @@ struct AgentSessionParserTests {
         try String(contentsOf: self.fixtureURL(name, extension: fileExtension), encoding: .utf8)
     }
 }
+
+#if os(macOS)
+struct ChatGPTCodexProcessTrustTests {
+    private static let nested =
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+
+    @Test(arguments: [
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+        Self.nested,
+    ])
+    func `signed process validates outer ChatGPT bundle rather than nested CLI bundle`(path: String) {
+        let trusted = ChatGPTCodexProcessTrust.isTrusted(
+            123,
+            executablePath: { pid in
+                #expect(pid == 123)
+                return path
+            },
+            resolvePath: { $0 },
+            processIsTrusted: { $0 == 123 },
+            appIsTrusted: { bundle in
+                #expect(bundle == "/Applications/ChatGPT.app")
+                return true
+            })
+        #expect(trusted)
+    }
+
+    @Test(arguments: [
+        nil,
+        "/tmp/codex",
+        "/Users/test/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/ChatGPT-copy.app/Contents/Resources/codex",
+    ] as [String?])
+    func `claimed command cannot replace kernel executable identity`(actualPath: String?) {
+        #expect(!ChatGPTCodexProcessTrust.isTrusted(
+            123,
+            executablePath: { _ in actualPath },
+            resolvePath: { $0 },
+            processIsTrusted: { _ in
+                Issue.record("Unrecognized paths must be rejected before signature inspection")
+                return true
+            },
+            appIsTrusted: { _ in true }))
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func `running signature and outer bundle assessment must both succeed`(processTrusted: Bool, bundleTrusted: Bool) {
+        let trusted = ChatGPTCodexProcessTrust.isTrusted(
+            123,
+            executablePath: { _ in Self.nested },
+            resolvePath: { $0 },
+            processIsTrusted: { _ in processTrusted },
+            appIsTrusted: { _ in bundleTrusted })
+        #expect(trusted == (processTrusted && bundleTrusted))
+    }
+
+    @Test(arguments: [
+        "/Users/test/Downloads/codex",
+        "/tmp/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        "/Applications/ChatGPT.app/Contents/Resources/other-codex",
+    ])
+    func `symlink redirects cannot authorize scanning even with trusted signatures`(resolvedPath: String) {
+        #expect(!ChatGPTCodexProcessTrust.isTrusted(
+            123,
+            executablePath: { _ in Self.nested },
+            resolvePath: { _ in resolvedPath },
+            processIsTrusted: { _ in true },
+            appIsTrusted: { _ in true }))
+    }
+
+    @Test
+    func `untrusted first candidate cannot hide a later trusted app server`() {
+        let records = AgentPSOutputParser.parse("""
+        123 1 Mon Jul 6 09:03:00 2026 \(Self.nested) app-server
+        124 1 Mon Jul 6 09:03:00 2026 /Applications/ChatGPT.app/Contents/Resources/codex app-server
+        """)
+        #expect(AgentPSOutputParser.hasTrustedChatGPTCodexAppServer(in: records, validator: { $0.pid == 124 }))
+    }
+
+    @Test(arguments: ["exec", "app-server-helper", "--help"])
+    func `nested executable requires app server argument and cannot bypass trust as a CLI`(argument: String) {
+        let records = AgentPSOutputParser.parse("123 1 Mon Jul 6 09:03:00 2026 \(Self.nested) \(argument)")
+        #expect(!AgentPSOutputParser.hasTrustedChatGPTCodexAppServer(in: records, validator: { _ in
+            Issue.record("Non-server processes must not reach the app-server validator")
+            return true
+        }))
+        #expect(AgentPSOutputParser.agentProcesses(from: records).isEmpty)
+    }
+
+    @Test
+    func `forged app server command cannot borrow installed ChatGPT identity`() throws {
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        defer {
+            sleeper.terminate()
+            sleeper.waitUntilExit()
+        }
+        let records = AgentPSOutputParser.parse(
+            "\(sleeper.processIdentifier) 1 Mon Jul 6 09:03:00 2026 \(Self.nested) app-server")
+        #expect(!AgentPSOutputParser.hasTrustedChatGPTCodexAppServer(in: records, validator: {
+            ChatGPTCodexProcessTrust.isTrusted($0.pid)
+        }))
+    }
+}
+#endif

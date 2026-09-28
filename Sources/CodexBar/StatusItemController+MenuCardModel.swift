@@ -8,153 +8,20 @@ extension StatusItemController {
                 self?.menuCardModel(for: provider)
             },
             isProviderRefreshActive: { [weak self] provider in
-                self?.store.refreshingProviders.contains(provider) == true
+                self?.store.refreshingProviders.contains(provider.instanceID) == true
             })
     }
 
     func menuCardModel(
         for provider: UsageProvider?,
-        snapshotOverride: UsageSnapshot? = nil,
-        errorOverride: String? = nil,
-        forceOverrideCard: Bool = false,
-        accountOverride: AccountInfo? = nil,
-        planOverride: String? = nil) -> UsageMenuCardView.Model?
+        context: UsageMenuCardContext = .menu) -> UsageMenuCardView.Model?
     {
-        let target = provider ?? self.store.enabledProvidersForDisplay().first ?? .codex
-        let metadata = self.store.metadata(for: target)
-
-        let usesOverrideCard = forceOverrideCard || snapshotOverride != nil || errorOverride != nil
-        let surface: CodexConsumerProjection.Surface = if usesOverrideCard {
-            .overrideCard
-        } else {
-            .liveCard
-        }
-        // Override cards belong to a specific account/context. Never fall back to
-        // provider-level live data here; that can belong to a different account.
-        let snapshot: UsageSnapshot? = if surface == .overrideCard {
-            snapshotOverride
-        } else {
-            snapshotOverride ?? self.store.snapshot(for: target)
-        }
-        let projectedTokenSnapshot = self.store.tokenSnapshot(fromProviderSnapshot: snapshot, provider: target)
-        let storedTokenSnapshot = UsageStore.tokenCostRequiresProviderSnapshot(target)
-            ? nil
-            : self.store.tokenSnapshot(for: target)
-        let now = Date()
-        let codexProjection = self.store.codexConsumerProjectionIfNeeded(
-            for: target,
-            surface: surface,
-            snapshotOverride: snapshotOverride,
-            errorOverride: errorOverride,
-            now: now)
-        let credits: CreditsSnapshot?
-        let creditsError: String?
-        let dashboard: OpenAIDashboardSnapshot?
-        let dashboardError: String?
-        let tokenSnapshot: CostUsageTokenSnapshot?
-        let tokenError: String?
-        if let codexProjection {
-            credits = codexProjection.credits?.snapshot
-            // Credits and dashboard collection are optional adjuncts. Keep their setup diagnostics in
-            // provider Settings so a signed-out browser does not dominate the glanceable menu card.
-            creditsError = nil
-            dashboard = nil
-            dashboardError = nil
-            if surface == .liveCard {
-                tokenSnapshot = projectedTokenSnapshot ?? storedTokenSnapshot
-                tokenError = self.store.tokenError(for: target)
-            } else {
-                tokenSnapshot = projectedTokenSnapshot
-                tokenError = nil
-            }
-        } else if ProviderDescriptorRegistry.descriptor(for: target).tokenCost.supportsTokenCost,
-                  surface == .liveCard
-        {
-            credits = nil
-            creditsError = nil
-            dashboard = nil
-            dashboardError = nil
-            tokenSnapshot = projectedTokenSnapshot ?? storedTokenSnapshot
-            tokenError = self.store.tokenError(for: target)
-        } else {
-            credits = nil
-            creditsError = nil
-            dashboard = nil
-            dashboardError = nil
-            tokenSnapshot = projectedTokenSnapshot
-            tokenError = nil
-        }
-
-        let sourceLabel = surface == .liveCard ? self.store.sourceLabel(for: target) : nil
-        let kiloAutoMode = target == .kilo && self.settings.kiloUsageDataSource == .auto
-        // Abacus uses primary for monthly credits (no secondary window)
-        let paceWindow = target == .abacus ? snapshot?.primary : snapshot?.secondary
-        let weeklyPace = if let codexProjection,
-                            let weekly = codexProjection.rateWindow(for: .weekly)
-        {
-            self.store.weeklyPace(provider: target, window: weekly, now: now)
-        } else {
-            paceWindow.flatMap { window in
-                self.store.weeklyPace(provider: target, window: window, now: now)
-            }
-        }
-        let fallbackAccount = accountOverride
-            ?? (metadata.usesAccountFallback
-                ? self.store.accountInfo(for: target)
-                : AccountInfo(email: nil, plan: nil))
-        let input = UsageMenuCardView.Model.Input(
-            provider: target,
-            metadata: metadata,
-            snapshot: snapshot,
-            codexProjection: codexProjection,
-            credits: credits,
-            creditsError: creditsError,
-            dashboard: dashboard,
-            dashboardError: dashboardError,
-            tokenSnapshot: tokenSnapshot,
-            tokenError: tokenError,
-            account: fallbackAccount,
-            accountIsAuthoritative: accountOverride != nil,
-            planOverride: planOverride,
-            isRefreshing: self.store.shouldShowRefreshingMenuCardIndicator(for: target),
-            // Provider-level errors can belong to a different account, so
-            // override cards never inherit them (same rule as the snapshot,
-            // token-cost, and source-label fallbacks above).
-            lastError: errorOverride
-                ?? codexProjection?.userFacingErrors.usage
-                ?? (surface == .liveCard ? self.store.userFacingError(for: target) : nil),
-            limitsAvailability: self.store.knownLimitsAvailability(for: target),
-            usageBarsShowUsed: self.settings.usageBarsShowUsed,
-            resetTimeDisplayStyle: self.settings.resetTimeDisplayStyle,
-            tokenCostUsageEnabled: self.settings.isCostUsageEffectivelyEnabled(for: target),
-            tokenCostInlineDashboardEnabled: self.settings.costSummaryShowsInlineDashboard(for: target),
-            tokenCostMenuSectionEnabled: !UsageStore.tokenCostRequiresProviderSnapshot(target) &&
-                self.settings.costSummaryShowsSubmenu(for: target),
-            costComparisonPeriodsEnabled: self.settings.costComparisonPeriodsEnabled,
-            showOptionalCreditsAndExtraUsage: self.settings.showOptionalCreditsAndExtraUsage,
-            codexSparkUsageVisible: self.settings.codexSparkUsageVisible,
-            copilotBudgetExtrasEnabled: self.settings.copilotBudgetExtrasEnabled,
-            sourceLabel: sourceLabel,
-            kiloAutoMode: kiloAutoMode,
-            hidePersonalInfo: self.settings.hidePersonalInfo,
-            weeklyPace: weeklyPace,
-            quotaWarningThresholds: [
-                .session: self.quotaWarningMarkerThresholds(provider: target, window: .session),
-                .weekly: self.quotaWarningMarkerThresholds(provider: target, window: .weekly),
-            ],
-            workDaysPerWeek: self.settings.weeklyProgressWorkDays,
-            usesLiveSubtitle: surface == .liveCard,
-            now: now)
-        return UsageMenuCardView.Model.make(input)
+        // Provider-specific by design: Codex is the historical fallback when no provider is enabled.
+        let target = provider ?? self.store.enabledFirstPartyProvidersForDisplay().first ?? .codex
+        return self.store.menuCardModel(for: target, context: context)
     }
 
     func accountInfo(for account: CodexVisibleAccount) -> AccountInfo {
         AccountInfo(email: account.email, plan: account.workspaceLabel)
-    }
-
-    private func quotaWarningMarkerThresholds(provider: UsageProvider, window: QuotaWarningWindow) -> [Int] {
-        guard self.settings.quotaWarningMarkersVisible else { return [] }
-        guard self.settings.quotaWarningEnabled(provider: provider, window: window) else { return [] }
-        return self.settings.resolvedQuotaWarningThresholds(provider: provider, window: window)
     }
 }

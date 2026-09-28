@@ -8,6 +8,105 @@ import Glibc
 #endif
 
 struct SpawnedProcessGroupTests {
+    #if DEBUG
+    @Test
+    func `owned descriptor take discard and deinit are one shot`() throws {
+        func makePipe() throws -> (read: Int32, write: Int32) {
+            var descriptors = [Int32](repeating: -1, count: 2)
+            try #require(pipe(&descriptors) == 0)
+            return (descriptors[0], descriptors[1])
+        }
+
+        func expectEOF(_ readDescriptor: Int32) {
+            let flags = fcntl(readDescriptor, F_GETFL)
+            #expect(flags >= 0)
+            #expect(fcntl(readDescriptor, F_SETFL, flags | O_NONBLOCK) == 0)
+            var byte: UInt8 = 0
+            #expect(read(readDescriptor, &byte, 1) == 0)
+        }
+
+        let transferredPipe = try makePipe()
+        defer { _ = close(transferredPipe.read) }
+        let transferred = SpawnedProcessGroup._test_ownedDescriptorTakeOnce(
+            ownedFileDescriptor: transferredPipe.write)
+        let transferredDescriptor = try #require(transferred.first)
+        #expect(transferred.second == nil)
+        #expect(!transferred.discardAfterTake)
+        _ = close(transferredDescriptor)
+        expectEOF(transferredPipe.read)
+
+        let discardedPipe = try makePipe()
+        defer { _ = close(discardedPipe.read) }
+        let discarded = SpawnedProcessGroup._test_ownedDescriptorDiscardTwice(
+            ownedFileDescriptor: discardedPipe.write)
+        #expect(discarded.first)
+        #expect(!discarded.second)
+        expectEOF(discardedPipe.read)
+
+        let deinitPipe = try makePipe()
+        defer { _ = close(deinitPipe.read) }
+        SpawnedProcessGroup._test_ownedDescriptorDeinit(ownedFileDescriptor: deinitPipe.write)
+        expectEOF(deinitPipe.read)
+    }
+
+    @Test
+    func `PTY descriptor reservation failure prevents child launch`() throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexbar-pty-reservation-\(UUID().uuidString).marker")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        var primaryFD: Int32 = -1
+        var secondaryFD: Int32 = -1
+        try #require(openpty(&primaryFD, &secondaryFD, nil, nil, nil) == 0)
+        defer {
+            _ = close(primaryFD)
+            _ = close(secondaryFD)
+        }
+
+        do {
+            _ = try SpawnedProcessGroup.withPTYPrimaryDescriptorReservationFailureForTesting {
+                try SpawnedProcessGroup.launchPTY(
+                    binary: "/usr/bin/python3",
+                    arguments: ["-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()", marker.path],
+                    environment: ProcessInfo.processInfo.environment,
+                    workingDirectory: nil,
+                    fileDescriptors: (primary: primaryFD, secondary: secondaryFD))
+            }
+            Issue.record("Expected PTY descriptor reservation to fail")
+        } catch let SpawnedProcessGroup.LaunchError.setupFailed(details) {
+            #expect(details == "reserve PTY primary descriptor")
+        } catch {
+            Issue.record("Unexpected launch error: \(error)")
+        }
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test
+    func `output holder cleanup lease expires closes descriptor and disarms cleanup`() throws {
+        var descriptors = [Int32](repeating: -1, count: 2)
+        try #require(pipe(&descriptors) == 0)
+        let readDescriptor = descriptors[0]
+        let leasedWriteDescriptor = descriptors[1]
+        defer { _ = close(readDescriptor) }
+
+        let start = Date()
+        let result = SpawnedProcessGroup._test_outputHolderCleanupLeaseExpiry(
+            ownedFileDescriptor: leasedWriteDescriptor,
+            maxLifetime: 0.05,
+            waitTimeout: 0.5)
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(result.completed)
+        #expect(!result.active)
+        #expect(elapsed < 0.5)
+        let flags = fcntl(readDescriptor, F_GETFL)
+        #expect(flags >= 0)
+        #expect(fcntl(readDescriptor, F_SETFL, flags | O_NONBLOCK) == 0)
+        var byte: UInt8 = 0
+        #expect(read(readDescriptor, &byte, 1) == 0)
+    }
+    #endif
+
     @Test
     func `pipe cleanup preserves standard descriptors`() {
         let descriptors = SpawnedProcessGroup.pipeDescriptorsToClose([0, 1, 2, 3, 4, 3])
@@ -590,8 +689,10 @@ struct SpawnedProcessGroupTests {
         #expect(heartbeatAfterSettle == heartbeatAfterCleanup)
     }
 
-    @Test
-    func `normal exit cleanup catches helper spawned during SIGTERM`() async throws {
+    @Test(arguments: [0, 1000])
+    func `normal exit cleanup catches helper spawned during SIGTERM`(
+        firstHeartbeatDelayMilliseconds: Int) async throws
+    {
         let readyFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexbar-process-group-post-exit-\(UUID().uuidString).ready")
         let childPIDFile = readyFile.appendingPathExtension("pid")
@@ -601,6 +702,7 @@ struct SpawnedProcessGroupTests {
             try? FileManager.default.removeItem(at: childPIDFile)
             try? FileManager.default.removeItem(at: heartbeatFile)
         }
+        try "0".write(to: heartbeatFile, atomically: true, encoding: .utf8)
 
         let script = """
         import os
@@ -618,8 +720,9 @@ struct SpawnedProcessGroupTests {
                 if child == 0:
                     os.close(reader)
                     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                    with open(sys.argv[2], "w") as handle:
-                        handle.write(str(os.getpid()))
+                    delay = float(sys.argv[4]) / 1000
+                    if delay > 0:
+                        time.sleep(delay)
                     with open(sys.argv[3], "w") as heartbeat:
                         heartbeat.write("1")
                         heartbeat.flush()
@@ -633,6 +736,8 @@ struct SpawnedProcessGroupTests {
                             heartbeat.truncate()
                             heartbeat.flush()
                             time.sleep(0.02)
+                with open(sys.argv[2], "w") as handle:
+                    handle.write(str(child))
                 os.close(writer)
                 os.read(reader, 1)
                 os.close(reader)
@@ -653,7 +758,10 @@ struct SpawnedProcessGroupTests {
         let stderrPipe = Pipe()
         let process = try SpawnedProcessGroup.launch(
             binary: "/usr/bin/python3",
-            arguments: ["-c", script, readyFile.path, childPIDFile.path, heartbeatFile.path],
+            arguments: [
+                "-c", script, readyFile.path, childPIDFile.path, heartbeatFile.path,
+                String(firstHeartbeatDelayMilliseconds),
+            ],
             environment: ProcessInfo.processInfo.environment,
             stdoutPipe: stdoutPipe,
             stderrPipe: stderrPipe)
@@ -664,7 +772,6 @@ struct SpawnedProcessGroupTests {
         #expect(FileManager.default.fileExists(atPath: readyFile.path))
 
         await process.terminateResidualProcesses(grace: 0.2)
-        await process.finish()
 
         var childPID: pid_t?
         for _ in 0..<100 {
@@ -676,10 +783,23 @@ struct SpawnedProcessGroupTests {
             }
             try await Task.sleep(for: .milliseconds(20))
         }
-        let resolvedChildPID = try #require(childPID)
-        defer { _ = kill(resolvedChildPID, SIGKILL) }
+        // Capture a surviving child before reaping the root releases its process-group identity.
+        let childIdentity = childPID.flatMap { pid -> TTYProcessTreeTerminator.ProcessIdentity? in
+            guard let identity = TTYProcessTreeTerminator.processIdentity(for: pid),
+                  getpgid(pid) == process.processGroup,
+                  TTYProcessTreeTerminator.isCurrent(identity)
+            else { return nil }
+            return identity
+        }
+        await process.finish()
+        _ = try #require(childPID)
+        defer {
+            if let childIdentity, TTYProcessTreeTerminator.isCurrent(childIdentity) {
+                _ = kill(childIdentity.pid, SIGKILL)
+            }
+        }
         let heartbeatAfterCleanup = try String(contentsOf: heartbeatFile, encoding: .utf8)
-        try await Task.sleep(for: .milliseconds(200))
+        try await Task.sleep(for: .milliseconds(firstHeartbeatDelayMilliseconds + 200))
         let heartbeatAfterSettle = try String(contentsOf: heartbeatFile, encoding: .utf8)
         #expect(heartbeatAfterSettle == heartbeatAfterCleanup)
     }

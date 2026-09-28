@@ -48,7 +48,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: projection,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -103,35 +102,45 @@ struct MenuCardModelCodexProjectionTests {
                 dashboardRequiresLogin: false,
                 now: now))
 
-        let model = UsageMenuCardView.Model.make(.init(
-            provider: .codex,
-            metadata: metadata,
-            snapshot: snapshot,
-            codexProjection: projection,
-            credits: nil,
-            creditsError: nil,
-            dashboard: nil,
-            dashboardError: nil,
-            tokenSnapshot: nil,
-            tokenError: nil,
-            account: AccountInfo(email: "user@example.com", plan: "Pro"),
-            isRefreshing: false,
-            lastError: nil,
-            usageBarsShowUsed: false,
-            resetTimeDisplayStyle: .countdown,
-            tokenCostUsageEnabled: false,
-            showOptionalCreditsAndExtraUsage: true,
-            hidePersonalInfo: false,
-            quotaWarningThresholds: [.session: [], .weekly: []],
-            workDaysPerWeek: 5,
-            now: now))
+        func makeModel(appearance: WorkdayTickAppearance) -> UsageMenuCardView.Model {
+            UsageMenuCardView.Model.make(.init(
+                provider: .codex,
+                metadata: metadata,
+                snapshot: snapshot,
+                codexProjection: projection,
+                credits: nil,
+                creditsError: nil,
+                dashboardError: nil,
+                tokenSnapshot: nil,
+                tokenError: nil,
+                account: AccountInfo(email: "user@example.com", plan: "Pro"),
+                isRefreshing: false,
+                lastError: nil,
+                usageBarsShowUsed: false,
+                resetTimeDisplayStyle: .countdown,
+                tokenCostUsageEnabled: false,
+                showOptionalCreditsAndExtraUsage: true,
+                hidePersonalInfo: false,
+                quotaWarningThresholds: [.session: [], .weekly: []],
+                workDaysPerWeek: 5,
+                workdayTickAppearance: appearance,
+                now: now))
+        }
+
+        let model = makeModel(appearance: .highContrast)
 
         let weekly = try #require(model.metrics.first { $0.id == "secondary" })
         #expect(weekly.warningMarkerPercents.isEmpty)
         #expect(weekly.workdayMarkerPercents == [20.0, 40.0, 60.0, 80.0])
+        #expect(weekly.workdayTickAppearance == .highContrast)
 
         let session = try #require(model.metrics.first { $0.id == "primary" })
         #expect(session.warningMarkerPercents.isEmpty)
+
+        let hiddenModel = makeModel(appearance: .hidden)
+        let hiddenWeekly = try #require(hiddenModel.metrics.first { $0.id == "secondary" })
+        #expect(hiddenWeekly.workdayMarkerPercents.isEmpty)
+        #expect(hiddenWeekly.workdayTickAppearance == .hidden)
     }
 
     @Test
@@ -177,7 +186,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: projection,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -241,7 +249,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: projection,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -284,7 +291,6 @@ struct MenuCardModelCodexProjectionTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -327,7 +333,6 @@ struct MenuCardModelCodexProjectionTests {
             snapshot: snapshot,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -358,7 +363,6 @@ struct MenuCardModelCodexProjectionTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -390,7 +394,6 @@ struct MenuCardModelCodexProjectionTests {
             snapshot: nil,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -464,7 +467,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: codexProjection,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -531,7 +533,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: codexProjection,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -589,7 +590,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: codexProjection,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -670,7 +670,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: projection,
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -696,8 +695,8 @@ struct MenuCardModelCodexProjectionTests {
         #expect(sparkWeekly.percent == 0)
         #expect(sparkWeekly.percentLabel == "0% left")
         #expect(sparkWeekly.resetText != nil)
-        #expect(sparkWeekly.detailLeftText == "86% in deficit")
-        #expect(sparkWeekly.detailRightText == "Runs out now")
+        #expect(sparkWeekly.detailLeftText == nil)
+        #expect(sparkWeekly.detailRightText == nil)
         // Spark trails the core session/weekly lanes rather than replacing them.
         let sparkIndex = try #require(model.metrics.firstIndex { $0.id == "codex-spark" })
         let sparkWeeklyIndex = try #require(model.metrics.firstIndex { $0.id == "codex-spark-weekly" })
@@ -741,7 +740,6 @@ struct MenuCardModelCodexProjectionTests {
             codexProjection: codexProjection,
             credits: CreditsSnapshot(remaining: 12, events: [], updatedAt: now),
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -756,6 +754,71 @@ struct MenuCardModelCodexProjectionTests {
             now: now))
 
         #expect(model.creditsText == nil)
+    }
+
+    @Test
+    func `codex card titles follow window duration instead of slot position`() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let metadata = try #require(ProviderDefaults.metadata[.codex])
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 55,
+                windowMinutes: 43200,
+                resetsAt: now.addingTimeInterval(24 * 86400),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 5,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(6 * 86400),
+                resetDescription: nil),
+            tertiary: nil,
+            updatedAt: now,
+            identity: ProviderIdentitySnapshot(
+                providerID: .codex,
+                accountEmail: "user@example.com",
+                accountOrganization: nil,
+                loginMethod: "Pro"))
+        let projection = CodexConsumerProjection.make(
+            surface: .liveCard,
+            context: CodexConsumerProjection.Context(
+                snapshot: snapshot,
+                rawUsageError: nil,
+                liveCredits: nil,
+                rawCreditsError: nil,
+                liveDashboard: nil,
+                rawDashboardError: nil,
+                dashboardAttachmentAuthorized: false,
+                dashboardRequiresLogin: false,
+                now: now))
+
+        let model = UsageMenuCardView.Model.make(.init(
+            provider: .codex,
+            metadata: metadata,
+            snapshot: snapshot,
+            codexProjection: projection,
+            credits: nil,
+            creditsError: nil,
+            dashboardError: nil,
+            tokenSnapshot: nil,
+            tokenError: nil,
+            account: AccountInfo(email: "user@example.com", plan: "Pro"),
+            isRefreshing: false,
+            lastError: nil,
+            usageBarsShowUsed: false,
+            resetTimeDisplayStyle: .countdown,
+            tokenCostUsageEnabled: false,
+            showOptionalCreditsAndExtraUsage: true,
+            codexSparkUsageVisible: false,
+            hidePersonalInfo: false,
+            now: now))
+
+        #expect(model.metrics.map(\.title) == ["Monthly", "Weekly"])
+        #expect(model.metrics.map(\.id) == ["monthly", "secondary"])
+        let monthly = try #require(model.metrics.first { $0.id == "monthly" })
+        #expect(monthly.detailLeftText == nil)
+        #expect(monthly.detailRightText == nil)
+        #expect(monthly.warningMarkerPercents.isEmpty)
+        #expect(monthly.resetText != nil)
     }
 }
 
@@ -829,7 +892,6 @@ struct MenuCardModelCodexSparkVisibilityTests {
             codexProjection: projection,
             credits: CreditsSnapshot(remaining: 12, events: [], updatedAt: now),
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -858,7 +920,6 @@ struct MenuCardModelCodexSparkVisibilityTests {
             codexProjection: projection,
             credits: CreditsSnapshot(remaining: 12, events: [], updatedAt: now),
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,

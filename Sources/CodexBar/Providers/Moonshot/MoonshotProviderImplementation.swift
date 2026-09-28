@@ -1,7 +1,5 @@
-import AppKit
 import CodexBarCore
 import Foundation
-import SwiftUI
 
 struct MoonshotProviderImplementation: ProviderImplementation {
     let id: UsageProvider = .moonshot
@@ -26,21 +24,16 @@ struct MoonshotProviderImplementation: ProviderImplementation {
 
     @MainActor
     func isAvailable(context: ProviderAvailabilityContext) -> Bool {
-        if MoonshotSettingsReader.apiKey(environment: context.environment) != nil {
+        let region = context.settings.moonshotRegion
+        if MoonshotSettingsReader.apiKey(for: region, environment: context.environment) != nil {
             return true
         }
-        context.settings.ensureMoonshotAPITokenLoaded()
-        return !context.settings.moonshotAPIToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty
+        return context.settings.hasMoonshotAPIToken(for: region)
     }
 
     @MainActor
     func settingsPickers(context: ProviderSettingsContext) -> [ProviderSettingsPickerDescriptor] {
-        let binding = Binding(
-            get: { context.settings.moonshotRegion.rawValue },
-            set: { raw in
-                context.settings.moonshotRegion = MoonshotRegion(rawValue: raw) ?? .international
-            })
+        let binding = context.rawValueBinding(\.moonshotRegion, fallback: .international)
         let options = MoonshotRegion.allCases.map {
             ProviderSettingsPickerOption(id: $0.rawValue, title: $0.displayName)
         }
@@ -49,7 +42,8 @@ struct MoonshotProviderImplementation: ProviderImplementation {
             ProviderSettingsPickerDescriptor(
                 id: "moonshot-api-region",
                 title: "API region",
-                subtitle: "Choose the Moonshot/Kimi API host for international or China mainland accounts.",
+                subtitle: "Open-platform balance only. Keys are bound to the selected regional host and cannot be " +
+                    "sent to the other region.",
                 binding: binding,
                 options: options,
                 isVisible: nil,
@@ -62,25 +56,19 @@ struct MoonshotProviderImplementation: ProviderImplementation {
         [
             ProviderSettingsFieldDescriptor(
                 id: "moonshot-api-key",
-                title: "API key",
-                subtitle: "Stored in ~/.codexbar/config.json.",
+                title: "Open Platform API key",
+                subtitle: "Use a key issued for the selected region. Changing regions leaves the other key " +
+                    "unavailable until you switch back or replace it.",
                 kind: .secure,
                 placeholder: "sk-...",
-                binding: context.stringBinding(\.moonshotAPIToken),
+                binding: context.binding(\.moonshotAPIToken),
                 actions: [
-                    ProviderSettingsActionDescriptor(
+                    ProviderSettingsActionDescriptor.openURL(
                         id: "moonshot-open-dashboard",
-                        title: "Open Moonshot Console",
-                        style: .link,
-                        isVisible: nil,
-                        perform: {
-                            if let url = URL(string: "https://platform.moonshot.ai/console/account") {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }),
+                        title: "Open regional console",
+                        url: context.settings.moonshotRegion.consoleURL),
                 ],
-                isVisible: nil,
-                onActivate: { context.settings.ensureMoonshotAPITokenLoaded() }),
+                isVisible: nil),
         ]
     }
 }

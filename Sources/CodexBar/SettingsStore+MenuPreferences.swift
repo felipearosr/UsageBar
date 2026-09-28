@@ -27,6 +27,18 @@ enum SwitcherRowsOption: String, CaseIterable {
     }
 }
 
+enum MergedIconDisplayStyle: String, CaseIterable {
+    case switcher
+    case stacked
+
+    var label: String {
+        switch self {
+        case .switcher: L("merged_icon_style_switcher")
+        case .stacked: L("merged_icon_style_stacked")
+        }
+    }
+}
+
 enum UsageBarsFillOption: String, CaseIterable {
     case remaining
     case used
@@ -35,6 +47,18 @@ enum UsageBarsFillOption: String, CaseIterable {
         switch self {
         case .remaining: L("usage_bars_fill_remaining")
         case .used: L("usage_bars_fill_used")
+        }
+    }
+}
+
+enum MergedOverviewLayout: String, CaseIterable {
+    case detailed
+    case compact
+
+    var label: String {
+        switch self {
+        case .detailed: L("overview_layout_detailed")
+        case .compact: L("overview_layout_compact")
         }
     }
 }
@@ -83,6 +107,45 @@ enum CostSummaryOption: String, CaseIterable {
     }
 }
 
+enum AgentSessionLabelStyle: String, CaseIterable {
+    case project
+    case descriptive
+    case descriptiveAndProject
+
+    var label: String {
+        switch self {
+        case .project: L("agent_session_label_project")
+        case .descriptive: L("agent_session_label_descriptive")
+        case .descriptiveAndProject: L("agent_session_label_descriptive_and_project")
+        }
+    }
+
+    func label(for session: AgentSession) -> String {
+        let project = session.projectName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let descriptive = session.sessionName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch self {
+        case .project:
+            return project?.nilIfEmpty ?? L("agent_session_unknown_project")
+        case .descriptive:
+            return descriptive?.nilIfEmpty ?? project?.nilIfEmpty ?? L("agent_session_unknown_project")
+        case .descriptiveAndProject:
+            guard let descriptive = descriptive?.nilIfEmpty else {
+                return project?.nilIfEmpty ?? L("agent_session_unknown_project")
+            }
+            guard let project = project?.nilIfEmpty,
+                  descriptive.caseInsensitiveCompare(project) != .orderedSame
+            else { return descriptive }
+            return "\(descriptive) · \(project)"
+        }
+    }
+}
+
+extension String {
+    fileprivate var nilIfEmpty: String? {
+        self.isEmpty ? nil : self
+    }
+}
+
 extension SettingsStore {
     var menuBarIconStyle: MenuBarIconStyle {
         get {
@@ -108,6 +171,34 @@ extension SettingsStore {
     var switcherRowsOption: SwitcherRowsOption {
         get { self.switcherShowsIcons ? .icons : .progress }
         set { self.switcherShowsIcons = newValue == .icons }
+    }
+
+    var mergedIconDisplayStyle: MergedIconDisplayStyle {
+        get { self.mergeIconsStacked ? .stacked : .switcher }
+        set { self.mergeIconsStacked = newValue == .stacked }
+    }
+
+    var mergeIconStackedTopProvider: UsageProvider? {
+        get { self.mergeIconStackedTopProviderRaw.flatMap(UsageProvider.init(rawValue:)) }
+        set { self.mergeIconStackedTopProviderRaw = newValue?.rawValue }
+    }
+
+    var mergeIconStackedBottomProvider: UsageProvider? {
+        get { self.mergeIconStackedBottomProviderRaw.flatMap(UsageProvider.init(rawValue:)) }
+        set { self.mergeIconStackedBottomProviderRaw = newValue?.rawValue }
+    }
+
+    func mergedIconPresentation(
+        activeProviders: [UsageProvider],
+        mergeIcons: Bool? = nil) -> MergedIconPresentation
+    {
+        MergedIconPresentation(
+            mergeIcons: mergeIcons ?? self.mergeIcons,
+            iconStyle: self.menuBarIconStyle,
+            requestedStyle: self.mergedIconDisplayStyle,
+            eligibleProviders: activeProviders,
+            preferredTop: self.mergeIconStackedTopProvider,
+            preferredBottom: self.mergeIconStackedBottomProvider)
     }
 
     var usageBarsFillOption: UsageBarsFillOption {
@@ -162,112 +253,36 @@ extension SettingsStore {
     }
 
     func menuBarMetricPreference(for provider: UsageProvider) -> MenuBarMetricPreference {
-        if Self.isBalanceOnlyProvider(provider), provider != .mistral {
-            return .automatic
-        }
-        if provider == .mistral {
-            let raw = self.menuBarMetricPreferencesRaw[provider.rawValue] ?? ""
-            let preference = MenuBarMetricPreference(rawValue: raw) ?? .automatic
-            switch preference {
-            case .automatic, .monthlyPlan:
-                return preference
-            case .primary, .secondary, .primaryAndSecondary, .tertiary, .extraUsage, .average:
-                return .automatic
-            }
-        }
-        if provider == .openrouter {
-            let raw = self.menuBarMetricPreferencesRaw[provider.rawValue] ?? ""
-            let preference = MenuBarMetricPreference(rawValue: raw) ?? .automatic
-            switch preference {
-            case .automatic, .primary:
-                return preference
-            case .secondary, .primaryAndSecondary, .average, .tertiary, .extraUsage, .monthlyPlan:
-                return .automatic
-            }
-        }
         let raw = self.menuBarMetricPreferencesRaw[provider.rawValue] ?? ""
         let preference = MenuBarMetricPreference(rawValue: raw) ?? .automatic
-        if preference == .average, !self.menuBarMetricSupportsAverage(for: provider) {
-            return .automatic
-        }
-        if preference == .primaryAndSecondary, !self.menuBarMetricSupportsPrimaryAndSecondary(for: provider) {
-            return .automatic
-        }
-        if preference == .tertiary, !self.menuBarMetricSupportsTertiary(for: provider) {
-            return .automatic
-        }
-        if preference == .extraUsage, !self.menuBarMetricSupportsExtraUsage(for: provider) {
-            return .automatic
-        }
-        if preference == .monthlyPlan {
-            return .automatic
-        }
-        return preference
+        return self.menuBarMetricSupports(preference, for: provider) ? preference : .automatic
     }
 
     func setMenuBarMetricPreference(_ preference: MenuBarMetricPreference, for provider: UsageProvider) {
-        if Self.isBalanceOnlyProvider(provider), provider != .mistral {
-            self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.automatic.rawValue
-            return
-        }
-        if provider == .mistral {
-            switch preference {
-            case .automatic, .monthlyPlan:
-                self.menuBarMetricPreferencesRaw[provider.rawValue] = preference.rawValue
-            case .primary, .secondary, .primaryAndSecondary, .tertiary, .extraUsage, .average:
-                self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.automatic.rawValue
-            }
-            return
-        }
-        if provider == .openrouter {
-            switch preference {
-            case .automatic, .primary:
-                self.menuBarMetricPreferencesRaw[provider.rawValue] = preference.rawValue
-            case .secondary, .primaryAndSecondary, .average, .tertiary, .extraUsage, .monthlyPlan:
-                self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.automatic.rawValue
-            }
-            return
-        }
-        if preference == .primaryAndSecondary, !self.menuBarMetricSupportsPrimaryAndSecondary(for: provider) {
-            self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.automatic.rawValue
-            return
-        }
-        if preference == .tertiary, !self.menuBarMetricSupportsTertiary(for: provider) {
-            self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.automatic.rawValue
-            return
-        }
-        if preference == .extraUsage, !self.menuBarMetricSupportsExtraUsage(for: provider) {
-            self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.automatic.rawValue
-            return
-        }
-        if preference == .monthlyPlan {
-            self.menuBarMetricPreferencesRaw[provider.rawValue] = MenuBarMetricPreference.automatic.rawValue
-            return
-        }
-        self.menuBarMetricPreferencesRaw[provider.rawValue] = preference.rawValue
+        let resolved = self.menuBarMetricSupports(preference, for: provider) ? preference : .automatic
+        self.menuBarMetricPreferencesRaw[provider.rawValue] = resolved.rawValue
     }
 
     func menuBarMetricSupportsAverage(for provider: UsageProvider) -> Bool {
-        provider == .gemini
+        self.menuBarMetricCapabilities(for: provider).supports(.average)
     }
 
     func menuBarMetricSupportsPrimaryAndSecondary(for provider: UsageProvider) -> Bool {
-        provider == .codex || provider == .claude
+        self.menuBarMetricCapabilities(for: provider).supports(.primaryAndSecondary)
     }
 
     func menuBarMetricSupportsTertiary(for provider: UsageProvider) -> Bool {
-        provider == .cursor || provider == .perplexity || provider == .zai
+        self.menuBarMetricCapabilities(for: provider).supports(.tertiary)
     }
 
     func menuBarMetricSupportsTertiary(for provider: UsageProvider, snapshot: UsageSnapshot?) -> Bool {
-        if provider == .cursor || provider == .zai {
-            return snapshot?.tertiary != nil
-        }
-        return self.menuBarMetricSupportsTertiary(for: provider)
+        let capabilities = self.menuBarMetricCapabilities(for: provider)
+        guard capabilities.supports(.tertiary) else { return false }
+        return !capabilities.tertiaryRequiresWindow || snapshot?.tertiary != nil
     }
 
     func menuBarMetricSupportsExtraUsage(for provider: UsageProvider) -> Bool {
-        provider == .cursor || provider == .claude
+        self.menuBarMetricCapabilities(for: provider).supports(.extraUsage)
     }
 
     func menuBarMetricSupportsExtraUsage(for provider: UsageProvider, snapshot: UsageSnapshot?) -> Bool {
@@ -292,20 +307,35 @@ extension SettingsStore {
     }
 
     func isCostUsageEffectivelyEnabled(for provider: UsageProvider) -> Bool {
-        self.costUsageEnabled
-            && ProviderDescriptorRegistry.descriptor(for: provider).tokenCost.supportsTokenCost
+        let isEnabled = self.costUsageEnabled ||
+            (provider == .codex && self.codexLocalSessionCostLedgerEnabled)
+        return isEnabled && ProviderDescriptorRegistry.descriptor(for: provider).tokenCost.supportsTokenCost
     }
 
     var resetTimeDisplayStyle: ResetTimeDisplayStyle {
         self.resetTimesShowAbsolute ? .absolute : .countdown
     }
 
-    static func isBalanceOnlyProvider(_ provider: UsageProvider) -> Bool {
-        switch provider {
-        case .deepseek, .mistral, .kimik2, .moonshot, .poe, .crossmodel:
-            true
-        default:
-            false
+    private func menuBarMetricCapabilities(for provider: UsageProvider) -> ProviderMenuBarMetricCapabilities {
+        ProviderDescriptorRegistry.descriptor(for: provider).menuBarMetrics
+    }
+
+    private func menuBarMetricSupports(_ preference: MenuBarMetricPreference, for provider: UsageProvider) -> Bool {
+        self.menuBarMetricCapabilities(for: provider).supports(preference.providerMetric)
+    }
+}
+
+extension MenuBarMetricPreference {
+    var providerMetric: ProviderMenuBarMetric {
+        switch self {
+        case .automatic: .automatic
+        case .primary: .primary
+        case .secondary: .secondary
+        case .primaryAndSecondary: .primaryAndSecondary
+        case .tertiary: .tertiary
+        case .extraUsage: .extraUsage
+        case .average: .average
+        case .monthlyPlan: .monthlyPlan
         }
     }
 }

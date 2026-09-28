@@ -1,8 +1,65 @@
 import Foundation
 import Testing
+@testable import CodexBar
 @testable import CodexBarCore
 
 struct WidgetSnapshotTests {
+    @Test
+    func `widget token fallback keeps positive totals and rejects overflow`() {
+        for (tokens, expected) in [
+            ([Int?](), Int?.none),
+            ([nil, 0], nil),
+            ([12, nil, 30], 42),
+            ([Int.max, 1, -1], nil),
+            ([-1], nil),
+        ] {
+            let snapshot = CostUsageTokenSnapshot(
+                sessionTokens: nil,
+                sessionCostUSD: nil,
+                last30DaysTokens: nil,
+                last30DaysCostUSD: nil,
+                daily: tokens.enumerated().map { index, total in
+                    .init(
+                        date: "2026-09-\(index + 1)",
+                        inputTokens: nil,
+                        outputTokens: nil,
+                        totalTokens: total,
+                        costUSD: nil,
+                        modelsUsed: nil,
+                        modelBreakdowns: nil)
+                },
+                updatedAt: Date(timeIntervalSince1970: 0))
+            #expect(UsageStore.widgetTokenUsageSummary(from: snapshot, provider: .claude)?.last30DaysTokens == expected)
+        }
+    }
+
+    @Test(arguments: [1, 30], [nil, "Custom"] as [String?])
+    func `Codex widget labels disclose API estimates`(historyDays: Int, historyLabel: String?) {
+        let snapshot = CostUsageTokenSnapshot(
+            sessionTokens: 1200,
+            sessionCostUSD: 1.25,
+            last30DaysTokens: 9000,
+            last30DaysCostUSD: 9.99,
+            historyDays: historyDays,
+            historyLabel: historyLabel,
+            daily: [],
+            updatedAt: Date(timeIntervalSince1970: 0))
+
+        let codex = UsageStore.widgetTokenUsageSummary(from: snapshot, provider: .codex)
+        let claude = UsageStore.widgetTokenUsageSummary(from: snapshot, provider: .claude)
+
+        #expect(codex?.sessionLabel == "Today API est. · not billed")
+        let period = historyLabel ?? (historyDays == 1 ? "Today" : "30d")
+        #expect(codex?.last30DaysLabel == "\(period) API est. · not billed")
+        #expect(claude?.sessionLabel == "Today")
+        #expect(claude?.last30DaysLabel == period)
+        for provider in [UsageProvider.bedrock, .mistral] {
+            let summary = UsageStore.widgetTokenUsageSummary(from: snapshot, provider: provider)
+            #expect(summary?.sessionLabel == "Latest billing day")
+            #expect(summary?.last30DaysLabel == period)
+        }
+    }
+
     @Test
     func `widget snapshot round trip`() throws {
         let entry = WidgetSnapshot.ProviderEntry(
@@ -27,7 +84,8 @@ struct WidgetSnapshotTests {
                 last30DaysLabel: "This month"),
             dailyUsage: [
                 WidgetSnapshot.DailyUsagePoint(dayKey: "2025-12-20", totalTokens: 1200, costUSD: 12.3),
-            ])
+            ],
+            quotaOwnerKey: "claude-account-cache-key")
 
         let snapshot = WidgetSnapshot(
             entries: [entry],
@@ -50,6 +108,7 @@ struct WidgetSnapshotTests {
         #expect(decoded.entries.first?.tokenUsage?.sessionLabel == "Latest billing day")
         #expect(decoded.entries.first?.tokenUsage?.last30DaysLabel == "This month")
         #expect(decoded.entries.first?.usageRows?.map(\.id) == ["session", "weekly"])
+        #expect(decoded.entries.first?.quotaOwnerKey == "claude-account-cache-key")
         #expect(decoded.enabledProviders == [.codex, .claude])
         #expect(decoded.usageBarsShowUsed)
     }
@@ -167,6 +226,7 @@ struct WidgetSnapshotTests {
 
         #expect(decoded.entries.count == 1)
         #expect(decoded.entries.first?.usageRows == nil)
+        #expect(decoded.entries.first?.quotaOwnerKey == nil)
         #expect(decoded.entries.first?.secondary?.usedPercent == 25)
         #expect(!decoded.usageBarsShowUsed)
     }

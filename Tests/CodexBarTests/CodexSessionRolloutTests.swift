@@ -1,8 +1,19 @@
-import CodexBarCore
 import Foundation
+#if canImport(SQLite3)
+import SQLite3
+#elseif canImport(CSQLite3)
+import CSQLite3
+#endif
 import Testing
+@testable import CodexBar
+@testable import CodexBarCore
 
 struct CodexSessionRolloutTests {
+    private static let chatGPTExecutables = [
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    ]
+
     @Test
     func `first rollout line maps to file only agent session`() throws {
         let url = try AgentSessionParserTests.fixtureURL("agent-session-rollout", extension: "jsonl")
@@ -62,4 +73,491 @@ struct CodexSessionRolloutTests {
         #expect(!AgentSessionCorrelation.codexWorkingDirectoriesMatch(nil, nil))
         #expect(!AgentSessionCorrelation.codexWorkingDirectoriesMatch("/repo/alpha", nil))
     }
+
+    @Test(arguments: Self.chatGPTExecutables)
+    func `trusted chatgpt app server projects recent codex rollout activity without an agent process`(
+        executable: String) async throws
+    {
+        let now = Date()
+        let fixture = try Self.makeAdaptiveChatGPTFixture(now: now, rolloutAge: 30, appServerExecutable: executable)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let sessions = await fixture.scanner.scan(
+            now: now,
+            environment: fixture.environment,
+            includeFileOnlySessions: false)
+        let session = try #require(sessions.first)
+
+        #expect(sessions.count == 1)
+        #expect(session.provider == .codex)
+        #expect(session.source == .cli)
+        #expect(session.state == .active)
+        #expect(session.pid == nil)
+        #expect(try abs(#require(session.lastActivityAt).timeIntervalSince(now.addingTimeInterval(-30))) < 0.01)
+    }
+
+    @Test(arguments: Self.chatGPTExecutables)
+    func `idle chatgpt app server with a stale rollout does not produce coding activity`(
+        executable: String) async throws
+    {
+        let now = Date()
+        let fixture = try Self.makeAdaptiveChatGPTFixture(
+            now: now,
+            rolloutAge: 31 * 60,
+            appServerExecutable: executable)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let sessions = await fixture.scanner.scan(
+            now: now,
+            environment: fixture.environment,
+            includeFileOnlySessions: false)
+
+        #expect(sessions.isEmpty)
+    }
+
+    @Test(arguments: Self.chatGPTExecutables)
+    func `continuing an existing chatgpt codex rollout advances the adaptive activity signal`(
+        executable: String) async throws
+    {
+        let now = Date()
+        let fixture = try Self.makeAdaptiveChatGPTFixture(now: now, rolloutAge: 30, appServerExecutable: executable)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let firstSessions = await fixture.scanner.scan(
+            now: now,
+            environment: fixture.environment,
+            includeFileOnlySessions: false)
+        let firstActivity = try #require(firstSessions.first?.lastActivityAt)
+        let nextActivity = now.addingTimeInterval(20)
+        try FileManager.default.setAttributes(
+            [.modificationDate: nextActivity],
+            ofItemAtPath: fixture.rollout.path)
+
+        let continuedSessions = await fixture.scanner.scan(
+            now: nextActivity.addingTimeInterval(1),
+            environment: fixture.environment,
+            includeFileOnlySessions: false)
+        let continuedActivity = try #require(continuedSessions.first?.lastActivityAt)
+
+        #expect(continuedSessions.first?.id == firstSessions.first?.id)
+        #expect(continuedActivity > firstActivity)
+        #expect(abs(continuedActivity.timeIntervalSince(nextActivity)) < 0.01)
+    }
+
+    @Test(arguments: Self.chatGPTExecutables)
+    func `untrusted chatgpt app server cannot authorize adaptive rollout inspection`(executable: String) async throws {
+        let now = Date()
+        let fixture = try Self.makeAdaptiveChatGPTFixture(
+            now: now, rolloutAge: 30, appServerExecutable: executable, appServerIsTrusted: false)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let sessions = await fixture.scanner.scan(
+            now: now,
+            environment: fixture.environment,
+            includeFileOnlySessions: false)
+
+        #expect(sessions.isEmpty)
+    }
+
+    @Test(arguments: [
+        "codex",
+        "/tmp/codex",
+        "/tmp/ChatGPT.app/Contents/Resources/codex",
+        "<home>/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex-fake",
+        "/Applications/ChatGPT.app/Contents/Resources/../Resources/codex",
+    ])
+    func `unrecognized app server path cannot authorize adaptive rollout inspection`(executable: String) async throws {
+        let now = Date()
+        let fixture = try Self.makeAdaptiveChatGPTFixture(
+            now: now,
+            rolloutAge: 30,
+            appServerExecutable: executable)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let sessions = await fixture.scanner.scan(
+            now: now,
+            environment: fixture.environment,
+            includeFileOnlySessions: false)
+
+        #expect(sessions.isEmpty)
+    }
+
+    @Test
+    func `local scanner parses only its newest configured rollout candidates`() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("CodexSessionRolloutTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let now = Date()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy/MM/dd"
+        let codexHome = temporaryRoot.appendingPathComponent("codex-home", isDirectory: true)
+        let sessionDirectory = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(formatter.string(from: now), isDirectory: true)
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+
+        let fixtureURL = try AgentSessionParserTests.fixtureURL("agent-session-rollout", extension: "jsonl")
+        let fixture = try String(contentsOf: fixtureURL, encoding: .utf8)
+        for (index, age) in [30.0, 20.0, -3600.0].enumerated() {
+            let id = "bounded-rollout-\(index)"
+            let url = sessionDirectory.appendingPathComponent("rollout-bounded-\(index).jsonl")
+            try fixture
+                .replacingOccurrences(of: "019f-session-fixture", with: id)
+                .write(to: url, atomically: true, encoding: .utf8)
+            try fileManager.setAttributes(
+                [.modificationDate: now.addingTimeInterval(-age)],
+                ofItemAtPath: url.path)
+        }
+
+        let scanner = LocalAgentSessionScanner(config: SessionScanConfig(
+            fileOnlyWindow: 60 * 60,
+            maxProcessCount: 0,
+            maxCodexRolloutCount: 2,
+            maxClaudeTranscriptCountPerProject: 0))
+        let sessions = await scanner.scan(now: now, environment: [
+            "CODEX_HOME": codexHome.path,
+            "HOME": temporaryRoot.path,
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        ])
+
+        #expect(Set(sessions.map(\.id)) == ["bounded-rollout-1", "bounded-rollout-2"])
+        #expect(sessions.first(where: { $0.id == "bounded-rollout-2" })?.lastActivityAt == now)
+
+        let rescanned = await scanner.scan(
+            now: now.addingTimeInterval(30),
+            environment: [
+                "CODEX_HOME": codexHome.path,
+                "HOME": temporaryRoot.path,
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            ])
+        #expect(rescanned.first(where: { $0.id == "bounded-rollout-2" })?.lastActivityAt == now)
+    }
+
+    @Test
+    func `subagent and guardian rollout metadata produce descriptive names`() throws {
+        let subagentLine =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"subagent\",\"cwd\":\"/repo\"," +
+            "\"originator\":\"codex_vscode\",\"source\":{\"subagent\":{\"thread_spawn\":{\"agent_path\":" +
+            "\"/root/neon_patch_review2\"}}}}}"
+        let guardianLine =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"guardian\",\"cwd\":\"/repo\"," +
+            "\"originator\":\"codex_vscode\",\"source\":{\"subagent\":{\"other\":\"guardian\"}}}}"
+
+        let subagent = try #require(CodexRolloutFirstLineParser.parse(subagentLine))
+        let guardian = try #require(CodexRolloutFirstLineParser.parse(guardianLine))
+
+        #expect(subagent.agentPath == "/root/neon_patch_review2")
+        #expect(subagent.descriptiveName(threadMetadata: nil) == "Neon patch review 2")
+        #expect(guardian.isGuardian)
+        #expect(guardian.descriptiveName(threadMetadata: nil) == "Approval review")
+    }
+
+    @Test
+    func `chat names stay primary for subagent and guardian sessions`() throws {
+        let subagentLine =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"subagent\",\"cwd\":\"/repo\"," +
+            "\"originator\":\"codex_vscode\",\"source\":{\"subagent\":{\"thread_spawn\":{\"agent_path\":" +
+            "\"/root/neon_patch_review2\"}}}}}"
+        let guardianLine =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"guardian\",\"cwd\":\"/repo\"," +
+            "\"originator\":\"codex_vscode\",\"source\":{\"subagent\":{\"other\":\"guardian\"}}}}"
+        let subagent = try #require(CodexRolloutFirstLineParser.parse(subagentLine))
+        let guardian = try #require(CodexRolloutFirstLineParser.parse(guardianLine))
+
+        #expect(subagent.descriptiveName(threadMetadata: CodexThreadMetadata(
+            title: "Website refresh",
+            agentPath: nil)) == "Website refresh · Neon patch review 2")
+        #expect(guardian.descriptiveName(threadMetadata: CodexThreadMetadata(
+            title: "Dependency audit",
+            agentPath: nil)) == "Dependency audit · Approval review")
+    }
+
+    @Test
+    func `chat and task names stay menu sized`() throws {
+        let line =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"subagent\",\"cwd\":\"/repo\"," +
+            "\"originator\":\"codex_vscode\",\"source\":{\"subagent\":{\"thread_spawn\":{\"agent_path\":" +
+            "\"/root/review_the_complete_rollout_and_report_every_regression\"}}}}}"
+        let metadata = try #require(CodexRolloutFirstLineParser.parse(line))
+
+        let name = metadata.descriptiveName(threadMetadata: CodexThreadMetadata(
+            title: "Continue work on the Concrete Authority website and compare every source",
+            agentPath: nil))
+
+        #expect(name == "Continue work on the Concrete Authority… · Review the complete…")
+        #expect((name?.count ?? .max) <= 64)
+    }
+
+    @Test
+    func `current rollout agent path produces a descriptive subagent name without sqlite`() throws {
+        let line =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"subagent\",\"cwd\":\"/repo\"," +
+            "\"originator\":\"codex_vscode\",\"source\":\"subagent\"," +
+            "\"agent_path\":\"/root/config_audit3\"}}"
+
+        let metadata = try #require(CodexRolloutFirstLineParser.parse(line))
+
+        #expect(metadata.agentPath == "/root/config_audit3")
+        #expect(metadata.descriptiveName(threadMetadata: nil) == "Config audit 3")
+    }
+
+    @Test
+    func `thread titles skip command preambles and stay menu sized`() {
+        let metadata = CodexRolloutMetadata(
+            sessionID: "main",
+            cwd: "/repo",
+            originator: "codex_vscode",
+            source: "vscode")
+        let title = """
+        /brain-orient
+
+        Continue work on the Concrete Authority website and compare every current source before changing anything.
+        """
+
+        let name = metadata.descriptiveName(threadMetadata: CodexThreadMetadata(
+            title: title,
+            agentPath: nil))
+        #expect(name == "Continue work on the Concrete Authority website and compare eve…")
+        #expect(name?.count == 64)
+    }
+
+    @Test
+    func `live scanner suppresses descriptive names for ambiguous same project processes`() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("CodexSessionRolloutTests-ambiguous-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let now = Date()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy/MM/dd"
+        let codexHome = root.appendingPathComponent("codex-home", isDirectory: true)
+        let sessionDirectory = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(formatter.string(from: now), isDirectory: true)
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+
+        for (index, name) in ["recent_activity", "older_activity"].enumerated() {
+            let line =
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-\(index)\",\"cwd\":\"/repo\"," +
+                "\"originator\":\"codex_cli\",\"source\":{\"subagent\":{\"thread_spawn\":{\"agent_path\":" +
+                "\"/root/\(name)\"}}}}}"
+            let url = sessionDirectory.appendingPathComponent("rollout-ambiguous-\(index).jsonl")
+            try line.write(to: url, atomically: true, encoding: .utf8)
+            try fileManager.setAttributes(
+                [.modificationDate: now.addingTimeInterval(TimeInterval(-index * 30))],
+                ofItemAtPath: url.path)
+        }
+
+        let scanner = LocalAgentSessionScanner(
+            processOutputProvider: { _ in
+                """
+                201 1 Mon Jul 6 09:03:00 2026 /usr/local/bin/codex exec
+                202 1 Tue Jul 7 09:03:00 2026 /usr/local/bin/codex exec
+                """
+            },
+            cwdProvider: { _, _ in [201: "/repo", 202: "/repo"] })
+        let sessions = await scanner.scan(
+            now: now,
+            environment: [
+                "CODEX_HOME": codexHome.path,
+                "HOME": root.path,
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            ],
+            includeFileOnlySessions: false)
+
+        #expect(sessions.count == 2)
+        #expect(sessions.allSatisfy { $0.projectName == "repo" })
+        #expect(sessions.allSatisfy { $0.sessionName == nil })
+    }
+
+    @Test(arguments: Self.chatGPTExecutables, [30.0, 6 * 60.0])
+    func `chatgpt rollout freshness controls five versus thirty minute cadence`(
+        executable: String, age: TimeInterval) async throws
+    {
+        let now = Date()
+        let fixture = try Self.makeAdaptiveChatGPTFixture(now: now, rolloutAge: age, appServerExecutable: executable)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let sessions = await fixture.scanner.scan(
+            now: now, environment: fixture.environment, includeFileOnlySessions: false)
+        let decision = UsageStore.adaptiveRefreshDecision(
+            now: now,
+            lastMenuOpenAt: nil,
+            lastCodingActivityAt: AgentSessionsStore.latestActivityAt(in: sessions),
+            lowPowerModeEnabled: false,
+            thermalState: .nominal)
+
+        #expect(decision.reason == (age < 300 ? .codingActivity : .longIdle))
+        #expect(decision.delay == .seconds(age < 300 ? 300 : 1800))
+    }
+
+    @Test(arguments: Self.chatGPTExecutables)
+    func `app server trust is revalidated after a successful scan`(executable: String) async throws {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data().write(to: marker)
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let now = Date()
+        let fixture = try Self.makeAdaptiveChatGPTFixture(
+            now: now,
+            rolloutAge: 30,
+            appServerExecutable: executable,
+            appServerTrustValidator: { _ in FileManager.default.fileExists(atPath: marker.path) })
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let trusted = await fixture.scanner.scan(
+            now: now, environment: fixture.environment, includeFileOnlySessions: false)
+        #expect(trusted.count == 1)
+        try FileManager.default.removeItem(at: marker)
+        let untrusted = await fixture.scanner.scan(
+            now: now, environment: fixture.environment, includeFileOnlySessions: false)
+        #expect(untrusted.isEmpty)
+    }
+
+    private struct AdaptiveChatGPTFixture {
+        let root: URL
+        let rollout: URL
+        let scanner: LocalAgentSessionScanner
+        let environment: [String: String]
+    }
+
+    private static func makeAdaptiveChatGPTFixture(
+        now: Date,
+        rolloutAge: TimeInterval,
+        appServerExecutable: String = "/Applications/ChatGPT.app/Contents/Resources/codex",
+        appServerIsTrusted: Bool = true,
+        appServerTrustValidator: LocalAgentSessionScanner
+            .AppServerTrustValidator? = nil) throws -> AdaptiveChatGPTFixture
+    {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("CodexSessionRolloutTests-chatgpt-\(UUID().uuidString)", isDirectory: true)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy/MM/dd"
+        let codexHome = root.appendingPathComponent("codex-home", isDirectory: true)
+        let sessionDirectory = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(formatter.string(from: now), isDirectory: true)
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+
+        let source = try AgentSessionParserTests.fixtureURL("agent-session-rollout", extension: "jsonl")
+        let rollout = sessionDirectory.appendingPathComponent("rollout-chatgpt-existing.jsonl")
+        try fileManager.copyItem(at: source, to: rollout)
+        try fileManager.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-rolloutAge)],
+            ofItemAtPath: rollout.path)
+
+        let executable = appServerExecutable.replacingOccurrences(of: "<home>", with: root.path)
+        let scanner = LocalAgentSessionScanner(
+            processOutputProvider: { _ in
+                "4234 1 Mon Jul 6 09:03:00 2026 \(executable) " +
+                    "-c features.code_mode_host=true app-server --analytics-default-enabled"
+            },
+            cwdProvider: { _, _ in [:] },
+            appServerTrustValidator: appServerTrustValidator ?? { _ in appServerIsTrusted })
+        return AdaptiveChatGPTFixture(
+            root: root,
+            rollout: rollout,
+            scanner: scanner,
+            environment: [
+                "CODEX_HOME": codexHome.path,
+                "HOME": root.path,
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            ])
+    }
+
+    #if canImport(SQLite3) || canImport(CSQLite3)
+    @Test
+    func `scanner resolves relative sqlite homes for multiple session projects`() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("CodexSessionRolloutTests-relative-sqlite-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+        let now = Date()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy/MM/dd"
+        let codexHome = root.appendingPathComponent("codex-home", isDirectory: true)
+        let sessionDirectory = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(formatter.string(from: now), isDirectory: true)
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+
+        for index in 0..<2 {
+            let project = root.appendingPathComponent("project-\(index)", isDirectory: true)
+            let sqliteHome = project.appendingPathComponent("relative-state", isDirectory: true)
+            try fileManager.createDirectory(at: sqliteHome, withIntermediateDirectories: true)
+            let sessionID = "relative-session-\(index)"
+            let line =
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(sessionID)\",\"cwd\":\"\(project.path)\"," +
+                "\"originator\":\"codex_cli\",\"source\":\"cli\"}}"
+            try line.write(
+                to: sessionDirectory.appendingPathComponent("rollout-relative-\(index).jsonl"),
+                atomically: true,
+                encoding: .utf8)
+            try Self.createThreadDatabase(
+                at: sqliteHome.appendingPathComponent("state_5.sqlite"),
+                sessionID: sessionID,
+                title: "Project \(index) title")
+        }
+
+        let scanner = LocalAgentSessionScanner(config: SessionScanConfig(
+            maxProcessCount: 0,
+            maxClaudeTranscriptCountPerProject: 0))
+        let sessions = await scanner.scan(now: now, environment: [
+            "CODEX_HOME": codexHome.path,
+            "CODEX_SQLITE_HOME": "relative-state",
+            "HOME": root.path,
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        ])
+
+        #expect(Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.sessionName) }) == [
+            "relative-session-0": "Project 0 title",
+            "relative-session-1": "Project 1 title",
+        ])
+    }
+
+    private static func createThreadDatabase(
+        at url: URL,
+        sessionID: String,
+        title: String) throws
+    {
+        var database: OpaquePointer?
+        guard sqlite3_open(url.path, &database) == SQLITE_OK, let database else {
+            throw SQLiteFixtureError.open
+        }
+        defer { sqlite3_close(database) }
+        guard sqlite3_exec(
+            database,
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, agent_path TEXT);",
+            nil,
+            nil,
+            nil) == SQLITE_OK
+        else { throw SQLiteFixtureError.exec }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "INSERT INTO threads (id, title, agent_path) VALUES (?1, ?2, NULL);",
+            -1,
+            &statement,
+            nil) == SQLITE_OK,
+            let statement
+        else { throw SQLiteFixtureError.exec }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, sessionID, -1, transient)
+        sqlite3_bind_text(statement, 2, title, -1, transient)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw SQLiteFixtureError.exec }
+    }
+
+    private enum SQLiteFixtureError: Error {
+        case open
+        case exec
+    }
+    #endif
 }

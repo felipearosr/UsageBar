@@ -1,7 +1,5 @@
-import AppKit
 import CodexBarCore
 import Foundation
-import SwiftUI
 
 struct OpenRouterProviderImplementation: ProviderImplementation {
     let id: UsageProvider = .openrouter
@@ -13,26 +11,23 @@ struct OpenRouterProviderImplementation: ProviderImplementation {
 
     @MainActor
     func observeSettings(_ settings: SettingsStore) {
-        _ = settings.openRouterAPIToken
+        _ = settings[providerConfig: .openrouter, field: .apiKey]
+        _ = settings[providerConfig: .openrouter, field: .endpoint]
     }
 
     @MainActor
     func settingsSnapshot(context: ProviderSettingsSnapshotContext) -> ProviderSettingsSnapshotContribution? {
-        _ = context
-        return nil
+        ProviderDescriptorRegistry.descriptor(for: self.id).settingsSection.credentialContribution(
+            context: ProviderCredentialSettingsContext(
+                config: context.settings.providerConfig(for: self.id),
+                account: nil))
     }
 
     @MainActor
     func isAvailable(context: ProviderAvailabilityContext) -> Bool {
-        if OpenRouterSettingsReader.apiToken(environment: context.environment) != nil {
-            return true
-        }
-        return !context.settings.openRouterAPIToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    @MainActor
-    func settingsPickers(context _: ProviderSettingsContext) -> [ProviderSettingsPickerDescriptor] {
-        []
+        OpenRouterSettingsReader.apiToken(environment: context.environment) != nil ||
+            !context.settings[providerConfig: .openrouter, field: .apiKey]
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @MainActor
@@ -41,15 +36,35 @@ struct OpenRouterProviderImplementation: ProviderImplementation {
             ProviderSettingsFieldDescriptor(
                 id: "openrouter-api-key",
                 title: "API key",
-                subtitle: "Stored in ~/.codexbar/config.json. "
-                    + "Get your key from openrouter.ai/settings/keys and set a key spending limit "
-                    + "there to enable API key quota tracking.",
+                subtitle: "Required. Enter a regular API key or a Management API key here. "
+                    + "Management keys also enable account Activity on the official OpenRouter API.",
                 kind: .secure,
                 placeholder: "sk-or-v1-...",
-                binding: context.stringBinding(\.openRouterAPIToken),
+                binding: context.providerConfigBinding(.apiKey),
                 actions: [],
-                isVisible: nil,
-                onActivate: nil),
+                isVisible: nil),
+            ProviderSettingsFieldDescriptor(
+                id: "openrouter-api-url",
+                title: "API URL",
+                subtitle: "Optional. Defaults to the hosted OpenRouter API.",
+                kind: .plain,
+                placeholder: "https://openrouter.ai/api/v1",
+                binding: context.providerConfigBinding(.endpoint),
+                actions: [],
+                isVisible: nil),
+            ProviderSettingsFieldDescriptor(
+                id: "openrouter-management-api-key",
+                title: "Management API key",
+                subtitle: "Optional additional key for account Activity. "
+                    + "Only needed to use a separate Management API key "
+                    + "from the one in the required API key field above.",
+                kind: .secure,
+                placeholder: "sk-or-v1-...",
+                binding: context.providerConfigSecretBinding(
+                    key: OpenRouterSettingsReader.managementAPIKeyEnvironmentKey,
+                    logField: "managementAPIKey"),
+                actions: [],
+                isVisible: nil),
         ]
     }
 }

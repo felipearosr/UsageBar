@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
+@Suite(CodexCredentialFixtures())
 struct CodexOAuthTests {
     private func makeContext(
         runtime: ProviderRuntime = .app,
@@ -81,11 +82,13 @@ struct CodexOAuthTests {
         #expect(creds.refreshToken.isEmpty)
         #expect(creds.idToken == nil)
         #expect(creds.accountId == nil)
+        #expect(creds.isAPIKey)
+        #expect(!creds.needsRefresh)
     }
 
     @Test
     func `reset-credit token load ignores an API key beside O auth tokens`() throws {
-        let home = FileManager.default.temporaryDirectory
+        let home = CodexCredentialFixtures.root
             .appendingPathComponent("codexbar-reset-credit-oauth-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -736,7 +739,9 @@ struct CodexOAuthTests {
 
         #expect(strategy.shouldFallback(on: CodexOAuthFetchError.unauthorized, context: context))
         #expect(strategy.shouldFallback(on: CodexOAuthCredentialsError.notFound, context: context))
+        #expect(strategy.shouldFallback(on: CodexOAuthCredentialsError.unreadable, context: context))
         #expect(strategy.shouldFallback(on: CodexOAuthCredentialsError.missingTokens, context: context))
+        #expect(!strategy.shouldFallback(on: CodexOAuthCredentialsError.readOnlySource, context: context))
         #expect(strategy.shouldFallback(on: CodexTokenRefresher.RefreshError.expired, context: context))
         #expect(strategy.shouldFallback(on: CodexTokenRefresher.RefreshError.revoked, context: context))
         #expect(strategy.shouldFallback(on: CodexTokenRefresher.RefreshError.reused, context: context))
@@ -780,12 +785,64 @@ struct CodexOAuthTests {
     }
 
     @Test
-    func `explicit O auth mode never falls back to CLI`() {
+    func `explicit O auth mode only falls back to CLI for native refresh recovery`() {
         let strategy = CodexOAuthFetchStrategy()
         let context = self.makeContext(sourceMode: .oauth)
 
         #expect(!strategy.shouldFallback(on: CodexOAuthFetchError.unauthorized, context: context))
+        #expect(strategy.shouldFallback(on: CodexOAuthCredentialsError.nativeRefreshRequired, context: context))
+        #expect(!strategy.shouldFallback(on: CodexOAuthCredentialsError.readOnlySource, context: context))
         #expect(!strategy.shouldFallback(on: CodexTokenRefresher.RefreshError.expired, context: context))
+    }
+
+    @Test
+    func `credential recovery errors direct users to codex login`() {
+        #expect(CodexOAuthCredentialsError.nativeRefreshRequired.localizedDescription.contains("codex login"))
+        #expect(CodexOAuthCredentialsError.readOnlySource.localizedDescription.contains("codex login"))
+        #expect(CodexOAuthFetchError.unauthorized.localizedDescription.contains("codex login"))
+    }
+
+    @Test
+    func `explicit O auth mode includes CLI recovery after native credentials expire`() async {
+        let context = self.makeContext(sourceMode: .oauth)
+        let strategies = await CodexProviderDescriptor.descriptor.fetchPlan.pipeline.resolveStrategies(context)
+
+        #expect(strategies.map(\.id) == ["codex.oauth", "codex.oauth-native-refresh-cli"])
+    }
+
+    @Test
+    func `native refresh recovery is unavailable when Codex CLI is missing`() async throws {
+        let home = CodexCredentialFixtures.root
+            .appendingPathComponent("codexbar-native-refresh-no-cli-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try CodexOAuthCredentialsStore.save(
+            CodexOAuthCredentials(
+                accessToken: "access-token",
+                refreshToken: "refresh-token",
+                idToken: nil,
+                accountId: "account-id",
+                lastRefresh: Date(timeIntervalSinceNow: -(9 * 24 * 60 * 60))),
+            env: ["CODEX_HOME": home.path])
+
+        var context = self.makeContext(sourceMode: .oauth)
+        context = ProviderFetchContext(
+            runtime: context.runtime,
+            sourceMode: context.sourceMode,
+            includeCredits: context.includeCredits,
+            includeOptionalUsage: context.includeOptionalUsage,
+            webTimeout: context.webTimeout,
+            webDebugDumpHTML: context.webDebugDumpHTML,
+            verbose: context.verbose,
+            env: ["CODEX_HOME": home.path, "CODEX_CLI_PATH": "/missing/codex"],
+            settings: context.settings,
+            fetcher: context.fetcher,
+            claudeFetcher: context.claudeFetcher,
+            browserDetection: context.browserDetection)
+
+        let isAvailable = await CodexOAuthNativeRefreshCLIStrategy(binaryResolver: { _ in nil })
+            .isAvailable(context)
+        #expect(!isAvailable)
     }
 
     @Test

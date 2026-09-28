@@ -32,23 +32,13 @@ private func appLanguageDefaults() -> UserDefaults {
     return UserDefaults(suiteName: "CodexBar") ?? .standard
 }
 
-private let isRunningTestsProcessAtStartup: Bool = {
-    let env = ProcessInfo.processInfo.environment
-    if env["XCTestConfigurationFilePath"] != nil { return true }
-    if env["TESTING_LIBRARY_VERSION"] != nil { return true }
-    if env["SWIFT_TESTING"] != nil { return true }
-    return NSClassFromString("XCTestCase") != nil
-}()
-
-private func isRunningTestsProcess() -> Bool {
-    isRunningTestsProcessAtStartup
-}
+private let isRunningTestsProcessAtStartup = TestProcessSafety.isRunning
 
 private func resolvedAppLanguage() -> String {
     if let override = CodexBarLocalizationOverride.appLanguage {
         return override
     }
-    if isRunningTestsProcess() {
+    if isRunningTestsProcessAtStartup {
         return "en"
     }
     return appLanguageDefaults().string(forKey: "appLanguage") ?? ""
@@ -207,10 +197,47 @@ func L(_ key: String, language: String) -> String {
     return codexBarLocalizedString(key, bundle: bundle, resourceBundle: resourceBundle)
 }
 
+/// Uses an explicit duration for Simplified Chinese quota surfaces while preserving the generic
+/// `Session` translation for conversations and other non-quota UI.
+func localizedSessionQuotaLabel(_ label: String, windowMinutes: Int?) -> String {
+    let localizedLabel = L(label)
+    guard label == "Session",
+          localizedBundle().bundleURL.lastPathComponent.caseInsensitiveCompare("zh-Hans.lproj") == .orderedSame,
+          let windowMinutes
+    else { return localizedLabel }
+
+    if windowMinutes == 7 * 24 * 60 {
+        return L("Weekly")
+    }
+    guard (60...(12 * 60)).contains(windowMinutes), windowMinutes.isMultiple(of: 60) else {
+        return localizedLabel
+    }
+    return "\(codexBarLocalizedInteger(windowMinutes / 60)) \(L("Hour"))"
+}
+
 func codexBarLocalizedLocale() -> Locale {
-    let language = resolvedAppLanguage()
+    codexBarLocale(forLanguage: resolvedAppLanguage())
+}
+
+/// Returns the locale of the resource bundle currently selected by `L`.
+///
+/// This can differ from `Locale.current` when the app falls back to a supported language. Plural
+/// formatting must use this locale so it follows the same language as the resolved strings.
+func codexBarLocalizedResourceLocale() -> Locale {
+    let bundleURL = localizedBundle().bundleURL
+    guard bundleURL.pathExtension == "lproj" else {
+        return codexBarLocalizedLocale()
+    }
+    return codexBarLocale(forLanguage: bundleURL.deletingPathExtension().lastPathComponent)
+}
+
+private func codexBarLocale(forLanguage language: String) -> Locale {
     guard !language.isEmpty else { return .current }
-    switch language.lowercased() {
+    let normalized = language.lowercased()
+    if normalized == "ar" || normalized.hasPrefix("ar-") {
+        return Locale(identifier: "\(language)@numbers=arab")
+    }
+    switch normalized {
     case "zh-hans":
         return Locale(identifier: "zh-Hans")
     case "zh-hant":
@@ -220,6 +247,10 @@ func codexBarLocalizedLocale() -> Locale {
     default:
         return Locale(identifier: language)
     }
+}
+
+func codexBarLocalizedInteger(_ value: Int) -> String {
+    value.formatted(.number.locale(codexBarLocalizedLocale()))
 }
 
 func codexBarLocalizedString(_ key: String, bundle: Bundle, resourceBundle: Bundle) -> String {

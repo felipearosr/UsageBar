@@ -3,6 +3,33 @@ import Testing
 @testable import CodexBarCore
 
 struct ClaudeSwapListParserTests {
+    @Test
+    func `read only adapter preserves usage without activation`() throws {
+        let list = try self.parse("""
+        {
+          "schemaVersion": 1, "activeAccountNumber": 1, "supportsAccountSwitching": false,
+          "accounts": [
+            {"number": 1, "active": true, "usageStatus": "foreign_credential"},
+            {"number": 2, "active": false, "usageStatus": "ok", "usage": {"fiveHour": {"pct": 25}}}
+          ]
+        }
+        """)
+        let accounts = ClaudeSwapAccountProjection.accountSnapshots(from: list)
+        #expect(accounts.count == 2)
+        #expect(accounts.allSatisfy { !$0.canActivate })
+        #expect(accounts.first?.isActive == true)
+        #expect(accounts.last?.snapshot?.primary?.usedPercent == 25)
+    }
+
+    @Test(arguments: ["null", "0", "1", "\"false\"", "[]", "{}"])
+    func `rejects nonboolean switching capability`(value: String) {
+        #expect(throws: ClaudeSwapListParserError.malformedShape("supportsAccountSwitching is not a boolean")) {
+            try self.parse("""
+            {"schemaVersion": 1, "activeAccountNumber": null, "supportsAccountSwitching": \(value), "accounts": []}
+            """)
+        }
+    }
+
     private func parse(_ json: String) throws -> ClaudeSwapAccountList {
         try ClaudeSwapListParser.parse(Data(json.utf8))
     }
@@ -24,7 +51,10 @@ struct ClaudeSwapListParserTests {
               "usageStatus": "ok",
               "usage": {
                 "fiveHour": {"pct": 25.0, "resetsAt": "2026-06-22T23:29:59Z", "countdown": "1h"},
-                "sevenDay": {"pct": 16.5, "resetsAt": "2026-06-26T17:59:59Z"}
+                "sevenDay": {"pct": 16.5, "resetsAt": "2026-06-26T17:59:59Z"},
+                "scoped": [
+                  {"pct": 33.0, "name": "Fable", "resetsAt": "2026-06-26T17:59:59Z"}
+                ]
               },
               "usageFetchedAt": "2026-06-22T20:00:00Z",
               "usageAgeSeconds": 42.0
@@ -43,21 +73,115 @@ struct ClaudeSwapListParserTests {
         let list = try self.parse(json)
         #expect(list.activeAccountNumber == 2)
         #expect(list.accounts.count == 2)
+        #expect(list.supportsAccountSwitching)
 
         let first = try #require(list.accounts.first)
         #expect(first.number == 1)
         #expect(first.email == "work@example.com")
+        #expect(first.organizationName.isEmpty)
+        #expect(first.alias == nil)
         #expect(first.isActive == false)
         #expect(first.usageStatus == .ok)
         #expect(first.fiveHour?.usedPercent == 25.0)
         #expect(first.fiveHour?.resetsAt == Date(timeIntervalSince1970: 1_782_170_999))
         #expect(first.sevenDay?.usedPercent == 16.5)
+        #expect(first.scoped == [
+            ClaudeSwapScopedUsageWindow(
+                name: "Fable",
+                usedPercent: 33,
+                resetsAt: Date(timeIntervalSince1970: 1_782_496_799)),
+        ])
 
         let second = try #require(list.accounts.last)
         #expect(second.isActive == true)
+        #expect(second.organizationName.isEmpty)
+        #expect(second.alias == nil)
         #expect(second.fiveHour?.usedPercent == 80)
         #expect(second.fiveHour?.resetsAt == nil)
         #expect(second.sevenDay == nil)
+        #expect(second.scoped.isEmpty)
+    }
+
+    @Test(arguments: [true, false])
+    func `parses explicit switching capabilities`(supported: Bool) throws {
+        let list = try self.parse("""
+        {"schemaVersion": 1, "activeAccountNumber": null, "supportsAccountSwitching": \(supported), "accounts": []}
+        """)
+        #expect(list.supportsAccountSwitching == supported)
+    }
+
+    @Test
+    func `ignores malformed and unknown scoped rows without losing account windows`() throws {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "activeAccountNumber": 1,
+          "accounts": [{
+            "number": 1,
+            "active": true,
+            "usageStatus": "ok",
+            "usage": {
+              "fiveHour": {"pct": 19.0},
+              "sevenDay": {"pct": 42.0},
+              "scoped": [
+                {"pct": 133.0, "name": "  Fable  ", "resetsAt": "2026-07-21T08:00:00Z"},
+                {"pct": 17.0, "name": "All models"},
+                {"scope": "future_scope", "pct": 5.0},
+                {"pct": "unknown", "name": "Example Model"},
+                {"pct": 8.0, "name": "Bad Reset", "resetsAt": "next week"},
+                "future-shape"
+              ]
+            }
+          }]
+        }
+        """
+
+        let row = try #require(self.parse(json).accounts.first)
+        #expect(row.fiveHour?.usedPercent == 19)
+        #expect(row.sevenDay?.usedPercent == 42)
+        #expect(row.scoped.map(\.name) == ["Fable", "All models"])
+        #expect(row.scoped.map(\.usedPercent) == [100, 17])
+        #expect(row.scoped.first?.resetsAt == Date(timeIntervalSince1970: 1_784_620_800))
+    }
+
+    @Test
+    func `decodes display only organization name and optional alias`() throws {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "activeAccountNumber": 1,
+          "accounts": [
+            {
+              "number": 1,
+              "email": "shared@example.com",
+              "organizationName": "Sendbird",
+              "alias": "Work",
+              "organizationUuid": "ignored-uuid",
+              "isOrganization": true,
+              "active": true,
+              "usageStatus": "ok",
+              "usage": null
+            },
+            {
+              "number": 2,
+              "email": "shared@example.com",
+              "organizationName": "  ",
+              "alias": "",
+              "active": false,
+              "usageStatus": "ok",
+              "usage": null
+            }
+          ]
+        }
+        """
+
+        let accounts = try self.parse(json).accounts
+        let first = try #require(accounts.first)
+        #expect(first.organizationName == "Sendbird")
+        #expect(first.alias == "Work")
+        let second = try #require(accounts.last)
+        #expect(second.organizationName.isEmpty)
+        #expect(second.alias == nil)
     }
 
     @Test
@@ -97,6 +221,30 @@ struct ClaudeSwapListParserTests {
             .unavailable,
             .unknown("brand_new_status"),
         ])
+    }
+
+    @Test
+    func `projects relogin required status to recovery guidance`() throws {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "activeAccountNumber": null,
+          "accounts": [
+            {
+              "number": 1,
+              "email": "expired@example.com",
+              "active": false,
+              "usageStatus": "relogin_required",
+              "usage": null
+            }
+          ]
+        }
+        """
+
+        let list = try self.parse(json)
+        let account = try #require(ClaudeSwapAccountProjection.accountSnapshots(from: list).first)
+        #expect(account.error == "Re-login required. Re-authenticate this account in claude-swap.")
+        #expect(account.canActivate == false)
     }
 
     @Test

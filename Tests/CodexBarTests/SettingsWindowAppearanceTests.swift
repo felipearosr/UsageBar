@@ -6,10 +6,39 @@ import Testing
 @MainActor
 struct SettingsWindowAppearanceTests {
     @Test
-    func `settings sidebar uses a fixed noncollapsible width`() {
+    func `settings sidebar default width sits within its resize bounds`() {
         #expect(SettingsPane.sidebarWidth == 260)
-        #expect(SettingsPane.windowMinWidth > SettingsPane.sidebarWidth)
+        #expect(SettingsPane.sidebarMinWidth < SettingsPane.sidebarWidth)
+        #expect(SettingsPane.sidebarMaxWidth > SettingsPane.sidebarWidth)
         #expect(SettingsPane.detailMaxWidth > SettingsPane.windowMinWidth - SettingsPane.sidebarWidth)
+        // The static window minimum must leave a usable detail pane even at the widest
+        // sidebar; this is what lets window sizing stay independent of the drag state.
+        #expect(SettingsPane.windowMinWidth - SettingsPane.sidebarMaxWidth >= 400)
+    }
+
+    @Test
+    func `sidebar resize handle clamps drags and re-anchors on mouse down`() {
+        let view = SidebarResizeHandleView()
+        var stored = Double(SettingsPane.sidebarWidth)
+        view.getWidth = { stored }
+        view.setWidth = { newValue in
+            stored = min(
+                max(newValue, Double(SettingsPane.sidebarMinWidth)),
+                Double(SettingsPane.sidebarMaxWidth))
+        }
+
+        view.mouseDown(with: NSEvent.fakeMouseEvent(windowX: 300))
+        view.mouseDragged(with: NSEvent.fakeMouseEvent(windowX: 300 + 500))
+        #expect(stored == Double(SettingsPane.sidebarMaxWidth))
+
+        view.mouseDown(with: NSEvent.fakeMouseEvent(windowX: 300))
+        view.mouseDragged(with: NSEvent.fakeMouseEvent(windowX: 300 - 500))
+        #expect(stored == Double(SettingsPane.sidebarMinWidth))
+
+        // A fresh mouseDown re-anchors the drag to the current (clamped) width.
+        view.mouseDown(with: NSEvent.fakeMouseEvent(windowX: 300))
+        view.mouseDragged(with: NSEvent.fakeMouseEvent(windowX: 300 + 40))
+        #expect(stored == Double(SettingsPane.sidebarMinWidth) + 40)
     }
 
     @Test
@@ -121,6 +150,33 @@ struct SettingsWindowAppearanceTests {
     }
 
     @Test
+    func `settings window joins the active Space for Stage Manager`() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false)
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenPrimary]
+
+        SettingsWindowStageBehavior.applyCollectionBehavior(window)
+
+        #expect(window.collectionBehavior == SettingsWindowStageBehavior.collectionBehavior)
+        #expect(window.collectionBehavior.contains(.moveToActiveSpace))
+        #expect(window.collectionBehavior.contains(.fullScreenAuxiliary))
+        #expect(!window.collectionBehavior.contains(.canJoinAllSpaces))
+        #expect(!window.collectionBehavior.contains(.fullScreenPrimary))
+    }
+
+    @Test
+    func `presenting settings restores a miniaturized window`() {
+        let window = MiniaturizedWindowSpy()
+
+        SettingsWindowStageBehavior.present(window)
+
+        #expect(window.wasDeminiaturized)
+    }
+
+    @Test
     func `settings window style remains resizable`() {
         let bridge = SettingsWindowAppearanceView()
         let window = NSWindow(
@@ -132,6 +188,22 @@ struct SettingsWindowAppearanceTests {
         window.contentView = bridge
 
         #expect(window.styleMask.contains(.resizable))
+    }
+
+    @Test
+    func `settings window style enables minimization`() {
+        let bridge = SettingsWindowAppearanceView()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false)
+
+        window.contentView = bridge
+
+        #expect(window.styleMask.contains(.miniaturizable))
+        #expect(window.isMiniaturizable)
+        #expect(window.standardWindowButton(.miniaturizeButton)?.isEnabled == true)
     }
 
     @Test
@@ -177,4 +249,38 @@ struct SettingsWindowAppearanceTests {
 @MainActor
 private final class ResetCapture {
     var actions: [SettingsWindowAppearance.ResetAction] = []
+}
+
+@MainActor
+private final class MiniaturizedWindowSpy: NSWindow {
+    var wasDeminiaturized = false
+
+    override var isMiniaturized: Bool {
+        !self.wasDeminiaturized
+    }
+
+    override func deminiaturize(_ sender: Any?) {
+        _ = sender
+        self.wasDeminiaturized = true
+    }
+
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        _ = sender
+    }
+}
+
+extension NSEvent {
+    /// Minimal mouse event for driving NSView mouseDown/mouseDragged handlers in tests.
+    fileprivate static func fakeMouseEvent(windowX: CGFloat) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: .leftMouseDragged,
+            location: NSPoint(x: windowX, y: 0),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1)!
+    }
 }

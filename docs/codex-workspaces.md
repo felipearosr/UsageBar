@@ -1,0 +1,142 @@
+---
+summary: "Codex Workspaces local index, cache persistence, and debug inspector."
+read_when:
+  - Changing Codex project or session indexing
+  - Debugging Workspaces cache completeness
+---
+
+# Codex Workspaces local index
+
+Codex Workspaces attributes the existing local Codex cost scan to projects,
+sessions, models, and days. This foundation is local-only library behavior; it
+does not add a remote API, provider authentication flow, billing interface, or
+public CLI JSON contract.
+
+## Internal navigation scaffold
+
+Debug builds can expose a Codex-only **Workspaces** menu action with
+`CODEXBAR_ENABLE_WORKSPACES_MENU=1`. It opens one reusable native project and
+session inspector. The inspector is cache-first: it shows the latest available
+local snapshot immediately, keeps that content visible while an explicit
+**Refresh usage data** action requests a new scan, and does not force a refresh
+merely by opening the window. When detailed cached content is
+absent, the inspector performs one normal sidecar-backed detail load. A
+successful refresh that returns partial source data replaces the rendered snapshot
+and remains labeled partial. A refresh that fails preserves the previously
+rendered snapshot—complete or partial—and adds a recoverable failure notice. The existing hide-personal-information
+projection is applied before paths, workspace names, working directories, or
+session titles reach the inspector. Release builds always disable this gate,
+even if the environment variable is present. Changing the selected source,
+history range, or Hide Personal Info clears the old presentation and reloads the
+visible window with the new configuration. An earlier request cannot publish
+content from the old scope after that change.
+Closing cancels this window's pending request. Reopening reuses a completed
+snapshot, or starts a cache-first load after an interrupted initial load.
+
+The basic inspector excludes Models analytics, charts, CSV/export,
+search/filter controls, preference or opt-in changes, background indexing, and
+index rebuild controls. Those remain separate follow-ups; this navigation layer
+does not alter the foundation's scanner, sidecar, or persistence contracts.
+
+## Data flow
+
+`CostUsageScanner` remains authoritative for JSONL parsing, cumulative-token
+deltas, fork and subagent accounting, pricing, and incremental cursors. The
+Workspaces index combines that scan cache with the read-only Codex thread
+catalog:
+
+1. Scan local rollout JSONL into the SQLite cost cache.
+2. Read catalog metadata without modifying the Codex catalog.
+3. Canonicalize workspace attribution and scope it to the selected Codex home.
+4. Publish the complete source state and derived snapshot in one SQLite
+   transaction.
+5. Expose project, session, model, daily, source-status, progress, and CSV
+   library models to presentation consumers.
+
+Project indexing reads exact usage rows and daily aggregates without loading
+raw token snapshots. The read stays within one SQLite transaction, so a
+concurrent scanner commit cannot turn a consistent project report into empty
+history. This optimization applies to Workspaces indexing; the menu-bar scanner
+already loads token snapshots lazily.
+
+The supported internal presentation boundary is:
+
+- `CostUsageFetcher.loadCachedCodexLocalProjectUsageSnapshot`
+- `CostUsageFetcher.loadCodexLocalProjectUsageSnapshot`
+- `CostUsageFetcher.clearCachedCodexLocalProjectUsageSnapshot`
+- `CodexLocalProjectUsageSnapshot`
+- `CodexLocalProjectUsageIndexProgress`
+
+## Persistence contracts
+
+The Codex cost cache is:
+
+```text
+~/Library/Caches/CodexBar/cost-usage/cost-usage.sqlite
+```
+
+The Workspaces sidecar is:
+
+```text
+~/Library/Caches/CodexBar/local-usage/codex-workspaces-v1.sqlite
+```
+
+The sidecar currently uses SQLite schema version 5 and snapshot payload format
+3. This is the first released Workspaces schema. A database with any other
+`PRAGMA user_version` is rejected as incompatible and is never modified.
+
+### Legacy JSON cache cutover
+
+The SQLite store rebuilds derived usage from session files instead of importing
+the old monolithic `codex-v11.json` cache. When that legacy artifact is found,
+the store removes it and its temporary copies and rebuilds the SQLite cache.
+Source session files remain unchanged; subsequent scans reuse SQLite cursors.
+
+### Sidecar rollback
+
+Publication is transactional: a failed synchronization or snapshot write rolls
+back and leaves the previous complete snapshot available.
+
+Before importing source rows, the indexer validates the raw cost cache against
+the selected Codex home. A failed read or retained cache from another home fails
+the refresh before changing saved project history. A successfully scanned,
+same-scope empty history remains valid and can replace earlier usage.
+
+## Catalog completeness and last-good data
+
+Catalog access distinguishes complete, missing, locked, corrupt, and
+incompatible states. A complete read replaces catalog metadata for that Codex
+home scope. A later same-scope incomplete read reports partial or stale source
+status while retaining the last-good catalog attribution and usage snapshot.
+Sparse rollout updates do not erase retained titles, workspace paths, or other
+catalog metadata.
+
+Scope identifiers and invalidation fingerprints are hashes; raw Codex-home
+paths are not persisted as scope identifiers. Changed and deleted rollout files,
+parser or pricing changes, history-window changes, and catalog changes
+invalidate only the affected cached state.
+
+## Cost and display semantics
+
+Known model cost and unknown-cost coverage are represented separately. Unknown
+pricing never becomes a synthetic zero-cost claim. Models analytics, parity
+checks, performance telemetry, and CSV serialization operate on the same
+persisted snapshot.
+
+Display-only projections are transient:
+
+- Hiding estimated cost does not rewrite the sidecar.
+- Including or excluding cached input does not rescan or rewrite the sidecar.
+- Hiding personal information removes persisted workspace paths, working
+  directories, workspace names, and session titles from snapshots before they
+  reach presentation code; it does not rewrite the local sidecar.
+- Rankings, totals, charts, and breakdowns must use the same projection.
+
+## Privacy boundary
+
+The scanner, catalog reader, cache, sidecar, analytics, and CSV serializer run
+locally. They do not upload rollout contents or catalog records. The stored
+index can contain local workspace paths, session metadata, token totals, and
+derived cost estimates, so runtime evidence must be sanitized before
+publication. Remove paths, titles, session IDs, identities, tokens, keys,
+network addresses, and database row contents from shared logs and screenshots.

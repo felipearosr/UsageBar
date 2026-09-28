@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import CodexBar
 
-@Suite(.serialized)
+@Suite(.serialized, CodexCredentialFixtures())
 @MainActor
 struct CodexSystemPromotionUITests {
     @Test
@@ -37,7 +37,7 @@ struct CodexSystemPromotionUITests {
         #expect(promotionResult.outcome == .promoted)
         #expect(container.settings.codexActiveSource == .liveSystem)
         #expect(container.settings.codexVisibleAccountProjection.liveVisibleAccountID == managedVisibleAccountID)
-        #expect(coordinator.userFacingError == nil)
+        #expect(!coordinator.isInteractionBlocked())
     }
 
     @Test
@@ -69,9 +69,20 @@ struct CodexSystemPromotionUITests {
 
         #expect(error.title == "Could not switch system account")
         #expect(error.message == "Finish the current managed account change before switching the system account.")
-        #expect(coordinator.userFacingError == error)
+        #expect(!coordinator.isPromotingSystemAccount)
         #expect(coordinator.isInteractionBlocked())
         #expect(container.settings.codexActiveSource == .managedAccount(id: target.id))
+    }
+
+    @Test
+    func `promotion coordinator explains selected workspace auth mismatch`() {
+        let error = CodexAccountPromotionCoordinator.mapUserFacingError(
+            CodexAccountPromotionError.targetManagedAccountWorkspaceDiffersFromAuthDefault)
+
+        #expect(error.title == "Could not switch system account")
+        #expect(error.message.contains("differs from its saved Codex auth default"))
+        #expect(error.message.contains("Keep it as a managed account"))
+        #expect(error.message.contains("will not rewrite Codex-owned auth"))
     }
 
     @Test

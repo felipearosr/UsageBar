@@ -1,7 +1,9 @@
+import CodexBarCore
 import Foundation
 
 struct SettingsDefaultsState {
     var refreshFrequency: RefreshFrequency
+    var adaptiveActivityScanConsent: AdaptiveActivityScanConsent
     var refreshAllProvidersOnMenuOpen: Bool
     var launchAtLogin: Bool
     var debugMenuEnabled: Bool
@@ -11,6 +13,8 @@ struct SettingsDefaultsState {
     var debugLoadingPatternRaw: String?
     var debugKeepCLISessionsAlive: Bool
     var statusChecksEnabled: Bool
+    var stayAwakeEnabled: Bool
+    var credentialExpiryNotificationsEnabled: Bool
     var sessionQuotaNotificationsEnabled: Bool
     var quotaWarningNotificationsEnabled: Bool
     var predictivePaceWarningNotificationsEnabled: Bool
@@ -22,22 +26,39 @@ struct SettingsDefaultsState {
     var quotaWarningSoundEnabled: Bool
     var quotaWarningOnScreenAlertEnabled: Bool
     var quotaWarningMarkersVisible: Bool
+    var paceVisible: Bool
     var weeklyProgressWorkDays: Int?
+    var workdayTickAppearanceRaw: String
     var usageBarsShowUsed: Bool
     var resetTimesShowAbsolute: Bool
     var providerChangelogLinksEnabled: Bool
     var menuBarShowsBrandIconWithPercent: Bool
     var menuBarHidesCritters: Bool
+    var menuBarColorPace: Bool
+    var menuBarHighContrastOnInactiveDisplays: Bool
     var menuBarDisplayModeRaw: String?
     var menuBarShowsResetTimeWhenExhausted: Bool
     var kiroMenuBarDisplayModeRaw: String?
     var historicalTrackingEnabled: Bool
     var multiAccountMenuLayoutRaw: String
+    var accountWidgetsEnabled: Bool
     var menuBarMetricPreferencesRaw: [String: String]
+    var storedMenuBarLayout: MenuBarLayout?
+    var menuBarLayoutConditionals: [MenuBarLayoutConditional]
+    var menuBarLayoutOverridesRaw: [String: MenuBarLayout]
+    var menuBarLayoutSizeRaw: String
+    var menuBarLayoutGapRaw: String
+    var menuBarLayoutVerticalAdjustment: Int
     var copilotBudgetExtrasEnabled: Bool
     var copilotIconSecondaryWindowIDRaw: String
+    var copilotSeatCreditEntitlementRaw: String
     var costUsageEnabled: Bool
-    var costUsageHistoryDays: Int
+    var codexLocalSessionCostLedgerEnabled: Bool
+    var costReportingPeriod: CostReportingPeriod
+    var costUsageBucketTimeZoneIdentifier: String
+    var openCodexUsageLogsEnabled: Bool
+    var hideNativeCodexCostWhenOpenCodexPresent: Bool
+    var spendDashboardHiddenSourceIDs: [String]
     var costComparisonPeriodsEnabled: Bool
     var costSummaryDisplayStyleRaw: String
     var hidePersonalInfo: Bool
@@ -47,15 +68,24 @@ struct SettingsDefaultsState {
     var menuBarShowsHighestUsage: Bool
     var claudeOAuthKeychainPromptModeRaw: String?
     var claudeOAuthKeychainReadStrategyRaw: String?
+    var claudeOAuthDirectKeychainReadAllowed: Bool
     var claudeWebExtrasEnabledRaw: Bool
     var showOptionalCreditsAndExtraUsage: Bool
+    var claudeDailyRoutinesUsageVisible: Bool
+    var claudeModelScopedWeeklyUsageVisible: Bool
     var codexSparkUsageVisible: Bool
+    var codexExternalOAuthSourcesAllowed: Bool
     var openAIWebAccessEnabled: Bool
     var openAIWebBatterySaverEnabled: Bool
+    var backgroundWorkLowPowerModePreference: LowPowerModePreference
     var providerStorageFootprintsEnabled: Bool
     var jetbrainsIDEBasePath: String
     var mergeIcons: Bool
+    var mergedOverviewLayoutRaw: String
     var switcherShowsIcons: Bool
+    var mergeIconsStacked: Bool
+    var mergeIconStackedTopProviderRaw: String?
+    var mergeIconStackedBottomProviderRaw: String?
     var mergedMenuLastSelectedWasOverview: Bool
     var mergedOverviewSelectedProvidersRaw: [String]
     var selectedMenuProviderRaw: String?
@@ -64,5 +94,13 @@ struct SettingsDefaultsState {
     var appLanguageRaw: String?
     var terminalAppRaw: String?
     var agentSessionsEnabled: Bool
+    var agentSessionLabelStyleRaw: String
     var agentSessionsManualHosts: String
+    var agentSessionsHideUnreachableHosts: Bool
+    var preferredCurrencyCode: String
+    var iCloudSyncEnabled: Bool
+    var iCloudSyncIncludeSecrets: Bool
+    var iCloudSyncSnapshotsEnabled: Bool
+    var iCloudSyncShowFleetAccounts: Bool
+    var iCloudSyncDeviceID: String
 }

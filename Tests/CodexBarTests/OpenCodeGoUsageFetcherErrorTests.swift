@@ -43,17 +43,107 @@ private final class OpenCodeGoContinuationBox<Value: Sendable>: @unchecked Senda
 
 @Suite(.serialized)
 struct OpenCodeGoUsageFetcherErrorTests {
+    @Test(arguments: [
+        (12, 8, 35),
+        (3, 1, 0),
+        (1, 1, 1),
+        (0, 0, 0),
+        (100, 100, 100),
+        (0.5, 0.5, 0.5),
+        (1, nil, nil),
+        (1, 1, nil),
+        (1, nil, 1),
+    ] as [(Double, Double?, Double?)])
+    func `public usage API sends bearer token and preserves percent units`(
+        rolling: Double,
+        weekly: Double?,
+        monthly: Double?) async throws
+    {
+        defer { OpenCodeGoStubURLProtocol.handler = nil }
+        let resetDates = [
+            "2026-08-12T02:00:00.000Z",
+            "2026-08-18T00:00:00.000Z",
+            "2026-09-01T00:00:00.000Z",
+        ]
+        var windows: [String: Any] = ["rolling": ["percent": rolling, "resetsAt": resetDates[0]]]
+        if let weekly {
+            windows["weekly"] = ["percent": weekly, "resetsAt": resetDates[1]]
+        }
+        if let monthly {
+            windows["monthly"] = ["percent": monthly, "resetsAt": resetDates[2]]
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["usage": windows])
+        let body = try #require(String(data: data, encoding: .utf8))
+        let requests = OpenCodeGoRequestRecorder<URLRequest>()
+        OpenCodeGoStubURLProtocol.handler = { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            requests.append(request)
+            return makeOpenCodeGoResponse(url: url, body: body, statusCode: 200, contentType: "application/json")
+        }
+
+        let now = Date(timeIntervalSince1970: 1_786_493_600)
+        let snapshot = try await OpenCodeGoUsageFetcher.fetchAPIUsage(
+            apiKey: "go_secret",
+            timeout: 2,
+            now: now,
+            session: self.makeSession())
+
+        #expect(requests.values.count == 1)
+        #expect(requests.values.first?.url?.path == "/zen/go/v1/usage")
+        #expect(requests.values.first?.value(forHTTPHeaderField: "Authorization") == "Bearer go_secret")
+        let usage = snapshot.toUsageSnapshot()
+        #expect(usage.primary?.usedPercent == rolling)
+        #expect(usage.secondary?.usedPercent == weekly)
+        #expect(usage.tertiary?.usedPercent == monthly)
+        #expect(snapshot.hasWeeklyUsage == (weekly != nil))
+        #expect(snapshot.hasMonthlyUsage == (monthly != nil))
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        #expect(usage.primary?.resetsAt == formatter.date(from: resetDates[0]))
+        #expect(usage.secondary?.resetsAt == weekly.flatMap { _ in formatter.date(from: resetDates[1]) })
+        #expect(usage.tertiary?.resetsAt == monthly.flatMap { _ in formatter.date(from: resetDates[2]) })
+    }
+
     @Test
-    func `dashboard URL uses normalized workspace ID`() {
+    func `public usage API maps unauthorized response to invalid credentials`() async {
+        defer { OpenCodeGoStubURLProtocol.handler = nil }
+        OpenCodeGoStubURLProtocol.handler = { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            return makeOpenCodeGoResponse(
+                url: url,
+                body: #"{"error":"unauthorized"}"#,
+                statusCode: 401,
+                contentType: "application/json")
+        }
+
+        do {
+            _ = try await OpenCodeGoUsageFetcher.fetchAPIUsage(
+                apiKey: "bad",
+                timeout: 2,
+                session: self.makeSession())
+            Issue.record("Expected invalidCredentials")
+        } catch let error as OpenCodeGoUsageError {
+            guard case .invalidCredentials = error else {
+                Issue.record("Expected invalidCredentials, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Expected OpenCodeGoUsageError, got \(error)")
+        }
+    }
+
+    @Test
+    func `dashboard URL uses the console route for normalized workspace IDs`() {
         #expect(
             OpenCodeGoUsageFetcher.dashboardURL(workspaceID: "https://opencode.ai/workspace/wrk_abc123/go")
-                .absoluteString == "https://opencode.ai/workspace/wrk_abc123/go")
+                .absoluteString == "https://opencode.ai/console/wrk_abc123/go")
         #expect(
             OpenCodeGoUsageFetcher.dashboardURL(workspaceID: "workspace=wrk_def456")
-                .absoluteString == "https://opencode.ai/workspace/wrk_def456/go")
+                .absoluteString == "https://opencode.ai/console/wrk_def456/go")
         #expect(
             OpenCodeGoUsageFetcher.dashboardURL(workspaceID: nil)
-                .absoluteString == "https://opencode.ai")
+                .absoluteString == "https://opencode.ai/auth")
     }
 
     private struct UsageWindow {
@@ -91,7 +181,7 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             let body = #"{"detail":"Workspace missing"}"#
-            return Self.makeResponse(url: url, body: body, statusCode: 500, contentType: "application/json")
+            return makeOpenCodeGoResponse(url: url, body: body, statusCode: 500, contentType: "application/json")
         }
 
         do {
@@ -123,11 +213,12 @@ struct OpenCodeGoUsageFetcherErrorTests {
             guard let url = request.url else { throw URLError(.badURL) }
             requests.append("\(request.httpMethod ?? "GET") \(url.path)")
 
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
             let workspaceServerID = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f"
             if url.query?.contains(workspaceServerID) == true,
                request.httpMethod?.uppercased() == "GET"
             {
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"{"ok":true}"#,
                     statusCode: 200,
@@ -138,14 +229,14 @@ struct OpenCodeGoUsageFetcherErrorTests {
                request.httpMethod?.uppercased() == "POST",
                request.value(forHTTPHeaderField: "X-Server-Id") == workspaceServerID
             {
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"{"data":[{"id":"wrk_TEST123"}]}"#,
                     statusCode: 200,
                     contentType: "application/json")
             }
 
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -166,8 +257,10 @@ struct OpenCodeGoUsageFetcherErrorTests {
         #expect(snapshot.weeklyUsagePercent == 44)
         #expect(snapshot.monthlyUsagePercent == 55)
         #expect(requests.values == [
+            "GET /console/api/orgs",
             "GET /_server",
             "POST /_server",
+            "GET /console/api/go/status",
             "GET /workspace/wrk_TEST123/go",
         ])
     }
@@ -182,13 +275,14 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             methods.append(request.httpMethod ?? "GET")
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
             let body = [
                 #";0x00000263;((self.$R=self.$R||{})["server-fn:test"]=[],"#,
                 #"($R=>$R[0]=Object.assign(new Error("actor of type \"public\" is not associated with an account"),"#,
                 #"{stack:"Error: actor of type \"public\" is not associated with an account"}))"#,
                 #"($R["server-fn:test"]))"#,
             ].joined()
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: body,
                 statusCode: 200,
@@ -210,7 +304,7 @@ struct OpenCodeGoUsageFetcherErrorTests {
             }
         }
 
-        #expect(methods.values == ["GET"])
+        #expect(methods.values == ["GET", "GET"])
     }
 
     @Test
@@ -223,7 +317,8 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             methods.append(request.httpMethod ?? "GET")
-            return Self.makeResponse(
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: "<html><title>opencode</title><body>No usage yet</body></html>",
                 statusCode: 200,
@@ -246,7 +341,7 @@ struct OpenCodeGoUsageFetcherErrorTests {
             }
         }
 
-        #expect(methods.values == ["GET", "GET", "GET"])
+        #expect(methods.values == ["GET", "GET", "GET", "GET", "GET"])
     }
 
     @Test
@@ -259,15 +354,16 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             observedPaths.append(url.path)
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
             if url.path == "/workspace/wrk_TEST123" {
                 Thread.sleep(forTimeInterval: 0.4)
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"<html><body><h2>現在の残高 $42.50</h2></body></html>"#,
                     statusCode: 200,
                     contentType: "text/html")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: "<html><title>opencode</title><body>No Go subscription usage</body></html>",
                 statusCode: 200,
@@ -287,8 +383,11 @@ struct OpenCodeGoUsageFetcherErrorTests {
         #expect(usage.secondary == nil)
         #expect(usage.providerCost?.used == 42.5)
         #expect(usage.providerCost?.period == "Zen balance")
-        #expect(observedPaths.values.count == 2)
-        #expect(Set(observedPaths.values) == ["/workspace/wrk_TEST123/go", "/workspace/wrk_TEST123"])
+        #expect(observedPaths.values.count == 4)
+        #expect(Set(observedPaths.values) == [
+            "/console/api/billing/status",
+            "/console/api/go/status", "/workspace/wrk_TEST123/go", "/workspace/wrk_TEST123",
+        ])
     }
 
     @Test
@@ -301,14 +400,15 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             observedPaths.append(url.path)
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
             if url.path == "/workspace/wrk_TEST123" {
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"<html><body><h2>Current balance $23.75</h2></body></html>"#,
                     statusCode: 200,
                     contentType: "text/html")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: "<html><title>opencode</title><body>No Go subscription usage</body></html>",
                 statusCode: 200,
@@ -324,7 +424,10 @@ struct OpenCodeGoUsageFetcherErrorTests {
 
         #expect(snapshot.isBalanceOnly)
         #expect(snapshot.zenBalanceUSD == 23.75)
-        #expect(observedPaths.values == ["/workspace/wrk_TEST123/go", "/workspace/wrk_TEST123"])
+        #expect(observedPaths.values == [
+            "/console/api/go/status", "/workspace/wrk_TEST123/go",
+            "/console/api/billing/status", "/workspace/wrk_TEST123",
+        ])
     }
 
     @Test
@@ -336,13 +439,13 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             if url.path == "/workspace/wrk_TEST123" {
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: "Unauthorized",
                     statusCode: 401,
                     contentType: "text/plain")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: "<html><title>opencode</title><body>No Go subscription usage</body></html>",
                 statusCode: 200,
@@ -374,13 +477,13 @@ struct OpenCodeGoUsageFetcherErrorTests {
             guard let url = request.url else { throw URLError(.badURL) }
             if url.path == "/workspace/wrk_TEST123" {
                 rootTimeout = request.timeoutInterval
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"<html><body><h2>Current balance $17.25</h2></body></html>"#,
                     statusCode: 200,
                     contentType: "text/html")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: #"<script>rollingUsage:{usagePercent:12}</script>"#,
                 statusCode: 200,
@@ -453,7 +556,8 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             observedPaths.append(url.path)
-            return Self.makeResponse(
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_URL123",
@@ -470,8 +574,10 @@ struct OpenCodeGoUsageFetcherErrorTests {
             workspaceIDOverride: "https://opencode.ai/workspace/wrk_URL123/billing",
             session: self.makeSession())
 
-        #expect(observedPaths.values.count == 3)
+        #expect(observedPaths.values.count == 5)
         #expect(Set(observedPaths.values) == [
+            "/console/api/go/status",
+            "/console/api/billing/status",
             "/workspace/wrk_URL123/go",
             "/workspace/wrk_URL123",
             "/_server",
@@ -487,13 +593,13 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             if url.path == "/workspace/wrk_TEST123" {
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"<html><body><h2>現在の残高 $98.76</h2></body></html>"#,
                     statusCode: 200,
                     contentType: "text/html")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -525,20 +631,20 @@ struct OpenCodeGoUsageFetcherErrorTests {
             guard let url = request.url else { throw URLError(.badURL) }
             observedRequests.append(request)
             if url.path == "/workspace/wrk_TEST123" {
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: "<html><body>Workspace dashboard without hydrated billing data</body></html>",
                     statusCode: 200,
                     contentType: "text/html")
             }
             if url.path == "/_server" {
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"$R[0]={customerID:"cus_test",balance:$R[1]=9876000000,reload:!1}"#,
                     statusCode: 200,
                     contentType: "text/javascript")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -549,10 +655,13 @@ struct OpenCodeGoUsageFetcherErrorTests {
                 contentType: "text/html")
         }
 
+        // The billing fallback needs two hops. Without the completeness wait, the app's 250 ms optional-balance
+        // grace can cancel the balance task before the billing request is sent on a loaded CI runner.
         let snapshot = try await OpenCodeGoUsageFetcher.fetchUsage(
             cookieHeader: "auth=test",
             timeout: 2,
             workspaceIDOverride: "wrk_TEST123",
+            waitForZenBalance: true,
             session: self.makeSession())
 
         #expect(snapshot.zenBalanceUSD == 98.76)
@@ -576,8 +685,9 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             observedCookie = request.value(forHTTPHeaderField: "Cookie")
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
             #expect(url.path == "/workspace/wrk_TEST123")
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: #"<html><body><h2>現在の残高 $98.76</h2></body></html>"#,
                 statusCode: 200,
@@ -607,7 +717,7 @@ struct OpenCodeGoUsageFetcherErrorTests {
                 rootTimeout = request.timeoutInterval
                 throw URLError(.timedOut)
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -639,13 +749,13 @@ struct OpenCodeGoUsageFetcherErrorTests {
             guard let url = request.url else { throw URLError(.badURL) }
             if url.path == "/workspace/wrk_TEST123" {
                 Thread.sleep(forTimeInterval: 1)
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"<html><body><h2>現在の残高 $98.76</h2></body></html>"#,
                     statusCode: 200,
                     contentType: "text/html")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -679,7 +789,8 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             observedPaths.append(url.path)
-            return Self.makeResponse(
+            if let response = openCodeGoConsoleNotMigratedResponse(for: url) { return response }
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -699,7 +810,7 @@ struct OpenCodeGoUsageFetcherErrorTests {
 
         #expect(snapshot.rollingUsagePercent == 17)
         #expect(snapshot.zenBalanceUSD == nil)
-        #expect(observedPaths == ["/workspace/wrk_TEST123/go"])
+        #expect(observedPaths == ["/console/api/go/status", "/workspace/wrk_TEST123/go"])
     }
 
     @Test
@@ -714,13 +825,13 @@ struct OpenCodeGoUsageFetcherErrorTests {
             if url.path == "/workspace/wrk_TEST123" {
                 rootStarted.continuation.yield(())
                 Thread.sleep(forTimeInterval: 0.2)
-                return Self.makeResponse(
+                return makeOpenCodeGoResponse(
                     url: url,
                     body: #"<html><body><h2>現在の残高 $98.76</h2></body></html>"#,
                     statusCode: 200,
                     contentType: "text/html")
             }
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -775,7 +886,7 @@ struct OpenCodeGoUsageFetcherErrorTests {
         OpenCodeGoStubURLProtocol.handler = { request in
             guard let url = request.url else { throw URLError(.badURL) }
             observedCookie = request.value(forHTTPHeaderField: "Cookie")
-            return Self.makeResponse(
+            return makeOpenCodeGoResponse(
                 url: url,
                 body: Self.goUsagePageHTML(
                     workspaceID: "wrk_TEST123",
@@ -794,7 +905,9 @@ struct OpenCodeGoUsageFetcherErrorTests {
 
         #expect(observedCookie == "auth=test")
     }
+}
 
+extension OpenCodeGoUsageFetcherErrorTests {
     private static func goUsagePageHTML(
         workspaceID: String,
         rolling: UsageWindow,
@@ -827,24 +940,38 @@ struct OpenCodeGoUsageFetcherErrorTests {
         </html>
         """
     }
+}
 
-    private static func makeResponse(
-        url: URL,
-        body: String,
-        statusCode: Int,
-        contentType: String) -> (HTTPURLResponse, Data)
-    {
-        let response = HTTPURLResponse(
-            url: url,
-            statusCode: statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": contentType])!
-        return (response, Data(body.utf8))
-    }
+private func makeOpenCodeGoResponse(
+    url: URL,
+    body: String,
+    statusCode: Int,
+    contentType: String) -> (HTTPURLResponse, Data)
+{
+    let response = HTTPURLResponse(
+        url: url,
+        statusCode: statusCode,
+        httpVersion: "HTTP/1.1",
+        headerFields: ["Content-Type": contentType])!
+    return (response, Data(body.utf8))
+}
+
+/// Workspaces that have not migrated are unknown to the console API, so the legacy paths stay in play.
+private func openCodeGoConsoleNotMigratedResponse(for url: URL) -> (HTTPURLResponse, Data)? {
+    guard url.path.hasPrefix("/console/api/") else { return nil }
+    return makeOpenCodeGoResponse(
+        url: url,
+        body: #"{"_tag":"NotFound"}"#,
+        statusCode: 404,
+        contentType: "application/json")
 }
 
 final class OpenCodeGoStubURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    private static let _handlerBox = LockIsolated<((URLRequest) throws -> (HTTPURLResponse, Data))?>(nil)
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { Self._handlerBox.value }
+        set { Self._handlerBox.setValue(newValue) }
+    }
 
     override static func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "opencode.ai"

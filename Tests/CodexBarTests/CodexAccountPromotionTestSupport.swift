@@ -9,6 +9,7 @@ final class CodexAccountPromotionTestContainer {
     let liveHomeURL: URL
     let managedHomesURL: URL
     let managedStoreURL: URL
+    let widgetSnapshotURL: URL
     let settings: SettingsStore
     let usageStore: UsageStore
     let fileStore: FileManagedCodexAccountStore
@@ -22,12 +23,13 @@ final class CodexAccountPromotionTestContainer {
         workspaceIdentities: [String: CodexOpenAIWorkspaceIdentity] = [:]) throws
     {
         self.suiteName = suiteName
-        self.rootURL = FileManager.default.temporaryDirectory
+        self.rootURL = CodexCredentialFixtures.root
             .appendingPathComponent("codex-account-promotion-tests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         self.liveHomeURL = self.rootURL.appendingPathComponent("liveHome", isDirectory: true)
         self.managedHomesURL = self.rootURL.appendingPathComponent("managed-codex-homes", isDirectory: true)
         self.managedStoreURL = self.rootURL.appendingPathComponent("managed-codex-accounts.json", isDirectory: false)
+        self.widgetSnapshotURL = self.rootURL.appendingPathComponent("widget-snapshot.json", isDirectory: false)
         self.baseEnvironment = ["CODEX_HOME": self.liveHomeURL.path]
         self.fileStore = FileManagedCodexAccountStore(fileURL: self.managedStoreURL, fileManager: .default)
         self.homeFactory = ManagedCodexHomeFactory(root: self.managedHomesURL, fileManager: .default)
@@ -60,7 +62,8 @@ final class CodexAccountPromotionTestContainer {
             fetcher: UsageFetcher(environment: [:]),
             browserDetection: BrowserDetection(cacheTTL: 0),
             settings: self.settings,
-            startupBehavior: .testing)
+            startupBehavior: .testing,
+            widgetSnapshotURL: self.widgetSnapshotURL)
         self.installDynamicCodexUsageLoader()
         self.usageStore._test_codexCreditsLoaderOverride = {
             CreditsSnapshot(remaining: 17, events: [], updatedAt: Date())
@@ -84,22 +87,23 @@ final class CodexAccountPromotionTestContainer {
         liveAuthSwapper: (any CodexLiveAuthSwapping)? = nil,
         activeSourceWriter: (any CodexActiveSourceWriting)? = nil,
         snapshotLoader: (any CodexAccountReconciliationSnapshotLoading)? = nil,
-        accountScopedRefresher: (any CodexAccountScopedRefreshing)? = nil)
+        accountScopedRefresher: (any CodexAccountScopedRefreshing)? = nil,
+        daemon: CodexAppServerDaemon = CodexAppServerDaemon())
         -> CodexAccountPromotionService
     {
         CodexAccountPromotionService(
             store: store ?? self.fileStore,
             homeFactory: self.homeFactory,
-            identityReader: self.identityReader,
             workspaceResolver: self.workspaceResolver,
             snapshotLoader: snapshotLoader
-                ?? SettingsStoreCodexAccountReconciliationSnapshotLoader(settingsStore: self.settings),
+                ?? self.settings,
             authMaterialReader: DefaultCodexAuthMaterialReader(),
             liveAuthSwapper: liveAuthSwapper ?? DefaultCodexLiveAuthSwapper(),
             activeSourceWriter: activeSourceWriter
-                ?? SettingsStoreCodexActiveSourceWriter(settingsStore: self.settings),
+                ?? self.settings,
             accountScopedRefresher: accountScopedRefresher
-                ?? UsageStoreCodexAccountScopedRefresher(usageStore: self.usageStore),
+                ?? self.usageStore,
+            daemon: daemon,
             baseEnvironment: self.baseEnvironment,
             fileManager: .default)
     }

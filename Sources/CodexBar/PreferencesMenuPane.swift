@@ -23,6 +23,12 @@ struct MenuPane: View {
                         subtitle: L("show_quota_warning_markers_subtitle"))
                 }
 
+                Toggle(isOn: self.$settings.paceVisible) {
+                    SettingsRowLabel(
+                        L("show_pace_title"),
+                        subtitle: L("show_pace_subtitle"))
+                }
+
                 SettingsMenuPicker(
                     selection: self.$settings.weeklyProgressWorkDays,
                     options: MenuSettingsMenuOptions.weeklyProgressWorkDays,
@@ -32,6 +38,19 @@ struct MenuPane: View {
                     optionLabel: { workDays in
                         Text(MenuSettingsMenuOptions.weeklyProgressWorkDaysLabel(workDays))
                     })
+
+                SettingsMenuPicker(
+                    selection: self.$settings.workdayTickAppearance,
+                    options: MenuSettingsMenuOptions.workdayTickAppearances,
+                    label: {
+                        SettingsRowLabel(
+                            L("workday_tick_appearance_title"),
+                            subtitle: L("workday_tick_appearance_subtitle"))
+                    },
+                    optionLabel: { appearance in
+                        Text(appearance.label)
+                    })
+                    .disabled(self.settings.weeklyProgressWorkDays == nil)
 
                 SettingsMenuPicker(
                     selection: self.$settings.resetTimesOption,
@@ -46,6 +65,15 @@ struct MenuPane: View {
 
             Section {
                 Toggle(L("show_provider_changelog_links_title"), isOn: self.$settings.providerChangelogLinksEnabled)
+
+                SettingsMenuPicker(
+                    selection: self.$settings.mergedOverviewLayout,
+                    options: MenuSettingsMenuOptions.mergedOverviewLayouts,
+                    label: {
+                        SettingsRowLabel(L("overview_layout_title"), subtitle: L("overview_layout_subtitle"))
+                    },
+                    optionLabel: { Text($0.label) })
+                    .disabled(!self.settings.mergeIcons)
 
                 Toggle(isOn: self.$settings.showOptionalCreditsAndExtraUsage) {
                     SettingsRowLabel(
@@ -66,27 +94,98 @@ struct MenuPane: View {
                 Text(L("section_content"))
             }
 
+            Section(L("section_widgets")) {
+                Toggle(isOn: self.$settings.accountWidgetsEnabled) {
+                    SettingsRowLabel(
+                        L("account_widgets_title"),
+                        subtitle: L("account_widgets_description"))
+                }
+                .onChange(of: self.settings.accountWidgetsEnabled) { _, enabled in
+                    self.store.persistWidgetSnapshot(reason: "account-widgets-setting")
+                    if enabled {
+                        Task { await self.store.refresh() }
+                    }
+                }
+            }
+
             CostSummarySettingsSection(settings: self.settings, store: self.store)
 
-            Section {
-                Toggle(isOn: self.$settings.agentSessionsEnabled) {
-                    SettingsRowLabel(
-                        L("agent_sessions_title"),
-                        subtitle: L("agent_sessions_subtitle"))
-                }
-
-                TextField(L("agent_sessions_hosts_title"), text: self.$settings.agentSessionsManualHosts)
-                    .disabled(!self.settings.agentSessionsEnabled)
-            } header: {
-                Text(L("section_agent_sessions"))
-            } footer: {
-                SettingsSectionFooter(L("agent_sessions_footer"))
-            }
+            AgentSessionsSettingsSection(settings: self.settings)
         }
         .formStyle(.grouped)
         .toggleStyle(.switch)
         .scrollContentBackground(.hidden)
         .background(FocusResigningBackground())
+    }
+}
+
+@MainActor
+struct AgentSessionsSettingsSection: View {
+    @Bindable var settings: SettingsStore
+
+    var body: some View {
+        Section {
+            Toggle(isOn: self.$settings.stayAwakeEnabled) {
+                SettingsRowLabel(
+                    "Stay Awake",
+                    subtitle: "Prevent idle system sleep while a local agent process is running, even when idle. " +
+                        "Uses battery power; does not prevent lid-close or display sleep.")
+            }
+
+            Toggle(isOn: self.$settings.agentSessionsEnabled) {
+                SettingsRowLabel(
+                    L("agent_sessions_title"),
+                    subtitle: L("agent_sessions_subtitle"))
+            }
+
+            SettingsMenuPicker(
+                selection: self.$settings.agentSessionLabelStyle,
+                options: MenuSettingsMenuOptions.agentSessionLabelStyles,
+                label: {
+                    SettingsRowLabel(
+                        L("agent_session_labels_title"),
+                        subtitle: L("agent_session_labels_subtitle"))
+                },
+                optionLabel: { style in
+                    Text(style.label)
+                })
+                .disabled(!self.settings.agentSessionsEnabled)
+
+            Toggle(isOn: self.$settings.agentSessionsHideUnreachableHosts) {
+                SettingsRowLabel(
+                    L("agent_sessions_hide_unreachable_title"),
+                    subtitle: L("agent_sessions_hide_unreachable_subtitle"))
+            }
+            .disabled(!self.settings.agentSessionsEnabled)
+
+            AgentSessionHostsEditor(settings: self.settings)
+        } header: {
+            Text(L("section_agent_sessions"))
+        } footer: {
+            SettingsSectionFooter(L("agent_sessions_footer"))
+        }
+    }
+}
+
+@MainActor
+struct AgentSessionHostsEditor: View {
+    static let inputFormatHint = "user@host, user@host"
+
+    @Bindable var settings: SettingsStore
+
+    var body: some View {
+        LabeledContent(L("agent_sessions_hosts_title")) {
+            TextField(
+                L("agent_sessions_hosts_title"),
+                text: self.$settings.agentSessionsManualHosts,
+                prompt: Text(verbatim: Self.inputFormatHint))
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 220, idealWidth: 280)
+                .accessibilityLabel(L("agent_sessions_hosts_title"))
+        }
+        .disabled(!self.settings.agentSessionsEnabled)
+        .help(L("agent_sessions_footer"))
     }
 }
 
@@ -124,18 +223,33 @@ struct CostSummarySettingsSection: View {
                 SettingsSectionFooter {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(L("cost_auto_refresh_info"))
-                        self.costStatusLine(provider: .claude)
-                        self.costStatusLine(provider: .codex)
+                        ForEach(Self.costStatusProviders, id: \.self) { provider in
+                            self.costStatusLine(provider: provider)
+                        }
+                        Text(Self.costDataExplanation())
                     }
                 }
             }
         }
     }
 
+    static func costDataExplanation() -> String {
+        L("cost_data_explanation")
+    }
+
+    static var costStatusProviders: [UsageProvider] {
+        ProviderDescriptorRegistry.all.compactMap { descriptor -> (UsageProvider, Int)? in
+            guard let order = descriptor.tokenCost.settingsStatusOrder else { return nil }
+            return (descriptor.id, order)
+        }
+        .sorted { $0.1 < $1.1 }
+        .map(\.0)
+    }
+
     private func costStatusLine(provider: UsageProvider) -> Text {
         let name = ProviderDescriptorRegistry.descriptor(for: provider).metadata.displayName
 
-        guard provider == .claude || provider == .codex else {
+        guard ProviderDescriptorRegistry.descriptor(for: provider).tokenCost.supportsTokenCost else {
             return Text(String(format: L("cost_status_unsupported"), name))
         }
 
@@ -181,22 +295,25 @@ struct CostHistoryDaysEditor: View {
     }
 
     var body: some View {
-        LabeledContent(Self.title(days: self.settings.costUsageHistoryDays)) {
+        Picker(L("cost_history_window_title"), selection: self.$settings.costReportingPeriod) {
+            Text(L("Month to date")).tag(CostReportingPeriod.monthToDate)
+            Text(L("All")).tag(CostReportingPeriod.allTime)
+            ForEach([1, 7, 30, 90, 365], id: \.self) { days in
+                Text(Self.title(days: days)).tag(CostReportingPeriod.rolling(days: days))
+            }
+            if case let .rolling(days) = self.settings.costReportingPeriod, ![1, 7, 30, 90, 365].contains(days) {
+                Text(Self.title(days: days)).tag(self.settings.costReportingPeriod)
+            }
+        }
+        if case .rolling = self.settings.costReportingPeriod {
             HStack(spacing: 8) {
-                TextField(
-                    Self.title(days: self.settings.costUsageHistoryDays),
-                    value: self.$settings.costUsageHistoryDays,
-                    format: .number)
+                TextField(L("Time range"), value: self.$settings.costUsageHistoryDays, format: .number)
                     .labelsHidden()
                     .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .monospacedDigit()
                     .frame(width: 64)
-
-                Stepper(value: self.$settings.costUsageHistoryDays, in: 1...365, step: 1) {
-                    EmptyView()
+                Stepper(value: self.$settings.costUsageHistoryDays, in: 1...365) {
+                    Text(Self.title(days: self.settings.costUsageHistoryDays))
                 }
-                .labelsHidden()
             }
         }
     }

@@ -30,6 +30,18 @@ struct ShellCommandLocatorProcessTests {
             .path
         let stdoutPIDFile = "\(pidFile).stdout"
         let stderrPIDFile = "\(pidFile).stderr"
+        let pidFiles = [stdoutPIDFile, stderrPIDFile]
+        defer {
+            for file in pidFiles {
+                if let pidText = try? String(contentsOfFile: file, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                    let pid = pid_t(pidText)
+                {
+                    kill(pid, SIGKILL)
+                }
+                try? FileManager.default.removeItem(atPath: file)
+            }
+        }
         let script = """
         import os
         import signal
@@ -53,29 +65,37 @@ struct ShellCommandLocatorProcessTests {
         time.sleep(1000)
         """
 
+        // Pre-warm the interpreter so cold-start latency on loaded CI runners cannot
+        // consume the probe timeout before the helper children write their PID files.
+        let warmup = Process()
+        warmup.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        warmup.arguments = ["-c", "pass"]
+        try warmup.run()
+        warmup.waitUntilExit()
+
         let start = Date()
         let data = ShellCommandLocator.test_runShellCommand(
             shell: "/usr/bin/python3",
             arguments: ["-c", script, pidFile],
-            timeout: 0.2)
+            timeout: 5.0)
         let elapsed = Date().timeIntervalSince(start)
 
-        let pids = try [stdoutPIDFile, stderrPIDFile].map { file in
+        // The PID files are written by detached grandchildren; give the filesystem a
+        // bounded grace period before reading so slow runners cannot race the writes.
+        let fileDeadline = Date().addingTimeInterval(10)
+        while Date() < fileDeadline,
+              !pidFiles.allSatisfy({ FileManager.default.fileExists(atPath: $0) })
+        {
+            usleep(100_000)
+        }
+        let pids = try pidFiles.map { file in
             let pidText = try String(contentsOfFile: file, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return try #require(pid_t(pidText))
         }
-        defer {
-            for pid in pids {
-                kill(pid, SIGKILL)
-            }
-            for file in [stdoutPIDFile, stderrPIDFile] {
-                try? FileManager.default.removeItem(atPath: file)
-            }
-        }
 
         #expect(data == nil)
-        #expect(elapsed < 3.0, "Timed-out PATH probes should remain bounded")
+        #expect(elapsed < 8.0, "Timed-out PATH probes should remain bounded")
         for pid in pids {
             #expect(kill(pid, 0) != 0)
         }

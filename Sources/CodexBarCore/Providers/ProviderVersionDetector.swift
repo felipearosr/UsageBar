@@ -111,7 +111,7 @@ public enum ProviderVersionDetector {
                         timeout: 5.0,
                         extraArgs: ["--version"],
                         initialDelay: 0.0,
-                        useClaudeProbeWorkingDirectory: true))
+                        useProviderProbeWorkingDirectory: true))
             } catch {
                 commandResult = nil
             }
@@ -125,7 +125,7 @@ public enum ProviderVersionDetector {
                     timeout: 5.0,
                     extraArgs: ["--version"],
                     initialDelay: 0.0,
-                    useClaudeProbeWorkingDirectory: true))
+                    useProviderProbeWorkingDirectory: true))
         } catch {
             commandResult = nil
         }
@@ -139,15 +139,34 @@ public enum ProviderVersionDetector {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    public static func claudeVersion() -> String? {
+    public static func claudeBinaryResolvable(
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool
+    {
         #if DEBUG
-        let pathOpt = self.whichHook != nil ? self.whichHook!("claude") : TTYCommandRunner.which("claude")
+        if let whichHook {
+            return whichHook("claude") != nil
+        }
+        #endif
+        return ClaudeCLIResolver.resolvedBinaryPath(environment: environment) != nil
+    }
+
+    public static func claudeVersion(
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> String?
+    {
+        #if DEBUG
+        let pathOpt = self.whichHook != nil
+            ? self.whichHook!("claude")
+            : ClaudeCLIResolver.resolvedBinaryPath(environment: environment)
         #else
-        let pathOpt = TTYCommandRunner.which("claude")
+        let pathOpt = ClaudeCLIResolver.resolvedBinaryPath(environment: environment)
         #endif
         guard let path = pathOpt else { return nil }
 
         guard let fingerprint = getClaudeFingerprint(forPath: path) else {
+            guard ClaudeCLIBackgroundAvailability.allowsOpaqueChildExecution(
+                binary: path,
+                environment: environment)
+            else { return nil }
             return self.runClaudeVersionCommand(path: path)
         }
         self.lock.lock()
@@ -171,6 +190,14 @@ public enum ProviderVersionDetector {
             let result = pending.result
             self.lock.unlock()
             return result
+        }
+
+        guard ClaudeCLIBackgroundAvailability.allowsOpaqueChildExecution(
+            binary: path,
+            environment: environment)
+        else {
+            self.lock.unlock()
+            return nil
         }
 
         let pending = PendingDetection()
@@ -197,7 +224,7 @@ public enum ProviderVersionDetector {
     }
 
     public static func codexVersion() -> String? {
-        guard let path = TTYCommandRunner.which("codex") else { return nil }
+        guard let path = TTYCommandRunner.which(CodexProviderDescriptor.descriptor.cli.name) else { return nil }
         let candidates = [
             ["--version"],
             ["version"],
@@ -214,13 +241,38 @@ public enum ProviderVersionDetector {
     public static func geminiVersion() -> String? {
         let env = ProcessInfo.processInfo.environment
         guard let path = BinaryLocator.resolveGeminiBinary(env: env, loginPATH: nil)
-            ?? TTYCommandRunner.which("gemini") else { return nil }
+            ?? TTYCommandRunner.which(GeminiProviderDescriptor.descriptor.cli.name) else { return nil }
         let candidates = [
             ["--version"],
             ["-v"],
         ]
         for args in candidates {
             if let version = Self.run(path: path, args: args) {
+                return version
+            }
+        }
+        return nil
+    }
+
+    /// Provider-specific by design: Kimi ships its CLI in dedicated standalone installation directories.
+    public static func kimiVersion() -> String? {
+        self.kimiVersion(
+            environment: ProcessInfo.processInfo.environment,
+            home: FileManager.default.homeDirectoryForCurrentUser,
+            pathLookup: { TTYCommandRunner.which("kimi") })
+    }
+
+    static func kimiVersion(environment: [String: String], home: URL, pathLookup: () -> String?) -> String? {
+        let codeHome = environment["KIMI_CODE_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? home.appendingPathComponent(".kimi-code")
+        let paths: [String?] = [
+            pathLookup(),
+            codeHome.appendingPathComponent("bin/kimi").path,
+            home.appendingPathComponent(".local/bin/kimi").path,
+        ]
+        let candidates = paths.compactMap(\.self)
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            if let version = Self.run(path: path, args: ["--version"]) {
                 return version
             }
         }

@@ -35,6 +35,21 @@ private final class MistralRequestPathLog: @unchecked Sendable {
     }
 }
 
+private final class MistralCookieHeaderLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedHeaders: [String] = []
+
+    var headers: [String] {
+        self.lock.withLock { self.storedHeaders }
+    }
+
+    func record(_ request: URLRequest) {
+        self.lock.withLock {
+            self.storedHeaders.append(request.value(forHTTPHeaderField: "Cookie") ?? "")
+        }
+    }
+}
+
 struct MistralVibeUsageTests {
     #if os(macOS)
     @Test
@@ -44,6 +59,49 @@ struct MistralVibeUsageTests {
             "admin.mistral.ai",
             "auth.mistral.ai",
             "console.mistral.ai",
+        ])
+
+        let referenceDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let query = MistralCookieImporter.cookieQuery(referenceDate: referenceDate)
+        #expect(query.domains == MistralCookieImporter.cookieDomains)
+        #expect(query.includeExpired == false)
+        #expect(query.referenceDate == referenceDate)
+        guard case .exact = query.domainMatch else {
+            Issue.record("Expected exact Mistral cookie-domain matching")
+            return
+        }
+    }
+
+    @Test
+    func `tries later browser sessions after invalid credentials`() async throws {
+        let headerLog = MistralCookieHeaderLog()
+        let usageData = Data(Self.billingUsageResponseJSON.utf8)
+        let sessions = try [
+            Self.session(cookieName: "ory_session_chrome", value: "stale", sourceLabel: "Chrome"),
+            Self.session(cookieName: "ory_session_firefox", value: "stale", sourceLabel: "Firefox"),
+            Self.session(cookieName: "ory_session_safari", value: "valid", sourceLabel: "Safari"),
+        ]
+        let transport = ProviderHTTPTransportHandler { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            if url.host == "admin.mistral.ai", url.path == "/api/billing/v2/usage" {
+                headerLog.record(request)
+                let cookieHeader = request.value(forHTTPHeaderField: "Cookie") ?? ""
+                let statusCode = cookieHeader.contains("ory_session_safari=valid") ? 200 : 401
+                return try (usageData, Self.response(url: url, statusCode: statusCode))
+            }
+            return try (Data(), Self.response(url: url, statusCode: 404))
+        }
+
+        let (_, session) = try await MistralWebFetchStrategy.fetchUsageFromSessions(
+            sessions,
+            timeout: 2,
+            transport: transport)
+
+        #expect(session.sourceLabel == "Safari")
+        #expect(headerLog.headers == [
+            "ory_session_chrome=stale",
+            "ory_session_firefox=stale",
+            "ory_session_safari=valid",
         ])
     }
     #endif
@@ -183,9 +241,45 @@ struct MistralVibeUsageTests {
         #expect(snapshot.mistralUsage?.credits == nil)
         #expect(requestLog.paths == [
             "admin.mistral.ai/api/billing/v2/usage",
+            "admin.mistral.ai/subscription",
             "console.mistral.ai/api-ui/trpc/billing.vibeUsage",
             "admin.mistral.ai/api/billing/credits",
         ])
+    }
+
+    @Test(arguments: [true, false])
+    func `combined fetch preserves billing and credits with partial allowances`(validAPI: Bool) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["budget": [
+            "api_budget": ["usage_percentage": 20, "initial_budget": 50, "currency": "EUR"],
+            "vibe_budget": ["usage_percentage": "invalid", "initial_budget": 100, "currency": "EUR"],
+        ]])
+        let json = try #require(String(bytes: data, encoding: .utf8))
+        let record = "7:\(json)\n"
+        let push = try JSONSerialization.data(withJSONObject: [1, record])
+        let encoded = try #require(String(bytes: push, encoding: .utf8))
+        let page = validAPI ? "<script>self.__next_f.push(\(encoded))</script>" : "unavailable"
+        let log = MistralRequestPathLog()
+        let transport = ProviderHTTPTransportHandler { request in
+            log.record(request)
+            let url = try #require(request.url)
+            let body: String
+            switch url.path {
+            case "/api/billing/v2/usage": body = Self.billingUsageResponseJSON
+            case "/subscription": body = page
+            case "/api-ui/trpc/billing.vibeUsage": body = Self.responseJSON(usagePercentage: 37)
+            case "/api/billing/credits":
+                body = #"{"wallet_amount":40,"credit_notes_amount":0,"ongoing_usage_balance":5,"currency":"EUR"}"#
+            default: throw URLError(.unsupportedURL)
+            }
+            return try (Data(body.utf8), Self.response(url: url, statusCode: 200))
+        }
+        let snapshot = try await MistralWebFetchStrategy.fetchUsageWithVibe(
+            cookieHeader: "ory_session_test=abc; csrftoken=csrf", csrfToken: "csrf", timeout: 1, transport: transport)
+        #expect(snapshot.primary?.usedPercent == (validAPI ? 20 : nil))
+        #expect(snapshot.extraRateWindows?.first { $0.id == "mistral-monthly-plan" }?.window.usedPercent == 37)
+        #expect(snapshot.mistralUsage?.credits?.availableAmount == 35)
+        #expect(snapshot.mistralUsage?.totalCost != nil)
+        #expect(log.paths.count == 4)
     }
 
     @Test
@@ -252,6 +346,20 @@ struct MistralVibeUsageTests {
         }}}}]
         """
     }
+
+    #if os(macOS)
+    private static func session(cookieName: String, value: String, sourceLabel: String) throws
+        -> MistralCookieImporter.SessionInfo
+    {
+        let cookie = try #require(HTTPCookie(properties: [
+            .domain: "admin.mistral.ai",
+            .path: "/",
+            .name: cookieName,
+            .value: value,
+        ]))
+        return MistralCookieImporter.SessionInfo(cookies: [cookie], sourceLabel: sourceLabel)
+    }
+    #endif
 
     private static var billingUsageResponseJSON: String {
         """

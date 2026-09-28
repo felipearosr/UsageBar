@@ -121,29 +121,23 @@ public enum MiMoLocalUsageFallback {
     }
 
     private static func intValue(_ raw: Any?) -> Int {
-        if let i = raw as? Int {
-            return max(0, i)
+        if let number = raw as? NSNumber {
+            if let integer = Int(number.stringValue) {
+                return max(0, integer)
+            }
+            let numeric = number.doubleValue
+            guard numeric >= 0 else { return 0 }
+            return Int(exactly: numeric.rounded(.towardZero)) ?? 0
         }
-        if let d = raw as? Double,
-           d.isFinite,
-           d >= 0,
-           d <= Double(Int.max)
-        {
-            return Int(d)
-        }
-        if let s = raw as? String, let i = Int(s) {
-            return max(0, i)
+        if let string = raw as? String, let integer = Int(string) {
+            return max(0, integer)
         }
         return 0
     }
 
     private static func updatedAt(json: [String: Any], url: URL, fallback: Date) -> Date {
-        if let raw = json["updated_at"] as? String {
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let parsed = fractional.date(from: raw) ?? ISO8601DateFormatter().date(from: raw) {
-                return parsed
-            }
+        if let parsed = ISO8601DateParser.parse(json["updated_at"] as? String) {
+            return parsed
         }
         return (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? fallback
     }

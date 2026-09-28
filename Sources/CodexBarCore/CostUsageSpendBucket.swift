@@ -88,7 +88,11 @@ extension CostUsageSpendBucket {
         self.cacheCreationTokens = add(self.cacheCreationTokens, other.cacheCreationTokens)
         self.totalTokens = add(self.totalTokens, other.totalTokens)
         self.requests = add(self.requests, other.requests)
-        self.costUSD = if let lhs = self.costUSD, let rhs = other.costUSD { lhs + rhs } else { nil }
+        self.costUSD = if let lhs = self.costUSD, let rhs = other.costUSD {
+            lhs + rhs
+        } else {
+            nil
+        }
     }
 
     /// Combines bucket lists from several log sources for one provider, merging equal hour × model keys.
@@ -136,6 +140,59 @@ extension CostUsageScanner {
         default:
             []
         }
+    }
+}
+
+extension CostUsageScanner {
+    /// Collects Codex rows into Spend Buckets while `buildCodexReportFromCache` prices them, so buckets
+    /// and the daily report share the same rows, reconciliation, and per-call pricing.
+    final class CodexSpendBucketCollector {
+        private(set) var buckets: [CostUsageSpendBucket] = []
+
+        func add(rows: [CodexUsageRow], pricing: CodexReportDayPricingContext) {
+            for row in rows {
+                guard let timestamp = CostUsageScanner.date(fromUnixMs: row.timestampUnixMs) else { continue }
+                let (cost, hasUnpricedTokens) = CostUsageScanner.codexRowCost(row, pricing: pricing)
+                let cached = min(row.cached, row.input)
+                // Codex `input` includes cached tokens; buckets count them separately. Codex logs have no
+                // cache-creation count.
+                self.buckets.append(CostUsageSpendBucket(
+                    hourStart: CostUsageSpendBucket.hourStart(of: timestamp),
+                    provider: .codex,
+                    model: row.model,
+                    costUSD: hasUnpricedTokens ? nil : cost,
+                    inputTokens: row.input - cached,
+                    outputTokens: row.output,
+                    cacheReadTokens: cached,
+                    cacheCreationTokens: nil,
+                    totalTokens: row.input + row.output,
+                    requests: 1))
+            }
+        }
+    }
+
+    static func loadCodexSpendBuckets(
+        since: Date,
+        until: Date,
+        now: Date,
+        options: Options,
+        checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
+    {
+        // The daily report refreshes and saves the store; the buckets then read the same rows back.
+        _ = try self.loadDailyReportCancellable(
+            provider: .codex,
+            since: since,
+            until: until,
+            now: now,
+            options: options,
+            checkCancellation: checkCancellation)
+        let range = CostUsageDayRange(since: since, until: until, calendar: options.calendar)
+        let view = CostUsageStore(cacheRoot: options.cacheRoot)
+            .syncLoadCodexReadView(calendar: range.calendar, purpose: .report)
+            .scoped(to: self.codexSessionsRoots(options: options))
+        let collector = CodexSpendBucketCollector()
+        _ = view.dailyReport(range: range, cacheRoot: options.cacheRoot, spendBuckets: collector)
+        return CostUsageSpendBucket.merged(collector.buckets.filter { $0.hourStart >= since && $0.hourStart < until })
     }
 }
 

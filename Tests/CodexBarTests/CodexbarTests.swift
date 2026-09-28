@@ -66,7 +66,7 @@ struct CodexBarTests {
             ],
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .antigravity)
+        let remaining = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .antigravity, showUsed: false)
 
         #expect(remaining.primary == nil)
         #expect(remaining.secondary == nil)
@@ -318,7 +318,7 @@ struct CodexBarTests {
             tertiary: RateWindow(usedPercent: 20, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .perplexity)
+        let remaining = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .perplexity, showUsed: false)
         #expect(remaining.primary == 80)
         #expect(remaining.secondary == 0)
     }
@@ -331,7 +331,7 @@ struct CodexBarTests {
             tertiary: RateWindow(usedPercent: 20, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .perplexity)
+        let remaining = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .perplexity, showUsed: false)
         #expect(remaining.primary == 80)
         #expect(remaining.secondary == 0)
     }
@@ -344,7 +344,7 @@ struct CodexBarTests {
             tertiary: RateWindow(usedPercent: 45, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .perplexity)
+        let remaining = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .perplexity, showUsed: false)
         #expect(remaining.primary == 55)
         #expect(remaining.secondary == 80)
     }
@@ -359,7 +359,7 @@ struct CodexBarTests {
             secondary: nil,
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .kimi)
+        let remaining = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .kimi, showUsed: false)
 
         guard let primaryRemaining = remaining.primary else {
             Issue.record("remaining.primary was nil after IconRemainingResolver check")
@@ -412,9 +412,10 @@ struct CodexBarTests {
             ],
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(
+        let remaining = IconRemainingResolver.resolvedPercents(
             snapshot: snapshot,
             style: .copilot,
+            showUsed: false,
             secondaryOverrideWindowID: "copilot-budget-agent")
 
         #expect(remaining.primary == 80)
@@ -422,16 +423,15 @@ struct CodexBarTests {
     }
 
     @Test
-    func `copying extra rate windows preserves subscription dates`() {
+    func `copying extra rate windows preserves subscription dates`() throws {
         let expiresAt = Date(timeIntervalSince1970: 1_810_656_000)
         let renewsAt = Date(timeIntervalSince1970: 1_810_569_600)
-        let ampUsage = AmpUsageDetails(
-            individualCredits: 12.5,
-            workspaceBalances: [AmpWorkspaceBalance(name: "Team", remaining: 7.25)])
-        let snapshot = UsageSnapshot(
+        let snapshot = try UsageSnapshot(
             primary: nil,
             secondary: nil,
-            ampUsage: ampUsage,
+            details: [ProviderDetailSection(rows: [
+                ProviderDetailSection.Row(label: "Individual credits", value: "$12.50"),
+            ])],
             subscriptionExpiresAt: expiresAt,
             subscriptionRenewsAt: renewsAt,
             updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
@@ -440,30 +440,47 @@ struct CodexBarTests {
 
         #expect(copied.subscriptionExpiresAt == expiresAt)
         #expect(copied.subscriptionRenewsAt == renewsAt)
-        #expect(copied.ampUsage == ampUsage)
+        #expect(copied.details == snapshot.details)
     }
 
     @Test
-    func `copying rate windows preserves provider payloads`() {
+    func `subscription metadata replacement switches renewal to expiration`() {
+        let renewal = Date(timeIntervalSince1970: 1_787_236_207)
+        let expiration = renewal.addingTimeInterval(86400)
+        let original = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 20,
+                windowMinutes: 300,
+                resetsAt: nil,
+                resetDescription: nil),
+            secondary: nil,
+            subscriptionRenewsAt: renewal,
+            updatedAt: Date(timeIntervalSince1970: 1_787_000_000))
+
+        let replaced = original.withSubscriptionMetadata(expiresAt: expiration, renewsAt: nil)
+
+        #expect(replaced.primary == original.primary)
+        #expect(replaced.updatedAt == original.updatedAt)
+        #expect(replaced.subscriptionRenewsAt == nil)
+        #expect(replaced.subscriptionExpiresAt == expiration)
+    }
+
+    @Test
+    func `copying rate windows preserves provider details`() throws {
         let updatedAt = Date(timeIntervalSince1970: 1_800_000_000)
-        let mimoUsage = MiMoUsageSnapshot(
-            balance: 12.5,
-            currency: "USD",
-            tokenUsed: 25,
-            tokenLimit: 100,
-            tokenPercent: 0.25,
-            updatedAt: updatedAt)
         let identity = ProviderIdentitySnapshot(
             providerID: .codex,
             accountEmail: "test@example.com",
             accountOrganization: "Example",
             loginMethod: "OAuth")
-        let snapshot = UsageSnapshot(
+        let snapshot = try UsageSnapshot(
             primary: nil,
             secondary: nil,
             tertiary: RateWindow(usedPercent: 30, windowMinutes: 60, resetsAt: nil, resetDescription: nil),
-            mimoUsage: mimoUsage,
-            cursorRequests: CursorRequestUsage(used: 10, limit: 50),
+            details: [ProviderDetailSection(rows: [
+                ProviderDetailSection.Row(label: "Balance", value: "$12.50"),
+                ProviderDetailSection.Row(label: "Request quota", value: "10 / 50"),
+            ])],
             subscriptionExpiresAt: updatedAt.addingTimeInterval(100),
             subscriptionRenewsAt: updatedAt.addingTimeInterval(200),
             updatedAt: updatedAt,
@@ -476,24 +493,23 @@ struct CodexBarTests {
         #expect(copied.primary?.usedPercent == 40)
         #expect(copied.secondary?.usedPercent == 50)
         #expect(copied.tertiary?.usedPercent == 30)
-        #expect(copied.mimoUsage?.balance == 12.5)
-        #expect(copied.cursorRequests?.used == 10)
+        #expect(copied.detailRow(label: "Balance")?.value == "$12.50")
+        #expect(copied.detailRow(label: "Request quota")?.value == "10 / 50")
         #expect(copied.subscriptionExpiresAt == updatedAt.addingTimeInterval(100))
         #expect(copied.subscriptionRenewsAt == updatedAt.addingTimeInterval(200))
         #expect(copied.identity?.accountOrganization == "Example")
     }
 
     @Test
-    func `copying identity preserves provider payloads`() {
+    func `copying identity preserves provider details`() throws {
         let updatedAt = Date(timeIntervalSince1970: 1_800_000_000)
-        let ampUsage = AmpUsageDetails(
-            individualCredits: 12.5,
-            workspaceBalances: [AmpWorkspaceBalance(name: "Team", remaining: 7.25)])
-        let snapshot = UsageSnapshot(
+        let snapshot = try UsageSnapshot(
             primary: nil,
             secondary: nil,
-            ampUsage: ampUsage,
-            cursorRequests: CursorRequestUsage(used: 10, limit: 50),
+            details: [ProviderDetailSection(rows: [
+                ProviderDetailSection.Row(label: "Individual credits", value: "$12.50"),
+                ProviderDetailSection.Row(label: "Request quota", value: "10 / 50"),
+            ])],
             subscriptionExpiresAt: updatedAt.addingTimeInterval(100),
             subscriptionRenewsAt: updatedAt.addingTimeInterval(200),
             updatedAt: updatedAt)
@@ -505,8 +521,8 @@ struct CodexBarTests {
 
         let copied = snapshot.withIdentity(identity)
 
-        #expect(copied.ampUsage == ampUsage)
-        #expect(copied.cursorRequests?.used == 10)
+        #expect(copied.details == snapshot.details)
+        #expect(copied.detailRow(label: "Request quota")?.value == "10 / 50")
         #expect(copied.subscriptionExpiresAt == updatedAt.addingTimeInterval(100))
         #expect(copied.subscriptionRenewsAt == updatedAt.addingTimeInterval(200))
         #expect(copied.identity?.accountOrganization == "Example")
@@ -520,9 +536,10 @@ struct CodexBarTests {
             extraRateWindows: nil,
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(
+        let remaining = IconRemainingResolver.resolvedPercents(
             snapshot: snapshot,
             style: .copilot,
+            showUsed: false,
             secondaryOverrideWindowID: "copilot-budget-agent")
 
         #expect(remaining.primary == 80)
@@ -581,12 +598,11 @@ struct CodexBarTests {
             showUsed: true)
 
         #expect(percents.primary == 10)
-        #expect(percents.secondary != nil)
-        #expect(percents.secondary ?? 1 < 0.01)
+        #expect(percents.secondary == 0.1)
     }
 
     @Test
-    func `merged icon keeps exhausted warp bonus fully used`() {
+    func `merged icon preserves exhausted warp bonus layout`() {
         let snapshot = UsageSnapshot(
             primary: RateWindow(usedPercent: 10, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
             secondary: RateWindow(usedPercent: 100, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
@@ -595,19 +611,26 @@ struct CodexBarTests {
         let percents = IconRemainingResolver.resolvedPercents(
             snapshot: snapshot,
             style: .warp,
-            showUsed: true,
-            renderingStyle: .combined)
+            showUsed: true)
 
         #expect(percents.primary == 10)
-        #expect(percents.secondary == 100)
+        #expect(percents.secondary == 0)
     }
 
     @Test
-    @MainActor
-    func `status icon accessibility uses percentage scale`() {
-        #expect(
-            StatusIconView.accessibilityPercentRemaining(50) ==
-                String(format: L("%d percent remaining"), 50))
+    func `merged icon keeps unused warp bonus lane visible`() {
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 10, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 0, windowMinutes: nil, resetsAt: nil, resetDescription: nil),
+            updatedAt: Date())
+
+        let percents = IconRemainingResolver.resolvedPercents(
+            snapshot: snapshot,
+            style: .warp,
+            showUsed: true)
+
+        #expect(percents.primary == 10)
+        #expect(percents.secondary == 0.1)
     }
 
     @Test
@@ -618,7 +641,7 @@ struct CodexBarTests {
             tertiary: nil,
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .codex)
+        let remaining = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .codex, showUsed: false)
         #expect(remaining.primary == 75)
         #expect(remaining.secondary == nil)
     }
@@ -631,7 +654,7 @@ struct CodexBarTests {
             tertiary: nil,
             updatedAt: Date())
 
-        let remaining = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .codex)
+        let remaining = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .codex, showUsed: false)
         #expect(remaining.primary == 75)
         #expect(remaining.secondary == nil)
     }
@@ -653,10 +676,15 @@ struct CodexBarTests {
                 resetDescription: nil),
             updatedAt: now.addingTimeInterval(-7200))
 
-        let capped = IconRemainingResolver.resolvedRemaining(snapshot: snapshot, style: .codex, now: now)
-        let reset = IconRemainingResolver.resolvedRemaining(
+        let capped = IconRemainingResolver.resolvedPercents(
             snapshot: snapshot,
             style: .codex,
+            showUsed: false,
+            now: now)
+        let reset = IconRemainingResolver.resolvedPercents(
+            snapshot: snapshot,
+            style: .codex,
+            showUsed: false,
             now: weeklyReset)
 
         #expect(capped.primary == 0)
@@ -849,7 +877,9 @@ struct CodexBarTests {
         try data.write(to: authURL)
 
         let fetcher = UsageFetcher(environment: ["CODEX_HOME": tmp.path])
-        let account = fetcher.loadAccountInfo()
+        let account = CodexCredentialFileAccess.withFixtureScope(.init(files: [authURL])) {
+            fetcher.loadAccountInfo()
+        }
         #expect(account.email == "user@example.com")
         #expect(account.plan == "pro")
     }
@@ -870,7 +900,9 @@ struct CodexBarTests {
         try data.write(to: authURL)
 
         let fetcher = UsageFetcher(environment: ["CODEX_HOME": tmp.path])
-        let account = fetcher.loadAccountInfo()
+        let account = CodexCredentialFileAccess.withFixtureScope(.init(files: [authURL])) {
+            fetcher.loadAccountInfo()
+        }
         #expect(account.email == "user@example.com")
         #expect(account.plan == "pro")
     }

@@ -4,6 +4,38 @@ import Testing
 @testable import CodexBarCore
 
 struct CostUsageScannerPriorityTests {
+    @Test(arguments: [(100_000, 20000, 10000, 2.64), (300_000, 100_000, 20000, 11.4)])
+    func `Astra native priority traces price short and long requests`(
+        input: Int, cached: Int, output: Int, expected: Double) throws
+    {
+        let env = try CostUsageTestEnvironment()
+        defer { env.cleanup() }
+        let day = try env.makeLocalNoon(year: 2026, month: 9, day: 4)
+        let timestamp = env.isoString(for: day)
+        let entries: [[String: Any]] = [
+            ["type": "turn_context", "timestamp": timestamp, "payload": ["model": "gpt-6-astra"]],
+            ["type": "event_msg", "timestamp": timestamp, "payload": [
+                "type": "task_started", "turn_id": "priority-turn",
+            ]],
+            self.tokenCount(timestamp: timestamp, input: input, cached: cached, output: output),
+        ]
+        _ = try env.writeCodexSessionFile(day: day, filename: "astra.jsonl", contents: env.jsonl(entries))
+        let dbURL = env.root.appendingPathComponent("logs_2.sqlite")
+        try CostUsageScannerCodexPriorityTests.createTestLogsDatabase(at: dbURL)
+        try self.insertPriorityTrace(dbURL: dbURL, timestamp: timestamp, model: "gpt-6-astra")
+        let options = CostUsageScanner.Options(
+            codexSessionsRoot: env.codexSessionsRoot,
+            cacheRoot: env.cacheRoot,
+            codexTraceDatabaseURL: dbURL,
+            forceRescan: true)
+        let report = CostUsageScanner.loadDailyReport(
+            provider: .codex, since: day, until: day, now: day, options: options)
+        let breakdown = try #require(report.data.first?.modelBreakdowns?.first)
+        #expect(try abs(#require(breakdown.priorityCostUSD) - expected) < 1e-12)
+        #expect(try abs(#require(report.summary?.totalCostUSD) - expected) < 1e-12)
+        #expect(breakdown.priorityTokens == input + output)
+    }
+
     @Test
     func `codex daily report applies gpt55 priority rates`() throws {
         let env = try CostUsageTestEnvironment()
@@ -50,6 +82,57 @@ struct CostUsageScannerPriorityTests {
         #expect(abs((breakdown.priorityCostUSD ?? 0) - priorityCost) < 0.000_000_001)
         #expect(breakdown.standardTokens == 110)
         #expect(breakdown.priorityTokens == 110)
+    }
+
+    @Test
+    func `codex daily report applies API fast pricing from brief`() throws {
+        let env = try CostUsageTestEnvironment()
+        defer { env.cleanup() }
+
+        let day = try env.makeLocalNoon(year: 2026, month: 5, day: 10)
+        let catalog = try JSONDecoder().decode(ModelsDevCatalog.self, from: Data("""
+        {
+          "openai": {
+            "id": "openai",
+            "models": {
+              "gpt-5.6-sol": {
+                "id": "gpt-5.6-sol",
+                "cost": { "input": 5, "output": 30, "cache_read": 0.5 }
+              }
+            }
+          }
+        }
+        """.utf8))
+        #expect(ModelsDevCache.save(catalog: catalog, fetchedAt: day, cacheRoot: env.cacheRoot))
+
+        let iso0 = env.isoString(for: day)
+        let iso1 = env.isoString(for: day.addingTimeInterval(1))
+        let entries: [[String: Any]] = [
+            ["type": "turn_context", "timestamp": iso0, "payload": ["model": "gpt-5.6-sol"]],
+            ["type": "event_msg", "timestamp": iso1, "payload": ["type": "task_started", "turn_id": "priority-turn"]],
+            self.tokenCount(timestamp: iso1, input: 100_000, cached: 20000, output: 20000),
+        ]
+        _ = try env.writeCodexSessionFile(day: day, filename: "session.jsonl", contents: env.jsonl(entries))
+
+        let dbURL = env.root.appendingPathComponent("logs_2.sqlite")
+        try CostUsageScannerCodexPriorityTests.createTestLogsDatabase(at: dbURL)
+        try self.insertPriorityTrace(dbURL: dbURL, timestamp: iso1, model: "gpt-5.6-sol")
+
+        var options = CostUsageScanner.Options(
+            codexSessionsRoot: env.codexSessionsRoot,
+            cacheRoot: env.cacheRoot,
+            codexTraceDatabaseURL: dbURL)
+        options.refreshMinIntervalSeconds = 0
+        let report = CostUsageScanner.loadDailyReport(
+            provider: .codex,
+            since: day,
+            until: day,
+            now: day,
+            options: options)
+
+        // The brief's models.dev Standard total is $1.01; API Fast is 2x for GPT-5.6.
+        let breakdown = try #require(report.data.first?.modelBreakdowns?.first)
+        #expect(abs((breakdown.priorityCostUSD ?? 0) - 2.02) < 1e-12)
     }
 
     @Test

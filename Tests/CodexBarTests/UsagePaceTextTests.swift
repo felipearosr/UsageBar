@@ -16,7 +16,15 @@ struct UsagePaceTextTests {
         "Runs out now",
         "Runs out in %@",
         "1.5× headroom",
-        "≈ %d%% run-out risk",
+        "(%d%% risk)",
+        "%@ left",
+        "session quota",
+        "session quotas",
+        "session_quota_estimate_value_format",
+        "≈%d full 5h windows of weekly left · %d windows until reset",
+        "Weekly cannot run out before reset at this pace",
+        "Weekly can run out ≈%d windows early",
+        "Estimated: %@",
         "%@ · %@",
     ]
 
@@ -161,11 +169,11 @@ struct UsagePaceTextTests {
 
         let detail = UsagePaceText.weeklyDetail(provider: .codex, pace: pace, now: now)
 
-        #expect(detail.rightLabel == "Runs out in 2d · ≈ 70% run-out risk")
+        #expect(detail.rightLabel == "Runs out in 2d (70% risk)")
     }
 
     @Test
-    func `weekly pace detail does not combine lasts until reset with run out risk`() {
+    func `weekly pace detail combines reserve outcome with risk`() {
         let now = Date(timeIntervalSince1970: 0)
         let pace = UsagePace(
             stage: .slightlyBehind,
@@ -179,7 +187,7 @@ struct UsagePaceTextTests {
         let detail = UsagePaceText.weeklyDetail(provider: .codex, pace: pace, now: now)
 
         #expect(detail.leftLabel == "9% in reserve")
-        #expect(detail.rightLabel == "≈ 45% run-out risk")
+        #expect(detail.rightLabel == "Lasts until reset (45% risk)")
     }
 
     @Test
@@ -197,11 +205,11 @@ struct UsagePaceTextTests {
 
         let detail = UsagePaceText.weeklyDetail(provider: .codex, pace: pace, now: now)
 
-        #expect(detail.rightLabel == "Lasts until reset · 1.5× headroom · ≈ 0% run-out risk")
+        #expect(detail.rightLabel == "Lasts until reset · 1.5× headroom (0% risk)")
     }
 
     @Test
-    func `weekly pace detail prefers risk over lasts until reset when rounded risk is material`() {
+    func `weekly pace detail keeps outcome beside material risk`() {
         let now = Date(timeIntervalSince1970: 0)
         let pace = UsagePace(
             stage: .slightlyBehind,
@@ -214,7 +222,7 @@ struct UsagePaceTextTests {
 
         let detail = UsagePaceText.weeklyDetail(provider: .codex, pace: pace, now: now)
 
-        #expect(detail.rightLabel == "≈ 5% run-out risk")
+        #expect(detail.rightLabel == "Lasts until reset (5% risk)")
     }
 
     // MARK: - Session pace (5-hour window)
@@ -268,6 +276,25 @@ struct UsagePaceTextTests {
         let detail = UsagePaceText.sessionDetail(provider: .codex, window: window, now: now)
 
         #expect(detail?.rightLabel == "Lasts until reset · 1.5× headroom")
+    }
+
+    @Test
+    func `Codex session pace suppressed for weekly and monthly durations but kept for fallback shapes`() {
+        let now = Date(timeIntervalSince1970: 0)
+        func window(minutes: Int?) -> RateWindow {
+            RateWindow(
+                usedPercent: 50,
+                windowMinutes: minutes,
+                resetsAt: now.addingTimeInterval(2 * 3600),
+                resetDescription: nil)
+        }
+
+        #expect(UsagePaceText.sessionPace(provider: .codex, window: window(minutes: 10080), now: now) == nil)
+        #expect(UsagePaceText.sessionPace(provider: .codex, window: window(minutes: 43200), now: now) == nil)
+        // Unknown durations fall back to the session lane and must keep their pre-existing pace.
+        #expect(UsagePaceText.sessionPace(provider: .codex, window: window(minutes: 540), now: now) != nil)
+        #expect(UsagePaceText.sessionPace(provider: .codex, window: window(minutes: nil), now: now) != nil)
+        #expect(UsagePaceText.sessionPace(provider: .codex, window: window(minutes: 300), now: now) != nil)
     }
 
     @Test
@@ -351,9 +378,23 @@ struct UsagePaceTextTests {
             resetsAt: now.addingTimeInterval(2 * 3600),
             resetDescription: nil)
 
-        let detail = UsagePaceText.sessionDetail(provider: .zai, window: window, now: now)
+        let detail = UsagePaceText.sessionDetail(provider: .deepseek, window: window, now: now)
 
         #expect(detail == nil)
+    }
+
+    @Test
+    func `session pace detail shows for zai five-hour window`() {
+        let now = Date(timeIntervalSince1970: 0)
+        let window = RateWindow(
+            usedPercent: 50,
+            windowMinutes: 300,
+            resetsAt: now.addingTimeInterval(2 * 3600),
+            resetDescription: nil)
+
+        let detail = UsagePaceText.sessionDetail(provider: .zai, window: window, now: now)
+
+        #expect(detail != nil)
     }
 
     @Test
@@ -389,6 +430,29 @@ struct UsagePaceTextTests {
             #expect(
                 Self.placeholderTokens(in: enValue) == Self.placeholderTokens(in: zhValue),
                 "Placeholder mismatch for key '\(key)': en='\(enValue)' zh='\(zhValue)'")
+        }
+    }
+
+    @Test
+    func `session quota estimate template localizes CJK number unit spacing`() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let expectations = [
+            (language: "zh-Hans", unit: "会话额度", expected: "0.3会话额度"),
+            (language: "zh-Hant", unit: "工作階段額度", expected: "0.3工作階段額度"),
+            (language: "ja", unit: "セッション枠", expected: "0.3セッション枠"),
+            (language: "ko", unit: "세션 할당량", expected: "0.3 세션 할당량"),
+        ]
+
+        for expectation in expectations {
+            let url = root.appendingPathComponent(
+                "Sources/CodexBar/Resources/\(expectation.language).lproj/Localizable.strings")
+            let table = try Self.readStringsTable(at: url)
+            let template = try #require(table["session_quota_estimate_value_format"])
+            let arguments: [CVarArg] = ["0.3", expectation.unit]
+            #expect(String(format: template, arguments: arguments) == expectation.expected)
         }
     }
 

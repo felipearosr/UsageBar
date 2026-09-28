@@ -8,8 +8,10 @@ read_when:
 
 # Configuration
 
-CodexBar reads a single JSON config file for CLI and app provider settings.
-API keys, manual cookie headers, source selection, ordering, and token accounts live here. Keychain is still used for runtime cookie caches, browser Safe Storage access, and provider OAuth/device-flow credentials where those flows require it.
+The app's **Help → CodexBar Help** command opens the [README](https://github.com/steipete/CodexBar/blob/main/README.md), including setup instructions and links to provider documentation.
+
+The app and CLI share one JSON file for API keys, manual cookie headers, source selection, provider ordering, and token accounts. The running app detects external edits, atomic replacements, and restored older contents, including during watcher startup and change callbacks. App writes update the baseline without being treated as external edits.
+Keychain holds runtime cookie caches, browser Safe Storage access, and provider OAuth/device-flow credentials where required.
 
 ## Location
 - `CODEXBAR_CONFIG=/path/to/config.json` when set.
@@ -18,12 +20,19 @@ API keys, manual cookie headers, source selection, ordering, and token accounts 
 - `~/.config/codexbar/config.json` by default for new installs.
 - `~/.codexbar/config.json` for existing legacy installs when no XDG config exists.
 - The directory is created if missing.
-- Permissions are set to `0600` whenever CodexBar writes the file on macOS and Linux.
+- Writes on macOS and Linux create a `0600` file inside a private `0700` staging directory beside the destination before writing any bytes, then sync and atomically replace the destination. Failed writes preserve the previous file and remove staging.
+
+A missing, zero-byte, or JSON-whitespace-only file (spaces, tabs, carriage returns, and line feeds) means no
+configuration. Reads use defaults without creating or rewriting the file; the next settings save writes valid JSON.
+If the running app sees a blank file, it retains its in-memory settings just as it does when the file is removed.
+Non-empty malformed JSON still reports a decode error in the CLI, blocks usage and config edits, and is not
+replaced by `loadOrCreateDefault()`.
 
 ## Root shape
 ```json
 {
   "version": 1,
+  "hooks": null,
   "providers": [
     {
       "id": "codex",
@@ -41,6 +50,82 @@ API keys, manual cookie headers, source selection, ordering, and token accounts 
 }
 ```
 
+## External event hooks
+
+Hooks are local, explicit opt-in automation. Configure them in Settings > Hooks or in this local config file; no
+HTTP or remote-config endpoint can create or enable hook rules. The top-level `hooks.enabled` switch defaults to
+`false`, and each rule also has its own `enabled` switch. The editor shows thresholds as percentages; example
+values and command paths appear only as prompts in empty fields.
+
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "events": [
+      {
+        "id": "quota-alert",
+        "enabled": true,
+        "event": "quota_low",
+        "provider": "codex",
+        "threshold": 0.9,
+        "executable": "/usr/local/bin/quota-alert",
+        "arguments": ["--message", "Codex quota is low", ""],
+        "timeoutSeconds": 10
+      }
+    ]
+  }
+}
+```
+
+Commands run as direct executable invocations, never through a shell. `executable` must be an absolute path,
+`arguments` preserves exact argument boundaries (including spaces and empty arguments), and `timeoutSeconds` must be
+between `0.1` and `300`. Hook processes receive only a small allowlist of general environment variables plus the
+event's `CODEXBAR_*` variables; CodexBar provider keys and tokens are not inherited. The same event is also encoded as
+JSON on stdin. Only configure executables you trust.
+
+Events:
+
+- `quota_low`: a quota lane crosses the rule's `threshold` upward. Thresholds are usage fractions greater than `0`
+  and at most `1`;
+  rules without a threshold use the provider's configured warning thresholds.
+- `quota_reached`: the primary session quota crosses into depletion.
+- `quota_reset`: a confirmed session or weekly reset occurs.
+- `usage_updated`: the macOS app published a successful, current provider refresh, or `hooks watch` completed a
+  successful poll. It can fire when values are unchanged. `usagePercent`, `windowMinutes`, and `resetAt`
+  describe the positional primary window; `secondaryUsagePercent`, `secondaryWindowMinutes`, and
+  `secondaryResetAt` describe the positional secondary window. Synthetic placeholder windows are omitted.
+- `provider_unavailable`: a provider status changes to a minor, major, or critical outage.
+- `provider_recovered`: that tracked outage returns to normal.
+- `refresh_failed`: a provider refresh fails; `CODEXBAR_STATUS` is a coarse category such as `timeout`, `offline`,
+  `network_error`, `auth_required`, `cancelled`, or `error`.
+
+`usage_updated`, `provider_unavailable`, and `refresh_failed` allow the first matching attempt immediately,
+then drop further attempts for the same provider/account/window for 600 seconds. Failed command attempts consume
+that interval; unmatched rules do not. There is no queued latest value or trailing delivery. Restarting resets
+the in-memory limiter. Quota and recovery events use their transition detectors instead. Hook failures are
+contained and never block app provider refresh. `hooks watch` reports only events whose command execution was
+attempted, including failed commands, rather than suppressed candidates.
+
+Payload environment variables are `CODEXBAR_EVENT`, `CODEXBAR_PROVIDER`, `CODEXBAR_TIMESTAMP`, and, when available,
+`CODEXBAR_ACCOUNT`, `CODEXBAR_WINDOW`, `CODEXBAR_USAGE_PERCENT`, `CODEXBAR_USED`, `CODEXBAR_LIMIT`,
+`CODEXBAR_WINDOW_MINUTES`, `CODEXBAR_RESET_AT`, `CODEXBAR_SECONDARY_USAGE_PERCENT`,
+`CODEXBAR_SECONDARY_WINDOW_MINUTES`, `CODEXBAR_SECONDARY_RESET_AT`, and `CODEXBAR_STATUS`. Enabling Hide personal info
+omits `CODEXBAR_ACCOUNT` and the matching JSON field.
+
+The stdin JSON uses the same camel-case field names without the `CODEXBAR_` prefix. Dates are UTC ISO 8601 strings,
+usage percentages are `0...1` fractions, unavailable optional fields are omitted rather than encoded as `null`, and
+keys are emitted in sorted order. A `quota_reached` payload is exactly shaped like this (the timestamps vary):
+
+```json
+{"event":"quota_reached","provider":"claude","resetAt":"2023-11-14T22:13:20Z","timestamp":"2023-11-14T22:15:00Z","usagePercent":0.42,"window":"session"}
+```
+
+The v1 field names and meanings are compatibility-stable. Hook consumers should ignore unknown fields so CodexBar can
+add optional observability data without breaking existing commands.
+
+Safety limits: at most 32 rules, 32 arguments per rule, 4 KiB per executable or argument string, 32 KiB per command,
+and 4 KiB per event payload. Configurations beyond these limits fail closed and do not execute.
+
 ## Provider fields
 All provider fields are optional unless noted.
 
@@ -48,18 +133,22 @@ All provider fields are optional unless noted.
 - `enabled`: enable/disable provider (defaults to provider default).
 - `source`: preferred source mode.
   - `auto|web|cli|oauth|api`
-  - `auto` uses provider-specific fallback order (see `docs/providers.md`).
+  - `auto` uses [provider-specific fallback order](providers.md#fetch-strategies-current).
   - `api` uses the provider's API-backed mode; only some providers consume the `apiKey` field.
 - `apiKey`: raw API token for providers that support config-backed direct API usage.
 - `enterpriseHost`: provider-specific API host/base URL override. Used by Azure OpenAI, Copilot, LLM Proxy, LiteLLM,
-  ClawRouter, and Wayfinder.
+  ClawRouter, sub2api, and Wayfinder.
 - `cookieSource`: cookie selection policy.
   - `auto` (browser import), `manual` (use `cookieHeader`), `off` (disable cookies)
 - `cookieHeader`: raw cookie header value (e.g. `key=value; other=...`).
-- `region`: provider-specific region (e.g. `zai`, `minimax`).
+- `region`: provider-specific region (e.g. `zai`, `minimax`). Kimi accepts `china` (default, `kimi.com`) or `international` (`kimi.ai`); see [Kimi setup](kimi.md). This selects API, web, cookie discovery, and dashboard hosts. Automatic CLI credential reuse is limited to China because the credential file has no issuing-host metadata.
 - `workspaceID`: provider-specific workspace/deployment/project ID (e.g. Azure OpenAI deployment, OpenAI API project,
-  `opencode`).
+  `opencode`, Notion space).
 - `tokenAccounts`: multi-account tokens for providers in `TokenAccountSupportCatalog`.
+- `claudeSwapEnabled`: allow the Claude provider to read account usage from claude-swap.
+- `claudeSwapExecutablePath`: path to the `cswap` executable.
+- `claudeSwapShowSingleAccount`: prefer a claude-swap card when exactly one account is available. Defaults to
+  `false`; multiple claude-swap accounts retain their existing precedence.
 
 ## Manual cookies
 Use manual cookies when automatic browser import is unavailable, disabled, or too noisy for your setup.
@@ -81,10 +170,10 @@ Example placeholder config:
   "version": 1,
   "providers": [
     {
-      "id": "example-provider",
+      "id": "claude",
       "enabled": true,
       "cookieSource": "manual",
-      "cookieHeader": "session=<REDACTED>; other=<REDACTED>"
+      "cookieHeader": "sessionKey=<REDACTED>"
     }
   ]
 }
@@ -94,81 +183,32 @@ Validate after editing:
 
 ```bash
 codexbar config validate
-codexbar usage --provider example-provider --verbose
 ```
 
-CLI shortcuts:
+Replace the placeholder with your own cookie before fetching usage with `codexbar usage --provider claude`.
+For another provider, use its registered [ID](provider-ids.md) and the cookie format in its [setup guide](providers.md).
+
+## CLI configuration
 
 ```bash
 codexbar config providers
 codexbar config enable --provider grok
 codexbar config disable --provider cursor
 printf '%s' "$ELEVENLABS_API_KEY" | codexbar config set-api-key --provider elevenlabs --stdin
-printf '%s' "$OPENAI_ADMIN_KEY" | codexbar config set-api-key --provider openai --stdin
-printf '%s' "$GROQ_API_KEY" | codexbar config set-api-key --provider groq --stdin
-printf '%s' "$LLM_PROXY_API_KEY" | codexbar config set-api-key --provider llmproxy --stdin
-printf '%s' "$LITELLM_API_KEY" | codexbar config set-api-key --provider litellm --stdin
-printf '%s' "$CLAWROUTER_API_KEY" | codexbar config set-api-key --provider clawrouter --stdin
-printf '%s' "$SUB2API_API_KEY" | codexbar config set-api-key --provider sub2api --stdin
 ```
 
-OpenAI API project scoping uses `workspaceID` in config. This maps to `OPENAI_PROJECT_ID` for Admin API usage and is
-only applied to the configured OpenAI key, not to selected OpenAI token accounts:
+Use the same `set-api-key --provider <id> --stdin` command with these provider/key pairs:
 
-```json
-{
-  "id": "openai",
-  "enabled": true,
-  "apiKey": "<OPENAI_ADMIN_KEY>",
-  "workspaceID": "proj_..."
-}
-```
-
-LLM Proxy also needs a base URL. Set `enterpriseHost` in config or `LLM_PROXY_BASE_URL` in the process environment:
-
-```json
-{
-  "id": "llmproxy",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://proxy.example.com"
-}
-```
-
-LiteLLM also needs a base URL. Set `enterpriseHost` in config or `LITELLM_BASE_URL` in the process environment:
-
-```json
-{
-  "id": "litellm",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://litellm.example.com"
-}
-```
-
-ClawRouter defaults to the hosted service. To use another deployment, set `enterpriseHost` in config or
-`CLAWROUTER_BASE_URL` in the process environment:
-
-```json
-{
-  "id": "clawrouter",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://router.example.com"
-}
-```
-
-sub2api needs its self-hosted base URL. Set `enterpriseHost` in config or `SUB2API_BASE_URL` in the process
-environment. Add labeled token accounts in Settings when one deployment has multiple group API keys:
-
-```json
-{
-  "id": "sub2api",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://sub2api.example.com"
-}
-```
+| Provider ID | Key environment variable | Additional configuration |
+| --- | --- | --- |
+| `openai` | `OPENAI_ADMIN_KEY` | `workspaceID` maps to `OPENAI_PROJECT_ID` for Admin API usage; applies to the configured key, not selected token accounts. |
+| `groq` | `GROQ_API_KEY` | See [Groq](groq.md). |
+| `llmproxy` | `LLM_PROXY_API_KEY` | Required base URL: `enterpriseHost` or `LLM_PROXY_BASE_URL`. |
+| `litellm` | `LITELLM_API_KEY` | Required base URL: `enterpriseHost` or `LITELLM_BASE_URL`. |
+| `clawrouter` | `CLAWROUTER_API_KEY` | Defaults to the hosted service; override with `enterpriseHost` or `CLAWROUTER_BASE_URL`. |
+| `sub2api` | `SUB2API_API_KEY` | Required self-hosted base URL: `enterpriseHost` or `SUB2API_BASE_URL`. Use labeled token accounts for multiple group keys. |
+| `aiand` | `AIAND_API_KEY` | See [ai&](aiand.md). |
+| `xai` | `XAI_MANAGEMENT_API_KEY` | See [xAI](xai.md). |
 
 See [CLI configuration](cli-configuration.md) for scripting examples and output formats.
 
@@ -195,14 +235,99 @@ and never paste real cookie values or readable DevTools screenshots into public 
 z.ai team accounts also use `usageScope`, `organizationId`, and `workspaceID`; see [z.ai](zai.md).
 
 ## Provider IDs
-Current IDs (see `Sources/CodexBarCore/Providers/Providers.swift`):
-`codex`, `openai`, `azureopenai`, `claude`, `cursor`, `opencode`, `opencodego`, `alibaba`, `alibabatokenplan`, `factory`, `gemini`, `antigravity`, `copilot`, `devin`, `zai`, `minimax`, `manus`, `kimi`, `kilo`, `kiro`, `vertexai`, `augment`, `jetbrains`, `kimik2`, `moonshot`, `amp`, `t3chat`, `ollama`, `synthetic`, `warp`, `openrouter`, `elevenlabs`, `windsurf`, `zed`, `perplexity`, `mimo`, `doubao`, `sakana`, `abacus`, `mistral`, `deepseek`, `codebuff`, `crof`, `venice`, `commandcode`, `qoder`, `stepfun`, `bedrock`, `grok`, `groq`, `llmproxy`, `litellm`, `deepgram`, `poe`, `chutes`, `crossmodel`, `clawrouter`, `sub2api`, `wayfinder`.
+
+See the [generated provider ID list](provider-ids.md), sourced from `UsageProvider` in enum order.
 
 ## Ordering
 The order of `providers` controls display/order in the app and CLI. Reorder the array to change ordering.
 
+## iCloud sync
+The three sync sub-options are disabled while the main sync switch is off, iCloud is unavailable, or a newer app version is required. Their saved choices are retained when sync is turned off and restored when it is enabled again.
+
+Opt-in (Settings → iCloud Sync, off by default; requires a signed release build and an iCloud account). When enabled, CodexBar syncs across the user's Macs via CloudKit (private database, container `iCloud.com.steipete.codexbar`):
+
+- **Provider configuration** — portable fields of each provider entry (enabled intent, extras, region, workspace, quota-warning overrides, ordering-relevant metadata). Secrets (`apiKey`, `secretKey`, `cookieHeader`, `tokenAccounts`) sync only when "Include API keys, cookies, and tokens" is on, and travel exclusively in CloudKit `encryptedValues` (end-to-end encrypted; readable only on the user's devices).
+- **A curated preferences subset** — notification/threshold/display settings.
+- **Usage snapshots** — per-device current usage per account, so other Macs can show last-known data ("via <Mac> · 1h ago") and accounts discovered on other Macs.
+
+The **Macs** list offers **Remove** for other devices, including stale duplicates left after a reinstall. Removal deletes that device record and its cached usage snapshots from iCloud; it leaves shared settings, credentials, and this Mac intact. Sync must be enabled and available. Failed removals remain visible and report a sync error. A Mac still running CodexBar with sync enabled can publish its records again.
+
+Never synced, by design: `hooks` (sync payloads structurally cannot create or modify hook rules — they execute local binaries), machine-local paths (`claudeSwapExecutablePath`, `codexProfileHomePaths`, `awsProfile`/`awsAuthMode`, `source`, `codexActiveSource`, `cookieSource`), menu-bar layout/geometry, debug settings, usage history, and cost ledgers. A provider is never auto-enabled on a Mac where its required local CLI is missing. Records carry a schema version; older app versions pause sync instead of rewriting newer payloads. The CLI does not talk to CloudKit — the running app watches `config.json`, applies CLI or hand edits locally, and syncs changed provider payloads to the fleet when iCloud sync is enabled. Remote changes written to the file are recognized as app writes and are not echoed back. The app tracks per-provider dirty state and never re-uploads unchanged state at launch.
+
 ## Notes
 - Fields not relevant to a provider are ignored.
 - Omitted providers are appended with defaults during normalization.
+- Unknown or retired provider entries are retained with all their fields, settings, and secrets in their original array positions during unrelated saves. This also applies when plugin discovery fails or the plugin runtime is unavailable. `config providers` labels unavailable entries as `plugin (not loaded)`; `config dump` includes them but redacts their opaque fields unless `--show-secrets` is explicitly requested. Remove plugin data through explicit plugin deletion, or remove the entry by editing the file.
 - Keep the file private; it contains secrets.
 - Validate the file with `codexbar config validate` (JSON output available with `--format json`).
+
+## Portable UI preferences
+
+On macOS, **Settings → General → Portable preferences** exports or imports a versioned `preferences.json`
+for dotfiles. UserDefaults remains the runtime owner; the file is an explicit snapshot, not a watched second
+configuration source. Provider settings remain in `config.json`, which may contain credentials.
+
+```sh
+codexbar config preferences export --file ~/dotfiles/codexbar/preferences.json
+codexbar config preferences import --file ~/dotfiles/codexbar/preferences.json --json
+```
+
+Export without `--file` writes JSON to stdout. The CLI exports stored overrides (unset preferences keep the
+app's defaults); Settings exports the effective preferences. CLI import queues an intentional local edit:
+the running app applies it through its normal settings setters, or applies it at its next launch. The CLI
+reports `{"status":"queued"}`. Multiple pending imports merge, with the latest supplied value winning.
+`--defaults-domain` can select an alternate app preferences domain; it defaults to `com.steipete.codexbar`.
+These commands transfer macOS UI preferences and are unavailable on Linux.
+
+```json
+{
+  "version": 1,
+  "preferences": {
+    "refreshFrequency": "fiveMinutes",
+    "hidePersonalInfo": true,
+    "mergeIcons": true,
+    "mergedOverviewSelectedProviders": ["codex", "claude"],
+    "switcherShortcuts": {
+      "previous": "shift+left",
+      "next": "shift+right",
+      "select2": "alt+cmd+2"
+    }
+  }
+}
+```
+
+The allowlist covers the existing iCloud preferences projection: refresh frequency and refresh-on-open;
+provider status checks; session, threshold and predictive pace notifications; session/weekly thresholds
+and notification windows; sound, on-screen alerts and threshold markers; pace visibility, workweek days
+and tick appearance; usage/reset display; local cost display, comparisons and summary style; privacy,
+blink/confetti effects, highest-usage selection, optional credits/extra usage, changelog links, currency
+and alphabetical provider sorting. JSON keys match the `SyncedPreferences` fields. It additionally includes
+`mergeIcons`, `mergeIconsStacked`, `switcherShowsIcons`, `mergedOverviewLayout`,
+`mergedOverviewSelectedProviders`, and `switcherShortcuts`. An overview selection is applied intentionally
+to the receiving Mac's active providers, including an empty selection. `weeklyProgressWorkDays: null`
+restores the seven-day default. Missing keys leave the receiving Mac's settings unchanged. Unknown preference keys,
+unsupported versions, invalid types and invalid shortcut mappings are rejected before applying changes.
+
+Credentials, accounts, hooks, launch at login, global hotkeys, local paths, device identity, iCloud switches,
+debug settings, and consent are excluded. Import does not enable activity-scan consent. Only the existing
+iCloud projection syncs onward; the additional menu settings and switcher shortcuts stay local unless
+explicitly exported and imported. Import does not modify `config.json` or iCloud's remote-update suppression.
+
+### Menu bar controls
+
+In **Settings → Menu Bar**, inactive combined-icon controls use dimmed labels. Their titles and explanations remain readable and available to VoiceOver; label styling follows each control's enabled state, including stacked-icon restrictions. The layout size and gap controls remain independent of Merge Icons.
+
+The open menu's persistent **Refresh** row uses a text label aligned with the other actions, without a decorative icon. Click the row, press **⌘R**, or use its VoiceOver button action to refresh.
+
+### Provider switcher shortcuts
+
+**Settings → General → Provider Switcher Shortcuts…** edits the same mapping as `switcherShortcuts` above.
+Defaults are `left`/`right` for `previous`/`next` and `cmd+1` through `cmd+9` for `select1` through `select9`.
+Selection refers to positions in the visible switcher, including Overview when present. These are local
+menu shortcuts, not global provider-opening hotkeys.
+
+Combine `ctrl`, `alt`, `shift` and `cmd` with an ASCII letter, digit, `left` or `right`; letters and digits
+require Command, Control or Option. `none` disables an action. Modifier order and letter case are normalized.
+Omitted actions retain their defaults. Duplicate assignments (including conflicts with defaults) and
+reserved commands are rejected. Reserved combinations are `cmd+r`, `cmd+,`, `cmd+q`, `cmd+h`, `cmd+m`,
+`cmd+w` and `alt+cmd+h`; Escape, Tab, Return and up/down arrows remain available to menu navigation.

@@ -8,7 +8,7 @@ let useLocalSweetCookieKit =
 let sweetCookieKitDependency: Package.Dependency =
     useLocalSweetCookieKit && FileManager.default.fileExists(atPath: sweetCookieKitPath)
     ? .package(path: sweetCookieKitPath)
-    : .package(url: "https://github.com/steipete/SweetCookieKit", from: "0.4.1")
+    : .package(url: "https://github.com/steipete/SweetCookieKit", from: "0.5.2")
 
 let sqlite3LibDir = ProcessInfo.processInfo.environment["CODEXBAR_SQLITE3_LIB_DIR"]?
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,17 +44,28 @@ let package = Package(
         return products
     }(),
     dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.3"),
-        .package(url: "https://github.com/steipete/Commander", from: "0.2.1"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
-        .package(url: "https://github.com/apple/swift-log", from: "1.13.2"),
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.4.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
+        .package(url: "https://github.com/steipete/Commander", from: "0.2.4"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.5.2"),
+        .package(url: "https://github.com/apple/swift-log", from: "1.15.1"),
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "3.1.0"),
         .package(url: "https://github.com/zats/Vortex", revision: "ef5392088d4aeb255c4eee83157dbdafcd31bf07"),
         sweetCookieKitDependency,
     ],
     targets: {
         var targets: [Target] = [
-            // Host pkg-config paths contaminate cross-musl links; the module map supplies sqlite3 linkage.
+            .target(
+                name: "CQuickJS",
+                path: "Sources/CQuickJS",
+                exclude: ["README.md", "LICENSE"],
+                publicHeadersPath: "include",
+                cSettings: [
+                    .define("_GNU_SOURCE"),
+                ],
+                linkerSettings: [
+                    .linkedLibrary("m", .when(platforms: [.linux])),
+                ]),
+            // Both glibc and static-musl CLI builds use this target; the module map supplies sqlite3 linkage.
             .systemLibrary(
                 name: "CSQLite3",
                 providers: [
@@ -64,22 +75,39 @@ let package = Package(
             .target(
                 name: "CodexBarCore",
                 dependencies: [
+                    "CQuickJS",
                     .target(name: "CSQLite3", condition: .when(platforms: [.linux])),
                     .product(name: "Crypto", package: "swift-crypto"),
                     .product(name: "Logging", package: "swift-log"),
                     .product(name: "SweetCookieKit", package: "SweetCookieKit"),
                 ],
+                resources: [
+                    .process("Resources"),
+                ],
                 swiftSettings: [
                     .enableUpcomingFeature("StrictConcurrency"),
                 ],
-                linkerSettings: sqlite3LinkerSettings),
+                linkerSettings: sqlite3LinkerSettings + [
+                    .linkedFramework("JavaScriptCore", .when(platforms: [.macOS])),
+                ]),
             .executableTarget(
                 name: "CodexBarCLI",
                 dependencies: [
                     "CodexBarCore",
                     .product(name: "Commander", package: "Commander"),
+                    .product(name: "Crypto", package: "swift-crypto"),
                 ],
                 path: "Sources/CodexBarCLI",
+                swiftSettings: [
+                    .enableUpcomingFeature("StrictConcurrency"),
+                ],
+                linkerSettings: sqlite3LinkerSettings),
+            // Crash-test subprocess: tests SIGKILL it mid-save to prove the cost store's
+            // save cycle is atomic. Not shipped; built only as a test dependency.
+            .executableTarget(
+                name: "CodexBarCostStoreCrashProbe",
+                dependencies: ["CodexBarCore"],
+                path: "Sources/CodexBarCostStoreCrashProbe",
                 swiftSettings: [
                     .enableUpcomingFeature("StrictConcurrency"),
                 ],
@@ -122,6 +150,14 @@ let package = Package(
                 name: "AdaptiveReplayKitTests",
                 dependencies: ["AdaptiveRefreshCore", "AdaptiveReplayKit"],
                 path: "Tests/AdaptiveReplayKitTests",
+                swiftSettings: [
+                    .enableUpcomingFeature("StrictConcurrency"),
+                    .enableExperimentalFeature("SwiftTesting"),
+                ]),
+            .testTarget(
+                name: "CodexBarPluginTests",
+                dependencies: ["CodexBarCore"],
+                path: "TestsPlugin",
                 swiftSettings: [
                     .enableUpcomingFeature("StrictConcurrency"),
                     .enableExperimentalFeature("SwiftTesting"),
@@ -185,15 +221,30 @@ let package = Package(
 
         targets.append(.testTarget(
             name: "CodexBarTests",
-            dependencies: ["CodexBar", "CodexBarCore", "CodexBarCLI", "CodexBarWidget"],
+            dependencies: [
+                "CodexBar", "CodexBarCore", "CodexBarCLI", "CodexBarCostStoreCrashProbe", "CodexBarWidget",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             path: "Tests",
-            exclude: ["AdaptiveReplayCLITests", "AdaptiveReplayKitTests"],
+            exclude: [
+                "AdaptiveReplayCLITests",
+                "AdaptiveReplayKitTests",
+                "CodexBarTests/ProviderPluginDetailsParityTests.swift",
+                "CodexBarTests/ProviderPluginExtensionParityTests.swift",
+                "CodexBarTests/ProviderPluginParityTests.swift",
+                "CodexBarTests/ProviderPluginRuntimeTests.swift",
+                "CodexBarTests/Sub2APIPluginGoldenTests.swift",
+            ],
             resources: [
                 .copy("CodexBarTests/Fixtures"),
             ],
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency"),
                 .enableExperimentalFeature("SwiftTesting"),
+            ],
+            linkerSettings: [
+                // XCTest's executable is three directories below its sibling framework products.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../../.."]),
             ]))
         #endif
 

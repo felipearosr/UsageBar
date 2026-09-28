@@ -9,33 +9,48 @@ extension UsageMenuCardView.Model {
         let codexProjection: CodexConsumerProjection?
         let credits: CreditsSnapshot?
         let creditsError: String?
-        let dashboard: OpenAIDashboardSnapshot?
         let dashboardError: String?
         let tokenSnapshot: CostUsageTokenSnapshot?
         let tokenError: String?
         let account: AccountInfo
         let accountIsAuthoritative: Bool
-        let planOverride: String?
+        let accountPrivacyOrdinal: PersonalInfoRedactor.AccountOrdinal?
+        let planOverride: PlanOverride
+        let planEmphasis: PlanEmphasis
+        let lastKnownUsageCapturedAt: Date?
         let isRefreshing: Bool
         let lastError: String?
         let limitsAvailability: UsageLimitsAvailability?
         let usageBarsShowUsed: Bool
         let resetTimeDisplayStyle: ResetTimeDisplayStyle
         let tokenCostUsageEnabled: Bool
-        let tokenCostInlineDashboardEnabled: Bool
+        let tokenCostIsRefreshing: Bool
+        let codexLocalSessionCostLedgerEnabled: Bool
+        let costSummaryInlineEnabled: Bool
         let tokenCostMenuSectionEnabled: Bool
         let costComparisonPeriodsEnabled: Bool
         let showOptionalCreditsAndExtraUsage: Bool
+        let claudeDailyRoutinesUsageVisible: Bool
         let codexSparkUsageVisible: Bool
         let copilotBudgetExtrasEnabled: Bool
+        /// Provider details is the diagnostic surface and lists every usage lane a provider reports.
+        /// The menu and widgets stay curated and may drop lanes that carry no information.
+        let showsAllUsageLanes: Bool
         let sourceLabel: String?
+        let subtitleOverride: String?
         let kiloAutoMode: Bool
         let hidePersonalInfo: Bool
         let weeklyPace: UsagePace?
+        let sessionEquivalentForecast: SessionEquivalentForecast?
         let quotaWarningThresholds: [QuotaWarningWindow: [Int]]
         let workDaysPerWeek: Int?
+        let workdayTickAppearance: WorkdayTickAppearance
+        let paceVisible: Bool
         let usesLiveSubtitle: Bool
+        let preferredCurrencyCode: String
+        let costUsageBucketCalendar: Calendar
         let now: Date
+        let observedWeeklyResets: [CostUsageQuotaResetObservation]
 
         init(
             provider: UsageProvider,
@@ -44,33 +59,46 @@ extension UsageMenuCardView.Model {
             codexProjection: CodexConsumerProjection? = nil,
             credits: CreditsSnapshot?,
             creditsError: String?,
-            dashboard: OpenAIDashboardSnapshot?,
             dashboardError: String?,
             tokenSnapshot: CostUsageTokenSnapshot?,
             tokenError: String?,
             account: AccountInfo,
             accountIsAuthoritative: Bool = false,
-            planOverride: String? = nil,
+            accountPrivacyOrdinal: PersonalInfoRedactor.AccountOrdinal? = nil,
+            planOverride: PlanOverride = .automatic,
+            planEmphasis: PlanEmphasis = .none,
+            lastKnownUsageCapturedAt: Date? = nil,
             isRefreshing: Bool,
             lastError: String?,
             limitsAvailability: UsageLimitsAvailability? = nil,
             usageBarsShowUsed: Bool,
             resetTimeDisplayStyle: ResetTimeDisplayStyle,
             tokenCostUsageEnabled: Bool,
-            tokenCostInlineDashboardEnabled: Bool? = nil,
+            tokenCostIsRefreshing: Bool = false,
+            codexLocalSessionCostLedgerEnabled: Bool = false,
+            costSummaryInlineEnabled: Bool? = nil,
             tokenCostMenuSectionEnabled: Bool? = nil,
             costComparisonPeriodsEnabled: Bool = false,
             showOptionalCreditsAndExtraUsage: Bool,
+            claudeDailyRoutinesUsageVisible: Bool = true,
             codexSparkUsageVisible: Bool = true,
             copilotBudgetExtrasEnabled: Bool = false,
+            showsAllUsageLanes: Bool = false,
             sourceLabel: String? = nil,
+            subtitleOverride: String? = nil,
             kiloAutoMode: Bool = false,
             hidePersonalInfo: Bool,
             weeklyPace: UsagePace? = nil,
+            sessionEquivalentForecast: SessionEquivalentForecast? = nil,
             quotaWarningThresholds: [QuotaWarningWindow: [Int]] = [:],
             workDaysPerWeek: Int? = nil,
+            workdayTickAppearance: WorkdayTickAppearance = .subtle,
+            paceVisible: Bool = true,
             usesLiveSubtitle: Bool = false,
-            now: Date)
+            preferredCurrencyCode: String = "auto",
+            costUsageBucketCalendar: Calendar = .current,
+            now: Date,
+            observedWeeklyResets: [CostUsageQuotaResetObservation] = [])
         {
             self.provider = provider
             self.metadata = metadata
@@ -78,33 +106,46 @@ extension UsageMenuCardView.Model {
             self.codexProjection = codexProjection
             self.credits = credits
             self.creditsError = creditsError
-            self.dashboard = dashboard
             self.dashboardError = dashboardError
             self.tokenSnapshot = tokenSnapshot
             self.tokenError = tokenError
             self.account = account
             self.accountIsAuthoritative = accountIsAuthoritative
+            self.accountPrivacyOrdinal = accountPrivacyOrdinal
             self.planOverride = planOverride
+            self.planEmphasis = planEmphasis
+            self.lastKnownUsageCapturedAt = lastKnownUsageCapturedAt
             self.isRefreshing = isRefreshing
             self.lastError = lastError
             self.limitsAvailability = limitsAvailability
             self.usageBarsShowUsed = usageBarsShowUsed
             self.resetTimeDisplayStyle = resetTimeDisplayStyle
             self.tokenCostUsageEnabled = tokenCostUsageEnabled
-            self.tokenCostInlineDashboardEnabled = tokenCostInlineDashboardEnabled ?? tokenCostUsageEnabled
+            self.tokenCostIsRefreshing = tokenCostIsRefreshing
+            self.codexLocalSessionCostLedgerEnabled = codexLocalSessionCostLedgerEnabled
+            self.costSummaryInlineEnabled = costSummaryInlineEnabled ?? tokenCostUsageEnabled
             self.tokenCostMenuSectionEnabled = tokenCostMenuSectionEnabled ?? tokenCostUsageEnabled
             self.costComparisonPeriodsEnabled = costComparisonPeriodsEnabled
             self.showOptionalCreditsAndExtraUsage = showOptionalCreditsAndExtraUsage
+            self.claudeDailyRoutinesUsageVisible = claudeDailyRoutinesUsageVisible
             self.codexSparkUsageVisible = codexSparkUsageVisible
             self.copilotBudgetExtrasEnabled = copilotBudgetExtrasEnabled
+            self.showsAllUsageLanes = showsAllUsageLanes
             self.sourceLabel = sourceLabel
+            self.subtitleOverride = subtitleOverride
             self.kiloAutoMode = kiloAutoMode
             self.hidePersonalInfo = hidePersonalInfo
             self.weeklyPace = weeklyPace
+            self.sessionEquivalentForecast = sessionEquivalentForecast
             self.quotaWarningThresholds = quotaWarningThresholds
             self.workDaysPerWeek = workDaysPerWeek
+            self.workdayTickAppearance = workdayTickAppearance
+            self.paceVisible = paceVisible
             self.usesLiveSubtitle = usesLiveSubtitle
+            self.preferredCurrencyCode = preferredCurrencyCode
+            self.costUsageBucketCalendar = costUsageBucketCalendar
             self.now = now
+            self.observedWeeklyResets = observedWeeklyResets
         }
     }
 }

@@ -2,59 +2,32 @@ import CodexBarCore
 import Foundation
 
 extension UsageStore {
-    private nonisolated static let limitResetThreshold = 1.0
     nonisolated static let sessionLimitResetDetectorDefaultsKey = "sessionLimitResetDetectorStates"
     private nonisolated static let weeklyLimitResetDetectorDefaultsKey = "weeklyLimitResetDetectorStates"
-    private nonisolated static let claudeOAuthAccountUuidMapDefaultsKey = "ClaudeOAuthHistoryOwnerAccountUuidMapV1"
+    private nonisolated static let claudeOAuthAccountUuidMapDefaultsKey = "ClaudeOAuthHistoryOwnerAccountUuidMapV2"
+    private nonisolated static let claudeOAuthAccountUuidMapLegacyDefaultsKey =
+        "ClaudeOAuthHistoryOwnerAccountUuidMapV1"
     private nonisolated static let claudeOAuthAccountCandidateMapDefaultsKey =
         "ClaudeOAuthHistoryOwnerAccountCandidateMapV1"
-    private nonisolated static let weeklyWindowMinutes = 7 * 24 * 60
-    private nonisolated static let planUtilizationUnscopedPreferredKey = "__unscoped__"
+    nonisolated static let sessionWindowMinutes = 5 * 60
+    nonisolated static let weeklyWindowMinutes = 7 * 24 * 60
+    nonisolated static let planUtilizationUnscopedPreferredKey = "__unscoped__"
     private nonisolated static let claudeOAuthPlanUtilizationAccountKeyPrefix = "__claude_oauth__:"
 
-    enum ClaudeOAuthActiveAccountObservation: Equatable, Sendable {
-        case stable(identity: String?)
-        case changed
-    }
-
-    struct ClaudeOAuthAccountBindingCandidate: Codable, Equatable {
-        let identity: String
-        let observedAt: Date
-    }
-
-    private struct ClaudeOAuthHistoryEvidence {
-        let owner: String
-        let persistentRefHash: String?
-        let keychainCredentialMismatch: Bool
-        let keychainCredentialAbsent: Bool
-        let keychainCredentialUnavailable: Bool
-        let activeAccountObservation: ClaudeOAuthActiveAccountObservation
-        let observedAt: Date
-    }
-
-    struct LimitResetDetectorState: Codable, Equatable {
-        let wasAboveThreshold: Bool
-        let lastObservedAt: Date
-        let sourceRawValue: String?
-        var resetBoundary: Date?
-    }
-
     func supportsPlanUtilizationHistory(for provider: UsageProvider) -> Bool {
-        switch provider {
-        case .codex, .claude:
-            true
-        default:
-            if self.planUtilizationHistory[provider]?.isEmpty == false {
-                true
-            } else if self.settings.historicalTrackingEnabled, let snapshot = self.snapshots[provider] {
-                !self.planUtilizationSeriesSamples(
-                    provider: provider,
-                    snapshot: snapshot,
-                    capturedAt: snapshot.updatedAt).isEmpty
-            } else {
-                false
-            }
+        if ProviderDescriptorRegistry.descriptor(for: provider).history.alwaysTracksPlanUtilization {
+            return true
         }
+        if self.planUtilizationHistory[provider.instanceID]?.isEmpty == false {
+            return true
+        }
+        guard self.settings.historicalTrackingEnabled, let snapshot = self.snapshots[provider.instanceID] else {
+            return false
+        }
+        return !self.planUtilizationSeriesSamples(
+            provider: provider,
+            snapshot: snapshot,
+            capturedAt: snapshot.updatedAt).isEmpty
     }
 
     private nonisolated static let planUtilizationMinSampleIntervalSeconds: TimeInterval = 60 * 60
@@ -66,40 +39,19 @@ extension UsageStore {
         let windowMinutes: Int
     }
 
-    private struct PlanUtilizationSeriesSample {
+    struct PlanUtilizationSeriesSample {
         let name: PlanUtilizationSeriesName
         let windowMinutes: Int
         let entry: PlanUtilizationHistoryEntry
-    }
-
-    private struct LimitResetDetectionContext {
-        let provider: UsageProvider
-        let account: ProviderTokenAccount?
-        let snapshot: UsageSnapshot
-        let accountKey: String?
-        let capturedAt: Date
-        let codexLimitResetOwnerKey: CodexLimitResetOwnerKey?
-    }
-
-    private struct LimitResetObservation {
-        let usedPercent: Double
-        let observedAt: Date
-        let resetBoundary: Date?
-        let source: SessionQuotaWindowSource?
-    }
-
-    private struct LimitResetDetectionDescriptor {
-        let seriesName: PlanUtilizationSeriesName
-        let defaultsKey: String
-        let resetKind: String
     }
 
     func planUtilizationHistory(for provider: UsageProvider) -> [PlanUtilizationSeriesHistory] {
         self.planUtilizationHistorySelection(for: provider).histories
     }
 
-    func planUtilizationHistorySelection(for provider: UsageProvider)
-        -> (accountKey: String?, histories: [PlanUtilizationSeriesHistory])
+    /// Read-only selection shares live account ownership rules without migrating or persisting history.
+    func planUtilizationHistorySelection(for provider: UsageProvider, readOnly: Bool = false)
+        -> PlanUtilizationHistorySelection
     {
         // The persisted history has not been read yet. Return the in-memory
         // stub (empty) without performing account migration or enqueueing an
@@ -107,10 +59,11 @@ extension UsageStore {
         // background load would record samples against an empty bucket and
         // overwrite real disk history.
         if !self.planUtilizationHistoryLoaded {
-            let providerBuckets = self.planUtilizationHistory[provider] ?? PlanUtilizationHistoryBuckets()
-            return (nil, providerBuckets.histories(for: nil))
+            let providerBuckets = self.planUtilizationHistory[provider.instanceID] ?? PlanUtilizationHistoryBuckets()
+            return providerBuckets.selection(for: nil)
         }
-        var providerBuckets = self.planUtilizationHistory[provider] ?? PlanUtilizationHistoryBuckets()
+        var providerBuckets = self.planUtilizationHistory[provider.instanceID] ?? PlanUtilizationHistoryBuckets()
+        // Provider-specific by design: Claude OAuth provenance can outrank configured token-account selection.
         if provider == .claude,
            providerBuckets.preferredAccountKey == Self.planUtilizationUnscopedPreferredKey
            || Self.isClaudeOAuthPlanUtilizationAccountKey(providerBuckets.preferredAccountKey)
@@ -118,41 +71,91 @@ extension UsageStore {
             // Persisted OAuth provenance outranks an unrelated configured token account. The unscoped
             // sentinel intentionally resolves to nil, including after the history store is reloaded.
             let accountKey = self.stickyPlanUtilizationAccountKey(providerBuckets: providerBuckets)
-            return (accountKey, providerBuckets.histories(for: accountKey))
+            return providerBuckets.selection(for: accountKey)
         }
         let originalProviderBuckets = providerBuckets
         let accountKey = self.resolvePlanUtilizationAccountKey(
             provider: provider,
-            snapshot: self.snapshots[provider],
+            snapshot: self.snapshots[provider.instanceID],
             preferredAccount: nil,
+            readOnly: readOnly,
             providerBuckets: &providerBuckets)
-        self.planUtilizationHistory[provider] = providerBuckets
-        if providerBuckets != originalProviderBuckets {
+        if !readOnly { self.planUtilizationHistory[provider.instanceID] = providerBuckets }
+        if !readOnly, providerBuckets != originalProviderBuckets {
+            self.planUtilizationHistoryRevision &+= 1
+            self.sessionEquivalentBurnCache.removeValue(forKey: provider.instanceID)
             let snapshotToPersist = self.planUtilizationHistory
             Task {
                 await self.planUtilizationPersistenceCoordinator.enqueue(snapshotToPersist)
             }
         }
-        return (accountKey, providerBuckets.histories(for: accountKey))
+        return providerBuckets.selection(for: accountKey)
+    }
+
+    func planUtilizationHistorySelection(
+        for provider: UsageProvider,
+        account: ProviderTokenAccount) -> PlanUtilizationHistorySelection
+    {
+        guard self.planUtilizationHistoryLoaded,
+              let accountKey = Self.planUtilizationAccountKey(provider: provider, account: account)
+        else {
+            return .unavailable
+        }
+        if self.settings.effectiveSelectedTokenAccount(for: provider)?.id == account.id {
+            let currentSelection = self.planUtilizationHistorySelection(for: provider)
+            if currentSelection.accountKey == accountKey {
+                return currentSelection
+            }
+        }
+        let providerBuckets = self.planUtilizationHistory[provider.instanceID] ?? PlanUtilizationHistoryBuckets()
+        return providerBuckets.selection(for: accountKey)
+    }
+
+    func planUtilizationHistorySelection(
+        for provider: UsageProvider,
+        snapshotOverride snapshot: UsageSnapshot) -> PlanUtilizationHistorySelection
+    {
+        guard self.planUtilizationHistoryLoaded,
+              let accountKey = Self.planUtilizationIdentityAccountKey(provider: provider, snapshot: snapshot)
+        else {
+            return .unavailable
+        }
+        if self.settings.effectiveSelectedTokenAccount(for: provider) == nil,
+           let currentSnapshot = self.snapshots[provider.instanceID],
+           Self.planUtilizationIdentityAccountKey(provider: provider, snapshot: currentSnapshot) == accountKey
+        {
+            let currentSelection = self.planUtilizationHistorySelection(for: provider)
+            if currentSelection.accountKey == accountKey {
+                return currentSelection
+            }
+        }
+        let providerBuckets = self.planUtilizationHistory[provider.instanceID] ?? PlanUtilizationHistoryBuckets()
+        return providerBuckets.selection(for: accountKey)
     }
 
     func codexPlanUtilizationHistories(forVisibleAccount account: CodexVisibleAccount)
         -> [PlanUtilizationSeriesHistory]
     {
+        self.codexPlanUtilizationHistorySelection(forVisibleAccount: account).histories
+    }
+
+    func codexPlanUtilizationHistorySelection(forVisibleAccount account: CodexVisibleAccount)
+        -> PlanUtilizationHistorySelection
+    {
         // Same gate as `planUtilizationHistorySelection`: defer ownership
-        // migration until the persisted history has been read.
+        // migration until the persisted history has been read. Unlike the live
+        // selection, an explicit account must never borrow unscoped startup data.
         if !self.planUtilizationHistoryLoaded {
-            let providerBuckets = self.planUtilizationHistory[.codex] ?? PlanUtilizationHistoryBuckets()
-            return providerBuckets.histories(for: nil)
+            return .unavailable
         }
         var providerBuckets = self.planUtilizationHistory[.codex] ?? PlanUtilizationHistoryBuckets()
         let originalProviderBuckets = providerBuckets
         let ownership = self.codexOwnershipContext(forVisibleAccount: account)
-        guard let canonicalKey = ownership.canonicalKey else { return [] }
+        guard let canonicalKey = ownership.canonicalKey else { return .unavailable }
 
         if ownership.hasAdjacentEmailScopeAmbiguity {
-            guard canonicalKey != ownership.canonicalEmailHashKey else { return [] }
-            return providerBuckets.histories(for: canonicalKey)
+            guard canonicalKey != ownership.canonicalEmailHashKey else { return .unavailable }
+            return providerBuckets.selection(for: canonicalKey)
         }
 
         let accountKey = self.materializeCodexPlanUtilizationHistoryIfNeeded(
@@ -162,22 +165,24 @@ extension UsageStore {
             providerBuckets: &providerBuckets)
         self.planUtilizationHistory[.codex] = providerBuckets
         if providerBuckets != originalProviderBuckets {
+            self.planUtilizationHistoryRevision &+= 1
+            self.sessionEquivalentBurnCache.removeValue(forKey: .codex)
             let snapshotToPersist = self.planUtilizationHistory
             Task {
                 await self.planUtilizationPersistenceCoordinator.enqueue(snapshotToPersist)
             }
         }
-        return providerBuckets.histories(for: accountKey)
+        return providerBuckets.selection(for: accountKey)
     }
 
     func shouldShowRefreshingMenuCard(for provider: UsageProvider) -> Bool {
-        self.refreshingProviders.contains(provider)
-            && self.snapshots[provider] == nil
+        self.refreshingProviders.contains(provider.instanceID)
+            && self.snapshots[provider.instanceID] == nil
             && self.error(for: provider) == nil
     }
 
     func shouldShowRefreshingMenuCardIndicator(for provider: UsageProvider) -> Bool {
-        self.refreshingProviders.contains(provider) && self.error(for: provider) == nil
+        self.refreshingProviders.contains(provider.instanceID) && self.error(for: provider) == nil
     }
 
     func shouldHidePlanUtilizationMenuItem(for provider: UsageProvider) -> Bool {
@@ -202,7 +207,18 @@ extension UsageStore {
         now: Date = Date())
         async
     {
-        let samples = self.planUtilizationSeriesSamples(provider: provider, snapshot: snapshot, capturedAt: now)
+        let detectorSamples = self.planUtilizationSeriesSamples(
+            provider: provider,
+            snapshot: snapshot,
+            capturedAt: now)
+        let samples = provider == .antigravity
+            ? self.planUtilizationSeriesSamples(
+                provider: provider,
+                snapshot: snapshot,
+                capturedAt: now,
+                forSessionEquivalents: true)
+            + Self.antigravityQuotaObservationSamples(snapshot: snapshot, capturedAt: now)
+            : detectorSamples
         var effectiveOwner = claudeOAuthHistoryOwnerIdentifier
         if provider == .claude, isClaudeOAuthSample, let owner = claudeOAuthHistoryOwnerIdentifier {
             effectiveOwner = self.resolvedClaudeOAuthHistoryOwner(evidence: ClaudeOAuthHistoryEvidence(
@@ -238,7 +254,7 @@ extension UsageStore {
         await MainActor.run {
             self.postLimitResetCelebrationsIfNeeded(
                 context: detectorContext,
-                samples: samples)
+                samples: detectorSamples)
         }
 
         guard !samples.isEmpty else { return }
@@ -259,11 +275,11 @@ extension UsageStore {
             _ = await self.planUtilizationHistoryLoadTask?.result
         }
 
-        var snapshotToPersist: [UsageProvider: PlanUtilizationHistoryBuckets]?
+        var snapshotToPersist: [ProviderInstanceID: PlanUtilizationHistoryBuckets]?
         await MainActor.run {
-            var providerBuckets = self.planUtilizationHistory[provider] ?? PlanUtilizationHistoryBuckets()
+            var providerBuckets = self.planUtilizationHistory[provider.instanceID] ?? PlanUtilizationHistoryBuckets()
             let originalProviderBuckets = providerBuckets
-            let preferredAccount = account ?? self.settings.selectedTokenAccount(for: provider)
+            let preferredAccount = account ?? self.settings.effectiveSelectedTokenAccount(for: provider)
             let accountKey = self.resolvePlanUtilizationAccountKey(
                 provider: provider,
                 snapshot: snapshot,
@@ -274,17 +290,36 @@ extension UsageStore {
                 shouldUpdatePreferredAccountKey: shouldUpdatePreferredAccountKey,
                 shouldAdoptUnscopedHistory: shouldAdoptUnscopedHistory,
                 providerBuckets: &providerBuckets)
-            let histories = providerBuckets.histories(for: accountKey)
-
-            if let updatedHistories = Self.updatedPlanUtilizationHistories(
-                existingHistories: histories,
-                samples: samples)
+            var histories = providerBuckets.histories(for: accountKey)
+            let originalHistories = histories
+            var samplesToPersist = samples
+            if provider == .antigravity,
+               samples.contains(where: { $0.name == .session }),
+               !histories.contains(where: { $0.name == .session })
             {
+                // Pre-feature Antigravity history could contain a provider-wide weekly maximum.
+                // Drop it before starting the Gemini-pinned session/weekly pair.
+                histories.removeAll { $0.name == .weekly }
+            }
+            if ![UsageProvider.codex, .claude, .antigravity].contains(provider) {
+                self.reconcileGenericSessionEquivalentHistory(
+                    scope: (provider, accountKey),
+                    snapshot: snapshot,
+                    providerBuckets: &providerBuckets,
+                    histories: &histories,
+                    samples: &samplesToPersist)
+                self.sessionEquivalentBurnCache.removeValue(forKey: provider.instanceID)
+            }
+
+            let updatedHistories = Self.updatedPlanUtilizationHistories(
+                existingHistories: histories,
+                samples: samplesToPersist) ?? histories
+            if updatedHistories != originalHistories {
                 providerBuckets.setHistories(updatedHistories, for: accountKey)
             }
 
             guard providerBuckets != originalProviderBuckets else { return }
-            self.planUtilizationHistory[provider] = providerBuckets
+            self.planUtilizationHistory[provider.instanceID] = providerBuckets
             self.planUtilizationHistoryRevision &+= 1
             snapshotToPersist = self.planUtilizationHistory
         }
@@ -294,12 +329,8 @@ extension UsageStore {
     }
 
     private func shouldRecordPlanUtilizationHistory(for provider: UsageProvider) -> Bool {
-        switch provider {
-        case .codex, .claude:
-            true
-        default:
+        ProviderDescriptorRegistry.descriptor(for: provider).history.alwaysTracksPlanUtilization ||
             self.settings.historicalTrackingEnabled
-        }
     }
 
     private nonisolated static func updatedPlanUtilizationHistories(
@@ -333,9 +364,12 @@ extension UsageStore {
             let canonicalWindowMinutes = sample.name.canonicalWindowMinutes(sample.windowMinutes)
             let key = PlanUtilizationSeriesKey(name: sample.name, windowMinutes: canonicalWindowMinutes)
             if let existingHistory = historiesByKey[key] {
-                guard let updatedEntries = self.updatedPlanUtilizationEntries(
-                    existingEntries: existingHistory.entries,
-                    entry: sample.entry)
+                var updatedEntries = existingHistory.entries
+                self.assertPlanUtilizationEntriesSorted(updatedEntries)
+                guard self.updatedPlanUtilizationEntries(
+                    existingEntries: &updatedEntries,
+                    entry: sample.entry,
+                    isQuotaObservation: sample.name.isQuotaObservation)
                 else {
                     continue
                 }
@@ -353,12 +387,7 @@ extension UsageStore {
         }
 
         guard didChange else { return nil }
-        return historiesByKey.values.sorted { lhs, rhs in
-            if lhs.windowMinutes != rhs.windowMinutes {
-                return lhs.windowMinutes < rhs.windowMinutes
-            }
-            return lhs.name.rawValue < rhs.name.rawValue
-        }
+        return historiesByKey.values.sorted(by: PlanUtilizationSeriesHistory.precedes)
     }
 
     private nonisolated static func mergedPlanUtilizationEntries(
@@ -371,28 +400,72 @@ extension UsageStore {
     }
 
     private nonisolated static func updatedPlanUtilizationEntries(
-        existingEntries: [PlanUtilizationHistoryEntry],
-        entry: PlanUtilizationHistoryEntry) -> [PlanUtilizationHistoryEntry]?
+        existingEntries: inout [PlanUtilizationHistoryEntry],
+        entry: PlanUtilizationHistoryEntry,
+        isQuotaObservation: Bool = false) -> Bool
     {
-        var entries = existingEntries
-        let insertionIndex = entries.firstIndex(where: { $0.capturedAt > entry.capturedAt }) ?? entries.endIndex
+        let insertionIndex = self.planUtilizationEntryInsertionIndex(
+            entries: existingEntries,
+            capturedAt: entry.capturedAt)
         let sampleHourBucket = self.planUtilizationHourBucket(for: entry.capturedAt)
         let sameHourRange = self.planUtilizationHourRange(
-            entries: entries,
+            entries: existingEntries,
             insertionIndex: insertionIndex,
             hourBucket: sampleHourBucket)
-        let existingHourEntries = Array(entries[sameHourRange])
-        let canonicalHourEntries = self.canonicalPlanUtilizationHourEntries(
-            existingHourEntries: existingHourEntries,
-            incomingEntry: entry)
+        let existingHourEntries = Array(existingEntries[sameHourRange])
+        let compact = isQuotaObservation ? self.latestObservationHourEntries : self.canonicalPlanUtilizationHourEntries
+        let canonicalHourEntries = compact(existingHourEntries, entry)
 
-        guard canonicalHourEntries != existingHourEntries else { return nil }
-        entries.replaceSubrange(sameHourRange, with: canonicalHourEntries)
+        guard canonicalHourEntries != existingHourEntries else { return false }
+        existingEntries.replaceSubrange(sameHourRange, with: canonicalHourEntries)
 
-        if entries.count > self.planUtilizationMaxSamples {
-            entries.removeFirst(entries.count - self.planUtilizationMaxSamples)
+        if existingEntries.count > self.planUtilizationMaxSamples {
+            existingEntries.removeFirst(existingEntries.count - self.planUtilizationMaxSamples)
         }
-        return entries
+        return true
+    }
+
+    /// The insertion search assumes `capturedAt` order. Checked once per merged series rather than per entry —
+    /// a per-entry check would reintroduce the O(n) scan this insertion path exists to remove.
+    private nonisolated static func assertPlanUtilizationEntriesSorted(
+        _ entries: [PlanUtilizationHistoryEntry])
+    {
+        #if DEBUG
+        assert(
+            zip(entries, entries.dropFirst()).allSatisfy { $0.capturedAt <= $1.capturedAt },
+            "plan-utilization entries must be sorted by capturedAt before insertion")
+        #endif
+    }
+
+    private nonisolated static func planUtilizationEntryInsertionIndex(
+        entries: [PlanUtilizationHistoryEntry],
+        capturedAt: Date) -> Int
+    {
+        guard let lastCapturedAt = entries.last?.capturedAt else {
+            return entries.endIndex
+        }
+        if lastCapturedAt <= capturedAt {
+            return entries.endIndex
+        }
+        return self.planUtilizationEntryUpperBound(entries: entries, capturedAt: capturedAt)
+    }
+
+    /// First index i such that entries[i].capturedAt > capturedAt (endIndex if none).
+    private nonisolated static func planUtilizationEntryUpperBound(
+        entries: [PlanUtilizationHistoryEntry],
+        capturedAt: Date) -> Int
+    {
+        var low = entries.startIndex
+        var high = entries.endIndex
+        while low < high {
+            let mid = low + ((high - low) / 2)
+            if entries[mid].capturedAt > capturedAt {
+                high = mid
+            } else {
+                low = mid + 1
+            }
+        }
+        return low
     }
 
     #if DEBUG
@@ -400,7 +473,18 @@ extension UsageStore {
         existingEntries: [PlanUtilizationHistoryEntry],
         entry: PlanUtilizationHistoryEntry) -> [PlanUtilizationHistoryEntry]?
     {
-        self.updatedPlanUtilizationEntries(existingEntries: existingEntries, entry: entry)
+        var entries = existingEntries
+        guard self.updatedPlanUtilizationEntries(existingEntries: &entries, entry: entry) else {
+            return nil
+        }
+        return entries
+    }
+
+    nonisolated static func _planUtilizationEntryUpperBoundForTesting(
+        entries: [PlanUtilizationHistoryEntry],
+        capturedAt: Date) -> Int
+    {
+        self.planUtilizationEntryUpperBound(entries: entries, capturedAt: capturedAt)
     }
 
     nonisolated static func _updatedPlanUtilizationHistoriesForTesting(
@@ -418,6 +502,7 @@ extension UsageStore {
     nonisolated static var _planUtilizationMaxSamplesForTesting: Int {
         self.planUtilizationMaxSamples
     }
+
     #endif
 
     private nonisolated static func clampedPercent(_ value: Double?) -> Double? {
@@ -429,11 +514,8 @@ extension UsageStore {
         context: LimitResetDetectionContext,
         samples: [PlanUtilizationSeriesSample])
     {
-        let shouldIgnoreCommandCode = context.provider == .commandcode
-            && context.snapshot.commandCodeSubscriptionEnrichmentUnavailable
-        let sessionObservation: LimitResetObservation? = if shouldIgnoreCommandCode {
-            nil
-        } else if context.provider == .codex {
+        // Provider-specific by design: Codex reset celebration confirmation uses owner-scoped session observations.
+        let sessionObservation: LimitResetObservation? = if context.provider == .codex {
             samples.last(where: { $0.name == .session }).map {
                 LimitResetObservation(
                     usedPercent: $0.entry.usedPercent,
@@ -486,115 +568,16 @@ extension UsageStore {
         case .primary:
             guard let minutes = resolved.window.windowMinutes else { return false }
             return minutes > 0 && minutes <= 6 * 60
-        case .copilotSecondaryFallback, .zaiTertiary, .antigravityQuotaSummary, .antigravityLegacy:
+        case .copilotSecondaryFallback, .antigravityQuotaSummary, .antigravityLegacy:
             return true
-        }
-    }
-
-    private func postLimitResetCelebrationIfNeeded(
-        states: inout [String: LimitResetDetectorState],
-        context: LimitResetDetectionContext,
-        descriptor: LimitResetDetectionDescriptor,
-        observation: LimitResetObservation?)
-    {
-        guard let observation else { return }
-
-        guard let accountIdentifier = self.limitResetAccountIdentifier(
-            provider: context.provider,
-            account: context.account,
-            snapshot: context.snapshot,
-            accountKey: context.accountKey,
-            codexLimitResetOwnerKey: context.codexLimitResetOwnerKey)
-        else {
-            return
-        }
-        let detectorKey = Self.limitResetDetectorStateKey(
-            provider: context.provider,
-            accountIdentifier: accountIdentifier)
-        let currentUsed = observation.usedPercent
-        let currentObservedAt = observation.observedAt
-        let wasAboveThreshold = currentUsed > Self.limitResetThreshold
-        if let existingState = states[detectorKey],
-           currentObservedAt <= existingState.lastObservedAt
-        {
-            return
-        }
-
-        let previousState = states[detectorKey]
-        let sourceRawValue = observation.source?.rawValue
-        let sourceChanged = descriptor.seriesName == .session && previousState?.sourceRawValue != nil
-            && previousState?.sourceRawValue != sourceRawValue
-        let resetBoundaryAllowsPost = if descriptor.seriesName == .session {
-            Self.limitResetBoundaryAdvanced(
-                previous: previousState?.resetBoundary,
-                current: observation.resetBoundary)
-        } else if context.provider == .codex, descriptor.seriesName == .weekly {
-            Self.limitResetBoundaryAdvanced(
-                previous: previousState?.resetBoundary,
-                current: observation.resetBoundary,
-                requiresPreviousBoundary: true)
-        } else {
-            true
-        }
-        let crossedBelowThreshold = !sourceChanged && previousState?.wasAboveThreshold == true && !wasAboveThreshold
-        let shouldPost = crossedBelowThreshold && resetBoundaryAllowsPost
-        let suppressedGuardedCrossing = crossedBelowThreshold && !resetBoundaryAllowsPost
-        // Sessions retain the last non-regressed boundary on every guarded sample. Codex weekly crossings
-        // adopt a newly appearing boundary so a later genuine advance can still trigger once.
-        let shouldPreserveBoundary = !sourceChanged && !resetBoundaryAllowsPost
-            && (descriptor.seriesName == .session || previousState?.resetBoundary != nil)
-        let shouldPreserveBaseline = suppressedGuardedCrossing
-        states[detectorKey] = LimitResetDetectorState(
-            // A transient zero must not erase the baseline needed to recognize the real reset that follows.
-            wasAboveThreshold: shouldPreserveBaseline ? true : wasAboveThreshold,
-            lastObservedAt: currentObservedAt,
-            sourceRawValue: sourceRawValue,
-            resetBoundary: shouldPreserveBoundary ? previousState?.resetBoundary : observation.resetBoundary)
-        self.persistLimitResetDetectorStates(
-            states,
-            defaultsKey: descriptor.defaultsKey,
-            logName: descriptor.resetKind)
-
-        guard shouldPost else { return }
-        let accountLabel = self.limitResetAccountLabel(
-            provider: context.provider,
-            account: context.account,
-            snapshot: context.snapshot)
-
-        CodexBarLog.logger(LogCategories.confetti).info(
-            "\(descriptor.resetKind.capitalized) limit reset",
-            metadata: [
-                "provider": context.provider.rawValue,
-                "accountIdentifier": accountIdentifier,
-                "accountLabel": accountLabel ?? "",
-                "resetKind": descriptor.resetKind,
-                "usedPercent": String(format: "%.2f", currentUsed),
-                "observedAt": String(format: "%.0f", currentObservedAt.timeIntervalSince1970),
-            ])
-        switch descriptor.seriesName {
-        case .session:
-            let event = SessionLimitResetEvent(
-                provider: context.provider,
-                accountIdentifier: accountIdentifier,
-                accountLabel: accountLabel,
-                usedPercent: currentUsed)
-            NotificationCenter.default.post(name: .codexbarSessionLimitReset, object: event)
-        case .weekly:
-            let event = WeeklyLimitResetEvent(
-                provider: context.provider,
-                accountIdentifier: accountIdentifier,
-                accountLabel: accountLabel,
-                usedPercent: currentUsed)
-            NotificationCenter.default.post(name: .codexbarWeeklyLimitReset, object: event)
-        default:
-            return
         }
     }
 
     private func planUtilizationSeriesSamples(
         provider: UsageProvider,
         snapshot: UsageSnapshot,
-        capturedAt: Date) -> [PlanUtilizationSeriesSample]
+        capturedAt: Date,
+        forSessionEquivalents: Bool = false) -> [PlanUtilizationSeriesSample]
     {
         var samplesByKey: [PlanUtilizationSeriesKey: PlanUtilizationSeriesSample] = [:]
 
@@ -620,6 +603,19 @@ extension UsageStore {
                     resetsAt: window.resetsAt))
         }
 
+        func appendGenericSessionEquivalentWindows() {
+            let components = Self.genericSessionEquivalentWindowComponents(snapshot: snapshot)
+            switch Self.genericSessionEquivalentWindowPairResolution(snapshot: snapshot) {
+            case let .resolved(session, weekly, _, _):
+                appendWindow(session, name: .session)
+                appendWindow(weekly, name: .weekly)
+            case .incomplete, .ambiguous:
+                appendWindow(components.session?.window, name: .session)
+                appendWindow(components.weekly?.window, name: .weekly)
+            }
+        }
+
+        // Provider-specific by design: payload shapes project different semantic lanes into history series.
         switch provider {
         case .codex:
             let projection = self.codexConsumerProjection(
@@ -633,33 +629,44 @@ extension UsageStore {
             appendWindow(snapshot.primary, name: .session)
             appendWindow(snapshot.secondary, name: .weekly)
             appendWindow(snapshot.tertiary, name: .opus)
-        case .antigravity:
-            let namedWeeklyWindows = snapshot.extraRateWindows?
-                .filter {
-                    $0.usageKnown
-                        && $0.id.hasPrefix("antigravity-quota-summary-")
-                        && $0.window.windowMinutes == Self.weeklyWindowMinutes
+        case .opencodego:
+            appendWindow(snapshot.primary, name: .session)
+            appendWindow(snapshot.secondary, name: .weekly)
+            appendWindow(snapshot.tertiary, name: .monthly)
+        case .mimo, .stepfun, .ollama:
+            if snapshot.primary?.windowMinutes == ProviderPaceCapability.monthlyWindowSentinelMinutes {
+                appendWindow(snapshot.primary, name: .monthly)
+                if provider == .ollama {
+                    appendWindow(snapshot.secondary, name: .weekly)
                 }
-                .map(\.window) ?? []
-            if let mostUsedWeeklyWindow = namedWeeklyWindows.max(by: { $0.usedPercent < $1.usedPercent }) {
-                appendWindow(mostUsedWeeklyWindow, name: .weekly)
             } else {
-                for window in [snapshot.primary, snapshot.secondary, snapshot.tertiary] {
-                    guard let window, window.windowMinutes == Self.weeklyWindowMinutes else { continue }
-                    appendWindow(window, name: .weekly)
+                appendGenericSessionEquivalentWindows()
+            }
+        case .antigravity:
+            if forSessionEquivalents {
+                guard let windows = self.sessionEquivalentWindows(provider: provider, snapshot: snapshot) else {
+                    return []
+                }
+                appendWindow(windows.session, name: .session)
+                appendWindow(windows.weekly, name: .weekly)
+            } else {
+                let namedWeeklyWindows = snapshot.extraRateWindows?
+                    .filter {
+                        $0.usageKnown
+                            && $0.id.hasPrefix("antigravity-quota-summary-")
+                            && $0.window.windowMinutes == Self.weeklyWindowMinutes
+                    }
+                    .map(\.window) ?? []
+                if let mostUsedWeeklyWindow = namedWeeklyWindows.max(by: { $0.usedPercent < $1.usedPercent }) {
+                    appendWindow(mostUsedWeeklyWindow, name: .weekly)
+                } else {
+                    appendWindow(
+                        self.planUtilizationWeeklyWindow(provider: provider, snapshot: snapshot),
+                        name: .weekly)
                 }
             }
         default:
-            let standardWeeklyWindow = [snapshot.primary, snapshot.secondary, snapshot.tertiary]
-                .compactMap(\.self)
-                .first { $0.windowMinutes == Self.weeklyWindowMinutes }
-            let extraWeeklyWindow = snapshot.extraRateWindows?
-                .lazy
-                .first { $0.usageKnown && $0.window.windowMinutes == Self.weeklyWindowMinutes }?
-                .window
-            if let weeklyWindow = standardWeeklyWindow ?? extraWeeklyWindow {
-                appendWindow(weeklyWindow, name: .weekly)
-            }
+            appendGenericSessionEquivalentWindows()
         }
 
         return samplesByKey.values.sorted { lhs, rhs in
@@ -701,26 +708,14 @@ extension UsageStore {
         existingHourEntries: [PlanUtilizationHistoryEntry],
         incomingEntry: PlanUtilizationHistoryEntry) -> [PlanUtilizationHistoryEntry]
     {
-        let hourlyObservations = (existingHourEntries + [incomingEntry]).sorted { lhs, rhs in
-            if lhs.capturedAt != rhs.capturedAt {
-                return lhs.capturedAt < rhs.capturedAt
-            }
-            if lhs.usedPercent != rhs.usedPercent {
-                return lhs.usedPercent < rhs.usedPercent
-            }
-            let lhsReset = lhs.resetsAt?.timeIntervalSince1970 ?? Date.distantPast.timeIntervalSince1970
-            let rhsReset = rhs.resetsAt?.timeIntervalSince1970 ?? Date.distantPast.timeIntervalSince1970
-            return lhsReset < rhsReset
-        }
+        let hourlyObservations = (existingHourEntries + [incomingEntry])
+            .sorted(by: PlanUtilizationHistoryEntry.precedes)
         guard var activeSegmentPeak = hourlyObservations.first else { return [] }
 
         var peakBeforeLatestReset: PlanUtilizationHistoryEntry?
 
         for observation in hourlyObservations.dropFirst() {
-            if self.startsNewPlanUtilizationResetSegment(
-                activeSegmentPeak: activeSegmentPeak,
-                observation: observation)
-            {
+            if self.haveMeaningfullyDifferentResetBoundaries(activeSegmentPeak.resetsAt, observation.resetsAt) {
                 if peakBeforeLatestReset == nil {
                     peakBeforeLatestReset = activeSegmentPeak
                 }
@@ -737,15 +732,6 @@ extension UsageStore {
             return [peakBeforeLatestReset, activeSegmentPeak]
         }
         return [activeSegmentPeak]
-    }
-
-    private nonisolated static func startsNewPlanUtilizationResetSegment(
-        activeSegmentPeak: PlanUtilizationHistoryEntry,
-        observation: PlanUtilizationHistoryEntry) -> Bool
-    {
-        self.haveMeaningfullyDifferentResetBoundaries(
-            activeSegmentPeak.resetsAt,
-            observation.resetsAt)
     }
 
     private nonisolated static func segmentPeakEntry(
@@ -799,12 +785,12 @@ extension UsageStore {
         snapshot: UsageSnapshot? = nil,
         preferredAccount: ProviderTokenAccount? = nil) -> String?
     {
-        let account = preferredAccount ?? self.settings.selectedTokenAccount(for: provider)
+        let account = preferredAccount ?? self.settings.effectiveSelectedTokenAccount(for: provider)
         let accountKey = Self.planUtilizationAccountKey(provider: provider, account: account)
         if let accountKey {
             return accountKey
         }
-        let resolvedSnapshot = snapshot ?? self.snapshots[provider]
+        let resolvedSnapshot = snapshot ?? self.snapshots[provider.instanceID]
         return resolvedSnapshot.flatMap { Self.planUtilizationIdentityAccountKey(provider: provider, snapshot: $0) }
     }
 
@@ -839,16 +825,17 @@ extension UsageStore {
         accountKey?.hasPrefix(self.claudeOAuthPlanUtilizationAccountKeyPrefix) == true
     }
 
-    private nonisolated static func planUtilizationIdentityAccountKey(
+    nonisolated static func planUtilizationIdentityAccountKey(
         provider: UsageProvider,
         snapshot: UsageSnapshot) -> String?
     {
-        guard let identity = snapshot.identity(for: provider) else { return nil }
+        guard let identity = snapshot.identity(for: provider.instanceID) else { return nil }
 
         let normalizedEmail = identity.accountEmail?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         if let normalizedEmail, !normalizedEmail.isEmpty {
+            // Provider-specific by design: Codex hashes email ownership; Claude also binds organization and plan.
             if provider == .codex {
                 return CodexHistoryOwnership.canonicalEmailHashKey(for: normalizedEmail)
             }
@@ -909,7 +896,7 @@ extension UsageStore {
         provider == .claude && self.shouldHidePlanUtilizationMenuItem(for: .claude)
     }
 
-    private nonisolated static func limitResetDetectorStateKey(
+    nonisolated static func limitResetDetectorStateKey(
         provider: UsageProvider,
         accountIdentifier: String) -> String
     {
@@ -919,10 +906,29 @@ extension UsageStore {
     nonisolated static func loadWeeklyLimitResetDetectorStates(from userDefaults: UserDefaults)
         -> [String: LimitResetDetectorState]
     {
-        self.loadLimitResetDetectorStates(
+        var states = self.loadLimitResetDetectorStates(
             from: userDefaults,
             defaultsKey: self.weeklyLimitResetDetectorDefaultsKey,
             logName: "weekly")
+        let legacyClaudeLowStateKeys = states.compactMap { key, state in
+            key.hasPrefix("\(UsageProvider.claude.rawValue):")
+                && !state.wasAboveThreshold
+                && state.recoveryAboveThresholdCount == nil
+                ? key
+                : nil
+        }
+        for key in legacyClaudeLowStateKeys {
+            guard var migratedState = states[key] else { continue }
+            migratedState.recoveryAboveThresholdCount = 0
+            states[key] = migratedState
+        }
+        // Legacy Codex states predate the plan and posted-boundary evidence needed by delayed confirmation.
+        // Discard them instead of guessing: the next sample safely establishes a fresh detector baseline.
+        states = states.filter { key, state in
+            !key.hasPrefix("\(UsageProvider.codex.rawValue):")
+                || state.codexWeeklyEvidenceVersion == LimitResetDetectorState.currentCodexWeeklyEvidenceVersion
+        }
+        return states
     }
 
     nonisolated static func loadLimitResetDetectorStates(
@@ -941,7 +947,7 @@ extension UsageStore {
         }
     }
 
-    private func persistLimitResetDetectorStates(
+    func persistLimitResetDetectorStates(
         _ states: [String: LimitResetDetectorState],
         defaultsKey: String,
         logName: String)
@@ -956,18 +962,14 @@ extension UsageStore {
         }
     }
 
-    // MARK: - Active Claude account corroboration (~/.claude.json)
-
-    /// The currently-active Claude account UUID, read prompt-free from `~/.claude.json`. This is the only
-    /// always-fresh, never-gated signal of the active account on a background poll: Claude Code's `/login`
-    /// updates the Keychain item in place and leaves `~/.claude/.credentials.json` stale, but immediately
-    /// rewrites `oauthAccount.accountUuid` in this sibling plain file. Returns nil on absence/corruption.
-    nonisolated static func activeClaudeAccountUuid() -> String? {
-        ClaudeActiveAccountProbe.activeClaudeAccountUuid()
-    }
-
     /// Persisted `historyOwnerIdentifier -> hashed active account identity` bindings.
     nonisolated static func loadClaudeOAuthAccountUuidMap(from userDefaults: UserDefaults) -> [String: String] {
+        // V1 values hash only the account UUID. V2 adds the owner-selected Claude config path, so a
+        // V1 binding can never match after upgrade and would quarantine owner-mediated samples forever.
+        // The history owner key itself is unchanged, so discarding the obsolete binding preserves history.
+        if userDefaults.object(forKey: self.claudeOAuthAccountUuidMapLegacyDefaultsKey) != nil {
+            userDefaults.removeObject(forKey: self.claudeOAuthAccountUuidMapLegacyDefaultsKey)
+        }
         guard let data = userDefaults.data(forKey: claudeOAuthAccountUuidMapDefaultsKey) else { return [:] }
         do {
             return try JSONDecoder().decode([String: String].self, from: data)
@@ -1112,30 +1114,6 @@ extension UsageStore {
         }
     }
 
-    nonisolated static func activeClaudeAccountIdentity() -> String? {
-        self.activeClaudeAccountUuid().map(self.claudeAccountIdentity)
-    }
-
-    private nonisolated static func claudeAccountIdentity(_ uuid: String) -> String {
-        self.sha256Hex(
-            "claude:active-account:v1:\(uuid.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())")
-    }
-
-    #if DEBUG
-    static func withActiveClaudeAccountUuidForTesting<T>(
-        _ uuid: String?,
-        _ body: () async throws -> T) async rethrows -> T
-    {
-        try await ClaudeActiveAccountProbe.$activeClaudeAccountUuidOverrideForTesting.withValue(
-            .value(uuid),
-            operation: body)
-    }
-
-    nonisolated static func _activeClaudeAccountIdentityForTesting(_ uuid: String) -> String {
-        self.claudeAccountIdentity(uuid)
-    }
-    #endif
-
     private func resolvePlanUtilizationAccountKey(
         provider: UsageProvider,
         snapshot: UsageSnapshot?,
@@ -1145,19 +1123,22 @@ extension UsageStore {
         isClaudeOAuthSample: Bool = false,
         shouldUpdatePreferredAccountKey: Bool = true,
         shouldAdoptUnscopedHistory: Bool = true,
+        readOnly: Bool = false,
         providerBuckets: inout PlanUtilizationHistoryBuckets) -> String?
     {
+        // Provider-specific by design: Codex reconciliation and Claude OAuth use distinct persisted owner migrations.
         if provider == .codex {
             return self.resolveCodexPlanUtilizationAccountKey(
                 snapshot: snapshot,
                 shouldUpdatePreferredAccountKey: shouldUpdatePreferredAccountKey,
                 shouldAdoptUnscopedHistory: shouldAdoptUnscopedHistory,
+                readOnly: readOnly,
                 providerBuckets: &providerBuckets)
         }
 
         // Claude's unscoped history is only safe to adopt during the first unambiguous migration.
         // The sentinel marks identityless OAuth, while any scoped bucket proves multiple owners may exist.
-        let canAdoptUnscopedHistory = shouldAdoptUnscopedHistory
+        let canAdoptUnscopedHistory = !readOnly && shouldAdoptUnscopedHistory
             && !(provider == .claude
                 && (providerBuckets.preferredAccountKey == Self.planUtilizationUnscopedPreferredKey
                     || !providerBuckets.accounts.isEmpty))
@@ -1167,9 +1148,7 @@ extension UsageStore {
                 historyOwnerIdentifier: claudeOAuthHistoryOwnerIdentifier,
                 corroboratingPersistentRefHash: claudeOAuthPersistentRefHash)
             {
-                if shouldUpdatePreferredAccountKey {
-                    providerBuckets.preferredAccountKey = oauthAccountKey
-                }
+                if shouldUpdatePreferredAccountKey, !readOnly { providerBuckets.preferredAccountKey = oauthAccountKey }
                 // Existing unscoped or identity-keyed history can belong to another OAuth account.
                 // Preserve it in place rather than silently adopting it into this opaque account.
                 return oauthAccountKey
@@ -1179,11 +1158,9 @@ extension UsageStore {
             return nil
         }
 
-        let resolvedAccount = preferredAccount ?? self.settings.selectedTokenAccount(for: provider)
+        let resolvedAccount = preferredAccount ?? self.settings.effectiveSelectedTokenAccount(for: provider)
         if let tokenAccountKey = Self.planUtilizationAccountKey(provider: provider, account: resolvedAccount) {
-            if shouldUpdatePreferredAccountKey {
-                providerBuckets.preferredAccountKey = tokenAccountKey
-            }
+            if shouldUpdatePreferredAccountKey, !readOnly { providerBuckets.preferredAccountKey = tokenAccountKey }
             if canAdoptUnscopedHistory {
                 self.adoptPlanUtilizationUnscopedHistoryIfNeeded(
                     into: tokenAccountKey,
@@ -1196,6 +1173,7 @@ extension UsageStore {
         if let snapshot,
            let identityAccountKey = Self.planUtilizationIdentityAccountKey(provider: provider, snapshot: snapshot)
         {
+            if readOnly { return identityAccountKey }
             let resolvedIdentityAccountKey = self.materializeLegacyClaudePlanUtilizationHistoryIfNeeded(
                 into: identityAccountKey,
                 provider: provider,
@@ -1224,10 +1202,12 @@ extension UsageStore {
         snapshot: UsageSnapshot?,
         shouldUpdatePreferredAccountKey: Bool,
         shouldAdoptUnscopedHistory: Bool,
+        readOnly: Bool,
         providerBuckets: inout PlanUtilizationHistoryBuckets) -> String?
     {
         let ownership = self.codexOwnershipContext(snapshot: snapshot, includeDashboardFallback: true)
         if let canonicalKey = ownership.canonicalKey {
+            if readOnly { return canonicalKey }
             let resolvedAccountKey = self.materializeCodexPlanUtilizationHistoryIfNeeded(
                 into: canonicalKey,
                 ownership: ownership,
@@ -1255,6 +1235,7 @@ extension UsageStore {
         var historiesToMerge: [[PlanUtilizationSeriesHistory]] = []
         let scopedRawKeys = Array(providerBuckets.accounts.keys)
         var legacyRawKeysToRemove: [String] = []
+        var hasForeignHistoryToMerge = false
 
         for rawKey in scopedRawKeys {
             let owner = CodexHistoryOwnership.classifyPersistedKey(
@@ -1272,6 +1253,7 @@ extension UsageStore {
                 historiesToMerge.append(accountHistories)
                 if rawKey != canonicalKey {
                     legacyRawKeysToRemove.append(rawKey)
+                    hasForeignHistoryToMerge = true
                 }
             }
         }
@@ -1285,6 +1267,7 @@ extension UsageStore {
         {
             historiesToMerge.append(opaqueHistories)
             legacyRawKeysToRemove.append(recoverableOpaqueRawKey)
+            hasForeignHistoryToMerge = true
         }
 
         if shouldAdoptUnscopedHistory,
@@ -1298,12 +1281,18 @@ extension UsageStore {
         {
             historiesToMerge.append(providerBuckets.unscoped)
             providerBuckets.unscoped = []
+            hasForeignHistoryToMerge = true
         }
 
-        guard !historiesToMerge.isEmpty else { return canonicalKey }
+        // Canonical-only contribution is not a migration; re-merging it with itself is quadratic.
+        // Skipping also skips incidental re-canonicalization of already-canonical series (duplicate
+        // (name, windowMinutes) collapse and per-hour peak replay). Repairing legacy data belongs
+        // at load time, not on every refresh and menu open.
+        guard hasForeignHistoryToMerge else { return canonicalKey }
         for rawKey in legacyRawKeysToRemove {
             providerBuckets.accounts.removeValue(forKey: rawKey)
         }
+        // Provider-specific by design: legacy Codex email/workspace buckets merge only after ambiguity checks.
         let mergedHistory = Self.mergedPlanUtilizationHistories(provider: .codex, histories: historiesToMerge)
         providerBuckets.setHistories(mergedHistory, for: canonicalKey)
         return canonicalKey
@@ -1330,7 +1319,7 @@ extension UsageStore {
         snapshot: UsageSnapshot,
         providerBuckets: inout PlanUtilizationHistoryBuckets) -> String
     {
-        guard provider == .claude,
+        guard provider == .claude, // Provider-specific by design: only Claude has this legacy email-key history.
               let legacyAccountKey = Self.legacyClaudePlanUtilizationEmailAccountKey(snapshot: snapshot),
               legacyAccountKey != accountKey,
               let legacyHistories = providerBuckets.accounts[legacyAccountKey],
@@ -1360,12 +1349,21 @@ extension UsageStore {
         guard !providerBuckets.unscoped.isEmpty else { return }
 
         let existingHistory = providerBuckets.accounts[accountKey] ?? []
+        let targetHasHistory = !existingHistory.isEmpty
         let mergedHistory = Self.mergedPlanUtilizationHistories(provider: provider, histories: [
             existingHistory,
             providerBuckets.unscoped,
         ])
         providerBuckets.setHistories(mergedHistory, for: accountKey)
         providerBuckets.setHistories([], for: nil)
+        if ![UsageProvider.codex, .claude, .antigravity].contains(provider) {
+            self.materializeLegacySessionEquivalentHistoryIdentityDuringAccountAdoption(
+                provider: provider,
+                from: nil,
+                to: accountKey,
+                targetHasHistory: targetHasHistory,
+                providerBuckets: &providerBuckets)
+        }
     }
 
     private func stickyPlanUtilizationAccountKey(
@@ -1566,34 +1564,30 @@ extension UsageStore {
         provider _: UsageProvider,
         histories: [[PlanUtilizationSeriesHistory]]) -> [PlanUtilizationSeriesHistory]
     {
-        var mergedByKey: [PlanUtilizationSeriesKey: PlanUtilizationSeriesHistory] = [:]
+        var mergedEntriesByKey: [PlanUtilizationSeriesKey: [PlanUtilizationHistoryEntry]] = [:]
 
         for historyGroup in histories {
             for history in historyGroup {
                 let key = PlanUtilizationSeriesKey(name: history.name, windowMinutes: history.windowMinutes)
-                let existingEntries = mergedByKey[key]?.entries ?? []
-                var mergedEntries = existingEntries
+                var mergedEntries = mergedEntriesByKey[key] ?? []
+                self.assertPlanUtilizationEntriesSorted(mergedEntries)
                 for entry in history.entries.sorted(by: { $0.capturedAt < $1.capturedAt }) {
-                    if let updatedEntries = self.updatedPlanUtilizationEntries(
-                        existingEntries: mergedEntries,
-                        entry: entry)
-                    {
-                        mergedEntries = updatedEntries
-                    }
+                    _ = self.updatedPlanUtilizationEntries(
+                        existingEntries: &mergedEntries,
+                        entry: entry,
+                        isQuotaObservation: history.name.isQuotaObservation)
                 }
-                mergedByKey[key] = PlanUtilizationSeriesHistory(
-                    name: history.name,
-                    windowMinutes: history.windowMinutes,
-                    entries: mergedEntries)
+                mergedEntriesByKey[key] = mergedEntries
             }
         }
 
-        return mergedByKey.values.sorted { lhs, rhs in
-            if lhs.windowMinutes != rhs.windowMinutes {
-                return lhs.windowMinutes < rhs.windowMinutes
-            }
-            return lhs.name.rawValue < rhs.name.rawValue
+        return mergedEntriesByKey.map { key, entries in
+            PlanUtilizationSeriesHistory(
+                name: key.name,
+                windowMinutes: key.windowMinutes,
+                entries: entries)
         }
+        .sorted(by: PlanUtilizationSeriesHistory.precedes)
     }
 
     #if DEBUG
@@ -1634,14 +1628,14 @@ extension UsageStore {
 
 actor PlanUtilizationHistoryPersistenceCoordinator {
     private let store: PlanUtilizationHistoryStore
-    private var pendingSnapshot: [UsageProvider: PlanUtilizationHistoryBuckets]?
+    private var pendingSnapshot: [ProviderInstanceID: PlanUtilizationHistoryBuckets]?
     private var isPersisting: Bool = false
 
     init(store: PlanUtilizationHistoryStore) {
         self.store = store
     }
 
-    func enqueue(_ snapshot: [UsageProvider: PlanUtilizationHistoryBuckets]) {
+    func enqueue(_ snapshot: [ProviderInstanceID: PlanUtilizationHistoryBuckets]) {
         self.pendingSnapshot = snapshot
         guard !self.isPersisting else { return }
         self.isPersisting = true
@@ -1660,53 +1654,10 @@ actor PlanUtilizationHistoryPersistenceCoordinator {
         self.isPersisting = false
     }
 
-    private func saveAsync(_ snapshot: [UsageProvider: PlanUtilizationHistoryBuckets]) async {
+    private func saveAsync(_ snapshot: [ProviderInstanceID: PlanUtilizationHistoryBuckets]) async {
         let store = self.store
         await Task.detached(priority: .utility) {
             store.save(snapshot)
         }.value
-    }
-}
-
-/// Prompt-free reader for the active Claude account UUID recorded in `~/.claude.json`. The `@TaskLocal` test
-/// seam lives here (not on `UsageStore`) because Swift forbids stored properties in extensions and task-local
-/// storage must be nonisolated, whereas `UsageStore` is `@MainActor`.
-private enum ClaudeActiveAccountProbe {
-    #if DEBUG
-    enum Override: Sendable {
-        case value(String?)
-    }
-
-    @TaskLocal static var activeClaudeAccountUuidOverrideForTesting: Override?
-    #endif
-
-    private struct ClaudeConfigAccount: Decodable {
-        struct OAuthAccount: Decodable {
-            let accountUuid: String?
-        }
-
-        let oauthAccount: OAuthAccount?
-    }
-
-    static func activeClaudeAccountUuid() -> String? {
-        #if DEBUG
-        if case let .value(uuid) = self.activeClaudeAccountUuidOverrideForTesting {
-            return uuid
-        }
-        #endif
-        // `~/.claude.json` is a SIBLING of `.claude/`, not inside it. Home resolution mirrors
-        // `ClaudeOAuthCredentials.defaultCredentialsURL()`. This intentionally does NOT honor
-        // CLAUDE_CONFIG_DIR: the credential store that yields `historyOwnerIdentifier` is purely
-        // home-relative, so the accountUuid corroboration must resolve against the same home or the
-        // two signals would point at different accounts.
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(ClaudeConfigAccount.self, from: data),
-              let uuid = decoded.oauthAccount?.accountUuid?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !uuid.isEmpty
-        else {
-            return nil
-        }
-        return uuid
     }
 }

@@ -6,7 +6,7 @@ extension StatusItemController {
     /// of each other and of the all-providers refresh.
     enum ManualRefreshScope: Hashable {
         case global
-        case provider(UsageProvider)
+        case provider(ProviderInstanceID)
     }
 }
 
@@ -18,21 +18,18 @@ enum LoginNotificationLogic {
     }
 }
 
+extension StatusItemController {
+    func setSettingsOpenHandler(_ handler: @escaping @MainActor (SettingsPane?) -> Void) {
+        self.settingsOpenHandler = handler
+    }
+
+    func isEnabled(_ provider: UsageProvider) -> Bool {
+        self.store.isEnabled(provider)
+    }
+}
+
 extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     // MARK: - Actions reachable from menus
-
-    func refreshStore(
-        forceTokenUsage: Bool,
-        refreshOpenMenusWhenComplete: Bool = true,
-        interaction: ProviderInteraction = .userInitiated)
-    {
-        Task {
-            await self.performStoreRefresh(
-                forceTokenUsage: forceTokenUsage,
-                refreshOpenMenusWhenComplete: refreshOpenMenusWhenComplete,
-                interaction: interaction)
-        }
-    }
 
     func performStoreRefresh(
         forceTokenUsage: Bool,
@@ -79,10 +76,17 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             let refreshStartedAt = Date()
             await self.store.refreshProvider(provider)
             guard !Task.isCancelled, !self.hasPreparedForAppShutdown else { return }
+            // Provider-specific by design: Codex publishes a compatible core quota model before its optional
+            // credits and OpenAI Web enrichment stages below. Incompatible cards remain frozen until the final
+            // menu reconciliation, so they never lose their loading state while still showing the old layout.
+            if provider == .codex {
+                self.menuCardRefreshMonitor.publishResolvedModelIfCompatible(for: provider)
+            }
             await self.store.refreshProviderStatus(provider)
             guard !Task.isCancelled, !self.hasPreparedForAppShutdown else { return }
             await self.store.refreshTokenUsageNow(for: provider, force: true)
             guard !Task.isCancelled, !self.hasPreparedForAppShutdown else { return }
+            // Provider-specific by design: Codex refresh also owns OpenAI dashboard and reset-credit enrichment.
             if provider == .codex {
                 await self.store.refreshCreditsNow(minimumSnapshotUpdatedAt: refreshStartedAt)
                 guard !Task.isCancelled, !self.hasPreparedForAppShutdown else { return }
@@ -167,11 +171,13 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             originatingMenuInteractionGeneration: originatingMenuInteractionGeneration)
     }
 
-    private func startManualRefresh(
-        for provider: UsageProvider?,
+    func startManualRefresh(
+        for provider: ProviderInstanceID?,
         originatingMenuID: ObjectIdentifier?,
         originatingMenuInteractionGeneration: Int?)
     {
+        let firstPartyProvider = provider?.firstPartyProvider
+        let tracksFirstPartyCards = provider == nil || firstPartyProvider != nil
         let scope: ManualRefreshScope = provider.map(ManualRefreshScope.provider) ?? .global
         let scopedRefreshInFlight = provider.map { self.store.refreshingProviders.contains($0) }
             ?? !self.store.refreshingProviders.isEmpty
@@ -188,7 +194,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
               !scopedRefreshInFlight
         else { return }
 
-        let frozenModels = self.frozenManualRefreshMenuCardModels()
+        let frozenModels = tracksFirstPartyCards ? self.frozenManualRefreshMenuCardModels() : [:]
         let viewportRestoreRequests = self.armManualRefreshViewportRestoreRequests(
             originatingMenuID: originatingMenuID,
             originatingMenuInteractionGeneration: originatingMenuInteractionGeneration)
@@ -197,7 +203,9 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             var completed = false
             defer {
                 self.manualRefreshTasks[scope] = nil
-                self.menuCardRefreshMonitor.endManualRefresh(for: provider)
+                if tracksFirstPartyCards {
+                    self.menuCardRefreshMonitor.endManualRefresh(for: firstPartyProvider)
+                }
                 self.updatePersistentRefreshItemsEnabled()
                 if completed {
                     self.scheduleCompletedManualRefreshViewportRestore(viewportRestoreRequests)
@@ -216,11 +224,17 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
                 return
             }
             #endif
-            if let provider {
+            if let provider = firstPartyProvider {
                 await self.performStoreRefresh(
                     for: provider,
                     refreshOpenMenusWhenComplete: true,
                     interaction: .userInitiated)
+            } else if let provider {
+                await self.withProviderInteraction(.userInitiated) {
+                    await self.store.refreshUserPlugin(provider)
+                    guard !Task.isCancelled, !self.hasPreparedForAppShutdown else { return }
+                    self.refreshOpenMenusAfterUserPluginRefresh(provider)
+                }
             } else {
                 await self.performStoreRefresh(
                     enrichmentMode: .forcedBackground,
@@ -231,16 +245,21 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             completed = true
         }
         self.manualRefreshTasks[scope] = task
-        self.menuCardRefreshMonitor.beginManualRefresh(frozenModels: frozenModels, provider: provider)
+        if tracksFirstPartyCards {
+            self.menuCardRefreshMonitor.beginManualRefresh(frozenModels: frozenModels, provider: firstPartyProvider)
+        }
         self.updatePersistentRefreshItemsEnabled()
     }
 
-    private func manualRefreshProvider(for menu: NSMenu?) -> UsageProvider? {
+    func manualRefreshProvider(for menu: NSMenu?) -> ProviderInstanceID? {
         guard let menu else { return nil }
         if self.shouldMergeIcons {
             guard self.mergedMenu == nil || menu === self.mergedMenu else { return nil }
-            guard !self.isMergedOverviewSelected(in: menu) else { return nil }
-            return self.resolvedMenuProvider()
+            let enabledProviders = self.store.enabledFirstPartyProvidersForDisplay()
+            if let selection = self.resolvedMergedMenuSelection(enabledProviders: enabledProviders) {
+                return selection.instanceID
+            }
+            return self.resolvedMenuProvider(enabledProviders: enabledProviders)?.instanceID
         }
         return self.menuProviders[ObjectIdentifier(menu)]
     }
@@ -253,13 +272,14 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
             providers.append(lastMenuProvider)
         }
         if providers.isEmpty,
-           let defaultProvider = self.settings.orderedProviders().first ?? UsageProvider.allCases.first
+           let defaultProvider = self.settings.orderedFirstPartyProviders().first ?? UsageProvider.allCases.first
         {
-            providers.append(defaultProvider)
+            providers.append(defaultProvider.instanceID)
         }
 
         var models: [UsageProvider: UsageMenuCardView.Model] = [:]
-        for provider in providers {
+        for instanceID in providers {
+            guard let provider = instanceID.firstPartyProvider else { continue }
             models[provider] = self.menuCardModel(for: provider)
         }
         return models
@@ -321,9 +341,14 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         self.updater.installUpdate()
     }
 
+    @objc func checkForUpdates() {
+        self.updater.checkForUpdates(nil)
+    }
+
     @objc func openDashboard() {
-        let preferred = self.lastMenuProvider
-            ?? (self.store.isEnabled(.codex) ? .codex : self.store.enabledProviders().first)
+        // Provider-specific by design: Codex remains the historical action fallback when no provider is selected.
+        let preferred = self.lastMenuProvider?.firstPartyProvider
+            ?? (self.store.isEnabled(.codex) ? .codex : self.store.enabledFirstPartyProviders().first)
 
         let provider = preferred ?? .codex
         guard let url = self.dashboardURL(for: provider) else { return }
@@ -334,6 +359,10 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         for provider: UsageProvider,
         environment: [String: String] = ProcessInfo.processInfo.environment) -> URL?
     {
+        // Provider-specific by design: these dashboards depend on region, source label, scope, or subscription plan.
+        if provider == .kimi {
+            return self.settings.kimiRegion.consoleURL
+        }
         if provider == .alibaba {
             return self.settings.alibabaCodingPlanAPIRegion.dashboardURL
         }
@@ -357,7 +386,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         }
 
         if provider == .zai {
-            return ZaiUsageFetcher.resolveDashboardURL(
+            return ZaiEndpointRouter.resolveDashboardURL(
                 region: self.settings.zaiAPIRegion,
                 environment: environment,
                 usageScope: self.settings.zaiEffectiveUsageScope())
@@ -365,8 +394,13 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
 
         if provider == .qoder {
             return QoderProviderDescriptor.dashboardURL(
-                settings: self.settings.qoderSettingsSnapshot(tokenOverride: nil),
+                settings: self.settings.resolvedCookieSettings(provider: provider, tokenOverride: nil),
                 sourceLabel: self.store.sourceLabel(for: .qoder))
+        }
+
+        // Provider-specific by design: the successful Helmcode snapshot owns the detected tenant.
+        if provider == .helmcode {
+            return HelmcodeProviderDescriptor.dashboardURL(snapshot: self.store.snapshot(for: provider.instanceID))
         }
 
         let meta = self.store.metadata(for: provider)
@@ -381,6 +415,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     }
 
     @objc func openCreditsPurchase() {
+        // Provider-specific by design: codexResetCredits payload supplies the validated ChatGPT purchase URL.
         let preferred = self.lastMenuProvider
             ?? (self.store.isEnabled(.codex) ? .codex : self.store.enabledProviders().first)
         let provider = preferred ?? .codex
@@ -431,15 +466,15 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     }
 
     @objc func openStatusPage() {
-        let preferred = self.lastMenuProvider
-            ?? (self.store.isEnabled(.codex) ? .codex : self.store.enabledProviders().first)
+        let preferred = self.lastMenuProvider?.firstPartyProvider
+            ?? (self.store.isEnabled(.codex) ? .codex : self.store.enabledFirstPartyProviders().first)
 
         self.openStatusPage(for: preferred ?? .codex)
     }
 
     @objc func openStatusPageFromMenuItem(_ sender: NSMenuItem) {
         let provider = (sender.identifier?.rawValue).flatMap(UsageProvider.init(rawValue:))
-            ?? self.lastMenuProvider
+            ?? self.lastMenuProvider?.firstPartyProvider
             ?? .codex
         self.openStatusPage(for: provider)
     }
@@ -452,8 +487,8 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     }
 
     @objc func openChangelog() {
-        let preferred = self.lastMenuProvider
-            ?? (self.store.isEnabled(.codex) ? .codex : self.store.enabledProviders().first)
+        let preferred = self.lastMenuProvider?.firstPartyProvider
+            ?? (self.store.isEnabled(.codex) ? .codex : self.store.enabledFirstPartyProviders().first)
 
         let provider = preferred ?? .codex
         let meta = self.store.metadata(for: provider)
@@ -462,6 +497,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     }
 
     @objc func openTerminalCommand(_ sender: NSMenuItem) {
+        // Provider-specific by design: legacy terminal menu items without a command payload open Claude.
         let command = sender.representedObject as? String ?? "claude"
         self.openTerminal(command: command)
     }
@@ -523,7 +559,9 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         }
 
         let rawProvider = sender.representedObject as? String
-        let provider = rawProvider.flatMap(UsageProvider.init(rawValue:)) ?? self.lastMenuProvider ?? .codex
+        let provider = rawProvider.flatMap(UsageProvider.init(rawValue:))
+            ?? self.lastMenuProvider?.firstPartyProvider
+            ?? .codex
         self.loginLogger.info("Switch Account tapped", metadata: ["provider": provider.rawValue])
         self.startLoginFlow(provider: provider)
     }
@@ -542,6 +580,16 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     @objc func showSettingsGeneral() {
         // Restore the last selected pane; only About navigates explicitly.
         self.openSettings(pane: nil)
+    }
+
+    @objc func showProviderSettings(_ sender: NSMenuItem) {
+        guard let rawProvider = sender.representedObject as? String,
+              let provider = UsageProvider(rawValue: rawProvider)
+        else {
+            self.menuLogger.error("Provider settings action is missing a valid provider")
+            return
+        }
+        self.openSettings(pane: .provider(provider.instanceID))
     }
 
     @objc func showSettingsAbout() {
@@ -579,7 +627,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     func celebrationOriginPoint(for provider: UsageProvider?) -> CGPoint? {
         let item: NSStatusItem = if self.shouldMergeIcons {
             self.statusItem
-        } else if let provider, let existing = self.statusItems[provider], existing.isVisible {
+        } else if let provider, let existing = self.statusItems[provider.instanceID], existing.isVisible {
             existing
         } else {
             self.lazyStatusItem(for: provider ?? .codex)
@@ -597,13 +645,14 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     }
 
     private func openSettings(pane: SettingsPane?) {
-        DispatchQueue.main.async {
-            if let pane {
-                self.preferencesSelection.pane = pane
-            }
-            NSApp.activate(ignoringOtherApps: true)
-            NotificationCenter.default.post(name: .codexbarOpenSettings, object: nil)
+        // End status-menu tracking before AppDelegate schedules activation and presentation.
+        // Otherwise AppKit can restore the previously active app after Settings is already visible.
+        _ = self.closeOpenMenusFromShortcutIfNeeded()
+        guard let settingsOpenHandler else {
+            self.menuLogger.error("Settings open handler was not configured")
+            return
         }
+        settingsOpenHandler(pane)
     }
 
     @objc func quit() {
@@ -614,7 +663,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
 
         self.scheduleQuitTermination { [weak self] in
             guard let self else { return }
-            self.prepareForAppShutdown()
+            // Let applicationWillTerminate remove items so released provider items keep their saved positions.
             self.terminateApplicationForQuit()
         }
     }
@@ -629,53 +678,27 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
 
     func openTerminal(command: String) {
         let terminal = self.settings.terminalApp
-
-        if terminal == .iTerm, !terminal.isInstalled {
-            CodexBarLog.logger(LogCategories.terminal).warning(
-                "iTerm is not installed, falling back to Terminal.app",
-                metadata: ["terminal": terminal.rawValue])
-            Self.openTerminalInDefaultTerminal(command: command)
-            return
-        }
-
-        if Self.executeAppleScript(terminal.appleScript(command: command)) {
-            return
-        }
-        guard terminal != .terminal else { return }
-
-        CodexBarLog.logger(LogCategories.terminal).warning(
-            "\(terminal.label) AppleScript failed, falling back to Terminal.app",
-            metadata: ["terminal": terminal.rawValue])
-        Self.openTerminalInDefaultTerminal(command: command)
-    }
-
-    private static func openTerminalInDefaultTerminal(command: String) {
-        self.executeAppleScript(TerminalApp.terminal.appleScript(command: command))
-    }
-
-    /// Executes an AppleScript and returns `true` on success, `false` on failure.
-    @discardableResult
-    private static func executeAppleScript(_ source: String) -> Bool {
-        if let appleScript = NSAppleScript(source: source) {
-            var error: NSDictionary?
-            appleScript.executeAndReturnError(&error)
-            if let error {
+        Task { @MainActor in
+            switch await TerminalLauncher().launch(terminal, command: command) {
+            case .selected:
+                break
+            case .fallback:
+                CodexBarLog.logger(LogCategories.terminal).warning(
+                    "\(terminal.label) launch failed, fell back to Terminal.app",
+                    metadata: ["terminal": terminal.rawValue])
+            case .failed:
                 CodexBarLog.logger(LogCategories.terminal).error(
-                    "Failed to execute AppleScript",
-                    metadata: ["error": String(describing: error)])
-                return false
+                    "Failed to open terminal",
+                    metadata: ["terminal": terminal.rawValue])
             }
-            return true
         }
-        CodexBarLog.logger(LogCategories.terminal).error("Failed to compile AppleScript")
-        return false
     }
 
     private func resolvedShortcutProvider() -> UsageProvider {
-        if let last = self.lastMenuProvider, self.isEnabled(last) {
+        if let last = self.lastMenuProvider?.firstPartyProvider, self.isEnabled(last) {
             return last
         }
-        if let first = self.store.enabledProviders().first {
+        if let first = self.store.enabledFirstPartyProviders().first {
             return first
         }
         return .codex
@@ -702,7 +725,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         }
     }
 
-    func presentCodexLoginResult(_ result: CodexLoginRunner.Result) {
+    func presentCodexLoginResult(_ result: CLILoginRunner.Result) {
         guard let info = CodexLoginAlertPresentation.alertInfo(for: result) else { return }
         self.presentLoginAlert(title: info.title, message: info.message)
     }
@@ -744,9 +767,10 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         }
     }
 
-    func describe(_ outcome: CodexLoginRunner.Result.Outcome) -> String {
+    func describe(_ outcome: CLILoginRunner.Result.Outcome) -> String {
         switch outcome {
         case .success: "success"
+        case .cancelled: "cancelled"
         case .timedOut: "timedOut"
         case let .failed(status): "failed(status: \(status))"
         case .missingBinary: "missingBinary"
@@ -769,6 +793,7 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         case .success: "success"
         case .missingBinary: "missingBinary"
         case let .launchFailed(message): "launchFailed(\(message))"
+        case .consumerTierDeprecated: "consumerTierDeprecated"
         }
     }
 
@@ -787,9 +812,18 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         }
     }
 
-    func presentGeminiLoginResult(_ result: GeminiLoginRunner.Result) {
-        guard let info = Self.geminiLoginAlertInfo(for: result) else { return }
-        self.presentLoginAlert(title: info.title, message: info.message)
+    /// Returns `true` when the alert offered a recovery action and the user chose it.
+    @discardableResult
+    func presentGeminiLoginResult(_ result: GeminiLoginRunner.Result) -> Bool {
+        guard let info = Self.geminiLoginAlertInfo(for: result) else { return false }
+        guard let confirmButtonTitle = info.confirmButtonTitle else {
+            self.presentLoginAlert(title: info.title, message: info.message)
+            return false
+        }
+        return self.presentLoginConfirmation(
+            title: info.title,
+            message: info.message,
+            confirmButtonTitle: confirmButtonTitle)
     }
 
     func presentAntigravityLoginResult(_ result: AntigravityLoginRunner.Result) {
@@ -800,6 +834,8 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
     struct LoginAlertInfo: Equatable {
         let title: String
         let message: String
+        /// When set, the alert offers this action alongside Cancel and reports whether it was chosen.
+        var confirmButtonTitle: String?
     }
 
     nonisolated static func geminiLoginAlertInfo(for result: GeminiLoginRunner.Result) -> LoginAlertInfo? {
@@ -812,6 +848,12 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
                 message: L("Install the Gemini CLI (npm i -g @google/gemini-cli) and try again."))
         case let .launchFailed(message):
             LoginAlertInfo(title: L("Could not open Terminal for Gemini"), message: message)
+        case .consumerTierDeprecated:
+            LoginAlertInfo(
+                title: L("Gemini CLI login is no longer supported"),
+                message: GeminiConsumerTierMigration.deprecationError + "\n\n"
+                    + GeminiConsumerTierMigration.loginSwitchAccountPrompt,
+                confirmButtonTitle: L("Switch Account…"))
         }
     }
 
@@ -830,6 +872,18 @@ extension StatusItemController: StatusItemMenuPersistentActionDelegate {
         case let .failed(message):
             LoginAlertInfo(title: L("Antigravity login failed"), message: message)
         }
+    }
+
+    /// Cancel is the default button on purpose: confirming clears stored provider credentials, so a
+    /// stray Return keypress must not destroy them.
+    func presentLoginConfirmation(title: String, message: String, confirmButtonTitle: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = L(title)
+        alert.informativeText = L(message)
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: L("Cancel"))
+        alert.addButton(withTitle: confirmButtonTitle)
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     func presentLoginAlert(title: String, message: String) {

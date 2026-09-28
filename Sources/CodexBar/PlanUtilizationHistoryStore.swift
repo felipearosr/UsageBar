@@ -14,7 +14,14 @@ struct PlanUtilizationSeriesName: RawRepresentable, Hashable, Codable, Expressib
 
     static let session: Self = "session"
     static let weekly: Self = "weekly"
+    static let monthly: Self = "monthly"
     static let opus: Self = "opus"
+    static let antigravityGemini: Self = "antigravityGemini"
+    static let antigravityClaudeGPT: Self = "antigravityClaudeGPT"
+
+    var isQuotaObservation: Bool {
+        self == .antigravityGemini || self == .antigravityClaudeGPT
+    }
 
     func canonicalWindowMinutes(_ windowMinutes: Int) -> Int {
         switch self {
@@ -32,6 +39,18 @@ struct PlanUtilizationHistoryEntry: Codable, Equatable, Hashable, Sendable {
     let capturedAt: Date
     let usedPercent: Double
     let resetsAt: Date?
+
+    static func precedes(_ lhs: Self, _ rhs: Self) -> Bool {
+        if lhs.capturedAt != rhs.capturedAt {
+            return lhs.capturedAt < rhs.capturedAt
+        }
+        if lhs.usedPercent != rhs.usedPercent {
+            return lhs.usedPercent < rhs.usedPercent
+        }
+        let lhsReset = lhs.resetsAt?.timeIntervalSince1970 ?? Date.distantPast.timeIntervalSince1970
+        let rhsReset = rhs.resetsAt?.timeIntervalSince1970 ?? Date.distantPast.timeIntervalSince1970
+        return lhsReset < rhsReset
+    }
 }
 
 struct PlanUtilizationSeriesHistory: Codable, Equatable, Sendable {
@@ -39,39 +58,83 @@ struct PlanUtilizationSeriesHistory: Codable, Equatable, Sendable {
     let windowMinutes: Int
     let entries: [PlanUtilizationHistoryEntry]
 
+    /// Zero is reserved for observed quota samples with no advertised reset cadence.
+    var hasSupportedCadence: Bool {
+        self.windowMinutes > 0 || (self.windowMinutes == 0 && self.name.isQuotaObservation)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case windowMinutes
+        case entries
+    }
+
     init(name: PlanUtilizationSeriesName, windowMinutes: Int, entries: [PlanUtilizationHistoryEntry]) {
         self.name = name
         self.windowMinutes = windowMinutes
-        self.entries = entries.sorted { lhs, rhs in
-            if lhs.capturedAt != rhs.capturedAt {
-                return lhs.capturedAt < rhs.capturedAt
-            }
-            if lhs.usedPercent != rhs.usedPercent {
-                return lhs.usedPercent < rhs.usedPercent
-            }
-            let lhsReset = lhs.resetsAt?.timeIntervalSince1970 ?? Date.distantPast.timeIntervalSince1970
-            let rhsReset = rhs.resetsAt?.timeIntervalSince1970 ?? Date.distantPast.timeIntervalSince1970
-            return lhsReset < rhsReset
-        }
+        self.entries = entries.sorted(by: PlanUtilizationHistoryEntry.precedes)
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let name = try container.decode(PlanUtilizationSeriesName.self, forKey: .name)
+        let windowMinutes = try container.decode(Int.self, forKey: .windowMinutes)
+        let entries = try container.decode([PlanUtilizationHistoryEntry].self, forKey: .entries)
+        self.init(name: name, windowMinutes: windowMinutes, entries: entries)
     }
 
     var latestCapturedAt: Date? {
         self.entries.last?.capturedAt
     }
+
+    static func precedes(_ lhs: Self, _ rhs: Self) -> Bool {
+        if lhs.windowMinutes != rhs.windowMinutes {
+            return lhs.windowMinutes < rhs.windowMinutes
+        }
+        return lhs.name.rawValue < rhs.name.rawValue
+    }
+}
+
+struct PlanUtilizationHistorySelection {
+    let accountKey: String?
+    let histories: [PlanUtilizationSeriesHistory]
+    let cacheIdentity: String
+
+    init(accountKey: String?, histories: [PlanUtilizationSeriesHistory]) {
+        self.accountKey = accountKey
+        self.histories = histories
+        self.cacheIdentity = "account:\(accountKey ?? UsageStore.planUtilizationUnscopedPreferredKey)"
+    }
+
+    private init(accountKey: String?, histories: [PlanUtilizationSeriesHistory], cacheIdentity: String) {
+        self.accountKey = accountKey
+        self.histories = histories
+        self.cacheIdentity = cacheIdentity
+    }
+
+    static let unavailable = Self(accountKey: nil, histories: [], cacheIdentity: "unavailable")
 }
 
 struct PlanUtilizationHistoryBuckets: Equatable, Sendable {
     var preferredAccountKey: String?
     var unscoped: [PlanUtilizationSeriesHistory] = []
     var accounts: [String: [PlanUtilizationSeriesHistory]] = [:]
+    var sessionEquivalentWindowPairIdentities: [String: String] = [:]
+
+    private static let unscopedIdentityKey = "__codexbar_unscoped__"
+    private static let invalidatedIdentity = "__codexbar_invalidated__"
 
     func histories(for accountKey: String?) -> [PlanUtilizationSeriesHistory] {
         guard let accountKey, !accountKey.isEmpty else { return self.unscoped }
         return self.accounts[accountKey] ?? []
     }
 
+    func selection(for accountKey: String?) -> PlanUtilizationHistorySelection {
+        PlanUtilizationHistorySelection(accountKey: accountKey, histories: self.histories(for: accountKey))
+    }
+
     mutating func setHistories(_ histories: [PlanUtilizationSeriesHistory], for accountKey: String?) {
-        let sorted = Self.sortedHistories(histories)
+        let sorted = histories.sorted(by: PlanUtilizationSeriesHistory.precedes)
         guard let accountKey, !accountKey.isEmpty else {
             self.unscoped = sorted
             return
@@ -83,24 +146,53 @@ struct PlanUtilizationHistoryBuckets: Equatable, Sendable {
         }
     }
 
+    func sessionEquivalentWindowPairIdentity(for accountKey: String?) -> String? {
+        self.sessionEquivalentWindowPairIdentities[Self.identityKey(for: accountKey)]
+    }
+
+    mutating func setSessionEquivalentWindowPairIdentity(_ identity: String?, for accountKey: String?) {
+        let key = Self.identityKey(for: accountKey)
+        if let identity {
+            self.sessionEquivalentWindowPairIdentities[key] = identity
+        } else {
+            self.sessionEquivalentWindowPairIdentities.removeValue(forKey: key)
+        }
+    }
+
+    mutating func invalidateSessionEquivalentWindowPairIdentity(for accountKey: String?) {
+        self.sessionEquivalentWindowPairIdentities[Self.identityKey(for: accountKey)] = Self.invalidatedIdentity
+    }
+
+    mutating func moveSessionEquivalentWindowPairIdentity(
+        from sourceAccountKey: String?,
+        to targetAccountKey: String?)
+    {
+        let sourceKey = Self.identityKey(for: sourceAccountKey)
+        let targetKey = Self.identityKey(for: targetAccountKey)
+        guard sourceKey != targetKey,
+              let sourceIdentity = self.sessionEquivalentWindowPairIdentities[sourceKey]
+        else {
+            return
+        }
+
+        if let targetIdentity = self.sessionEquivalentWindowPairIdentities[targetKey],
+           targetIdentity != sourceIdentity
+        {
+            self.sessionEquivalentWindowPairIdentities[targetKey] = Self.invalidatedIdentity
+        } else {
+            self.sessionEquivalentWindowPairIdentities[targetKey] = sourceIdentity
+        }
+        self.sessionEquivalentWindowPairIdentities.removeValue(forKey: sourceKey)
+    }
+
     var isEmpty: Bool {
         self.unscoped.isEmpty && self.accounts.values.allSatisfy(\.isEmpty)
     }
 
-    private static func sortedHistories(_ histories: [PlanUtilizationSeriesHistory]) -> [PlanUtilizationSeriesHistory] {
-        histories.sorted { lhs, rhs in
-            if lhs.windowMinutes != rhs.windowMinutes {
-                return lhs.windowMinutes < rhs.windowMinutes
-            }
-            return lhs.name.rawValue < rhs.name.rawValue
-        }
+    private static func identityKey(for accountKey: String?) -> String {
+        guard let accountKey, !accountKey.isEmpty else { return self.unscopedIdentityKey }
+        return accountKey
     }
-}
-
-private struct ProviderHistoryFile: Codable, Sendable {
-    let preferredAccountKey: String?
-    let unscoped: [PlanUtilizationSeriesHistory]
-    let accounts: [String: [PlanUtilizationSeriesHistory]]
 }
 
 private struct ProviderHistoryDocument: Codable, Sendable {
@@ -108,6 +200,7 @@ private struct ProviderHistoryDocument: Codable, Sendable {
     let preferredAccountKey: String?
     let unscoped: [PlanUtilizationSeriesHistory]
     let accounts: [String: [PlanUtilizationSeriesHistory]]
+    let sessionEquivalentWindowPairIdentities: [String: String]
 }
 
 struct PlanUtilizationHistoryStore: Sendable {
@@ -123,21 +216,17 @@ struct PlanUtilizationHistoryStore: Sendable {
         Self()
     }
 
-    func load() -> [UsageProvider: PlanUtilizationHistoryBuckets] {
-        self.loadProviderFiles()
-    }
-
     /// Loads the persisted histories on a utility-priority detached task.
     ///
     /// The on-disk decode is synchronous I/O + JSON parsing that can take
     /// ~150 ms for mature two-year histories and must not run on the app
     /// startup main thread. The returned dictionary is safe to apply on the
     /// main actor once decoding completes.
-    func loadAsync() async -> [UsageProvider: PlanUtilizationHistoryBuckets] {
+    func loadAsync() async -> [ProviderInstanceID: PlanUtilizationHistoryBuckets] {
         await Task.detached(priority: .utility) { self.load() }.value
     }
 
-    func save(_ providers: [UsageProvider: PlanUtilizationHistoryBuckets]) {
+    func save(_ providers: [ProviderInstanceID: PlanUtilizationHistoryBuckets]) {
         guard let directoryURL = self.directoryURL else { return }
         do {
             try FileManager.default.createDirectory(
@@ -147,12 +236,14 @@ struct PlanUtilizationHistoryStore: Sendable {
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.sortedKeys]
 
-            for provider in UsageProvider.allCases {
-                let fileURL = self.providerFileURL(for: provider)
-                let buckets = providers[provider] ?? PlanUtilizationHistoryBuckets()
+            let knownInstanceIDs = Set(UsageProvider.allCases.map(\.instanceID)).union(providers.keys)
+            for instanceID in knownInstanceIDs.sorted(by: { $0.rawValue < $1.rawValue }) {
+                let fileURL = self.providerFileURL(for: instanceID)
+                let buckets = providers[instanceID] ?? PlanUtilizationHistoryBuckets()
                 let unscoped = Self.sortedHistories(buckets.unscoped)
                 let accounts = Self.sortedAccounts(buckets.accounts)
-                guard !unscoped.isEmpty || !accounts.isEmpty else {
+                guard !unscoped.isEmpty || !accounts.isEmpty || !buckets.sessionEquivalentWindowPairIdentities.isEmpty
+                else {
                     try? FileManager.default.removeItem(at: fileURL)
                     continue
                 }
@@ -161,8 +252,14 @@ struct PlanUtilizationHistoryStore: Sendable {
                     version: Self.providerSchemaVersion,
                     preferredAccountKey: buckets.preferredAccountKey,
                     unscoped: unscoped,
-                    accounts: accounts)
+                    accounts: accounts,
+                    sessionEquivalentWindowPairIdentities: buckets.sessionEquivalentWindowPairIdentities)
                 let data = try encoder.encode(payload)
+                if let existingData = try? Data(contentsOf: fileURL),
+                   existingData == data
+                {
+                    continue
+                }
                 try data.write(to: fileURL, options: Data.WritingOptions.atomic)
             }
         } catch {
@@ -170,54 +267,39 @@ struct PlanUtilizationHistoryStore: Sendable {
         }
     }
 
-    private func loadProviderFiles() -> [UsageProvider: PlanUtilizationHistoryBuckets] {
-        guard self.directoryURL != nil else { return [:] }
+    func load() -> [ProviderInstanceID: PlanUtilizationHistoryBuckets] {
+        guard let directoryURL = self.directoryURL,
+              let fileURLs = try? FileManager.default.contentsOfDirectory(
+                  at: directoryURL,
+                  includingPropertiesForKeys: nil)
+        else { return [:] }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        var output: [UsageProvider: PlanUtilizationHistoryBuckets] = [:]
+        var output: [ProviderInstanceID: PlanUtilizationHistoryBuckets] = [:]
 
-        for provider in UsageProvider.allCases {
-            let fileURL = self.providerFileURL(for: provider)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+        for fileURL in fileURLs where fileURL.pathExtension == "json" {
+            guard let instanceID = ProviderInstanceID(rawValue: fileURL.deletingPathExtension().lastPathComponent)
+            else { continue }
             guard let data = try? Data(contentsOf: fileURL),
                   let decoded = try? decoder.decode(ProviderHistoryDocument.self, from: data)
             else {
                 continue
             }
 
-            let history = ProviderHistoryFile(
-                preferredAccountKey: decoded.preferredAccountKey,
-                unscoped: decoded.unscoped,
-                accounts: decoded.accounts)
-            output[provider] = Self.decodeProvider(history)
+            output[instanceID] = Self.decodeProvider(decoded)
         }
 
         return output
     }
 
-    private static func decodeProviders(
-        _ providers: [String: ProviderHistoryFile]) -> [UsageProvider: PlanUtilizationHistoryBuckets]
-    {
-        var output: [UsageProvider: PlanUtilizationHistoryBuckets] = [:]
-        for (rawProvider, providerHistory) in providers {
-            guard let provider = UsageProvider(rawValue: rawProvider) else { continue }
-            output[provider] = Self.decodeProvider(providerHistory)
-        }
-        return output
-    }
-
-    private static func decodeProvider(_ providerHistory: ProviderHistoryFile) -> PlanUtilizationHistoryBuckets {
+    private static func decodeProvider(_ providerHistory: ProviderHistoryDocument) -> PlanUtilizationHistoryBuckets {
         PlanUtilizationHistoryBuckets(
             preferredAccountKey: providerHistory.preferredAccountKey,
             unscoped: self.sortedHistories(providerHistory.unscoped),
-            accounts: Dictionary(
-                uniqueKeysWithValues: providerHistory.accounts.compactMap { accountKey, histories in
-                    let sorted = Self.sortedHistories(histories)
-                    guard !sorted.isEmpty else { return nil }
-                    return (accountKey, sorted)
-                }))
+            accounts: self.sortedAccounts(providerHistory.accounts),
+            sessionEquivalentWindowPairIdentities: providerHistory.sessionEquivalentWindowPairIdentities)
     }
 
     private static func sortedAccounts(
@@ -232,19 +314,8 @@ struct PlanUtilizationHistoryStore: Sendable {
     }
 
     private static func sortedHistories(_ histories: [PlanUtilizationSeriesHistory]) -> [PlanUtilizationSeriesHistory] {
-        self.sanitizedHistories(histories).sorted { lhs, rhs in
-            if lhs.windowMinutes != rhs.windowMinutes {
-                return lhs.windowMinutes < rhs.windowMinutes
-            }
-            return lhs.name.rawValue < rhs.name.rawValue
-        }
-    }
-
-    private static func sanitizedHistories(_ histories: [PlanUtilizationSeriesHistory])
-    -> [PlanUtilizationSeriesHistory] {
-        histories.filter { history in
-            history.windowMinutes > 0 && !history.entries.isEmpty
-        }
+        histories.filter { $0.hasSupportedCadence && !$0.entries.isEmpty }
+            .sorted(by: PlanUtilizationSeriesHistory.precedes)
     }
 
     private static func defaultDirectoryURL() -> URL? {
@@ -255,9 +326,9 @@ struct PlanUtilizationHistoryStore: Sendable {
         return dir.appendingPathComponent("history", isDirectory: true)
     }
 
-    private func providerFileURL(for provider: UsageProvider) -> URL {
+    private func providerFileURL(for instanceID: ProviderInstanceID) -> URL {
         let directoryURL = self.directoryURL ?? URL(fileURLWithPath: "/dev/null", isDirectory: true)
-        return directoryURL.appendingPathComponent("\(provider.rawValue).json", isDirectory: false)
+        return directoryURL.appendingPathComponent("\(instanceID.rawValue).json", isDirectory: false)
     }
 }
 
@@ -275,6 +346,9 @@ extension ProviderHistoryDocument {
         self.preferredAccountKey = try container.decodeIfPresent(String.self, forKey: .preferredAccountKey)
         self.unscoped = try container.decode([PlanUtilizationSeriesHistory].self, forKey: .unscoped)
         self.accounts = try container.decode([String: [PlanUtilizationSeriesHistory]].self, forKey: .accounts)
+        self.sessionEquivalentWindowPairIdentities = try container.decodeIfPresent(
+            [String: String].self,
+            forKey: .sessionEquivalentWindowPairIdentities) ?? [:]
     }
 }
 

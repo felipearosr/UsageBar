@@ -65,7 +65,7 @@ public struct JetBrainsStatusSnapshot: Sendable {
             usedPercent: self.quotaInfo.usedPercent,
             windowMinutes: nil,
             resetsAt: refillDate,
-            resetDescription: Self.formatResetDescription(refillDate))
+            resetDescription: UsageFormatter.compactResetDescription(refillDate))
 
         let identity = ProviderIdentitySnapshot(
             providerID: .jetbrains,
@@ -79,26 +79,6 @@ public struct JetBrainsStatusSnapshot: Sendable {
             tertiary: nil,
             updatedAt: Date(),
             identity: identity)
-    }
-
-    private static func formatResetDescription(_ date: Date?) -> String? {
-        guard let date else { return nil }
-        let now = Date()
-        let interval = date.timeIntervalSince(now)
-        guard interval > 0 else { return "Expired" }
-
-        let hours = Int(interval / 3600)
-        let minutes = Int((interval.truncatingRemainder(dividingBy: 3600)) / 60)
-
-        if hours > 24 {
-            let days = hours / 24
-            let remainingHours = hours % 24
-            return "Resets in \(days)d \(remainingHours)h"
-        } else if hours > 0 {
-            return "Resets in \(hours)h \(minutes)m"
-        } else {
-            return "Resets in \(minutes)m"
-        }
     }
 }
 
@@ -240,7 +220,7 @@ public struct JetBrainsStatusProbe: Sendable {
         let used = currentStr.flatMap { Double($0) } ?? 0
         let maximum = maximumStr.flatMap { Double($0) } ?? 0
         let available = availableStr.flatMap { Double($0) }
-        let until = untilStr.flatMap { Self.parseDate($0) }
+        let until = ISO8601DateParser.parse(untilStr)
 
         return JetBrainsQuotaInfo(type: type, used: used, maximum: maximum, available: available, until: until)
     }
@@ -259,7 +239,7 @@ public struct JetBrainsStatusProbe: Sendable {
         let amountStr = json["amount"] as? String
         let duration = json["duration"] as? String
 
-        let next = nextStr.flatMap { Self.parseDate($0) }
+        let next = ISO8601DateParser.parse(nextStr)
         let amount = amountStr.flatMap { Double($0) }
 
         let tariff = json["tariff"] as? [String: Any]
@@ -269,17 +249,6 @@ public struct JetBrainsStatusProbe: Sendable {
         let finalDuration = duration ?? tariffDuration
 
         return JetBrainsRefillInfo(type: type, next: next, amount: finalAmount, duration: finalDuration)
-    }
-
-    private static func parseDate(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) {
-            return date
-        }
-
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
     }
 }
 

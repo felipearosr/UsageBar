@@ -122,7 +122,7 @@ public struct OpenAIAPIUsageSnapshot: Codable, Equatable, Sendable {
         self.daily = daily.sorted { $0.startTime < $1.startTime }
         self.updatedAt = updatedAt
         self.historyDays = max(1, min(365, historyDays))
-        self.projectID = OpenAIAPISettingsReader.cleaned(projectID)
+        self.projectID = SettingsValue.cleaned(projectID)
     }
 
     public var last30Days: Summary {
@@ -186,7 +186,9 @@ public struct OpenAIAPIUsageSnapshot: Codable, Equatable, Sendable {
         return totals
             .map { name, total in total.makeModel(name: name) }
             .sorted {
-                if $0.totalTokens == $1.totalTokens { return $0.name < $1.name }
+                if $0.totalTokens == $1.totalTokens {
+                    return $0.name < $1.name
+                }
                 return $0.totalTokens > $1.totalTokens
             }
     }
@@ -201,7 +203,9 @@ public struct OpenAIAPIUsageSnapshot: Codable, Equatable, Sendable {
         return totals
             .map { LineItemBreakdown(name: $0.key, costUSD: $0.value) }
             .sorted {
-                if $0.costUSD == $1.costUSD { return $0.name < $1.name }
+                if $0.costUSD == $1.costUSD {
+                    return $0.name < $1.name
+                }
                 return $0.costUSD > $1.costUSD
             }
     }
@@ -268,6 +272,7 @@ public struct OpenAIAPIUsageSnapshot: Codable, Equatable, Sendable {
             last30DaysCostUSD: total.costUSD,
             last30DaysRequests: total.requests,
             historyDays: self.historyDays,
+            costProvenance: .vendorMetered,
             daily: daily,
             updatedAt: self.updatedAt)
     }

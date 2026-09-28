@@ -11,6 +11,11 @@ read_when:
 Status: accepted design boundary. This document defines a bounded MVP; it does not authorize runtime networking or
 implement the feature.
 
+Implementation status: the `ProviderInstanceID` runtime identity seam has landed. By owner decision, the local
+JavaScript/TypeScript plugin path now supersedes this document's declarative dot-path MVP. The network, secret,
+approval, redirect, response-bound, and runtime-identity requirements in the threat-model table remain binding for
+plugins.
+
 Issue: [#1735](https://github.com/steipete/CodexBar/issues/1735)
 
 ## Decision summary
@@ -30,7 +35,8 @@ collide in caches, status items, history, widgets, and settings.
 
 - `ProviderConfig.id` decodes directly as `UsageProvider`.
 - `ProviderDescriptorRegistry` bootstraps exactly one descriptor for every `UsageProvider.allCases` value.
-- `ProviderImplementationRegistry` constructs implementations with an exhaustive `UsageProvider` switch.
+- `ProviderCatalog` indexes the first-party implementations from the generated manifest. JavaScript plugins use the
+  separate `UserProviderPluginRegistry`.
 - Usage, errors, status, history, icons, settings, and menu state are keyed by `UsageProvider` across the app.
 - The settings sidebar now persists provider-pane selection as `provider:<UsageProvider.rawValue>` and still assumes one
   pane per compile-time provider, reinforcing that dynamic identities need the shared seam rather than a parallel UI path.
@@ -126,8 +132,10 @@ string-aware scanner before materializing JSON, so a hostile nested payload cann
 
 ### Network and secret boundary
 
-- Require HTTPS for authenticated requests. Allow HTTP only for an unauthenticated loopback URL (`localhost`,
-  `127.0.0.0/8`, or `::1`). Reject URL user info and fragments.
+- Require HTTPS for every public origin. A settings-configured origin may use HTTP only for loopback, RFC 1918 IPv4,
+  IPv4 link-local, IPv6 unique-local/link-local, or `.local` targets under the separate typed-approval gate. This local
+  exception may be authenticated because self-hosted LLM Proxy and LiteLLM deployments require the same bearer behavior
+  their existing Swift providers support. Reject URL user info and fragments.
 - Extend `ProviderEndpointOverrideValidator`; do not create a second URL parser. Use a dedicated
   `ProviderHTTPClient` configuration that rejects every redirect, even though the shared client safely permits same-origin
   HTTPS redirects.
@@ -242,8 +250,9 @@ change.
 ## Accepted owner decisions
 
 1. Declarative provider support is worth the runtime identity migration and long-term versioned schema support.
-2. MVP may use unauthenticated loopback HTTP only under the same separate approval gate, including typed confirmation of
-   the normalized URL. Every authenticated request requires HTTPS.
+2. MVP may use private-network HTTP only under the same separate approval gate, including typed confirmation of the
+   normalized origin. Public origins always require HTTPS. Bundled first-party code may bypass interactive approval only
+   for LLM Proxy and LiteLLM, whose existing Swift implementations already grant the identical target authority.
 3. A derived per-instance environment variable plus local URL/auth approval is the only MVP secret source. Keychain
    storage is deferred; the initial design must not imply or preserve a second secret path.
 4. MVP supports one primary rate window, with cost and identity optional. Multi-window and aggregation semantics remain

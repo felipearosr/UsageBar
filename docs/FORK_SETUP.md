@@ -1,13 +1,24 @@
 ---
-summary: "Fork setup: remote configuration and multi-upstream workflow."
+summary: "Historical topoffunnel fork setup and remote workflow; superseded for main-repository development."
 read_when:
-  - Setting up fork remotes
-  - Syncing with upstreams
+  - Reviewing the original topoffunnel fork remote setup
 ---
 
 # Fork Setup & Initial Configuration
 
+> Historical `topoffunnel/CodexBar` instructions. Use the [README](../README.md) and
+> [Development guide](DEVELOPMENT.md) for this repository. The Augment-removal warning below describes an old fork
+> comparison: Augment is registered and supported on current main. See the [Augment guide](augment.md).
+> The upstream/Quotio scripts and monitoring workflow still exist; their presence does not make this old fork
+> remote layout or selective-sync policy a requirement for main-repository development.
+
 **One-time setup for managing your CodexBar fork with multiple upstreams**
+
+For local Developer ID packaging, set `CODEXBAR_SIGNING=identity` and `APP_IDENTITY` to your installed identity's
+full name or certificate SHA-1 hash. The packaging script derives the Team ID and rejects conflicting
+`APP_TEAM_ID` overrides; it does not embed upstream CloudKit resources for another team. The release signing
+script uses the same `APP_IDENTITY`. See [identity signing requirements](DEVELOPMENT.md#local-development-build)
+and [release setup](RELEASING.md) before distributing a fork.
 
 ---
 
@@ -264,7 +275,24 @@ git push origin upstream-pr/fix-cursor-bonus
 # Go to: https://github.com/steipete/CodexBar
 # Click "New Pull Request"
 # Select: base: steipete:main <- compare: topoffunnel:upstream-pr/fix-cursor-bonus
+
+# 7. Link the originating issue in the PR body (see below)
 ```
+
+### Linking Issues
+
+Every fix PR should reference its originating issue (if there is one) in the PR body:
+
+- For issues in `steipete/CodexBar`, use `Closes #N` when the PR fully resolves the issue or `Refs #N`
+  when it only relates to the issue.
+- For issues in a contributor fork or another repository, use `Closes owner/repository#N` or
+  `Refs owner/repository#N`.
+
+An upstream PR resolves bare `#N` references in `steipete/CodexBar`. Qualify cross-repository references to avoid
+linking—or with `Closes`, closing—an unrelated upstream issue with the same number.
+
+Verify the cross-reference renders on the PR page before requesting review, so
+contributors can see which issue each fix belongs to.
 
 ---
 

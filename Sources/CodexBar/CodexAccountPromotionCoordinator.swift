@@ -13,7 +13,7 @@ final class CodexAccountPromotionCoordinator {
     weak var managedAccountCoordinator: ManagedCodexAccountCoordinator?
     private(set) var isAuthenticatingLiveAccount = false
     private(set) var isPromotingSystemAccount = false
-    private(set) var userFacingError: CodexSystemAccountPromotionUserFacingError?
+    private(set) var daemonRestartNote: String?
 
     init(
         service: CodexAccountPromotionService,
@@ -36,29 +36,21 @@ final class CodexAccountPromotionCoordinator {
     func promote(managedAccountID: UUID)
         async -> Result<CodexAccountPromotionResult, CodexSystemAccountPromotionUserFacingError>
     {
-        self.userFacingError = nil
-
         guard !self.isInteractionBlocked() else {
-            let error = Self.interactionBlockedError()
-            self.userFacingError = error
-            return .failure(error)
+            return .failure(Self.interactionBlockedError())
         }
 
         self.isPromotingSystemAccount = true
+        self.daemonRestartNote = nil
         defer { self.isPromotingSystemAccount = false }
 
         do {
             let result = try await self.service.promoteManagedAccount(id: managedAccountID)
+            self.daemonRestartNote = result.daemonRestartNote
             return .success(result)
         } catch {
-            let mapped = Self.mapUserFacingError(error)
-            self.userFacingError = mapped
-            return .failure(mapped)
+            return .failure(Self.mapUserFacingError(error))
         }
-    }
-
-    func clearError() {
-        self.userFacingError = nil
     }
 
     func setLiveReauthenticationInProgress(_ isInProgress: Bool) {
@@ -88,6 +80,10 @@ final class CodexAccountPromotionCoordinator {
                 L("CodexBar could not find saved auth for that account. Re-authenticate it and try again.")
             case .targetManagedAccountAuthUnreadable:
                 L("CodexBar could not read saved auth for that account. Re-authenticate it and try again.")
+            case .targetManagedAccountWorkspaceDiffersFromAuthDefault:
+                L(
+                    "That managed account uses a workspace that differs from its saved Codex auth default. " +
+                        "Keep it as a managed account; CodexBar will not rewrite Codex-owned auth to promote it.")
             case .liveAccountUnreadable:
                 L("CodexBar could not read the current system account on this Mac.")
             case .liveAccountMissingIdentityForPreservation:

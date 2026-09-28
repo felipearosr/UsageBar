@@ -2,7 +2,6 @@ import CodexBarCore
 import Foundation
 
 extension Notification.Name {
-    static let codexbarOpenSettings = Notification.Name("codexbarOpenSettings")
     static let codexbarDebugBlinkNow = Notification.Name("codexbarDebugBlinkNow")
     #if DEBUG
     static let codexbarDebugSimulateMemoryPressure =
@@ -11,7 +10,17 @@ extension Notification.Name {
     static let codexbarSessionLimitReset = Notification.Name("codexbarSessionLimitReset")
     static let codexbarWeeklyLimitReset = Notification.Name("codexbarWeeklyLimitReset")
     static let codexbarProviderConfigDidChange = Notification.Name("codexbarProviderConfigDidChange")
+    static let codexbarLocalConfigFileDidChange = Notification.Name("codexbarLocalConfigFileDidChange")
+    static let codexbarUsageSnapshotsDidChange = Notification.Name("codexbarUsageSnapshotsDidChange")
     static let codexbarQuotaWarningDidPost = Notification.Name("codexbarQuotaWarningDidPost")
+}
+
+final class UsageSnapshotsDidChangeEvent: NSObject, @unchecked Sendable {
+    let snapshots: [AccountSnapshotSyncPayload]
+
+    init(snapshots: [AccountSnapshotSyncPayload]) {
+        self.snapshots = snapshots
+    }
 }
 
 @MainActor

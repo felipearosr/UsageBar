@@ -70,24 +70,27 @@ struct ClaudeOAuthCredentialsStoreIsolatedSecurityCLITests {
             ClaudeOAuthCredentialsStore.isolatedSecurityCLIKeychainEnvironmentKey: "/tmp/verify.keychain-db",
         ]
 
-        let isMcpOnly = ClaudeOAuthCredentialsStore.withSecurityCLIReadOverrideForTesting(.data(mcpOnlyPayload)) {
-            ClaudeOAuthCredentialsStore.isMcpOAuthOnlyClaudeKeychainPayloadPresent(
-                interaction: .background,
-                readStrategy: .securityCLIExperimental,
-                keychainAccessDisabled: true,
-                environment: environment)
-        }
-        #expect(isMcpOnly)
+        ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.always) {
+            let isMcpOnly = ClaudeOAuthCredentialsStore
+                .withSecurityCLIReadOverrideForTesting(.data(mcpOnlyPayload)) {
+                    ClaudeOAuthCredentialsStore.isMcpOAuthOnlyClaudeKeychainPayloadPresent(
+                        interaction: .background,
+                        readStrategy: .securityCLIExperimental,
+                        keychainAccessDisabled: true,
+                        environment: environment)
+                }
+            #expect(isMcpOnly)
 
-        let blockedWithoutIsolatedKeychain = ClaudeOAuthCredentialsStore
-            .withSecurityCLIReadOverrideForTesting(.data(mcpOnlyPayload)) {
-                ClaudeOAuthCredentialsStore.isMcpOAuthOnlyClaudeKeychainPayloadPresent(
-                    interaction: .background,
-                    readStrategy: .securityCLIExperimental,
-                    keychainAccessDisabled: true,
-                    environment: [KeychainAccessGate.disableAccessEnvironmentKey: "1"])
-            }
-        #expect(blockedWithoutIsolatedKeychain == false)
+            let blockedWithoutIsolatedKeychain = ClaudeOAuthCredentialsStore
+                .withSecurityCLIReadOverrideForTesting(.data(mcpOnlyPayload)) {
+                    ClaudeOAuthCredentialsStore.isMcpOAuthOnlyClaudeKeychainPayloadPresent(
+                        interaction: .background,
+                        readStrategy: .securityCLIExperimental,
+                        keychainAccessDisabled: true,
+                        environment: [KeychainAccessGate.disableAccessEnvironmentKey: "1"])
+                }
+            #expect(blockedWithoutIsolatedKeychain == false)
+        }
     }
 
     @Test
@@ -107,7 +110,7 @@ struct ClaudeOAuthCredentialsStoreIsolatedSecurityCLITests {
                     environment: environment)
             }
         }
-        #expect(isMcpOnly)
+        #expect(!isMcpOnly)
 
         let blockedViaSecurityFramework = ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.never) {
             ClaudeOAuthCredentialsStore.withSecurityCLIReadOverrideForTesting(.data(mcpOnlyPayload)) {

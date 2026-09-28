@@ -10,13 +10,36 @@ public enum ClaudeOAuthFetchError: LocalizedError, Sendable {
     case serverError(Int, String?)
     case networkError(Error)
 
+    public static let usageRateLimitDescription =
+        "Claude OAuth usage endpoint is rate limited by Anthropic right now. Wait a few minutes, "
+            + "then click Refresh. If it keeps happening, run `claude logout && claude login`, then try again."
+
+    public static func isUsageRateLimitDescription(_ description: String?) -> Bool {
+        description == self.usageRateLimitDescription
+    }
+
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+        if let fetchError = error as? ClaudeOAuthFetchError,
+           case let .networkError(underlying) = fetchError
+        {
+            return self.isCancellation(underlying)
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
     public var errorDescription: String? {
         switch self {
         case .unauthorized:
             return "Claude OAuth request unauthorized. Run `claude` to re-authenticate."
         case .rateLimited:
-            return "Claude OAuth usage endpoint is rate limited by Anthropic right now. Wait a few minutes, "
-                + "then click Refresh. If it keeps happening, run `claude logout && claude login`, then try again."
+            return Self.usageRateLimitDescription
         case .invalidResponse:
             return "Claude OAuth response was invalid."
         case let .serverError(code, body):
@@ -37,14 +60,17 @@ public enum ClaudeOAuthFetchError: LocalizedError, Sendable {
 enum ClaudeOAuthUsageFetcher {
     private static let baseURL = "https://api.anthropic.com"
     private static let usagePath = "/api/oauth/usage"
+    private static let profilePath = "/api/oauth/profile"
     private static let betaHeader = "oauth-2025-04-20"
     private static let fallbackClaudeCodeVersion = "2.1.0"
 
     static func fetchUsage(
         accessToken: String,
-        detectClaudeVersion: Bool = true) async throws -> OAuthUsageResponse
+        detectClaudeVersion: Bool = true,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        transport: any ProviderHTTPTransport = ProviderHTTPClient.shared) async throws -> OAuthUsageResponse
     {
-        if let blockedUntil = ClaudeOAuthUsageRateLimitGate.blockedUntil() {
+        if let blockedUntil = ClaudeOAuthUsageRateLimitGate.blockedUntil(accessToken: accessToken) {
             throw ClaudeOAuthFetchError.rateLimited(retryAfter: blockedUntil)
         }
 
@@ -61,24 +87,29 @@ enum ClaudeOAuthUsageFetcher {
         // OAuth usage endpoint currently requires the beta header.
         request.setValue(Self.betaHeader, forHTTPHeaderField: "anthropic-beta")
         request.setValue(
-            Self.claudeCodeUserAgent(detectClaudeVersion: detectClaudeVersion),
+            Self.claudeCodeUserAgent(
+                detectClaudeVersion: detectClaudeVersion,
+                versionDetector: { ProviderVersionDetector.claudeVersion(environment: environment) }),
             forHTTPHeaderField: "User-Agent")
 
         do {
-            let response = try await ProviderHTTPClient.shared.response(for: request)
+            let response = try await transport.response(for: request)
             let data = response.data
             switch response.statusCode {
             case 200:
                 let usage = try Self.decodeUsageResponse(data)
-                ClaudeOAuthUsageRateLimitGate.recordSuccess()
+                ClaudeOAuthUsageRateLimitGate.recordSuccess(accessToken: accessToken)
                 return usage
             case 401:
                 throw ClaudeOAuthFetchError.unauthorized
             case 429:
                 let retryAfter = Self.retryAfterDate(from: response.response)
-                ClaudeOAuthUsageRateLimitGate.recordRateLimit(retryAfter: retryAfter)
+                ClaudeOAuthUsageRateLimitGate.recordRateLimit(
+                    accessToken: accessToken,
+                    retryAfter: retryAfter)
                 throw ClaudeOAuthFetchError.rateLimited(
-                    retryAfter: ClaudeOAuthUsageRateLimitGate.currentBlockedUntil() ?? retryAfter)
+                    retryAfter: ClaudeOAuthUsageRateLimitGate
+                        .currentBlockedUntil(accessToken: accessToken) ?? retryAfter)
             case 403:
                 let body = String(data: data, encoding: .utf8)
                 throw ClaudeOAuthFetchError.serverError(response.statusCode, body)
@@ -86,8 +117,41 @@ enum ClaudeOAuthUsageFetcher {
                 let body = String(data: data, encoding: .utf8)
                 throw ClaudeOAuthFetchError.serverError(response.statusCode, body)
             }
+        } catch let error where ClaudeOAuthFetchError.isCancellation(error) {
+            throw error
         } catch let error as ClaudeOAuthFetchError {
             throw error
+        } catch {
+            throw ClaudeOAuthFetchError.networkError(error)
+        }
+    }
+
+    static func fetchProfile(
+        accessToken: String,
+        transport: any ProviderHTTPTransport = ProviderHTTPClient.shared) async throws -> OAuthProfileResponse
+    {
+        guard let url = URL(string: self.baseURL + self.profilePath) else {
+            throw ClaudeOAuthFetchError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        do {
+            let response = try await transport.response(for: request)
+            guard response.statusCode == 200 else {
+                let body = String(data: response.data, encoding: .utf8)
+                throw ClaudeOAuthFetchError.serverError(response.statusCode, body)
+            }
+            return try JSONDecoder().decode(OAuthProfileResponse.self, from: response.data)
+        } catch let error as ClaudeOAuthFetchError {
+            throw error
+        } catch is DecodingError {
+            throw ClaudeOAuthFetchError.invalidResponse
         } catch {
             throw ClaudeOAuthFetchError.networkError(error)
         }
@@ -96,15 +160,6 @@ enum ClaudeOAuthUsageFetcher {
     static func decodeUsageResponse(_ data: Data) throws -> OAuthUsageResponse {
         let decoder = JSONDecoder()
         return try decoder.decode(OAuthUsageResponse.self, from: data)
-    }
-
-    static func parseISO8601Date(_ string: String?) -> Date? {
-        guard let string, !string.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
     }
 
     private static func retryAfterDate(from response: HTTPURLResponse, now: Date = Date()) -> Date? {
@@ -143,6 +198,63 @@ enum ClaudeOAuthUsageFetcher {
         let token = raw.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? raw
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+struct OAuthProfileResponse: Decodable, Sendable {
+    let accountUuid: String?
+    let emailAddress: String?
+    let organizationUuid: String?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        let account = try Self.decodeNestedContainer(in: container, key: "account")
+        let organization = try Self.decodeNestedContainer(in: container, key: "organization")
+        self.accountUuid = account.flatMap { Self.decodeString(in: $0, keys: ["uuid"]) }
+            ?? Self.decodeString(in: container, keys: ["accountUuid", "account_uuid"])
+        self.emailAddress =
+            account.flatMap { Self.decodeString(in: $0, keys: ["emailAddress", "email_address", "email"]) }
+                ?? Self.decodeString(in: container, keys: ["emailAddress", "email_address", "email"])
+        self.organizationUuid =
+            organization.flatMap { Self.decodeString(in: $0, keys: ["uuid"]) }
+                ?? Self.decodeString(in: container, keys: ["organizationUuid", "organization_uuid"])
+    }
+
+    init(emailAddress: String?, organizationUuid: String?, accountUuid: String? = nil) {
+        self.accountUuid = accountUuid
+        self.emailAddress = emailAddress
+        self.organizationUuid = organizationUuid
+    }
+
+    private static func decodeString(
+        in container: KeyedDecodingContainer<DynamicCodingKey>,
+        keys: [String]) -> String?
+    {
+        for keyName in keys {
+            guard let key = DynamicCodingKey(stringValue: keyName),
+                  let value = try? container.decodeIfPresent(String.self, forKey: key)
+            else {
+                continue
+            }
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+        return nil
+    }
+
+    private static func decodeNestedContainer(
+        in container: KeyedDecodingContainer<DynamicCodingKey>,
+        key keyName: String) throws -> KeyedDecodingContainer<DynamicCodingKey>?
+    {
+        guard let key = DynamicCodingKey(stringValue: keyName),
+              container.contains(key),
+              !((try? container.decodeNil(forKey: key)) ?? true)
+        else {
+            return nil
+        }
+        return try container.nestedContainer(keyedBy: DynamicCodingKey.self, forKey: key)
     }
 }
 
@@ -195,18 +307,14 @@ struct OAuthUsageResponse: Decodable {
         in container: KeyedDecodingContainer<DynamicCodingKey>,
         keys: [String]) -> (window: OAuthUsageWindow?, sourceKey: String?)
     {
-        var firstNullKey: String?
         for keyName in keys {
             guard let key = DynamicCodingKey(stringValue: keyName) else { continue }
             guard container.contains(key) else { continue }
             if let value = try? container.decodeIfPresent(OAuthUsageWindow.self, forKey: key) {
                 return (value, keyName)
             }
-            if firstNullKey == nil {
-                firstNullKey = keyName
-            }
         }
-        return (nil, firstNullKey)
+        return (nil, nil)
     }
 
     private static func decodeValue<T: Decodable>(

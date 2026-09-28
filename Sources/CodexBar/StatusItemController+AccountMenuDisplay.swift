@@ -2,8 +2,15 @@ import AppKit
 import CodexBarCore
 
 enum ClaudeSwapMenuPrecedence {
-    static func prefersClaudeSwap(provider: UsageProvider, accountCount: Int) -> Bool {
-        provider == .claude && accountCount > 1
+    static func prefersClaudeSwap(
+        provider: UsageProvider,
+        accountCount: Int,
+        showSingleAccount: Bool) -> Bool
+    {
+        // Provider-specific by design: claude-swap subprocess discovery owns Claude account presentation.
+        provider == .claude && ClaudeSwapAccountProjection.shouldPresentAccounts(
+            accountCount: accountCount,
+            showSingleAccount: showSingleAccount)
     }
 }
 
@@ -34,11 +41,14 @@ extension StatusItemController {
 
     func tokenAccountMenuDisplay(for provider: UsageProvider) -> TokenAccountMenuDisplay? {
         guard TokenAccountSupportCatalog.support(for: provider) != nil else { return nil }
-        // Multiple claude-swap rows are the selected Claude account source, so do not mix them
+        // Retained Cursor manual accounts are dormant while Automatic browser discovery owns the live snapshot.
+        guard self.settings.effectiveSelectedTokenAccount(for: provider) != nil else { return nil }
+        // Eligible claude-swap rows are the selected Claude account source, so do not mix them
         // with token-account cards or the segmented token-account switcher.
         if ClaudeSwapMenuPrecedence.prefersClaudeSwap(
             provider: provider,
-            accountCount: self.store.claudeSwapAccountSnapshots.count)
+            accountCount: self.store.claudeSwapAccountSnapshots.count,
+            showSingleAccount: self.settings.claudeSwapShowSingleAccount)
         {
             return nil
         }
@@ -78,13 +88,17 @@ extension StatusItemController {
         let label = accountSnapshot.account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return self.menuCardModel(
             for: provider,
-            snapshotOverride: accountSnapshot.snapshot,
-            errorOverride: accountSnapshot.error,
-            forceOverrideCard: true,
-            accountOverride: AccountInfo(email: label.isEmpty ? nil : label, plan: nil))
+            context: .account(.init(
+                snapshot: accountSnapshot.snapshot,
+                error: accountSnapshot.error,
+                info: AccountInfo(email: label.isEmpty ? nil : label, plan: nil),
+                historySelection: self.store.planUtilizationHistorySelection(
+                    for: provider,
+                    account: accountSnapshot.account))))
     }
 
     func codexAccountMenuDisplay(for provider: UsageProvider) -> CodexAccountMenuDisplay? {
+        // Provider-specific by design: managed Codex profiles use reconciled visible-account projection state.
         guard provider == .codex else { return nil }
         guard let projection = self.settings.codexVisibleAccountProjectionForMenuDisplay else { return nil }
         guard projection.visibleAccounts.count > 1 else { return nil }

@@ -1,4 +1,3 @@
-import AppKit
 import CodexBarCore
 import Foundation
 
@@ -12,8 +11,8 @@ struct OpenAIAPIProviderImplementation: ProviderImplementation {
 
     @MainActor
     func observeSettings(_ settings: SettingsStore) {
-        _ = settings.openAIAPIKey
-        _ = settings.openAIAPIProjectID
+        _ = settings[providerConfig: .openai, field: .apiKey]
+        _ = settings[providerConfig: .openai, field: .secretWorkspace(logField: "projectID")]
     }
 
     @MainActor
@@ -21,7 +20,8 @@ struct OpenAIAPIProviderImplementation: ProviderImplementation {
         if OpenAIAPISettingsReader.apiKey(environment: context.environment) != nil {
             return true
         }
-        return !context.settings.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return !context.settings[providerConfig: .openai, field: .apiKey]
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @MainActor
@@ -34,23 +34,14 @@ struct OpenAIAPIProviderImplementation: ProviderImplementation {
                     "legacy/user keys only get a best-effort balance fallback.",
                 kind: .secure,
                 placeholder: "sk-admin-...",
-                binding: context.stringBinding(\.openAIAPIKey),
+                binding: context.providerConfigBinding(.apiKey),
                 actions: [
-                    ProviderSettingsActionDescriptor(
+                    ProviderSettingsActionDescriptor.openURL(
                         id: "openai-open-billing",
                         title: "Open billing",
-                        style: .link,
-                        isVisible: nil,
-                        perform: {
-                            if let url = URL(
-                                string: "https://platform.openai.com/settings/organization/billing/overview")
-                            {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }),
+                        url: URL(string: "https://platform.openai.com/settings/organization/billing/overview")),
                 ],
-                isVisible: nil,
-                onActivate: nil),
+                isVisible: nil),
             ProviderSettingsFieldDescriptor(
                 id: "openai-project-id",
                 title: "Project ID",
@@ -58,21 +49,14 @@ struct OpenAIAPIProviderImplementation: ProviderImplementation {
                     "inherit OPENAI_PROJECT_ID.",
                 kind: .plain,
                 placeholder: "proj_...",
-                binding: context.stringBinding(\.openAIAPIProjectID),
+                binding: context.providerConfigBinding(.secretWorkspace(logField: "projectID")),
                 actions: [
-                    ProviderSettingsActionDescriptor(
+                    ProviderSettingsActionDescriptor.openURL(
                         id: "openai-open-projects",
                         title: "Open projects",
-                        style: .link,
-                        isVisible: nil,
-                        perform: {
-                            if let url = URL(string: "https://platform.openai.com/settings/organization/projects") {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }),
+                        url: URL(string: "https://platform.openai.com/settings/organization/projects")),
                 ],
-                isVisible: nil,
-                onActivate: nil),
+                isVisible: nil),
         ]
     }
 }

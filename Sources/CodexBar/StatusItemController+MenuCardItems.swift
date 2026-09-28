@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+/// Card rows draw their own selection state. Keeping AppKit's parallel highlight hidden also
+/// prevents newer menu implementations from painting a native selection behind the custom view.
+final class MenuCardMenuItem: NSMenuItem {
+    override var isHighlighted: Bool {
+        false
+    }
+}
+
 extension StatusItemController {
     func refreshMenuCardHeights(in menu: NSMenu) {
         let width = self.renderedMenuWidth(for: menu)
@@ -10,27 +18,24 @@ extension StatusItemController {
                 view.applySize(width: width, height: PersistentRefreshRowMetrics.defaults.rowHeight)
                 continue
             }
-            guard let view = item.view, view is any MenuCardMeasuring else { continue }
+            guard let view = item.view, let measuring = view as? any MenuCardMeasuring else { continue }
             guard abs(view.frame.width - width) > 0.5 else { continue }
             let id = item.representedObject as? String ?? "menuCard"
             let scope = self.menuProvider(for: menu)?.rawValue ?? id
             let height = self.cachedMenuCardHeight(for: id, scope: scope, width: width) {
                 self.menuCardHeight(for: view, width: width)
             }
-            view.frame = NSRect(
-                origin: .zero,
-                size: NSSize(width: width, height: height))
+            measuring.applyMeasuredSize(width: width, height: height)
         }
     }
 
-    func makeMenuCardItem<CardContent: View>(
-        _ view: CardContent,
+    func makeMenuCardItem(
+        _ view: some View,
         id: String,
         width: CGFloat,
         heightCacheScope: String? = nil,
         heightCacheFingerprint: String? = nil,
         submenu: NSMenu? = nil,
-        showsSubmenuIndicator: Bool? = nil,
         submenuIndicatorAlignment: Alignment = .topTrailing,
         submenuIndicatorTopPadding: CGFloat = 8,
         containsInteractiveControls: Bool = false,
@@ -38,9 +43,9 @@ extension StatusItemController {
         onClick: (() -> Void)? = nil) -> NSMenuItem
     {
         let allowsMenuHighlight = submenu != nil || onClick != nil
-        let effectiveShowsSubmenuIndicator = showsSubmenuIndicator ?? (submenu != nil)
         if !self.menuCardRenderingEnabledForController {
             let item = NSMenuItem()
+            item.title = ""
             item.isEnabled = allowsMenuHighlight
             item.representedObject = id
             item.submenu = submenu
@@ -51,84 +56,28 @@ extension StatusItemController {
             return item
         }
 
-        if usesGPUSelection {
-            // Selection is painted by AppKit/GPU, so the SwiftUI content is pinned to its normal
-            // appearance via a `highlightState` that is never flipped; these rows skip hosting-view
-            // recycling because the recycler is typed to `MenuCardItemHostingView`.
-            let interactiveRegionStore = MenuCardInteractiveRegionStore()
-            let wrapped = MenuCardSectionContainerView(
-                highlightState: MenuCardHighlightState(),
-                showsSubmenuIndicator: effectiveShowsSubmenuIndicator,
-                submenuIndicatorAlignment: submenuIndicatorAlignment,
-                submenuIndicatorTopPadding: submenuIndicatorTopPadding,
-                refreshMonitor: self.menuCardRefreshMonitor,
-                interactiveRegionStore: interactiveRegionStore)
-            {
-                view
-            }
-            let gpuHosting = GPUSelectionHostingView(
-                rootView: wrapped,
-                allowsMenuHighlight: allowsMenuHighlight,
-                containsInteractiveControls: containsInteractiveControls,
-                interactiveRegionStore: interactiveRegionStore,
-                onClick: onClick)
-            let gpuHeight = self.cachedMenuCardHeight(
-                for: id,
-                scope: heightCacheScope ?? id,
-                width: width,
-                fingerprint: heightCacheFingerprint)
-            {
-                self.menuCardHeight(for: gpuHosting, width: width)
-            }
-            gpuHosting.frame = NSRect(origin: .zero, size: NSSize(width: width, height: gpuHeight))
-            return self.makeMenuCardNSMenuItem(
-                hosting: gpuHosting,
-                id: id,
-                submenu: submenu,
-                isEnabled: allowsMenuHighlight || containsInteractiveControls)
-        }
-
-        let hosting: MenuCardItemHostingView<MenuCardSectionContainerView<CardContent>>
+        // Content is erased so every row shares one outer AppKit class. Tab switches can replant
+        // standard and GPU-selection payloads in place instead of detaching `item.view`.
+        let payload = MenuCardRowPayload(
+            content: AnyView(view),
+            showsSubmenuIndicator: submenu != nil,
+            submenuIndicatorAlignment: submenuIndicatorAlignment,
+            submenuIndicatorTopPadding: submenuIndicatorTopPadding,
+            allowsMenuHighlight: allowsMenuHighlight,
+            containsInteractiveControls: containsInteractiveControls,
+            usesGPUSelection: usesGPUSelection,
+            onClick: onClick)
+        let hosting: ErasedMenuCardHostingView
         if let recycled = self.takeRecyclableMenuCardView(
             for: id,
-            as: MenuCardItemHostingView<MenuCardSectionContainerView<CardContent>>.self)
+            as: ErasedMenuCardHostingView.self)
         {
-            let wrapped = MenuCardSectionContainerView(
-                highlightState: recycled.highlightState,
-                showsSubmenuIndicator: effectiveShowsSubmenuIndicator,
-                submenuIndicatorAlignment: submenuIndicatorAlignment,
-                submenuIndicatorTopPadding: submenuIndicatorTopPadding,
-                refreshMonitor: self.menuCardRefreshMonitor,
-                interactiveRegionStore: recycled.interactiveRegionStore)
-            {
-                view
-            }
-            recycled.prepareForReuse(
-                rootView: wrapped,
-                allowsMenuHighlight: allowsMenuHighlight,
-                containsInteractiveControls: containsInteractiveControls,
-                onClick: onClick)
+            self.replantMenuCardRowPayload(payload, into: recycled)
             hosting = recycled
         } else {
-            let highlightState = MenuCardHighlightState()
-            let interactiveRegionStore = MenuCardInteractiveRegionStore()
-            let wrapped = MenuCardSectionContainerView(
-                highlightState: highlightState,
-                showsSubmenuIndicator: effectiveShowsSubmenuIndicator,
-                submenuIndicatorAlignment: submenuIndicatorAlignment,
-                submenuIndicatorTopPadding: submenuIndicatorTopPadding,
-                refreshMonitor: self.menuCardRefreshMonitor,
-                interactiveRegionStore: interactiveRegionStore)
-            {
-                view
-            }
-            hosting = MenuCardItemHostingView(
-                rootView: wrapped,
-                highlightState: highlightState,
-                allowsMenuHighlight: allowsMenuHighlight,
-                containsInteractiveControls: containsInteractiveControls,
-                interactiveRegionStore: interactiveRegionStore,
-                onClick: onClick)
+            hosting = MenuRowContainerView(
+                payload: payload,
+                refreshMonitor: self.menuCardRefreshMonitor)
         }
         let height = self.cachedMenuCardHeight(
             for: id,
@@ -138,7 +87,7 @@ extension StatusItemController {
         {
             self.menuCardHeight(for: hosting, width: width)
         }
-        hosting.frame = NSRect(origin: .zero, size: NSSize(width: width, height: height))
+        hosting.applyMeasuredSize(width: width, height: height)
         return self.makeMenuCardNSMenuItem(
             hosting: hosting,
             id: id,
@@ -153,7 +102,11 @@ extension StatusItemController {
         submenu: NSMenu?,
         isEnabled: Bool) -> NSMenuItem
     {
-        let item = NSMenuItem()
+        let item = MenuCardMenuItem()
+        // NSMenuItem()'s default title is the literal string "NSMenuItem"; Tahoe's
+        // NSMenu paints that fallback title for frames where a row's view is
+        // detached mid-mutation. Keep the fallback render blank instead.
+        item.title = ""
         item.view = hosting
         item.isEnabled = isEnabled
         item.representedObject = id

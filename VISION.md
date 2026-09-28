@@ -18,3 +18,11 @@ CodexBar is the menu bar control surface for AI provider limits, credits, spend,
 - Changes that add meaningful maintenance complexity.
 - Behavior changes that affect provider auth, data storage, releases, or user privacy.
 - Provider additions that need new host APIs, bespoke UI, broad filesystem access, or unclear auth/privacy behavior.
+
+## Platform Scope
+
+- macOS is the home of the UI: the menu bar app, widgets, and any future native surfaces.
+- The CLI (`codexbar`) is cross-platform: macOS and Linux are supported today, with feature parity for usage, cost, serve, and hooks wherever platform APIs allow.
+- Windows is an aspiration, not a commitment: if Swift's Windows support matures enough to stop fighting us, shipping the CLI (and eventually more) there would be welcome. Contributions keeping the core portable are valued now.
+- Desktop-environment integrations beyond macOS (KDE widgets, GNOME extensions, etc.) belong in separate, community-maintained projects consuming `codexbar serve` or `codexbar usage --json`; we link good ones from the README rather than absorbing them.
+- Linux desktop and Omarchy are owner-requested exceptions: `Integrations/Linux` maintains portable Qt windows and a tray frontend consuming the Linux CLI; `Integrations/Omarchy` is a thin shell adapter sharing that backend. Provider fetching and authentication remain in the shared core/CLI.

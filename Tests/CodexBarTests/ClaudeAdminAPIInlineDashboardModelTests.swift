@@ -42,7 +42,6 @@ struct ClaudeAdminAPIInlineDashboardModelTests {
             snapshot: usage.toUsageSnapshot(),
             credits: nil,
             creditsError: nil,
-            dashboard: nil,
             dashboardError: nil,
             tokenSnapshot: nil,
             tokenError: nil,
@@ -52,16 +51,20 @@ struct ClaudeAdminAPIInlineDashboardModelTests {
             usageBarsShowUsed: false,
             resetTimeDisplayStyle: .countdown,
             tokenCostUsageEnabled: false,
+            costSummaryInlineEnabled: true,
             showOptionalCreditsAndExtraUsage: true,
             hidePersonalInfo: false,
             now: now))
 
         #expect(model.metrics.isEmpty)
-        #expect(model.inlineUsageDashboard?.kpis.first?.value == "$0.00")
-        #expect(model.inlineUsageDashboard?.points.first?.accessibilityValue == "2023-11-14: $1.25")
-        #expect(model.inlineUsageDashboard?.detailLines
-            .contains { $0.hasPrefix("30d:") && $0.contains("tokens") } == true)
-        #expect(model.inlineUsageDashboard?.detailLines.contains("Top model: claude-sonnet-4-20250514") == true)
+        #expect(model.inlineUsageDashboard == nil)
+        #expect(model.providerDetails.first?.rows.first?.value == "$0.00")
+        #expect(model.providerDetails.first?.chart?.points.first?.label == "2023-11-14")
+        #expect(model.providerDetails.first?.chart?.points.first?.value == 1.25)
+        #expect(model.providerDetails.first?.rows.contains { $0.label == "30d tokens" } == true)
+        #expect(model.providerDetails.first?.rows.contains {
+            $0.label == "Top model" && $0.value == "claude-sonnet-4-20250514"
+        } == true)
         #expect(model.planText == "Admin API")
     }
 

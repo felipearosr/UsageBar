@@ -60,8 +60,15 @@ public enum BrowserCookieAccessGate {
     private static let log = CodexBarLog.logger(LogCategories.browserCookieGate)
     @TaskLocal private static var explicitRetryScope: ExplicitRetryScope?
     @TaskLocal private static var deniedBrowsersForTesting: [Browser]?
+    #if DEBUG
+    @TaskLocal private static var shouldAttemptOverrideForTesting: Bool?
+    #endif
 
     static let allowTestCookieAccessEnvironmentKey = "CODEXBAR_ALLOW_TEST_BROWSER_COOKIE_ACCESS"
+
+    public static func requiresKeychainPromptAcknowledgement(for browsers: [Browser]) -> Bool {
+        browsers.contains(where: \.usesKeychainForCookieDecryption)
+    }
 
     static func cookieStoreAccessDecision(
         homeDirectories: [URL],
@@ -80,8 +87,16 @@ public enum BrowserCookieAccessGate {
     }
 
     public static func shouldAttempt(_ browser: Browser, now: Date = Date()) -> Bool {
+        #if DEBUG
+        if let shouldAttemptOverrideForTesting {
+            return shouldAttemptOverrideForTesting
+        }
+        #endif
         guard browser.usesKeychainForCookieDecryption else { return true }
         guard !KeychainAccessGate.isDisabled else { return false }
+        guard ProviderInteractionContext.current == .userInitiated else {
+            return self.shouldAttemptInBackground(browser)
+        }
         if self.deniedBrowsersForTesting?.contains(browser) == true {
             return self.isExplicitRetryAllowed(for: browser)
         }
@@ -160,6 +175,17 @@ public enum BrowserCookieAccessGate {
         }
     }
 
+    #if DEBUG
+    static func withShouldAttemptOverrideForTesting<T>(
+        _ result: Bool?,
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$shouldAttemptOverrideForTesting.withValue(result) {
+            try operation()
+        }
+    }
+    #endif
+
     static func operationPreservingAccessContext<T: Sendable>(
         _ operation: @escaping @Sendable () throws -> T) -> @Sendable () throws -> T
     {
@@ -172,6 +198,13 @@ public enum BrowserCookieAccessGate {
                 }
             }
         }
+    }
+
+    static func withRecordReadInteractionPolicy<T>(_ operation: () throws -> T) rethrows -> T {
+        guard ProviderInteractionContext.current == .background else {
+            return try operation()
+        }
+        return try BrowserCookieKeychainAccessGate.withUserInteractionDisallowed(operation)
     }
 
     public static func recordIfNeeded(_ error: Error, now: Date = Date()) {
@@ -196,6 +229,19 @@ public enum BrowserCookieAccessGate {
                     "browser": browser.displayName,
                     "until": "\(blockedUntil.timeIntervalSince1970)",
                 ])
+    }
+
+    public static func hasActiveDenial(for browser: Browser, now: Date = Date()) -> Bool {
+        guard browser.usesKeychainForCookieDecryption else { return false }
+        return self.lock.withLock { state in
+            self.loadIfNeeded(&state)
+            guard let blockedUntil = state.deniedUntilByBrowser[browser.rawValue] else { return false }
+            guard blockedUntil <= now else { return true }
+            state.deniedUntilByBrowser.removeValue(forKey: browser.rawValue)
+            state.chromiumFamilyDeniedUntil = state.deniedUntilByBrowser.values.max()
+            self.persist(state)
+            return false
+        }
     }
 
     static func recordAllowed(for browser: Browser) {
@@ -252,8 +298,49 @@ public enum BrowserCookieAccessGate {
             switch KeychainAccessPreflight.checkGenericPassword(service: label.service, account: label.account) {
             case .allowed:
                 return false
-            case .interactionRequired:
+            case .interactionRequired, .temporarilyUnavailable:
                 return true
+            case .notFound, .failure:
+                continue
+            }
+        }
+        return false
+    }
+
+    /// Background (non-user-initiated) refreshes must never surface a Keychain prompt. Rather than
+    /// skipping unconditionally, reuse the strictly no-UI Safe Storage preflight: when the ACL already
+    /// grants access (an explicit `.allowed`), a scheduled refresh can read cookies without any prompt,
+    /// so background usage stays in sync instead of only updating when the menu is opened. Anything else
+    /// — interaction required, not found, or a query failure — keeps the no-surprise boundary and skips.
+    /// A current grant can recover background refresh without clearing the user-initiated denial cooldown.
+    private static func shouldAttemptInBackground(_ browser: Browser) -> Bool {
+        if self.deniedBrowsersForTesting?.contains(browser) == true {
+            return false
+        }
+        guard self.chromiumKeychainAccessIsAllowed(for: browser) else {
+            self.log.info(
+                "Skipping background Chromium cookie import to avoid a Keychain prompt",
+                metadata: ["browser": browser.displayName])
+            return false
+        }
+        self.log.debug(
+            "Background Chromium cookie import allowed by no-UI Keychain preflight",
+            metadata: ["browser": browser.displayName])
+        return true
+    }
+
+    /// Returns true only when the no-UI Safe Storage preflight explicitly reports `.allowed` for one of
+    /// the browser's labels before any label requires interaction. Symmetric with
+    /// `chromiumKeychainRequiresInteraction`; `.notFound`/`.failure` are skipped and never treated as a
+    /// grant, so only an already-authorized ACL enables a background read.
+    private static func chromiumKeychainAccessIsAllowed(for browser: Browser) -> Bool {
+        let labels = browser.safeStorageLabels.isEmpty ? self.safeStorageLabels : browser.safeStorageLabels
+        for label in labels {
+            switch KeychainAccessPreflight.checkGenericPassword(service: label.service, account: label.account) {
+            case .allowed:
+                return true
+            case .interactionRequired, .temporarilyUnavailable:
+                return false
             case .notFound, .failure:
                 continue
             }
@@ -314,7 +401,9 @@ extension BrowserCookieClient {
         guard BrowserCookieAccessGate.shouldAttempt(browser) else { return [] }
         guard BrowserCookieAccessGate.claimExplicitRetryCookieReadIfNeeded(for: browser) else { return [] }
         do {
-            let records = try self.records(matching: query, in: browser, logger: logger)
+            let records = try BrowserCookieAccessGate.withRecordReadInteractionPolicy {
+                try self.records(matching: query, in: browser, logger: logger)
+            }
             BrowserCookieAccessGate.recordAllowed(for: browser)
             return records
         } catch {
@@ -325,6 +414,10 @@ extension BrowserCookieClient {
 }
 #else
 public enum BrowserCookieAccessGate {
+    public static func requiresKeychainPromptAcknowledgement(for browsers: [Browser]) -> Bool {
+        false
+    }
+
     public static func shouldAttempt(_ browser: Browser, now: Date = Date()) -> Bool {
         true
     }
@@ -350,6 +443,10 @@ public enum BrowserCookieAccessGate {
 
     public static func recordIfNeeded(_ error: Error, now: Date = Date()) {}
     public static func recordDenied(for browser: Browser, now: Date = Date()) {}
+    public static func hasActiveDenial(for browser: Browser, now: Date = Date()) -> Bool {
+        false
+    }
+
     public static func resetForTesting() {}
 }
 #endif

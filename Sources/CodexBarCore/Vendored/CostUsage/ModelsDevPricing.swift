@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -63,9 +68,13 @@ struct ModelsDevCatalog: Codable, Equatable {
         try container.encode(self.providers, forKey: ModelsDevAnyCodingKey(stringValue: "providers")!)
     }
 
-    func pricing(providerID rawProviderID: String, modelID rawModelID: String) -> ModelsDevPricingLookup? {
+    func pricing(
+        providerID rawProviderID: String,
+        modelID rawModelID: String,
+        exactModelID: Bool = false) -> ModelsDevPricingLookup?
+    {
         let providerID = ModelsDevProvider.normalizeProviderID(rawProviderID)
-        return self.providers[providerID]?.pricing(modelID: rawModelID)
+        return self.providers[providerID]?.pricing(modelID: rawModelID, exactModelID: exactModelID)
     }
 
     func isPlausibleRefresh() -> Bool {
@@ -160,8 +169,10 @@ struct ModelsDevProvider: Codable, Equatable {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    func pricing(modelID rawModelID: String) -> ModelsDevPricingLookup? {
-        let candidates = ModelsDevModelIDNormalizer.candidates(rawModelID)
+    func pricing(modelID rawModelID: String, exactModelID: Bool = false) -> ModelsDevPricingLookup? {
+        let candidates = exactModelID
+            ? [ModelsDevModelIDNormalizer.normalize(rawModelID)]
+            : ModelsDevModelIDNormalizer.candidates(rawModelID)
         for candidate in candidates {
             if let model = self.models[candidate],
                let pricing = model.pricing(providerID: self.id ?? self.mapKey ?? "", providerName: self.name)
@@ -427,14 +438,71 @@ enum ModelsDevCache {
     static let ttlSeconds: TimeInterval = 24 * 60 * 60
 
     private static let memo = ModelsDevCacheMemo()
+    /// Test-only instrumentation: counts `fileMetadata(at:)` reads (one per `load`) so tests can prove callers
+    /// resolve the catalog once instead of per pricing call. Task-local, so concurrent tests do not see each other's
+    /// counts, and unset (zero cost) in production.
+    @TaskLocal private static var metadataReadRecorder: MetadataReadRecorder?
 
-    private static func fileMetadata(at url: URL) -> (modificationDate: Date?, size: Int?) {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
-            return (nil, nil)
+    final class MetadataReadRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        func record() {
+            self.lock.lock()
+            self.count += 1
+            self.lock.unlock()
         }
-        let modificationDate = attributes[.modificationDate] as? Date
-        let size = (attributes[.size] as? NSNumber)?.intValue
-        return (modificationDate, size)
+
+        func snapshot() -> Int {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.count
+        }
+    }
+
+    static func withMetadataReadRecorderForTesting<T>(
+        _ recorder: MetadataReadRecorder,
+        operation: () throws -> T) rethrows -> T
+    {
+        try self.$metadataReadRecorder.withValue(recorder) {
+            try operation()
+        }
+    }
+
+    static func withMetadataReadRecorderForTesting<T>(
+        _ recorder: MetadataReadRecorder,
+        operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$metadataReadRecorder.withValue(recorder) {
+            try await operation()
+        }
+    }
+
+    /// Cheap POSIX stat for the (mtime, size) memo key. `attributesOfItem` also reads xattrs.
+    /// `stat(2)` follows a terminal symlink (matching what `Data(contentsOf:)` later reads) whereas
+    /// `attributesOfItem` did not.
+    private static func fileMetadata(at url: URL) -> (modificationDate: Date?, size: Int?) {
+        self.metadataReadRecorder?.record()
+
+        return url.withUnsafeFileSystemRepresentation { pointer in
+            guard let pointer else { return (nil, nil) }
+            var status = stat()
+            guard stat(pointer, &status) == 0 else {
+                return (nil, nil)
+            }
+            return (Self.modificationDate(from: status), Int(status.st_size))
+        }
+    }
+
+    private static func modificationDate(from status: stat) -> Date {
+        #if canImport(Darwin)
+        let seconds = TimeInterval(status.st_mtimespec.tv_sec)
+        let nanoseconds = TimeInterval(status.st_mtimespec.tv_nsec)
+        #else
+        let seconds = TimeInterval(status.st_mtim.tv_sec)
+        let nanoseconds = TimeInterval(status.st_mtim.tv_nsec)
+        #endif
+        return Date(timeIntervalSince1970: seconds + nanoseconds / 1_000_000_000)
     }
 
     private static func defaultCacheRoot() -> URL {
@@ -518,19 +586,12 @@ enum ModelsDevCache {
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(artifact) else { return false }
 
-        let tmp = dir.appendingPathComponent(".tmp-\(UUID().uuidString).json", isDirectory: false)
         do {
-            try data.write(to: tmp, options: [.atomic])
-            if FileManager.default.fileExists(atPath: url.path) {
-                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-            } else {
-                try FileManager.default.moveItem(at: tmp, to: url)
-            }
+            try data.write(to: url, options: [.atomic])
             // The on-disk catalog changed; drop the memo so the next load decodes the fresh file.
             Self.memo.invalidate(path: url.path)
             return true
         } catch {
-            try? FileManager.default.removeItem(at: tmp)
             return false
         }
     }
@@ -623,6 +684,7 @@ enum ModelsDevPricingPipeline {
     static func refreshForUnknownModelsIfNeeded(
         providerID: String,
         modelIDs: Set<String>,
+        exactModelIDs: Bool = false,
         now: Date = Date(),
         cacheRoot: URL? = nil,
         client: ModelsDevClient = ModelsDevClient()) async -> ModelsDevUnknownModelRefreshOutcome
@@ -630,7 +692,7 @@ enum ModelsDevPricingPipeline {
         guard !modelIDs.isEmpty else { return .unavailable }
         let load = ModelsDevCache.load(now: now, cacheRoot: cacheRoot)
         let unknownModelIDs = modelIDs.filter {
-            load.artifact?.catalog.pricing(providerID: providerID, modelID: $0) == nil
+            load.artifact?.catalog.pricing(providerID: providerID, modelID: $0, exactModelID: exactModelIDs) == nil
         }
         guard !unknownModelIDs.isEmpty else { return .pricingAvailable }
         if let fetchedAt = load.artifact?.fetchedAt,
@@ -649,7 +711,7 @@ enum ModelsDevPricingPipeline {
 
         let refreshedCatalog = ModelsDevCache.load(now: now, cacheRoot: cacheRoot).artifact?.catalog
         let pricingBecameAvailable = unknownModelIDs.contains {
-            refreshedCatalog?.pricing(providerID: providerID, modelID: $0) != nil
+            refreshedCatalog?.pricing(providerID: providerID, modelID: $0, exactModelID: exactModelIDs) != nil
         }
         return pricingBecameAvailable ? .pricingAvailable : .unavailable
     }

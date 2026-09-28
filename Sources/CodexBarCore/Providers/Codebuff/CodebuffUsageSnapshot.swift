@@ -66,7 +66,8 @@ public struct CodebuffUsageSnapshot: Sendable {
     }
 
     private func makeCreditsWindow() -> RateWindow? {
-        let total = self.resolvedTotal
+        let credits = CreditUsage(used: self.creditsUsed, total: self.creditsTotal, remaining: self.creditsRemaining)
+        let total = credits.total
         guard let total, total > 0 else {
             if self.creditsRemaining != nil || self.creditsUsed != nil {
                 // Degenerate case: no usable quota in the payload. Surface the row as fully
@@ -80,8 +81,8 @@ public struct CodebuffUsageSnapshot: Sendable {
             }
             return nil
         }
-        let used = self.resolvedUsed
-        let percent = min(100, max(0, (used / total) * 100))
+        let used = credits.used
+        let percent = UsagePercent(used: used, limit: total).displayClamped
         // Note: do not stuff the credit balance ("X/Y credits") into `resetDescription` —
         // generic renderers (UsageFormatter.resetLine) prepend "Resets " when `resetsAt`
         // is absent, which would surface misleading text like "Resets 250/1,000 credits".
@@ -96,31 +97,13 @@ public struct CodebuffUsageSnapshot: Sendable {
     private func makeWeeklyWindow() -> RateWindow? {
         guard let limit = self.weeklyLimit, limit > 0 else { return nil }
         let used = max(0, self.weeklyUsed ?? 0)
-        let percent = min(100, max(0, (used / limit) * 100))
+        let percent = UsagePercent(used: used, limit: limit).displayClamped
         // Same reasoning as above: avoid encoding non-reset detail in `resetDescription`.
         return RateWindow(
             usedPercent: percent,
             windowMinutes: 7 * 24 * 60,
             resetsAt: self.weeklyResetsAt,
             resetDescription: nil)
-    }
-
-    private var resolvedTotal: Double? {
-        if let creditsTotal { return max(0, creditsTotal) }
-        if let creditsUsed, let creditsRemaining {
-            return max(0, creditsUsed + creditsRemaining)
-        }
-        return nil
-    }
-
-    private var resolvedUsed: Double {
-        if let creditsUsed {
-            return max(0, creditsUsed)
-        }
-        if let total = self.resolvedTotal, let creditsRemaining {
-            return max(0, total - creditsRemaining)
-        }
-        return 0
     }
 
     private func makeLoginMethod() -> String? {
