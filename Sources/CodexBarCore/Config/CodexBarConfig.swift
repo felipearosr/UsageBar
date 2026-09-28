@@ -5,10 +5,69 @@ public struct CodexBarConfig: Codable, Sendable {
 
     public var version: Int
     public var providers: [ProviderConfig]
+    /// Provider entries whose `id` this build does not recognize (typically written by a newer build).
+    /// Kept verbatim so loading does not fail and saving does not drop them.
+    public var unknownProviders: [ConfigJSONValue]
 
-    public init(version: Int = Self.currentVersion, providers: [ProviderConfig]) {
+    public init(
+        version: Int = Self.currentVersion,
+        providers: [ProviderConfig],
+        unknownProviders: [ConfigJSONValue] = [])
+    {
         self.version = version
         self.providers = providers
+        self.unknownProviders = unknownProviders
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case providers
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try container.decode(Int.self, forKey: .version)
+        var providers: [ProviderConfig] = []
+        var unknownProviders: [ConfigJSONValue] = []
+        for entry in try container.decode([ProviderEntry].self, forKey: .providers) {
+            switch entry {
+            case let .known(config): providers.append(config)
+            case let .unknown(raw): unknownProviders.append(raw)
+            }
+        }
+        self.providers = providers
+        self.unknownProviders = unknownProviders
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.version, forKey: .version)
+        var list = container.nestedUnkeyedContainer(forKey: .providers)
+        for provider in self.providers {
+            try list.encode(provider)
+        }
+        for raw in self.unknownProviders {
+            try list.encode(raw)
+        }
+    }
+
+    /// Routes each `providers` element by its `id`: known ids decode strictly, unknown ids are kept raw.
+    private enum ProviderEntry: Decodable {
+        case known(ProviderConfig)
+        case unknown(ConfigJSONValue)
+
+        private enum IDKey: String, CodingKey {
+            case id
+        }
+
+        init(from decoder: Decoder) throws {
+            let id = try decoder.container(keyedBy: IDKey.self).decode(String.self, forKey: .id)
+            if UsageProvider(rawValue: id) != nil {
+                self = try .known(ProviderConfig(from: decoder))
+            } else {
+                self = try .unknown(ConfigJSONValue(from: decoder))
+            }
+        }
     }
 
     public static func makeDefault(
@@ -33,7 +92,9 @@ public struct CodexBarConfig: Codable, Sendable {
         UsageProvider.allCases.sorted { lhs, rhs in
             let lhsEnabled = enablement(lhs)
             let rhsEnabled = enablement(rhs)
-            if lhsEnabled != rhsEnabled { return lhsEnabled }
+            if lhsEnabled != rhsEnabled {
+                return lhsEnabled
+            }
             let lhsName = metadata[lhs]?.displayName ?? lhs.rawValue
             let rhsName = metadata[rhs]?.displayName ?? rhs.rawValue
             switch lhsName.localizedCaseInsensitiveCompare(rhsName) {
@@ -66,7 +127,8 @@ public struct CodexBarConfig: Codable, Sendable {
 
         return CodexBarConfig(
             version: Self.currentVersion,
-            providers: normalized)
+            providers: normalized,
+            unknownProviders: self.unknownProviders)
     }
 
     public func orderedProviders() -> [UsageProvider] {
