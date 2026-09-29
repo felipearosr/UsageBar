@@ -153,6 +153,8 @@ struct CodexUIErrorMapper {
             || lower.contains("get https://")
             || lower.contains("get http://")
             || lower.contains("returned invalid data")
+            || lower.contains("codex app-server exited")
+            || lower.contains("codex app-server closed stdout")
     }
 
     private static func looksOpenAIWebTimeout(lower: String) -> Bool {

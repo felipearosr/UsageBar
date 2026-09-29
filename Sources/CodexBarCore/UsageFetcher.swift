@@ -865,6 +865,9 @@ enum RPCWireError: Error, LocalizedError {
     case requestFailed(String)
     case malformed(String)
     case timeout(method: String)
+    /// The app-server closed stdout before replying. `termination` is nil when the child was still running
+    /// after the bounded exit wait; `stderr` is the last meaningful stderr line, already sanitized.
+    case processExited(termination: RPCChildTermination?, stderr: String?)
 
     var errorDescription: String? {
         switch self {
@@ -876,7 +879,19 @@ enum RPCWireError: Error, LocalizedError {
             "Codex returned invalid data: \(message)"
         case let .timeout(method):
             "Codex RPC timed out waiting for `\(method)` reply."
+        case let .processExited(termination, stderr):
+            Self.processExitedDescription(termination: termination, stderr: stderr)
         }
+    }
+
+    static func processExitedDescription(termination: RPCChildTermination?, stderr: String?) -> String {
+        let head = if let termination {
+            "codex app-server exited (\(termination.summary))"
+        } else {
+            "codex app-server closed stdout"
+        }
+        guard let stderr, !stderr.isEmpty else { return head }
+        return "\(head): \(stderr)"
     }
 }
 
@@ -888,6 +903,9 @@ private final class CodexRPCClient: @unchecked Sendable {
     private let stdin = RPCChildProcessInput()
     private let stdoutPipe = Pipe()
     private let stderrPipe = Pipe()
+    private let stderrTail = RPCStderrTail()
+    /// Upper bound on how long a stdout EOF waits for the child to exit and flush stderr.
+    private static let exitGraceSeconds: TimeInterval = 0.5
     private let stdoutLineStream: AsyncStream<Data>
     private let stdoutLineContinuation: AsyncStream<Data>.Continuation
     private var nextID = 1
@@ -976,14 +994,17 @@ private final class CodexRPCClient: @unchecked Sendable {
         }
 
         let stderrHandle = self.stderrPipe.fileHandleForReading
+        let stderrTail = self.stderrTail
         stderrHandle.readabilityHandler = { handle in
             let data = handle.availableData
             // When the child closes stderr, availableData returns empty and will keep re-firing; clear the handler
             // to avoid a busy read loop on the file-descriptor monitoring queue.
             if data.isEmpty {
                 handle.readabilityHandler = nil
+                stderrTail.markClosed()
                 return
             }
+            stderrTail.append(data)
             guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
             for line in text.split(whereSeparator: \.isNewline) {
                 Self.log.debug("[codex stderr] \(line)")
@@ -1098,7 +1119,19 @@ private final class CodexRPCClient: @unchecked Sendable {
                 return json
             }
         }
-        throw RPCWireError.malformed("codex app-server closed stdout")
+        throw await self.stdoutClosedError()
+    }
+
+    /// Waits briefly for the child to exit and flush stderr, then describes why stdout closed.
+    private func stdoutClosedError() async -> RPCWireError {
+        let deadline = Date().addingTimeInterval(Self.exitGraceSeconds)
+        while self.process.isRunning || !self.stderrTail.isClosed, Date() < deadline, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let termination = RPCChildTermination(process: self.process)
+        let stderr = self.stderrTail.lastMeaningfulLine()
+        Self.log.warning("Codex RPC closed stdout", metadata: ["termination": termination?.summary ?? "running"])
+        return .processExited(termination: termination, stderr: stderr)
     }
 
     private func decodeResult<T: Decodable>(from message: [String: Any]) throws -> T {
