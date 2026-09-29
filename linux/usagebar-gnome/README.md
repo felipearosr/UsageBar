@@ -103,6 +103,10 @@ result, GNOME log, and full-stage PNG screenshot under `/tmp`.
   supervisor (Gio.Subprocess), Soup 3 HTTP client, stale-merge (port of the
   Rust `merge_stale`), panel indicator + popover UI (St widgets), quota
   notifications.
+- `usagebar@felipearosr.github.io/authlogin.js` — which provider errors are
+  auth failures, each provider's login command, and the terminal launcher
+  order for the error banner's "Log in" button (pure; tested in
+  `tests/authlogin.test.mjs`).
 - `usagebar@felipearosr.github.io/machinesync.js` — Machine Sync push/read
   cadence and the Machines tab view model (pure; tested in
   `tests/machinesync.test.mjs`).

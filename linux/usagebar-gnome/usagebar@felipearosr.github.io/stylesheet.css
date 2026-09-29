@@ -99,6 +99,13 @@
   font-size: 9.5pt;
 }
 
+.usagebar-login-btn {
+  margin-top: 4px;
+  padding: 2px 10px;
+  font-size: 9.5pt;
+  border: 1px solid rgba(160, 160, 166, 0.4);
+}
+
 .usagebar-detail-head {
   spacing: 8px;
   margin-bottom: 6px;
