@@ -28,6 +28,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {PROVIDER_META} from './providermeta.js';
+import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
     buildCostDateRange,
     buildDailyCostRows,
@@ -1115,6 +1116,21 @@ function findBinary() {
     for (const dir of [`${GLib.get_home_dir()}/.local/bin`,
         '/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']) {
         const p = `${dir}/codexbar`;
+        if (GLib.file_test(p, GLib.FileTest.IS_EXECUTABLE))
+            return p;
+    }
+    return null;
+}
+
+// Provider CLIs (codex, claude, ...) often live outside GNOME Shell's PATH.
+function findLoginBinary(name) {
+    const inPath = GLib.find_program_in_path(name);
+    if (inPath)
+        return inPath;
+    const home = GLib.get_home_dir();
+    for (const dir of [`${home}/.local/bin`, `${home}/.bun/bin`, `${home}/.npm-global/bin`,
+        '/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']) {
+        const p = `${dir}/${name}`;
         if (GLib.file_test(p, GLib.FileTest.IS_EXECUTABLE))
             return p;
     }
@@ -4325,6 +4341,9 @@ export default class UsageBarExtension extends Extension {
 
         const actions = new St.BoxLayout({style_class: 'usagebar-banner-actions'});
         actions.add_child(this._buildRetryButton());
+        const login = this._buildLoginButton(row);
+        if (login)
+            actions.add_child(login);
         box.add_child(actions);
         card.add_child(box);
     }
@@ -4353,6 +4372,53 @@ export default class UsageBarExtension extends Extension {
                 this._fetchUsage(true);
         });
         return button;
+    }
+
+    // "Log in" for auth-failure banners; null when the error is not an auth
+    // problem or the provider has no login command (see authlogin.js).
+    _buildLoginButton(row) {
+        const argv = loginActionFor(row);
+        if (!argv)
+            return null;
+        const button = new St.Button({
+            label: 'Log in',
+            style_class: 'usagebar-link usagebar-banner-btn usagebar-login-btn',
+            can_focus: true,
+            reactive: true,
+            x_align: Clutter.ActorAlign.START,
+        });
+        button.connect('clicked', () => this._launchLogin(row.provider, argv));
+        return button;
+    }
+
+    _launchLogin(provider, argv) {
+        const name = PROVIDER_META[provider]?.name ?? provider;
+        const bin = findLoginBinary(argv[0]);
+        if (!bin) {
+            this._notify('UsageBar', `\`${argv[0]}\` not found. Install it, then run \`${argv.join(' ')}\` to log in to ${name}.`);
+            return;
+        }
+        const command = terminalArgv([bin, ...argv.slice(1)], p => GLib.find_program_in_path(p));
+        if (!command) {
+            console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+            this._notify('UsageBar', `No terminal found. Run \`${argv.join(' ')}\` in a terminal to log in to ${name}.`);
+            return;
+        }
+        this._indicator?.menu.close();
+        try {
+            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
+            // Launchers that hand off to a terminal server (gnome-terminal,
+            // ptyxis) exit right away, so this refresh can come early; it
+            // is best-effort.
+            const generation = this._generation;
+            proc.wait_async(null, () => {
+                if (generation === this._generation)
+                    this._fetchUsage(true);
+            });
+        } catch (e) {
+            console.warn(`usagebar: login terminal failed: ${e.message}`);
+            this._notify('UsageBar', `Could not open a terminal. Run \`${argv.join(' ')}\` to log in to ${name}.`);
+        }
     }
 
     // flat: no card background; thin separator lines between sections
