@@ -650,14 +650,48 @@
   font-size: 8.5pt;
 }
 
+.usagebar-machine-body {
+  spacing: 3px;
+}
+
+.usagebar-machine-line {
+  spacing: 6px;
+}
+
 .usagebar-machine-spend {
   font-size: 10pt;
-  margin-top: 2px;
 }
 
 .usagebar-machine-model {
   spacing: 6px;
   margin-left: 16px;
+}
+
+.usagebar-machine-detail .usagebar-machine-model {
+  margin-left: 0;
+  margin-top: 2px;
+}
+
+.usagebar-machine-model-tokens {
+  font-size: 8.5pt;
+  min-width: 64px;
+  text-align: right;
+}
+
+.usagebar-machine-model-spend {
+  min-width: 52px;
+  text-align: right;
+}
+
+.usagebar-machine-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  background-color: rgba(160, 160, 166, 0.18);
+}
+
+.usagebar-machine-badge-icon {
+  color: rgba(235, 235, 240, 0.9);
 }
 
 .usagebar-machine-foot {
