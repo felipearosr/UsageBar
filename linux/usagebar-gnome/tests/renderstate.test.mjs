@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import {updateCompletionMessage} from '../usagebar@felipearosr.github.io/updates.js';
 import {
     buildCostDateRange,
     buildDailyCostRows,
     buildSummaryBarSegments,
-    cliUpdateCompletionMessage,
     CostOverviewCache,
     costChartMetricOptions,
     costRangeOptions,
@@ -157,19 +157,19 @@ test('daily cost rows retain token-only days', () => {
     ]);
 });
 
-test('CLI update completion tells Linux users to start a new login session', () => {
+test('update completion tells Linux users to start a new login session', () => {
     const status = new StatusMessageState();
-    status.setTransient('Installing codexbar update…');
-    assert.equal(status.current, 'Installing codexbar update…');
+    status.setTransient('Installing UsageBar update…');
+    assert.equal(status.current, 'Installing UsageBar update…');
 
-    const completion = cliUpdateCompletionMessage('0.60.0');
+    const completion = updateCompletionMessage('1.2.0');
     status.setPersistent(completion);
     status.setTransient('codexbar serve exited — restarting…');
     assert.equal(status.current, completion);
     status.setTransient('');
     assert.equal(
         status.current,
-        'codexbar 0.60.0 installed — log out and back in to finish the update');
+        'UsageBar 1.2.0 installed — log out and back in to finish the update');
 });
 
 test('RenderScheduler coalesces a burst and can be cancelled', () => {

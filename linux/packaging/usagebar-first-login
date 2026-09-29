@@ -1,0 +1,25 @@
+#!/usr/bin/gjs -m
+// Runs from /etc/xdg/autostart at every GNOME login and turns the packaged
+// extension on once per user. Later choices stay the user's: after the first
+// run a stamp file makes this a no-op, so disabling UsageBar sticks.
+// Adding the uuid to enabled-extensions enables it live, because the shell
+// scanned /usr/share/gnome-shell/extensions when this session started.
+
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+
+const UUID = 'usagebar@felipearosr.github.io';
+const stamp = GLib.build_filenamev([GLib.get_user_state_dir(), 'usagebar', 'enabled-once']);
+
+if (!GLib.file_test(stamp, GLib.FileTest.EXISTS)) {
+    const settings = new Gio.Settings({schema_id: 'org.gnome.shell'});
+    const enabled = settings.get_strv('enabled-extensions');
+    if (!enabled.includes(UUID))
+        settings.set_strv('enabled-extensions', [...enabled, UUID]);
+    const disabled = settings.get_strv('disabled-extensions');
+    if (disabled.includes(UUID))
+        settings.set_strv('disabled-extensions', disabled.filter(uuid => uuid !== UUID));
+    Gio.Settings.sync();
+    GLib.mkdir_with_parents(GLib.path_get_dirname(stamp), 0o755);
+    GLib.file_set_contents(stamp, '');
+}
