@@ -99,6 +99,28 @@
   font-size: 9.5pt;
 }
 
+/* Provider error banner: warning text over a row of small actions. */
+.usagebar-error-banner {
+  spacing: 4px;
+}
+
+.usagebar-banner-actions {
+  spacing: 6px;
+}
+
+.usagebar-banner-btn {
+  font-size: 9pt;
+  padding: 2px 8px;
+}
+
+.usagebar-banner-btn:insensitive {
+  color: rgba(200, 200, 206, 0.6);
+}
+
+.usagebar-login-btn {
+  border: 1px solid rgba(160, 160, 166, 0.4);
+}
+
 .usagebar-detail-head {
   spacing: 8px;
   margin-bottom: 6px;
