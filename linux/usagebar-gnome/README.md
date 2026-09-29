@@ -15,10 +15,12 @@ banner until the session ends.
 
 Self-contained: it supervises its own `codexbar serve` child on a free
 loopback port (restart with backoff, killed on disable) and polls
-`GET /usage` / `GET /cost`. Requires the `codexbar` CLI ≥ 0.43.0 — install
-from [upstream's releases](https://github.com/steipete/CodexBar/releases)
-(NOT brew; the Linux formula lags and drops per-model limit data), or set
-`$CODEXBAR_BIN`.
+`GET /usage` / `GET /cost`. The .deb/.rpm (see `../README.md`) ship the
+fork's `codexbar` CLI at `/usr/libexec/usagebar/codexbar`, which the
+extension prefers; otherwise it uses `$CODEXBAR_BIN` or the first `codexbar`
+on `PATH`. Machine Sync needs the fork's CLI; everything else works with
+upstream's ≥ 0.43.0 (NOT brew; the Linux formula lags and drops per-model
+limit data).
 
 ## Install (development)
 

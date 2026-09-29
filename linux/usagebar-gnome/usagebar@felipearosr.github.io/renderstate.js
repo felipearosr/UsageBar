@@ -54,10 +54,6 @@ export class StatusMessageState {
     }
 }
 
-export function cliUpdateCompletionMessage(version) {
-    return `codexbar ${version} installed — log out and back in to finish the update`;
-}
-
 export function buildCostDateRange(days, now = new Date()) {
     const count = Math.max(1, Math.trunc(days));
     const dates = [];
