@@ -2105,6 +2105,7 @@ export default class UsageBarExtension extends Extension {
             this._fetchId = 0;
         }
         this._fetchInFlight = false;
+        this._retryInFlight = false;
         this._costInFlight = false;
         if (this._tickId) {
             GLib.source_remove(this._tickId);
@@ -2466,6 +2467,7 @@ export default class UsageBarExtension extends Extension {
             if (generation !== this._generation || !this._indicator)
                 return;
             this._fetchInFlight = false;
+            this._retryInFlight = false;
             if (force)
                 this._indicator.setRefreshing(false);
             if (error) {
@@ -3336,6 +3338,8 @@ export default class UsageBarExtension extends Extension {
             costVersion,
             localDateKey(),
             timeBucket,
+            // The error banner's Retry button shows the busy state.
+            !!this._retryInFlight,
         ].join('|');
     }
 
@@ -4301,6 +4305,56 @@ export default class UsageBarExtension extends Extension {
             this._settings.set_strv('known-windows', encoded);
     }
 
+    // Provider error banner: the warning text, then a row of small action
+    // buttons (Retry today; more actions slot into the same actions box).
+    _addErrorBanner(card, row) {
+        const box = new St.BoxLayout({
+            vertical: true,
+            style_class: 'usagebar-error-banner',
+            x_expand: true,
+        });
+        const msg = row.error.message ?? 'provider fetch failed';
+        const suffix = row.stale ? ' — showing last known data' : '';
+        const label = new St.Label({
+            text: `⚠ ${msg}${suffix}`,
+            style_class: 'usagebar-banner',
+            x_expand: true,
+        });
+        label.clutter_text.line_wrap = true;
+        box.add_child(label);
+
+        const actions = new St.BoxLayout({style_class: 'usagebar-banner-actions'});
+        actions.add_child(this._buildRetryButton());
+        box.add_child(actions);
+        card.add_child(box);
+    }
+
+    // Retry re-runs the header refresh (a forced /usage fetch). Serve has no
+    // per-provider forced refresh, so this refreshes every provider. The busy
+    // flag lives on the extension so re-rendered cards keep the busy state,
+    // and _fetchUsage's in-flight guard stops overlapping fetches.
+    _buildRetryButton() {
+        const button = new St.Button({
+            label: this._retryInFlight ? 'Retrying…' : 'Retry',
+            style_class: 'usagebar-link usagebar-banner-btn',
+            can_focus: true,
+            reactive: !this._retryInFlight,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        button.connect('clicked', () => {
+            if (this._retryInFlight)
+                return;
+            this._retryInFlight = true;
+            button.label = 'Retrying…';
+            button.reactive = false;
+            // A poll already in flight answers the retry; its completion
+            // clears the flag and re-renders.
+            if (!this._fetchInFlight)
+                this._fetchUsage(true);
+        });
+        return button;
+    }
+
     // flat: no card background; thin separator lines between sections
     // (usage | credits/cost | links) — used on the per-provider tabs.
     _buildCard(row, {showCost = true, flat = false, showLinks = true, showBackButton = false} = {}) {
@@ -4381,17 +4435,8 @@ export default class UsageBarExtension extends Extension {
         }
         card.add_child(head);
 
-        if (row.error) {
-            const msg = row.error.message ?? 'provider fetch failed';
-            const suffix = row.stale ? ' — showing last known data' : '';
-            const banner = new St.Label({
-                text: `⚠ ${msg}${suffix}`,
-                style_class: 'usagebar-banner',
-                x_expand: true,
-            });
-            banner.clutter_text.line_wrap = true;
-            card.add_child(banner);
-        }
+        if (row.error)
+            this._addErrorBanner(card, row);
 
         for (const {w, slot} of windowsOf(row)) {
             if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
