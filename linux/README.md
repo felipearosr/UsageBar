@@ -117,6 +117,19 @@ On Ubuntu / Debian, each release also has a CLI-only package,
 with other packages that ship a `codexbar` command. You don't need it next to
 the full `usagebar` package, which carries its own copy.
 
+On Arch, [`packaging/aur/`](packaging/aur/) holds the `usagebar-cli-bin`
+PKGBUILD and `.SRCINFO`. It downloads the release tarball with pinned
+checksums, uses the same layout (`/usr/lib/usagebar-cli`, `/usr/bin/codexbar`),
+and conflicts with other `codexbar` packages. Until it is on the AUR, build it
+from a checkout with `makepkg -si` in that directory.
+
+To bump it for a new release, run one command:
+`linux/packaging/aur/bump.sh <version>`. It sets `pkgver`, resets `pkgrel`,
+pins the checksums from the release's `.sha256` files and the LICENSE at the
+tag, and regenerates `.SRCINFO`, in an archlinux container when `makepkg`
+isn't installed. The release workflow runs it after publishing and uploads
+the result as the `aur-usagebar-cli-bin` artifact.
+
 #### COPR
 
 [`packaging/rpm/usagebar-cli.spec`](packaging/rpm/usagebar-cli.spec)
