@@ -108,6 +108,13 @@ instead (run it with `sudo`; the script never asks for privileges itself),
 `--prefix DIR` anywhere else, and `--uninstall` removes exactly what it
 installed. It refuses to replace a `codexbar` it didn't install.
 
+On Ubuntu / Debian, each release also has a CLI-only package,
+`usagebar-cli_<version>_amd64.deb` (`_arm64.deb` on ARM):
+`sudo apt install ./usagebar-cli_*.deb`. It puts the CLI in
+`/usr/lib/usagebar-cli` with `/usr/bin/codexbar` linking to it, and conflicts
+with other packages that ship a `codexbar` command. You don't need it next to
+the full `usagebar` package, which carries its own copy.
+
 ### Releasing
 
 Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).
