@@ -15,8 +15,10 @@ import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 import Pango from 'gi://Pango';
 
+import {needsCliNote} from './clicompat.js';
 import {hexColor} from './modelprefs.js';
 import {
+    CLI_WITHOUT_SYNC,
     canCreate,
     cleartextHost,
     cleartextWarning,
@@ -61,21 +63,22 @@ function buttonRow(props) {
 
 // Runs `binary args…` and resolves with syncprefs.parseResult's shape. stdin
 // is always a pipe (closed when `stdin` is null) so nothing can prompt.
-function runSync(binary, args, stdin = null) {
+// stderr is read only to recognise a CLI without `codexbar sync`.
+export function runSync(binary, args, stdin = null) {
     return new Promise(resolve => {
         let proc;
         try {
             proc = Gio.Subprocess.new([binary, ...args],
                 Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE |
-                Gio.SubprocessFlags.STDERR_SILENCE);
+                Gio.SubprocessFlags.STDERR_PIPE);
         } catch (e) {
             resolve({ok: false, reason: null, message: e.message});
             return;
         }
         proc.communicate_utf8_async(stdin, null, (p, res) => {
             try {
-                const [, stdout] = p.communicate_utf8_finish(res);
-                resolve(parseResult({success: p.get_successful(), stdout}));
+                const [, stdout, stderr] = p.communicate_utf8_finish(res);
+                resolve(parseResult({success: p.get_successful(), stdout, stderr}));
             } catch (e) {
                 resolve({ok: false, reason: null, message: e.message});
             }
@@ -228,6 +231,10 @@ export class MachineSyncPage {
         const result = await this._run(settingsArgs());
         if (!this._alive)
             return;
+        if (result.reason === CLI_WITHOUT_SYNC) {
+            this._setGroups([this._needsCliGroup()]);
+            return;
+        }
         if (!result.ok) {
             this._setGroups([new Adw.PreferencesGroup({
                 title: 'Machine Sync',
@@ -240,6 +247,18 @@ export class MachineSyncPage {
             this._renderPaired();
         else
             this._renderUnpaired();
+    }
+
+    // Upstream's CLI has no `codexbar sync`: say so instead of showing the
+    // pairing UI, and link to the install page.
+    _needsCliGroup() {
+        const note = needsCliNote('machineSync');
+        const group = new Adw.PreferencesGroup({title: note.title, description: note.body});
+        const install = new Gtk.Button({label: note.button, valign: Gtk.Align.CENTER});
+        install.connect('clicked', () =>
+            new Gtk.UriLauncher({uri: note.url}).launch(this._window, null, null));
+        group.header_suffix = install;
+        return group;
     }
 
     // ---------- not paired ----------

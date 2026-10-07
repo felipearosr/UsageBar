@@ -5,6 +5,7 @@
 // The Pairing Link is the Sync Group's key. It reaches the CLI on stdin, never
 // in argv, and nothing here returns it inside an error or status string.
 
+import {isUnknownCommand, needsCliNote} from './clicompat.js';
 import {machineColor} from './machinesync.js';
 
 // The CLI prints only JSON on stdout with this flag, errors included.
@@ -97,10 +98,15 @@ export function redactPairingLinks(text) {
     return String(text ?? '').replace(LINK_PATTERN, '[Pairing Link]');
 }
 
+// The reason parseResult gives a CLI that has no `codexbar sync` at all
+// (upstream's): Settings shows the needs-the-UsageBar-CLI note for it.
+export const CLI_WITHOUT_SYNC = 'cli_without_sync';
+
 // A finished `codexbar sync … --json-only` run → {ok, data} or
 // {ok: false, reason, message}. Failures print
-// [{"provider":"cli","error":{"message","reason",…}}] on stdout.
-export function parseResult({success, stdout = ''}) {
+// [{"provider":"cli","error":{"message","reason",…}}] on stdout; stderr is
+// only read to recognise a CLI without the `sync` command.
+export function parseResult({success, stdout = '', stderr = ''}) {
     const text = String(stdout ?? '').trim();
     const start = text.search(/[[{]/);
     let data = null;
@@ -114,6 +120,8 @@ export function parseResult({success, stdout = ''}) {
     const error = Array.isArray(data) ? data.find(entry => entry?.error)?.error : null;
     if (success && data && !error)
         return {ok: true, data};
+    if (isUnknownCommand(error?.message) || (!error && isUnknownCommand(stderr)))
+        return {ok: false, reason: CLI_WITHOUT_SYNC, message: ''};
     return {
         ok: false,
         reason: error?.reason ?? null,
@@ -157,6 +165,8 @@ const REASONS = {
 // The sentence shown for a failed action. Unknown reasons fall back to the
 // CLI's own message, which is already written for people.
 export function friendlyError({reason, message} = {}) {
+    if (reason === CLI_WITHOUT_SYNC)
+        return needsCliNote('machineSync').body;
     if (reason && REASONS[reason])
         return REASONS[reason];
     if (reason && /^http_5\d\d$/.test(reason))

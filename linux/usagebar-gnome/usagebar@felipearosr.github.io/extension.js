@@ -56,6 +56,7 @@ import {
 } from './modelprefs.js';
 import {INSTALL_URL, MISSING_CLI} from './onboarding.js';
 import {findCodexbar, withClaudeOAuth} from './cli.js';
+import {featureState, readReport, syncProbeFromHttpStatus} from './clicompat.js';
 
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
@@ -1720,6 +1721,14 @@ export default class UsageBarExtension extends Extension {
             readInFlight: false,
             lastReadAt: 0,
             pushError: null,
+            // Does this serve have Machine Sync? Its /health capability
+            // report decides; without one, GET /sync/status answering 404
+            // means no. Reset whenever serve (re)starts.
+            report: null,
+            reportChecked: false,
+            reportInFlight: false,
+            probe: null,
+            requests: 0,         // /sync/* requests sent, for the UI smoke
         };
         this._machinesRenderKey = null;
         this._lastFetchAt = 0;
@@ -1968,8 +1977,11 @@ export default class UsageBarExtension extends Extension {
                     return;
                 if (status)
                     this._indicator.setStatus(status);
-                if (port)
+                if (port) {
+                    // A restarted serve may be a different CLI: ask again.
+                    this._resetSyncSupport();
                     this._scheduleFetch(2);
+                }
             });
         this._supervisor.start();
     }
@@ -2209,6 +2221,52 @@ export default class UsageBarExtension extends Extension {
     // first when asked with ?refresh=1. The cheap cache read on every tick
     // is how the popover learns whether this Machine is paired at all.
 
+    // 'available', 'needs-upgrade' or 'unknown' (serve hasn't answered yet).
+    _syncSupport() {
+        const sync = this._sync;
+        return sync ? featureState('machineSync', {report: sync.report, probe: sync.probe}).state
+            : 'unknown';
+    }
+
+    _resetSyncSupport() {
+        const sync = this._sync;
+        if (!sync)
+            return;
+        sync.report = null;
+        sync.reportChecked = false;
+        sync.probe = null;
+    }
+
+    // Upstream's CLI has no Machine Sync: drop the tab and stop asking.
+    _markSyncUnsupported() {
+        const sync = this._sync;
+        sync.paired = false;
+        sync.payload = null;
+        sync.fetchError = null;
+        sync.nextPushAt = 0;
+        sync.lastReadAt = 0;
+        this._requestRender();
+    }
+
+    // serve's /health; once it carries a capability report, that decides.
+    _fetchCapabilities() {
+        const sync = this._sync;
+        sync.reportInFlight = true;
+        this._get('/health', (payload, error) => {
+            if (this._sync !== sync)
+                return;
+            sync.reportInFlight = false;
+            if (error)
+                return; // serve not up yet; the next tick asks again
+            sync.reportChecked = true;
+            sync.report = readReport(payload);
+            if (this._syncSupport() === 'needs-upgrade')
+                this._markSyncUnsupported();
+            else
+                this._syncTick();
+        });
+    }
+
     _machinesTabVisible() {
         return !!(this._indicator?.menu.isOpen && this._view === 'machines' && this._sync?.paired);
     }
@@ -2229,7 +2287,11 @@ export default class UsageBarExtension extends Extension {
 
     _syncTick() {
         const sync = this._sync;
-        if (!sync || sync.readInFlight || this._syncFixture || !this._supervisor?.port)
+        if (!sync || this._syncFixture || !this._supervisor?.port)
+            return;
+        if (!sync.reportChecked && !sync.reportInFlight)
+            this._fetchCapabilities();
+        if (sync.readInFlight || this._syncSupport() === 'needs-upgrade')
             return;
         const plan = this._syncPlan();
         if (plan.push)
@@ -2242,10 +2304,18 @@ export default class UsageBarExtension extends Extension {
         sync.readInFlight = true;
         if (refresh)
             sync.lastReadAt = Date.now();
+        sync.requests++;
         this._get(refresh ? '/sync/status?refresh=1' : '/sync/status', (payload, error) => {
             if (this._sync !== sync)
                 return;
             sync.readInFlight = false;
+            const probe = syncProbeFromHttpStatus(error ? error.status : 200);
+            if (probe !== null)
+                sync.probe = probe;
+            if (this._syncSupport() === 'needs-upgrade') {
+                this._markSyncUnsupported();
+                return;
+            }
             if (error) {
                 // Serve is down or restarting: keep the last good data.
                 sync.fetchError = error;
@@ -2283,6 +2353,7 @@ export default class UsageBarExtension extends Extension {
         const sync = this._sync;
         sync.pushInFlight = true;
         sync.nextPushAt = Date.now() + nextPushDelaySecs() * 1000;
+        sync.requests++;
         this._get('/sync/push', (_result, error) => {
             if (this._sync !== sync)
                 return;
@@ -2767,6 +2838,54 @@ export default class UsageBarExtension extends Extension {
             });
         };
 
+        // Machine Sync support of the CLI under test. Without it (upstream's
+        // CLI, or the stub with STUB_CODEXBAR_SYNC=0) the popover has no
+        // Machines tab and sends no /sync/* requests; the Machines fixture
+        // smoke then has nothing to show and is skipped.
+        // USAGEBAR_UI_SMOKE_EXPECT_SYNC=0|1 asserts which case this run is.
+        const expectSync = GLib.getenv('USAGEBAR_UI_SMOKE_EXPECT_SYNC');
+        const steps = []; // filled once the smoke starts
+        const syncSupportSmoke = (assertions, done, attempt = 0) => {
+            const support = this._syncSupport();
+            if (support === 'unknown' && attempt < 40) {
+                later(250, () => syncSupportSmoke(assertions, done, attempt + 1));
+                return;
+            }
+            if (expectSync === '0' || expectSync === '1') {
+                const wanted = expectSync === '1' ? 'available' : 'needs-upgrade';
+                assertions.push(assertion(`Machine Sync support is ${wanted}`, support === wanted,
+                    {actual: support}));
+            }
+            if (support !== 'needs-upgrade') {
+                done();
+                return;
+            }
+            steps.splice(steps.indexOf(machinesSmoke), 1);
+            const before = this._sync.requests;
+            this._indicator.menu.open();
+            for (let i = 0; i < 3; i++)
+                this._syncTick();
+            this._view = 'machines'; // a stale selection falls back to Providers
+            this._render();
+            later(400, () => {
+                try {
+                    assertions.push(assertion('no /sync/* requests without Machine Sync',
+                        this._sync.requests === before, {before, after: this._sync.requests}));
+                    assertions.push(assertion('no Machines tab without Machine Sync',
+                        !this._indicator._tabItem.visible));
+                    assertions.push(assertion('popover stays on Providers without Machine Sync',
+                        this._view === 'providers'));
+                } catch (error) {
+                    done(error);
+                    return;
+                }
+                capture('no-machine-sync.png', () => {
+                    this._indicator.menu.close();
+                    done();
+                });
+            });
+        };
+
         // Provider marks: logos when icons/ is present, brand-colored
         // monograms when it is not (USAGEBAR_HIDE_PROVIDER_ICONS=1).
         const logosHidden = GLib.getenv('USAGEBAR_HIDE_PROVIDER_ICONS') === '1';
@@ -2869,7 +2988,7 @@ export default class UsageBarExtension extends Extension {
                 missingCliSmoke(assertions);
                 return;
             }
-            const steps = [markSmoke, machinesSmoke];
+            steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
             const next = error => {
                 if (error)
                     finish(assertions, error);
@@ -3087,7 +3206,8 @@ export default class UsageBarExtension extends Extension {
             : this._lastFetchAt ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
                 : 'fetching…');
 
-        const machines = machinesView(this._sync?.payload, {
+        const machines = machinesView(
+            this._syncSupport() === 'needs-upgrade' ? null : this._sync?.payload, {
             now: Date.now(),
             fetchError: this._sync?.fetchError,
             colors: DISPLAY.machineColors,

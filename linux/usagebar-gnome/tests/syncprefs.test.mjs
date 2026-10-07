@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 
 import {
     canCreate,
+    CLI_WITHOUT_SYNC,
     cleartextHost,
     createArgs,
     createdText,
@@ -28,6 +29,7 @@ import {
     tokenField,
 } from '../usagebar@felipearosr.github.io/syncprefs.js';
 import {MACHINE_PALETTE} from '../usagebar@felipearosr.github.io/machinesync.js';
+import {needsCliNote} from '../usagebar@felipearosr.github.io/clicompat.js';
 
 const LINK = 'codexbar-sync://sync.example.com/base#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
 const HTTP_LINK = 'codexbar-sync+http://nas.lan:8080#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
@@ -135,6 +137,21 @@ test('parses success and error JSON from the CLI', () => {
     assert.deepEqual(parseResult({success: true, stdout: 'not json'}), {ok: false, reason: null, message: ''});
     // An error array with exit 0 is still an error.
     assert.equal(parseResult({success: true, stdout: cliError('network', 'x')}).ok, false);
+});
+
+test('a CLI without `codexbar sync` maps to the needs-the-UsageBar-CLI note', () => {
+    // Upstream with --json-only: the parser error comes back as JSON.
+    const json = parseResult({success: false, stdout: cliError(null, "Unknown command 'sync'")});
+    assert.deepEqual(json, {ok: false, reason: CLI_WITHOUT_SYNC, message: ''});
+    // Without JSON on stdout the error is only on stderr.
+    assert.deepEqual(parseResult({success: false, stdout: '', stderr: "Unknown command 'sync'\n"}),
+        {ok: false, reason: CLI_WITHOUT_SYNC, message: ''});
+    // A JSON error of its own wins over stray stderr text.
+    assert.equal(parseResult({success: false, stdout: cliError('network', 'offline'),
+        stderr: 'Unknown command'}).reason, 'network');
+    const text = friendlyError(json);
+    assert.equal(text, needsCliNote('machineSync').body);
+    assert.doesNotMatch(text, /Unknown command/i);
 });
 
 test('enrollment, expiry, and Machine-cap errors read as plain language', () => {

@@ -22,7 +22,9 @@ import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
 import {INSTALL_URL} from './onboarding.js';
-import {MachineSyncPage} from './syncpage.js';
+import {MachineSyncPage, runSync} from './syncpage.js';
+import {CLI_WITHOUT_SYNC, settingsArgs} from './syncprefs.js';
+import {featureState, supportSummary} from './clicompat.js';
 import {findCodexbar, parseCliVersion} from './cli.js';
 
 // Same lookup as the extension, so Settings names the CLI it runs.
@@ -35,7 +37,8 @@ function findBinary() {
     });
 }
 
-// Read-only row: the resolved codexbar path and the version it reports.
+// Read-only row: the resolved codexbar path, the version it reports, and
+// whether it has every fork-only feature UsageBar uses.
 function cliRow(binary) {
     const row = new Adw.ActionRow({
         title: 'CLI',
@@ -50,22 +53,37 @@ function cliRow(binary) {
     row.add_suffix(link);
     if (!binary)
         return row;
+    let version = 'version unknown';
+    let features = supportSummary({machineSync: featureState('machineSync')});
+    const show = () => {
+        row.subtitle = `${binary} · ${version} · ${features}`;
+    };
+    show();
     try {
         const proc = Gio.Subprocess.new([binary, '--version'],
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
         proc.communicate_utf8_async(null, null, (p, res) => {
-            let version = null;
             try {
                 const [, out] = p.communicate_utf8_finish(res);
-                version = parseCliVersion(out);
+                const parsed = parseCliVersion(out);
+                if (parsed)
+                    version = `version ${parsed}`;
             } catch {
-                // reported as unknown below
+                // reported as unknown
             }
-            row.subtitle = `${binary} · ${version ? `version ${version}` : 'version unknown'}`;
+            show();
         });
     } catch {
-        row.subtitle = `${binary} · version unknown`;
+        // reported as unknown
     }
+    // No capability report from the CLI yet: a CLI without `codexbar sync`
+    // answers this local settings read with "Unknown command".
+    runSync(binary, settingsArgs()).then(result => {
+        const probe = result.ok ? true : result.reason === CLI_WITHOUT_SYNC ? false : null;
+        features = probe === null ? 'couldn’t check Machine Sync'
+            : supportSummary({machineSync: featureState('machineSync', {probe})});
+        show();
+    });
     return row;
 }
 
