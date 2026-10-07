@@ -56,31 +56,53 @@ killed on disable). No daemons to babysit, nothing listening beyond
 
 | | |
 |---|---|
-| [`usagebar-gnome/`](usagebar-gnome/) | **GNOME Shell extension** — the primary surface. Pure GJS (St/Clutter), GNOME 49 & 50, Wayland. Everything above lives here. |
+| [`usagebar-gnome/`](usagebar-gnome/) | **GNOME Shell extension** — the primary surface. Pure GJS (St/Clutter), GNOME 46, 49 & 50, Wayland and X11. Everything above lives here. |
 | [`codexbar-tray/`](codexbar-tray/) | **Tauri tray app** — fallback for non-GNOME desktops (KDE, XFCE, …). Tray icon, text usage menu, popup window. Rust core, 15 tests. |
 
 Both talk to the same [codexbar CLI](https://github.com/steipete/CodexBar)
 (`GET /usage`, `GET /cost` from `codexbar serve`), so they stay in lockstep
 with whatever providers upstream supports.
 
-## Quick start
+## Install
 
-The full from-zero walkthrough (packages, CLI install, config, verification
-without logging out) is in [**BOOTSTRAP.md**](BOOTSTRAP.md). The short
-version:
+1. Download the package for your system from
+   [Releases](https://github.com/felipearosr/UsageBar/releases/latest):
+   - Ubuntu / Debian: `usagebar_<version>_amd64.deb` (`_arm64.deb` on ARM)
+   - Fedora: `usagebar-<version>-1.x86_64.rpm` (`.aarch64.rpm` on ARM)
+2. Open it. App Center (Ubuntu) or Software (Fedora) installs it along with
+   everything it needs. From a terminal: `sudo apt install ./usagebar_*.deb`
+   or `sudo dnf install ./usagebar-*.rpm`.
+3. Log out and back in once.
 
-1. Install the `codexbar` CLI from upstream's
-   [GitHub releases](https://github.com/steipete/CodexBar/releases)
-   (`CodexBarCLI-v*-linux-x86_64.tar.gz`, ≥ 0.43.0 — the brew Linux formula
-   lags and silently drops the per-model limit data).
-2. Pin Claude to the OAuth source in `~/.config/codexbar/config.json`
-   (`"source": "oauth"`). Providers can be enabled from the extension's
-   Settings → Providers page afterwards (or `codexbar config enable`).
-3. Symlink `usagebar-gnome/usagebar@felipearosr.github.io` into
-   `~/.local/share/gnome-shell/extensions/`, run
-   `gnome-extensions enable usagebar@felipearosr.github.io`, log out/in.
+UsageBar then turns itself on and enables Claude and Codex if you've signed
+in to Claude Code or the Codex CLI on this machine. Other providers are in
+Settings → Providers. New releases show up in the menu as "UsageBar <version>
+is available. Install now?", which asks for your password and installs the
+update.
 
-Verified on Fedora 43 / GNOME 49 and Fedora 44 / GNOME 50, both Wayland.
+Needs GNOME 46, 49 or 50: Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44.
+The package includes this fork's `codexbar` CLI (upstream plus Machine Sync)
+under `/usr/libexec/usagebar`, so it doesn't conflict with another `codexbar`
+you may have installed.
+
+Verified on Fedora 43 / GNOME 49 and Fedora 44 / GNOME 50 (Wayland), and on
+Ubuntu 24.04 / GNOME 46 packages (Wayland and X11, headless).
+
+### Releasing
+
+Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).
+[`release-usagebar.yml`](../.github/workflows/release-usagebar.yml) builds the
+fork CLI for x86_64 and aarch64, packages it with the extension
+([`packaging/build-packages.sh`](packaging/build-packages.sh)), and publishes
+the release the extension's updater reads. The repo must be public for
+installed copies to see updates.
+
+### Development
+
+The from-zero dev setup (CLI install, config, verification without logging
+out) is in [**BOOTSTRAP.md**](BOOTSTRAP.md). A symlinked checkout in
+`~/.local/share/gnome-shell/extensions/` takes precedence over the packaged
+copy, and dev installs don't self-update.
 
 ## Status
 

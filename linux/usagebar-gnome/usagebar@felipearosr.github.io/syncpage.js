@@ -51,6 +51,14 @@ import {
 
 const INFO_DEBOUNCE_MS = 700;
 
+// Adw.ButtonRow needs libadwaita 1.6; GNOME 46 (Ubuntu 24.04) ships 1.5, where
+// an activatable ActionRow stands in and emits the same `activated` signal.
+function buttonRow(props) {
+    if (Adw.ButtonRow)
+        return new Adw.ButtonRow(props);
+    return new Adw.ActionRow({...props, activatable: true});
+}
+
 // Runs `binary args…` and resolves with syncprefs.parseResult's shape. stdin
 // is always a pipe (closed when `stdin` is null) so nothing can prompt.
 function runSync(binary, args, stdin = null) {
@@ -261,7 +269,7 @@ export class MachineSyncPage {
         serverRow.input_purpose = Gtk.InputPurpose.URL;
         const infoRow = new Adw.ActionRow({title: 'Server', visible: false, use_markup: false});
         const tokenRow = new Adw.PasswordEntryRow({title: 'Enrollment Token', visible: false});
-        const createRow = new Adw.ButtonRow({title: 'Create Sync Group', sensitive: false});
+        const createRow = buttonRow({title: 'Create Sync Group', sensitive: false});
         createRow.add_css_class('suggested-action');
         for (const row of [serverRow, infoRow, tokenRow, createRow])
             group.add(row);
@@ -353,7 +361,7 @@ export class MachineSyncPage {
                 '“codexbar sync link”.',
         });
         const linkRow = new Adw.PasswordEntryRow({title: 'Pairing Link'});
-        const joinRow = new Adw.ButtonRow({title: 'Join Sync Group', sensitive: false});
+        const joinRow = buttonRow({title: 'Join Sync Group', sensitive: false});
         group.add(linkRow);
         group.add(joinRow);
         let busy = false;
@@ -723,7 +731,7 @@ export class MachineSyncPage {
 
     _leaveGroup() {
         const group = new Adw.PreferencesGroup();
-        const leaveRow = new Adw.ButtonRow({title: 'Leave Sync Group'});
+        const leaveRow = buttonRow({title: 'Leave Sync Group'});
         leaveRow.add_css_class('destructive-action');
         leaveRow.connect('activated', async () => {
             if (!await this._confirm('Leave the Sync Group?', LEAVE_WARNING, 'Leave'))

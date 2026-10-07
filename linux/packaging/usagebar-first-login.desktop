@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=UsageBar first-login setup
+Comment=Turns on the UsageBar GNOME Shell extension the first time you log in
+Exec=/usr/libexec/usagebar/usagebar-first-login
+OnlyShowIn=GNOME;
+NoDisplay=true
+X-GNOME-Autostart-Phase=Applications

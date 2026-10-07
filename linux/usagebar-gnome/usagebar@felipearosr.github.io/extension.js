@@ -32,7 +32,6 @@ import {
     buildCostDateRange,
     buildDailyCostRows,
     buildSummaryBarSegments,
-    cliUpdateCompletionMessage,
     costChartMetricOptions,
     CostOverviewCache,
     costRangeOptions,
@@ -54,6 +53,17 @@ import {
     modelColors,
     withoutHiddenModels,
 } from './modelprefs.js';
+import {
+    compareVersions,
+    installCommand,
+    latestUsageBarRelease,
+    PACKAGED_BIN,
+    packageAssetName,
+    RELEASES_API,
+    updateCompletionMessage,
+    updateReadyText,
+    withClaudeOAuth,
+} from './updates.js';
 
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
@@ -1080,6 +1090,8 @@ function findBinary() {
     const explicit = GLib.getenv('CODEXBAR_BIN');
     if (explicit && GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE))
         return explicit;
+    if (GLib.file_test(PACKAGED_BIN, GLib.FileTest.IS_EXECUTABLE))
+        return PACKAGED_BIN;
     const inPath = GLib.find_program_in_path('codexbar');
     if (inPath)
         return inPath;
@@ -1188,38 +1200,18 @@ class ServeSupervisor {
     }
 }
 
-// ---------- CLI self-update ----------
+// ---------- self-update ----------
 //
-// The macOS app updates through Sparkle; here the extension keeps the
-// codexbar CLI current itself: poll upstream's latest GitHub release, stage
-// the matching linux tarball (sha256-verified) under the cache dir, then on
-// "Restart now" swap it in next to the running binary and bounce serve.
-// `codexbar --version` prints "CodexBar unknown", so the installed version
-// comes from a VERSION file beside the binary (upstream's tarball layout)
-// or the version this updater last installed.
+// The macOS app updates through Sparkle. Here, a .deb/.rpm install checks
+// UsageBar's own GitHub releases, stages the matching package (sha256-verified)
+// under the cache dir, and on "Install now" hands it to the package manager
+// behind a pkexec password prompt. Extension and CLI update together, so the
+// fork's CLI is never swapped for an upstream build. Dev installs (symlinked
+// checkout, hand-installed CLI) update from git and get no updater.
 
-const RELEASES_API = 'https://api.github.com/repos/steipete/CodexBar/releases/latest';
 const UPSTREAM_URL = 'https://github.com/steipete/CodexBar';
 const UPDATE_FIRST_CHECK_SECS = 30;
 const UPDATE_CHECK_SECS = 6 * 3600;
-const CLI_BUNDLE = 'CodexBar_CodexBarCore.bundle';
-
-// $1 binary (resolved), $2 its dir, $3 staging dir. Copy-then-rename so the
-// binary path never points at a half-written file; one backup is kept.
-// VERSION always lands beside the binary: the CLI reads it for --version,
-// which is how every session (not just this dconf) learns what's installed.
-const SWAP_SCRIPT = `set -e
-real="$1"; dir="$2"; stage="$3"
-[ -w "$dir" ] || { echo "no write access to $dir" >&2; exit 1; }
-cp -f "$stage/CodexBarCLI" "$real.new"
-mv -f "$real" "$real.bak-usagebar"
-mv -f "$real.new" "$real"
-if [ -d "$stage/${CLI_BUNDLE}" ]; then
-  rm -rf "$dir/${CLI_BUNDLE}.bak"
-  if [ -e "$dir/${CLI_BUNDLE}" ]; then mv "$dir/${CLI_BUNDLE}" "$dir/${CLI_BUNDLE}.bak"; fi
-  cp -R "$stage/${CLI_BUNDLE}" "$dir/${CLI_BUNDLE}"
-fi
-cp -f "$stage/VERSION" "$dir/VERSION"`;
 
 function runAsync(argv, cancellable) {
     return new Promise((resolve, reject) => {
@@ -1252,85 +1244,29 @@ function runAsync(argv, cancellable) {
     });
 }
 
-function compareVersions(a, b) {
-    const pa = a.split('.').map(n => parseInt(n, 10) || 0);
-    const pb = b.split('.').map(n => parseInt(n, 10) || 0);
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-        const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-        if (d)
-            return d;
-    }
-    return 0;
-}
-
-// Follow symlinks (~/.local/bin/codexbar -> CodexBarCLI) to the real file.
-function realPath(path) {
-    for (let i = 0; i < 16; i++) {
-        let target;
-        try {
-            target = GLib.file_read_link(path);
-        } catch {
-            return path;
-        }
-        path = GLib.path_is_absolute(target)
-            ? target : GLib.build_filenamev([GLib.path_get_dirname(path), target]);
-    }
-    return path;
-}
-
-// Size + mtime: enough to tell whether the binary is still the one the
-// updater installed.
-function fileFingerprint(path) {
-    try {
-        const info = Gio.File.new_for_path(path).query_info(
-            'standard::size,time::modified', Gio.FileQueryInfoFlags.NONE, null);
-        return `${info.get_size()}:${info.get_attribute_uint64('time::modified')}`;
-    } catch {
+// 'deb' or 'rpm' when this extension and its CLI came from the package,
+// null for dev installs.
+function packageFormat(extensionPath, binary) {
+    if (binary !== PACKAGED_BIN || !extensionPath.startsWith('/usr/share/gnome-shell/extensions/'))
         return null;
-    }
+    if (GLib.file_test('/var/lib/dpkg/info/usagebar.list', GLib.FileTest.EXISTS))
+        return 'deb';
+    if (GLib.find_program_in_path('rpm'))
+        return 'rpm';
+    return null;
 }
 
-class CliUpdater {
-    constructor(binary, settings, session, onReady) {
-        this._binary = binary;
-        this._settings = settings;
+class PackageUpdater {
+    constructor(format, version, session, onReady) {
+        this._format = format;
+        this._version = version;
         this._session = session;
         this._onReady = onReady; // (version)
         this._cancellable = new Gio.Cancellable();
         this._stageRoot = GLib.build_filenamev(
-            [GLib.get_user_cache_dir(), 'usagebar', 'cli-update']);
+            [GLib.get_user_cache_dir(), 'usagebar', 'update']);
         this._busy = false;
-        this.ready = null; // {version, stage} once a verified build is staged
-    }
-
-    // Newer CLIs print "CodexBar 0.59.0"; older ones "CodexBar unknown".
-    async _probeVersion() {
-        try {
-            const out = await runAsync([this._binary, '--version'], this._cancellable);
-            this._probed = out.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
-        } catch {
-            this._probed = null;
-        }
-    }
-
-    installedVersion() {
-        // A binary other than the one this updater installed (say a fork
-        // build copied over it) would still read the VERSION file it left.
-        const ours = this._settings.get_string('cli-installed-fingerprint');
-        if (ours && ours !== fileFingerprint(realPath(this._binary)))
-            return null;
-        if (this._probed)
-            return this._probed;
-        const dir = GLib.path_get_dirname(realPath(this._binary));
-        try {
-            const [, bytes] = GLib.file_get_contents(`${dir}/VERSION`);
-            const v = new TextDecoder().decode(bytes).trim();
-            if (v)
-                return v;
-        } catch {
-            // no VERSION file — manual/brew install
-        }
-        return this._settings.get_string('cli-installed-version') || null;
+        this.ready = null; // {version, file} once a verified package is staged
     }
 
     async check() {
@@ -1338,31 +1274,21 @@ class CliUpdater {
             return;
         this._busy = true;
         try {
-            await this._probeVersion();
-            const release = await this._fetchRelease();
-            const version = release.tag_name?.replace(/^v/, '');
-            const installed = this.installedVersion();
-            // Unknown installed version means a local/fork build ("CodexBar
-            // unknown") — never offer to replace one of those.
-            if (!version || !installed || compareVersions(version, installed) <= 0)
+            const latest = latestUsageBarRelease(await this._fetchReleases());
+            if (!latest || compareVersions(latest.version, this._version) <= 0)
                 return;
-            const stage = GLib.build_filenamev([this._stageRoot, version]);
-            const marker = `${stage}/.verified`;
-            if (!GLib.file_test(marker, GLib.FileTest.EXISTS)) {
-                await this._stage(release, version, stage);
-                GLib.file_set_contents(marker, version);
-            }
-            this.ready = {version, stage};
-            this._onReady(version);
+            const file = await this._stage(latest.release, latest.version);
+            this.ready = {version: latest.version, file};
+            this._onReady(latest.version);
         } catch (e) {
             if (!this._cancellable.is_cancelled())
-                console.warn(`usagebar: codexbar update check failed: ${e.message}`);
+                console.warn(`usagebar: update check failed: ${e.message}`);
         } finally {
             this._busy = false;
         }
     }
 
-    _fetchRelease() {
+    _fetchReleases() {
         return new Promise((resolve, reject) => {
             const msg = Soup.Message.new('GET', RELEASES_API);
             // GitHub rejects requests without a User-Agent.
@@ -1382,13 +1308,16 @@ class CliUpdater {
         });
     }
 
-    async _stage(release, version, stage) {
+    async _stage(release, version) {
         const c = this._cancellable;
-        const arch = (await runAsync(['uname', '-m'], c)).trim();
-        if (!['x86_64', 'aarch64'].includes(arch))
-            throw new Error(`no linux build for ${arch}`);
-        const musl = GLib.file_test(`/lib/ld-musl-${arch}.so.1`, GLib.FileTest.EXISTS);
-        const name = `CodexBarCLI-v${version}-linux-${musl ? 'musl-' : ''}${arch}.tar.gz`;
+        const machine = (await runAsync(['uname', '-m'], c)).trim();
+        const name = packageAssetName(this._format, version, machine);
+        if (!name)
+            throw new Error(`no ${this._format} package for ${machine}`);
+        const file = `${this._stageRoot}/${name}`;
+        const marker = `${file}.verified`;
+        if (GLib.file_test(marker, GLib.FileTest.EXISTS))
+            return file;
         const assetUrl = n => release.assets?.find(a => a.name === n)?.browser_download_url;
         const url = assetUrl(name);
         const sumUrl = assetUrl(`${name}.sha256`);
@@ -1397,24 +1326,19 @@ class CliUpdater {
 
         // A newer release supersedes anything staged before.
         await runAsync(['rm', '-rf', this._stageRoot], c);
-        GLib.mkdir_with_parents(stage, 0o755);
-        const tarball = `${this._stageRoot}/${name}`;
-        // curl, not Soup: a ~160 MB body shouldn't sit in the shell's heap.
-        await runAsync(['curl', '-fsSL', '--max-time', '900', '-o', tarball, url], c);
+        GLib.mkdir_with_parents(this._stageRoot, 0o755);
+        // curl, not Soup: a large body shouldn't sit in the shell's heap.
+        await runAsync(['curl', '-fsSL', '--max-time', '900', '-o', file, url], c);
         const expected = (await runAsync(['curl', '-fsSL', '--max-time', '60', sumUrl], c))
             .trim().split(/\s+/)[0];
-        const actual = (await runAsync(['sha256sum', tarball], c)).trim().split(/\s+/)[0];
+        const actual = (await runAsync(['sha256sum', file], c)).trim().split(/\s+/)[0];
         if (!expected || expected !== actual)
             throw new Error(`checksum mismatch for ${name}`);
-        await runAsync(['tar', '-xzf', tarball, '-C', stage], c);
-        GLib.unlink(tarball);
-        const bin = `${stage}/CodexBarCLI`;
-        if (!GLib.file_test(bin, GLib.FileTest.IS_EXECUTABLE))
-            throw new Error('tarball has no CodexBarCLI');
-        await runAsync([bin, '--version'], c); // it runs on this machine
+        GLib.file_set_contents(marker, version);
+        return file;
     }
 
-    // Swap the staged build in; the caller restarts serve. Returns the version.
+    // Install the staged package; the new code loads at the next login.
     async apply() {
         const ready = this.ready;
         if (!ready)
@@ -1423,12 +1347,7 @@ class CliUpdater {
             throw new Error('update check in progress');
         this._busy = true;
         try {
-            const real = realPath(this._binary);
-            await runAsync(['sh', '-c', SWAP_SCRIPT, 'sh',
-                real, GLib.path_get_dirname(real), ready.stage], this._cancellable);
-            this._settings.set_string('cli-installed-version', ready.version);
-            this._settings.set_string('cli-installed-fingerprint', fileFingerprint(real) ?? '');
-            this._probed = ready.version;
+            await runAsync(installCommand(this._format, ready.file), this._cancellable);
             this.ready = null;
             await runAsync(['rm', '-rf', this._stageRoot], this._cancellable).catch(() => {});
             return ready.version;
@@ -1439,6 +1358,21 @@ class CliUpdater {
 
     stop() {
         this._cancellable.cancel();
+    }
+}
+
+// The CLI's version sits in a VERSION file beside the binary (the release
+// tarball layout); `codexbar --version` reads the same file.
+function cliVersion(binary) {
+    try {
+        const real = GLib.canonicalize_filename(binary, null);
+        const target = GLib.file_test(real, GLib.FileTest.IS_SYMLINK)
+            ? GLib.build_filenamev([GLib.path_get_dirname(real), GLib.file_read_link(real)])
+            : real;
+        const [, bytes] = GLib.file_get_contents(`${GLib.path_get_dirname(target)}/VERSION`);
+        return new TextDecoder().decode(bytes).trim() || null;
+    } catch {
+        return null;
     }
 }
 
@@ -1592,7 +1526,7 @@ class UsageBarIndicator extends PanelMenu.Button {
         });
 
         // Footer, mirroring the macOS app menu. The update row only shows
-        // once a verified CLI update is staged.
+        // once a verified package update is staged.
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const footerItem = (text, icon, accel) => {
             const item = new PopupMenu.PopupImageMenuItem(text, icon);
@@ -1660,7 +1594,7 @@ class UsageBarIndicator extends PanelMenu.Button {
     setUpdateReady(version) {
         this._updateItem.visible = !!version;
         if (version)
-            this._updateItem.label.text = `Update ready (codexbar ${version}). Restart now?`;
+            this._updateItem.label.text = updateReadyText(version);
     }
 
     _openCostPanel() {
@@ -2061,13 +1995,14 @@ export default class UsageBarExtension extends Extension {
 
         const binary = findBinary();
         if (!binary) {
-            this._indicator.setStatus('codexbar CLI not found — install it from ' +
-                'github.com/steipete/CodexBar releases or set $CODEXBAR_BIN');
+            this._indicator.setStatus('codexbar CLI not found — reinstall UsageBar from ' +
+                'github.com/felipearosr/UsageBar/releases or set $CODEXBAR_BIN');
             this._render();
             return;
         }
         this._binary = binary;
         this._loadDisplayNames(binary);
+        this._bootstrapProviders(binary);
 
         // Refetch when the CLI config changes — prefs toggles, terminal
         // `codexbar config enable`, hand edits alike. Serve re-reads the
@@ -2107,11 +2042,14 @@ export default class UsageBarExtension extends Extension {
             });
         this._supervisor.start();
 
-        this._updater = new CliUpdater(binary, this._settings, this._session,
-            version => {
+        const format = packageFormat(this.path, binary);
+        const version = this.metadata['version-name'];
+        if (format && version) {
+            this._updater = new PackageUpdater(format, version, this._session, ready => {
                 if (generation === this._generation)
-                    this._indicator?.setUpdateReady(version);
+                    this._indicator?.setUpdateReady(ready);
             });
+        }
         this._updateToggleId = this._settings.connect('changed::update-check-enabled', () => {
             if (generation !== this._generation)
                 return;
@@ -2232,7 +2170,7 @@ export default class UsageBarExtension extends Extension {
             if (generation !== this._generation)
                 return GLib.SOURCE_REMOVE;
             if (this._settings.get_boolean('update-check-enabled'))
-                this._updater.check();
+                this._updater?.check();
             this._scheduleUpdateCheck(UPDATE_CHECK_SECS);
             return GLib.SOURCE_REMOVE;
         });
@@ -2241,19 +2179,19 @@ export default class UsageBarExtension extends Extension {
     async _applyUpdate() {
         const generation = this._generation;
         this._indicator.setUpdateReady(null);
-        this._indicator.setStatus('Installing codexbar update…');
+        this._indicator.setStatus('Installing UsageBar update…');
         try {
             const version = await this._updater.apply();
             if (generation !== this._generation || !this._indicator)
                 return;
-            const message = cliUpdateCompletionMessage(version);
+            const message = updateCompletionMessage(version);
             this._indicator.setStatus('');
             this._indicator.setPersistentStatus(message);
             Main.notify('UsageBar', message);
         } catch (e) {
             if (generation !== this._generation || !this._indicator)
                 return;
-            this._indicator.setStatus(`codexbar update failed: ${e.message}`);
+            this._indicator.setStatus(`UsageBar update failed: ${e.message}`);
             if (this._updater?.ready)
                 this._indicator.setUpdateReady(this._updater.ready.version);
         }
@@ -2267,10 +2205,11 @@ export default class UsageBarExtension extends Extension {
             if (this._aboutDialog === dialog)
                 this._aboutDialog = null;
         });
-        const cli = this._updater?.installedVersion() ?? 'unknown';
+        const version = this.metadata['version-name'] ?? 'dev';
+        const cli = this._binary ? cliVersion(this._binary) ?? 'unknown' : 'not found';
         dialog.contentLayout.add_child(new Dialog.MessageDialogContent({
             title: 'UsageBar',
-            description: `Version ${this.metadata.version} · codexbar CLI ${cli}\n\n` +
+            description: `Version ${version} · codexbar CLI ${cli}\n\n` +
                 'AI coding-provider usage limits in the GNOME panel. ' +
                 'Linux port of CodexBar by Peter Steinberger.',
         }));
@@ -2293,6 +2232,44 @@ export default class UsageBarExtension extends Extension {
     }
 
     // ----- data -----
+
+    // First run for this user: turn on the providers they're already signed
+    // in to, and give claude the OAuth source it needs on Linux (the CLI's
+    // default source drops per-model limits and the plan badge). Runs once;
+    // an existing config keeps its provider choices.
+    async _bootstrapProviders(binary) {
+        const settings = this._settings;
+        if (settings.get_boolean('providers-bootstrapped'))
+            return;
+        const home = GLib.get_home_dir();
+        const configPath = GLib.build_filenamev(
+            [GLib.get_user_config_dir(), 'codexbar', 'config.json']);
+        const credentials = {
+            claude: `${GLib.getenv('CLAUDE_CONFIG_DIR') ?? `${home}/.claude`}/.credentials.json`,
+            codex: `${GLib.getenv('CODEX_HOME') ?? `${home}/.codex`}/auth.json`,
+        };
+        try {
+            if (!GLib.file_test(configPath, GLib.FileTest.EXISTS)) {
+                for (const [provider, path] of Object.entries(credentials)) {
+                    if (GLib.file_test(path, GLib.FileTest.EXISTS))
+                        await runAsync([binary, 'config', 'enable', '--provider', provider]);
+                }
+            }
+            if (GLib.file_test(configPath, GLib.FileTest.EXISTS)) {
+                const [, bytes] = GLib.file_get_contents(configPath);
+                const next = withClaudeOAuth(JSON.parse(new TextDecoder().decode(bytes)));
+                // 0600 like the CLI: the config can hold API keys.
+                if (next) {
+                    GLib.file_set_contents_full(configPath,
+                        new TextEncoder().encode(`${JSON.stringify(next, null, 2)}\n`),
+                        GLib.FileSetContentsFlags.CONSISTENT, 0o600);
+                }
+            }
+            settings.set_boolean('providers-bootstrapped', true);
+        } catch (e) {
+            console.warn(`usagebar: provider setup failed: ${e.message}`);
+        }
+    }
 
     _loadDisplayNames(binary) {
         const generation = this._generation;
