@@ -33,11 +33,11 @@ public enum CommandCodeProviderDescriptor {
             branding: ProviderBranding(
                 iconStyle: .init(provider: .commandcode),
                 iconResourceName: "ProviderIcon-commandcode",
-                color: ProviderColor(hex: 0xA04DFD),
+                color: ProviderColor(hex: 0x8C4EDD),
                 confettiPalette: [
                     ProviderColor(hex: 0x000000),
                     ProviderColor(hex: 0xFFFFFF),
-                    ProviderColor(hex: 0x7B5BFF),
+                    ProviderColor(hex: 0x8C4EDD),
                 ],
                 widgetColor: ProviderColor(hex: 0x000000)),
             tokenCost: ProviderTokenCostConfig(
@@ -138,7 +138,9 @@ struct CommandCodeWebFetchStrategy: ProviderFetchStrategy {
 
     private static func manualCookieHeader(from context: ProviderFetchContext) -> String? {
         guard context.settings?.commandcode?.cookieSource == .manual else { return nil }
-        return CookieHeaderNormalizer.normalize(context.settings?.commandcode?.manualCookieHeader)
+        let normalized = CookieHeaderNormalizer.normalize(context.settings?.commandcode?.manualCookieHeader)
+        guard let header = normalized, !header.contains("="), !header.contains(";") else { return normalized }
+        return CommandCodeCookieHeader.override(from: header)?.headerValue
     }
 
     func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
