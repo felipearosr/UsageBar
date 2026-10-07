@@ -32,8 +32,10 @@ root="$work/root"
 lib="$root/usr/lib/usagebar-cli"
 mkdir -p "$lib" "$root/usr/bin" "$root/usr/share/doc/usagebar-cli" "$root/DEBIAN"
 tar -xzo -f "$tarball" -C "$lib"
-[ -x "$lib/CodexBarCLI" ] && [ -f "$lib/VERSION" ] && [ -d "$lib/CodexBar_CodexBarCore.bundle" ] \
-    || { echo "unexpected CLI tarball layout" >&2; exit 1; }
+if [ ! -x "$lib/CodexBarCLI" ] || [ ! -f "$lib/VERSION" ] || [ ! -d "$lib/CodexBar_CodexBarCore.bundle" ]; then
+    echo "unexpected CLI tarball layout" >&2
+    exit 1
+fi
 ln -s ../lib/usagebar-cli/CodexBarCLI "$root/usr/bin/codexbar"
 install -m 0644 "$repo/LICENSE" "$root/usr/share/doc/usagebar-cli/copyright"
 find "$root" -type d -exec chmod 0755 {} +

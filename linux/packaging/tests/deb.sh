@@ -18,7 +18,7 @@ stage_artifacts "${1:-/artifacts}"
 version=$(tarball_version "$(find_tarball /tmp/art)")
 deb_arch=$(dpkg --print-architecture)
 set -- /tmp/art/usagebar-cli_*_"$deb_arch".deb
-[ $# -eq 1 ] && [ -f "$1" ] || fail "expected exactly one usagebar-cli_*_$deb_arch.deb"
+if [ $# -ne 1 ] || [ ! -f "$1" ]; then fail "expected exactly one usagebar-cli_*_$deb_arch.deb"; fi
 deb=$1
 
 say "install, check through the PATH symlink"
