@@ -1,7 +1,8 @@
 # Upstream merge runbook
 
-How UsageBar takes each steipete/CodexBar release. Written from the 0.43.1 → 0.68.0 merge (#26) and the
-first rehearsal against 0.72.0. If a step here turns out wrong during a merge, fix this file in the same PR.
+How UsageBar takes each steipete/CodexBar release. Written from the 0.43.1 → 0.68.0 merge (#26), the first
+rehearsal against 0.72.0, and the 0.72.0 merge itself (#95). If a step here turns out wrong during a merge, fix
+this file in the same PR.
 
 Remotes, as in every checkout of this repo:
 
@@ -68,14 +69,36 @@ From #26 (23 conflicted files) and the rehearsal on 2026-10-06 (`upstream/main` 
 
 | Area | Files | Fork feature | How #26 re-applied it |
 | --- | --- | --- | --- |
-| Cost scanners | `Sources/CodexBarCore/Vendored/CostUsage/`: `CostUsageScanner.swift`, `+Claude.swift`, `+CacheHelpers.swift`, `+TemporalBuckets.swift`, `CostUsageStore+ReadView.swift`; `Sources/CodexBarCore/PiSessionCostScanner.swift` | Machine Sync: Spend Buckets | Codex: optional `CodexSpendBucketCollector` on `buildCodexReportFromCache`, per-row cost factored into `codexRowCost`. Claude: `ClaudeUsageRow.omittedFields` captured at parse time, per-row cost in `claudeRowCost`. Pi: per-file `hourContributions` and `hourKey` on keyed entries. **The only conflict in the 0.72.0 rehearsal is here**: upstream reworked the Claude row builder (`cacheCreate1h`); the fork's `omittedFields` and `tokens` struct have to be re-applied, and `ClaudeSpendBucketLinuxTests` "fields the log omits stay absent" fails until they are. |
-| Cache schema versions | `Vendored/CostUsage/CostUsageClaudeCache.swift` (`schemaVersion`), `PiSessionCostCache.swift` (`pi-sessions-vN.json`) | Spend Buckets | The fork bumped Claude 4 → 5 and Pi v9 → v10 to carry hour data. **If upstream bumps either, the fork's number must end above both**, or upstream's new version silently equals the fork's old one and users keep a stale cache. Today: upstream Claude is 4, fork 5. |
+| Cost scanners | `Sources/CodexBarCore/Vendored/CostUsage/`: `CostUsageScanner.swift`, `+Claude.swift`, `+CacheHelpers.swift`, `+TemporalBuckets.swift`, `CostUsageStore+ReadView.swift`; `Sources/CodexBarCore/PiSessionCostScanner.swift` | Machine Sync: Spend Buckets | Codex: optional `CodexSpendBucketCollector` on `buildCodexReportFromCache`, per-row cost factored into `codexRowCost`. Claude: `ClaudeUsageRow.omittedFields` captured at parse time, per-row cost in `claudeRowCost`. Pi: per-file `hourContributions` and `hourKey` on keyed entries. **The one real conflict in #95 (0.72.0) was here**: upstream reworked the Claude row builder (scan-range check before pricing, `cacheCreate1h`) and removed the private `ClaudeTokens` struct. #95 kept upstream's builder and re-applied only `claudeOmittedUsageFields(usage)` → `omittedFields`; `ClaudeSpendBucketLinuxTests` "fields the log omits stay absent" fails until it is. |
+| Cache schema versions | `Vendored/CostUsage/CostUsageClaudeCache.swift` (`schemaVersion`), `PiSessionCostCache.swift` (`artifactVersion`, `pi-sessions-vN.json`) | Spend Buckets | See [Cache schema versions](#cache-schema-versions) below. |
 | CLI entry and help | `Sources/CodexBarCLI/CLIEntry.swift`, `CLIHelp.swift`, `Tests/CodexBarTests/CLIEntryTests.swift` | Machine Sync: `codexbar sync` | Register `sync` next to upstream's commands; help text in `CLIHelp`. |
 | CLI errors | `Sources/CodexBarCLI/CLIErrorReporting.swift`, `CLIIO.swift` | Machine Sync: error `reason` | Carry `reason` and `exit(reason:)` into upstream's error reporting. |
 | `serve` | `Sources/CodexBarCLI/CLIServeCommand.swift`, `CLILocalHTTPServer.swift` (409, 502 status cases), `Tests/CodexBarTests/CLIServeRouterTests.swift` | Machine Sync: `/sync/status`, `/sync/push`; `/cost?days=N` | `/sync/*` through upstream's data-route auth, `Cache-Control: no-store`; `ServeRuntime` takes `sync` with a default; `/cost?days=N` maps to `CostReportingPeriod.rolling(days:)`. |
 | OpenCode | `Sources/CodexBarCore/Providers/OpenCode/OpenCodeProviderDescriptor.swift` | OpenCode on Linux | Browser-support exemption lives in the descriptor, like OpenCode Go. |
 | macOS menu | `StatusItemController+MenuCardItems.swift`, `+MenuTypes.swift`, `+Menu.swift` | none (macOS UI) | Upstream's side taken, fork change dropped. |
 | Plumbing | `CHANGELOG.md`, `AGENTS.md`, `Makefile`, `Scripts/lint.sh`, `.gitignore`, `docs/cli.md`, `docs/opencode.md` | repo plumbing | Insert the fork's lines into upstream's text; never reorder upstream's. |
+
+### Cache schema versions
+
+The fork's Spend Buckets store extra data in two upstream caches, so the fork runs its own schema numbers:
+
+| Cache | Constant | Fork | Upstream at v0.72.0 |
+| --- | --- | --- | --- |
+| Claude | `CostUsageClaudeCache.schemaVersion` | 6 (#88: persists `omittedFields`) | 4 |
+| Pi | `PiSessionCostCache.artifactVersion` | 10 (hour data) | 9 |
+
+**Rule: when upstream bumps either number to the fork's value or above, bump the fork's above upstream's** in
+the merge PR, and list the cache rebuild under "Notes". Otherwise upstream's new version equals an old fork
+version and users keep a cache with the wrong shape. Update this table on every merge.
+`merge-rehearsal.sh drift` (step 4) prints both pairs and warns when upstream has caught up.
+
+### Fork code that outgrows an upstream file
+
+Upstream files grow between releases. A merge that adds upstream lines to a file the fork also extended can push
+it past swiftlint's `file_length` limit (1,500 lines): in #95, `CLIServeCommand.swift` came out at 1,501. Don't
+raise the limit or trim upstream's code: move the fork's code into a fork-owned file and leave a one-line hook in
+upstream's (#95 moved the `/sync/*` auth and dispatch into `serveSyncRoute` in `CLIServeSync.swift`, leaving one
+`case .syncStatus, .syncPush:` line). That also shrinks the next merge's conflict surface.
 
 ## 3. Regenerate generated files
 
@@ -99,18 +122,22 @@ Without a local Swift toolchain, use containers: `localhost/codexbar-swift:6.3.3
 `ProcessOwnershipReaperTests` spawns `/usr/bin/python3`; a container without it fails that suite with "The file
 doesn't exist", which is the container, not the merge (GitHub's runners have python3).
 
+Mount the checkout with **`:z` (shared label), never `:Z`**. `:Z` relabels `/src` private to one container, so a
+second container started while a build runs (swiftlint next to the Swift build, say) relabels it again and the
+build dies with permission errors partway through.
+
 ```sh
 # Format only the Swift files that differ from upstream, so upstream code isn't reformatted.
-git diff --name-only $TAG -- '*.swift' | xargs podman run --rm -v "$PWD:/src:Z" -w /src \
+git diff --name-only $TAG -- '*.swift' | xargs podman run --rm -v "$PWD:/src:z" -w /src \
   ghcr.io/nicklockwood/swiftformat:latest
-podman run --rm -v "$PWD:/src:Z" -w /src ghcr.io/realm/swiftlint:latest swiftlint lint --strict
+podman run --rm -v "$PWD:/src:z" -w /src ghcr.io/realm/swiftlint:latest swiftlint lint --strict
 ./Scripts/lint.sh lint-linux                     # what CI's lint job runs (installs its tools into .build)
 
 # Linux test target and the fork suites. Run the fork suites first: they say whether a fork feature broke.
-podman run --rm -v "$PWD:/src:Z" -w /src localhost/codexbar-swift:6.3.3 bash -c '
+podman run --rm -v "$PWD:/src:z" -w /src localhost/codexbar-swift:6.3.3 bash -c '
   swift build --build-tests &&
   . Scripts/test_environment.sh &&
-  swift test --skip-build --filter "MachineSync|CLIServeSync|CLISync|SpendBucket|OpenCode" &&
+  swift test --skip-build --filter "MachineSync|CLIServeSync|CLISync|SpendBucket|OpenCode|CLIServeRouter" &&
   swift test --skip-build --parallel'
 
 # GNOME extension
@@ -119,13 +146,65 @@ node --test linux/usagebar-gnome/tests/*.test.mjs
 
 The fork suites: Machine Sync create, pair, push, status, management, timer and protocol vectors;
 `CLIServeSync`; `CLISync*`; Spend Buckets for Codex, Claude and Pi (and their merging); OpenCode on Linux.
-All must pass. #26 had 1,008 tests in 136 suites passing.
+All must pass. #26 had 1,008 tests in 136 suites passing; #95 had 1,095 in 146 (152 tests in 23 fork suites).
+
+### macOS-only tests: check them before you push
+
+The Linux test target is `TestsLinux`. `Tests/CodexBarTests` builds only on macOS, so neither the container nor
+the rehearsal runs it; the first place its failures show up is the PR's macOS CI shards, about 70 minutes a
+round when many PRs are queued (see [Flaky tests and slow runners](#flaky-tests-and-slow-runners)). Upstream
+writes those tests against upstream's caches and code, so new ones break on fork differences. #95 hit three:
+
+- `CostUsageClaudeFragmentTests` "save encodes only three changed files…" and the opt-in
+  `CostUsageClaudePersistenceBenchmarkTests` set `cache.usage.version = 4`, upstream's Claude schema. The fork's is
+  6, so they had to say 6.
+- `CostUsageClaudePriceRangeTests` "range rejection preserves golden rows…" expected Claude rows without the
+  fork's `omittedFields` (incomplete streaming entries carry `[.cacheRead, .cacheCreation]` in the fork).
+- Upstream's new `ProcessEnvironmentStorageTests` walks `Sources/` and flagged fork code:
+  `MachineSyncTimerInstaller.environment` stored a `[String: String]` without the `@ProcessEnvironment` wrapper.
+
+Before pushing, run the drift check from the merge branch (it reads refs, so the tree can be in any state):
+
+```sh
+linux/upstream/merge-rehearsal.sh drift origin/main $TAG
+```
+
+It prints the fork's and upstream's cache schema versions (warning if upstream has caught up), every line
+upstream added to `Tests/CodexBarTests` since the last merge that sets a cache `version`, names
+`schemaVersion`/`artifactVersion`, builds `ClaudeUsageRow`/`PiPackedUsage`, or walks `"Sources"`, and every fork
+line that declares an environment dictionary without `@ProcessEnvironment`. It exits 1 when it lists anything.
+Not every hit is a bug (a test may pin an old version on purpose); read each, fix the ones that disagree with the
+fork, and say in the PR which upstream tests you adjusted and why. The same grep by hand:
+
+```sh
+base=$(git merge-base origin/main $TAG)
+git diff -U0 $base $TAG -- Tests/CodexBarTests | grep -E '^\+.*(\.version = [0-9]+|schemaVersion|artifactVersion|ClaudeUsageRow\(|PiPackedUsage\(|"Sources")'
+git diff -U0 $base origin/main -- Sources | grep -E '^\+.*(let|var) +\w*[Ee]nv\w* *: *\[String: *String\]' | grep -v '@ProcessEnvironment'
+```
+
+The rehearsal runs the same check as a warning (it never fails the run).
+
+### Flaky tests and slow runners
+
+Re-run these once before treating them as merge failures:
+
+- `ProviderPluginOptionalPOSTTests` "caller cancellation…" (timing).
+- `CLIHooksWatchSleepLinuxTests` "stops promptly…" (timing).
+- `ProcessOwnershipReaperTests` "probe reaps detached grandchild…": flaky on runners, and always fails in a
+  container without `/usr/bin/python3` (above).
+
+macOS runners queue: with many open PRs, a macOS CI round took about 70 minutes during #95. Run everything above
+locally first so a round isn't spent on something Linux could have caught, and push fixes in batches.
 
 ## 5. Smoke the merged CLI
 
 From the container build (`.build/debug/CodexBarCLI`), with a scratch `HOME` and no real accounts:
 
-- `codexbar --version` reports the new upstream base.
+- The upstream base is `version.env` (`MARKETING_VERSION`, `BUILD_NUMBER`), not `--version`: check that it reads
+  the tag's values (`git diff $TAG -- version.env` prints nothing). `codexbar --version` reads an adjacent
+  `VERSION` file that packaging writes, so a SwiftPM debug build prints just `CodexBar` and a packaged build
+  prints the UsageBar version. Only check `--version` on a packaged build (step 9), where it must print the
+  UsageBar release.
 - `codexbar sync status` runs (not "Unknown command"); unpaired it reports so.
 - `codexbar serve`: `/health` is ok, `/sync/status` returns `{"paired":false}`, `POST /sync/push` returns 409
   "Machine Sync is off", `GET /sync/push` returns 405, `/cost?provider=codex&days=7` answers with
@@ -198,10 +277,11 @@ checklist lives with the release workflow (#48).
 ## The merge rehearsal
 
 `.github/workflows/usagebar-merge-rehearsal.yml` runs daily and on demand. It checks out fork `main`, merges
-`upstream/main` (or a tag) into a scratch branch inside the runner, and runs steps 3 to 6. Conflicts are resolved
-to upstream's side first, so failing checks point at fork code that needs re-applying. It rewrites the body of
-one pinned issue (label `merge-rehearsal`) with the result. It pushes nothing, opens no PRs, and doesn't touch
-`main`'s CI: a conflict or failing test shows up in the issue, not as a red run.
+`upstream/main` (or a tag) into a scratch branch inside the runner, and runs steps 3 to 6, with the macOS-only
+test drift check as a warning. Conflicts are resolved to upstream's side first, so failing checks point at fork
+code that needs re-applying. It rewrites the body of one pinned issue (label `merge-rehearsal`) with the result.
+It pushes nothing, opens no PRs, and doesn't touch `main`'s CI: a conflict or failing test shows up in the
+issue, not as a red run.
 
 ```sh
 gh workflow run usagebar-merge-rehearsal.yml -R felipearosr/UsageBar                       # upstream/main
@@ -215,6 +295,7 @@ git switch -c scratch/rehearsal origin/main
 cp linux/upstream/merge-rehearsal.sh /tmp/mr.sh            # the merge can't change the copy you run
 /tmp/mr.sh merge upstream/main /tmp/rehearsal
 /tmp/mr.sh check /tmp/rehearsal "GNOME extension JS tests" -- sh -c 'node --test linux/usagebar-gnome/tests/*.test.mjs'
+/tmp/mr.sh warn /tmp/rehearsal "macOS-only test drift" -- /tmp/mr.sh drift HEAD^1 HEAD^2
 /tmp/mr.sh report /tmp/rehearsal
 git switch - && git branch -D scratch/rehearsal
 ```

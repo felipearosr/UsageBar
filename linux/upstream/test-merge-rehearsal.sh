@@ -2,7 +2,8 @@
 # Tests merge-rehearsal.sh against a throwaway repo with an "upstream" and a
 # shellcheck disable=SC2016  # Backticks in single quotes are Markdown, not command substitution.
 # "fork" branch: clean merge, a content conflict on an allowlisted hook, a
-# modify/delete conflict, and the rendered report.
+# modify/delete conflict, the rendered report, and the macOS-only test drift
+# check with its warn status.
 
 set -euo pipefail
 
@@ -105,6 +106,64 @@ printf 'dirty\n' >> Hook.swift
 if "$SCRIPT" merge v0.2.0 "$WORK/dirty" 2>/dev/null; then
   fail "merge should refuse a dirty tree"
 fi
+
+# 4. macOS-only test drift (drift) and the warn status.
+drift_repo="$WORK/drift-repo"
+mkdir -p "$drift_repo"
+cd "$drift_repo"
+claude_cache=Sources/CodexBarCore/Vendored/CostUsage/CostUsageClaudeCache.swift
+pi_cache=Sources/CodexBarCore/PiSessionCostCache.swift
+mkdir -p "$(dirname "$claude_cache")" Tests/CodexBarTests
+g init -q
+printf '    private static let schemaVersion = 4\n' > "$claude_cache"
+printf '    private static let artifactVersion = 9\n' > "$pi_cache"
+g add -A
+g commit -qm base
+
+g switch -qc upstream
+printf '        cache.usage.version = 4\n        let row = CostUsageScanner.ClaudeUsageRow(\n' \
+  > Tests/CodexBarTests/NewUpstreamTests.swift
+g add -A
+g commit -qm "upstream test pins the cache version"
+
+g switch -q main
+printf '    private static let schemaVersion = 6\n' > "$claude_cache"
+printf '    private static let artifactVersion = 10\n' > "$pi_cache"
+g commit -qam "fork bumps caches"
+g tag fork-caches
+printf '    public var environment: [String: String]\n    @ProcessEnvironment var safeEnvironment: [String: String]\n' \
+  > Sources/CodexBarCore/ForkTimer.swift
+g add -A
+g commit -qm "fork stores an environment"
+
+if "$SCRIPT" drift main upstream > "$WORK/drift.txt"; then
+  fail "drift should exit 1 when it finds something"
+fi
+expect_contains "$WORK/drift.txt" "Cache schema: Claude fork 6, upstream 4; Pi fork 10, upstream 9"
+expect_contains "$WORK/drift.txt" "NewUpstreamTests.swift:         cache.usage.version = 4"
+expect_contains "$WORK/drift.txt" "NewUpstreamTests.swift:         let row = CostUsageScanner.ClaudeUsageRow("
+expect_contains "$WORK/drift.txt" "ForkTimer.swift:     public var environment: [String: String]"
+grep -q safeEnvironment "$WORK/drift.txt" && fail "drift flagged a @ProcessEnvironment property"
+grep -q WARN "$WORK/drift.txt" && fail "drift warned about cache versions the fork is above"
+
+g switch -q upstream
+printf '    private static let schemaVersion = 6\n' > "$claude_cache"
+g commit -qam "upstream catches up with the fork's Claude schema"
+g switch -q main
+"$SCRIPT" drift main upstream > "$WORK/drift-bump.txt" || true
+expect_contains "$WORK/drift-bump.txt" "WARN: upstream Claude schema 6 >= fork 6: bump the fork above it"
+
+"$SCRIPT" drift fork-caches fork-caches~1 > "$WORK/drift-none.txt" || fail "drift with nothing new should exit 0"
+expect_contains "$WORK/drift-none.txt" "No macOS-only test drift found."
+
+warned="$WORK/warned"
+"$SCRIPT" merge upstream "$warned" || fail "drift merge exited non-zero"
+"$SCRIPT" warn "$warned" "macOS-only test drift" -- "$SCRIPT" drift HEAD^1 HEAD^2
+[[ "$(cat "$warned/checks/macOS_only_test_drift.status")" == warn ]] || fail "warn should record warn"
+"$SCRIPT" report "$warned" > "$WORK/warned.md"
+expect_contains "$WORK/warned.md" "## Merge rehearsal: Clean pass, 1 warning(s)"
+expect_contains "$WORK/warned.md" "| macOS-only test drift | warn |"
+expect_contains "$WORK/warned.md" "<details><summary>macOS-only test drift (warn)"
 
 if [[ "$FAILURES" -gt 0 ]]; then
   printf '%s failure(s)\n' "$FAILURES" >&2

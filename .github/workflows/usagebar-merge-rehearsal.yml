@@ -91,6 +91,13 @@ jobs:
           "$MR" merge "$REF" "$OUT"
           echo "status=$(cat "$OUT/merge-status")" >> "$GITHUB_OUTPUT"
 
+      # Tests/CodexBarTests is macOS-only, so the Linux build below never runs it.
+      # A warning, not a failure: it lists new upstream test lines that pin cache
+      # schemas or row shapes, and fork code those tests would flag (#95).
+      - name: macOS-only test drift
+        if: steps.merge.outputs.status != 'up-to-date'
+        run: '"$MR" warn "$OUT" "macOS-only test drift" -- "$MR" drift HEAD^1 HEAD^2'
+
       - name: Generated files are current
         if: steps.merge.outputs.status != 'up-to-date'
         run: |

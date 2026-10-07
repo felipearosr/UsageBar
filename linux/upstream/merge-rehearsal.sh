@@ -8,10 +8,12 @@
 #
 #   merge-rehearsal.sh merge  <upstream-ref> <out-dir>
 #   merge-rehearsal.sh check  <out-dir> <name> -- <command...>
+#   merge-rehearsal.sh warn   <out-dir> <name> -- <command...>   (like check; a failure is only a warning)
 #   merge-rehearsal.sh skip   <out-dir> <name> <reason>
 #   merge-rehearsal.sh report <out-dir>
+#   merge-rehearsal.sh drift  <fork-ref> <upstream-ref>   (macOS-only test drift; exits 1 on findings)
 #
-# `check` always exits 0; the result lives in <out-dir>/checks.
+# `check` and `warn` always exit 0; the result lives in <out-dir>/checks.
 # Run it in a scratch branch or a CI checkout: `merge` commits the merge.
 
 set -euo pipefail
@@ -99,17 +101,92 @@ cmd_merge() {
 }
 
 cmd_check() {
-  local out="$1" name="$2"
-  shift 2
+  local on_fail="$1" out="$2" name="$3"
+  shift 3
   [[ "${1:-}" == "--" ]] && shift
   local slug="${name//[^A-Za-z0-9]/_}"
   printf '%s\t%s\n' "$slug" "$name" >> "$out/checks/order"
   if ( cd "$ROOT_DIR" && "$@" ) > "$out/checks/${slug}.log" 2>&1; then
     printf 'pass\n' > "$out/checks/${slug}.status"
   else
-    printf 'fail\n' > "$out/checks/${slug}.status"
+    printf '%s\n' "$on_fail" > "$out/checks/${slug}.status"
   fi
   printf '%s: %s\n' "$name" "$(cat "$out/checks/${slug}.status")"
+}
+
+# The Swift `= N` literal on the line matching $2 in file $1 at ref $3, or '?'.
+version_at() {
+  local value
+  value="$(git show "$3:$1" 2>/dev/null | grep -E "$2" | grep -oE '= *[0-9]+' | head -n 1 | tr -dc '0-9')"
+  printf '%s' "${value:-?}"
+}
+
+# "<file>: <line>" for each line added between refs $1 and $2 under path $3 whose text matches ERE $4.
+added_lines_matching() {
+  # ENVIRON, not -v: -v would eat the regex's backslashes.
+  git diff -U0 "$1" "$2" -- "$3" | ADDED_RE="$4" awk '
+    /^\+\+\+ b\// { file = substr($0, 7); next }
+    /^\+/ && !/^\+\+\+/ { line = substr($0, 2); if (line ~ ENVIRON["ADDED_RE"]) print file ": " line }'
+}
+
+# Pre-push check for the macOS-only test drift that #95 found only in macOS CI.
+# Tests/CodexBarTests doesn't build on Linux, so upstream tests there that pin
+# the fork's cache schemas or row shapes, or scan the fork's sources, never run
+# in the container. Prints what to look at; exits 1 if there is anything.
+cmd_drift() {
+  local fork="$1" upstream="$2"
+  local base found=0
+  base="$(git merge-base "$fork" "$upstream")" || die "no merge base for $fork and $upstream"
+
+  # 1. Cache schema versions: the fork's must stay above upstream's (RUNBOOK.md, "Cache schema versions").
+  local claude_file=Sources/CodexBarCore/Vendored/CostUsage/CostUsageClaudeCache.swift
+  local pi_file=Sources/CodexBarCore/PiSessionCostCache.swift
+  local claude_re='static let schemaVersion = [0-9]+' pi_re='static let artifactVersion = [0-9]+'
+  local fork_claude fork_pi up_claude up_pi
+  fork_claude="$(version_at "$claude_file" "$claude_re" "$fork")"
+  up_claude="$(version_at "$claude_file" "$claude_re" "$upstream")"
+  fork_pi="$(version_at "$pi_file" "$pi_re" "$fork")"
+  up_pi="$(version_at "$pi_file" "$pi_re" "$upstream")"
+  printf 'Cache schema: Claude fork %s, upstream %s; Pi fork %s, upstream %s\n' \
+    "$fork_claude" "$up_claude" "$fork_pi" "$up_pi"
+  if [[ "$fork_claude$up_claude$fork_pi$up_pi" == *'?'* ]]; then
+    printf '  WARN: a schema version could not be read; check both files by hand\n'
+    found=1
+  else
+    if (( up_claude >= fork_claude )); then
+      printf '  WARN: upstream Claude schema %s >= fork %s: bump the fork above it\n' "$up_claude" "$fork_claude"
+      found=1
+    fi
+    if (( up_pi >= fork_pi )); then
+      printf '  WARN: upstream Pi artifact version %s >= fork %s: bump the fork above it\n' "$up_pi" "$fork_pi"
+      found=1
+    fi
+  fi
+
+  # 2. Lines upstream added to macOS-only tests that pin cache versions or row shapes.
+  local hits
+  hits="$(added_lines_matching "$base" "$upstream" Tests/CodexBarTests \
+    '\.version = [0-9]+|schemaVersion|artifactVersion|pi-sessions-v[0-9]+|ClaudeUsageRow\(|PiPackedUsage\(|"Sources"')"
+  if [[ -n "$hits" ]]; then
+    printf '\nNew upstream lines in macOS-only tests that may pin fork schemas or scan fork sources\n'
+    printf '(cache versions must match the fork, Claude rows carry omittedFields, Sources walkers see fork files):\n'
+    printf '%s\n' "$hits" | head -n 60 | cut -c1-240 | sed 's/^/  /'
+    found=1
+  fi
+
+  # 3. Environment dictionaries the fork declares without @ProcessEnvironment (ProcessEnvironmentStorageTests).
+  local env_re='(let|var)[[:space:]]+[A-Za-z_]*[Ee]nv[A-Za-z_]*[[:space:]]*:[[:space:]]*'
+  env_re+='(\[[[:space:]]*String[[:space:]]*:[[:space:]]*String[[:space:]]*\]|Dictionary<)'
+  hits="$(added_lines_matching "$base" "$fork" Sources "$env_re" | grep -v '@ProcessEnvironment' || true)"
+  if [[ -n "$hits" ]]; then
+    printf '\nFork lines declaring an environment dictionary without @ProcessEnvironment\n'
+    printf '(upstream ProcessEnvironmentStorageTests fails on stored ones; computed getters are fine):\n'
+    printf '%s\n' "$hits" | head -n 60 | cut -c1-240 | sed 's/^/  /'
+    found=1
+  fi
+
+  (( found == 0 )) && printf 'No macOS-only test drift found.\n'
+  return "$found"
 }
 
 cmd_skip() {
@@ -132,7 +209,7 @@ cmd_report() {
   upstream_tag="$(meta "$out" upstream_tag)"
   fork_sha="$(meta "$out" fork_sha)"
   ahead="$(meta "$out" ahead)"
-  local status conflicts=0 hunks=0 failed=0
+  local status conflicts=0 hunks=0 failed=0 warned=0
   status="$(cat "$out/merge-status")"
   if [[ -s "$out/conflicts.tsv" ]]; then
     conflicts="$(wc -l < "$out/conflicts.tsv" | tr -d ' ')"
@@ -140,6 +217,7 @@ cmd_report() {
   fi
   if [[ -f "$out/checks/order" ]]; then
     failed="$(cat "$out"/checks/*.status | grep -c '^fail$' || true)"
+    warned="$(cat "$out"/checks/*.status | grep -c '^warn$' || true)"
   fi
 
   local headline
@@ -149,6 +227,9 @@ cmd_report() {
     headline="Clean pass"
   else
     headline="${conflicts} conflicting file(s), ${failed} failing check(s)"
+  fi
+  if [[ "$status" != up-to-date && "$warned" != 0 ]]; then
+    headline+=", ${warned} warning(s)"
   fi
 
   printf '## Merge rehearsal: %s\n\n' "$headline"
@@ -187,8 +268,9 @@ cmd_report() {
     done < "$out/checks/order"
     printf '\n'
     while IFS=$'\t' read -r slug name; do
-      [[ "$(cat "$out/checks/${slug}.status")" == fail ]] || continue
-      printf '<details><summary>%s: last %s log lines</summary>\n\n```\n' "$name" "$LOG_TAIL_LINES"
+      result="$(cat "$out/checks/${slug}.status")"
+      [[ "$result" == fail || "$result" == warn ]] || continue
+      printf '<details><summary>%s (%s): last %s log lines</summary>\n\n```\n' "$name" "$result" "$LOG_TAIL_LINES"
       tail -n "$LOG_TAIL_LINES" "$out/checks/${slug}.log" | cut -c1-300 | sed 's/```/` ` `/g'
       printf '```\n</details>\n\n'
     done < "$out/checks/order"
@@ -201,8 +283,10 @@ cmd_report() {
 
 case "${1:-}" in
   merge) [[ $# == 3 ]] || die "usage: merge <upstream-ref> <out-dir>"; cmd_merge "$2" "$3" ;;
-  check) [[ $# -ge 4 ]] || die "usage: check <out-dir> <name> -- <command...>"; shift; cmd_check "$@" ;;
+  check) [[ $# -ge 4 ]] || die "usage: check <out-dir> <name> -- <command...>"; shift; cmd_check fail "$@" ;;
+  warn) [[ $# -ge 4 ]] || die "usage: warn <out-dir> <name> -- <command...>"; shift; cmd_check warn "$@" ;;
+  drift) [[ $# == 3 ]] || die "usage: drift <fork-ref> <upstream-ref>"; cmd_drift "$2" "$3" ;;
   skip) [[ $# == 4 ]] || die "usage: skip <out-dir> <name> <reason>"; cmd_skip "$2" "$3" "$4" ;;
   report) [[ $# == 2 ]] || die "usage: report <out-dir>"; cmd_report "$2" ;;
-  *) die "usage: $(basename "$0") merge|check|skip|report ..." ;;
+  *) die "usage: $(basename "$0") merge|check|warn|skip|report|drift ..." ;;
 esac
