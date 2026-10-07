@@ -181,12 +181,22 @@ jobs:
           set -euo pipefail
           linux/packaging/build-packages.sh "$TARBALL" "$VERSION" "$RUNNER_TEMP/packages"
           cp "$TARBALL" "$TARBALL.sha256" "$RUNNER_TEMP/packages/"
+          linux/packaging/build-cli-deb.sh "$TARBALL" "$VERSION" "$RUNNER_TEMP/packages"
           linux/packaging/build-cli-rpm.sh "$VERSION" "$RUNNER_TEMP/packages" "$TARBALL"
-          dpkg-deb --info "$RUNNER_TEMP"/packages/*.deb
+          for deb in "$RUNNER_TEMP"/packages/*.deb; do dpkg-deb --info "$deb"; done
           for rpm in "$RUNNER_TEMP"/packages/*.rpm; do rpm -qpil "$rpm" | head -40; done
 
       - name: CLI RPM smoke test
         run: linux/packaging/tests/run-in-container.sh registry.fedoraproject.org/fedora:latest rpm.sh "$RUNNER_TEMP/packages"
+
+      - name: CLI .deb smoke test
+        run: |
+          set -euo pipefail
+          for image in debian:stable ubuntu:24.04 ubuntu:latest; do
+            echo "::group::usagebar-cli .deb on $image"
+            linux/packaging/tests/run-in-container.sh "$image" deb.sh "$RUNNER_TEMP/packages"
+            echo "::endgroup::"
+          done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -259,6 +269,7 @@ jobs:
 
           - Ubuntu / Debian: \`usagebar_${version}_amd64.deb\` (ARM: \`_arm64.deb\`)
           - Fedora: \`usagebar-${version}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)
+          - Just the \`codexbar\` CLI on Ubuntu / Debian: \`usagebar-cli_${version}_amd64.deb\` (ARM: \`_arm64.deb\`)
           - Just the \`codexbar\` CLI on Fedora: \`usagebar-cli-${version}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)
           - Just the \`codexbar\` CLI, any distro: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/linux/packaging/install-cli.sh | sh\`
 

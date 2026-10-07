@@ -9,6 +9,30 @@ app that tracks usage limits and spend across AI coding providers. All provider
 plumbing is his; this directory brings the experience to Linux desktops,
 GNOME-native first.
 
+## UsageBar vs CodexBar
+
+[**CodexBar**](https://github.com/steipete/CodexBar) is the original project:
+the macOS menu bar app, the cross-platform `codexbar` CLI, and every provider
+integration UsageBar shows. It also ships its own Qt desktop app for Linux
+(see its [Linux guide](../Integrations/Linux/README.md)).
+
+UsageBar is a fork of CodexBar that adds:
+
+- a GNOME Shell extension that shows usage in the top bar
+  ([`usagebar-gnome/`](usagebar-gnome/)), plus a Tauri tray app for other
+  desktops ([`codexbar-tray/`](codexbar-tray/));
+- Machine Sync, which shares spend across your machines
+  (`codexbar sync` in this fork's CLI). Upstream's CLI doesn't have it.
+
+Which one to use:
+
+- **macOS:** use [CodexBar](https://github.com/steipete/CodexBar).
+- **Linux with GNOME:** use UsageBar.
+- **Other Linux desktops:** CodexBar's Qt app or UsageBar's tray app. Machine
+  Sync needs this fork's CLI either way.
+
+UsageBar doesn't ship a macOS build. It merges in upstream CodexBar changes.
+
 ## Why
 
 You're deep in a Claude Code or Codex session and the only warning you get
@@ -59,34 +83,13 @@ killed on disable). No daemons to babysit, nothing listening beyond
 | [`usagebar-gnome/`](usagebar-gnome/) | **GNOME Shell extension** — the primary surface. Pure GJS (St/Clutter), GNOME 46, 49 & 50, Wayland and X11. Everything above lives here. |
 | [`codexbar-tray/`](codexbar-tray/) | **Tauri tray app** — fallback for non-GNOME desktops (KDE, XFCE, …). Tray icon, text usage menu, popup window. Rust core, 15 tests. |
 
-Both talk to the same [codexbar CLI](https://github.com/steipete/CodexBar)
-(`GET /usage`, `GET /cost` from `codexbar serve`), so they stay in lockstep
-with whatever providers upstream supports.
+Both talk to the `codexbar` CLI (`GET /usage`, `GET /cost` from
+`codexbar serve`). UsageBar ships its own build of that CLI: upstream's plus
+Machine Sync. Provider support tracks upstream.
 
 ## Install
 
-1. Download the package for your system from
-   [Releases](https://github.com/felipearosr/UsageBar/releases/latest):
-   - Ubuntu / Debian: `usagebar_<version>_amd64.deb` (`_arm64.deb` on ARM)
-   - Fedora: `usagebar-<version>-1.x86_64.rpm` (`.aarch64.rpm` on ARM)
-2. Open it. App Center (Ubuntu) or Software (Fedora) installs it along with
-   everything it needs. From a terminal: `sudo apt install ./usagebar_*.deb`
-   or `sudo dnf install ./usagebar-*.rpm`.
-3. Log out and back in once.
-
-UsageBar then turns itself on and enables Claude and Codex if you've signed
-in to Claude Code or the Codex CLI on this machine. Other providers are in
-Settings → Providers. New releases show up in the menu as "UsageBar <version>
-is available. Install now?", which asks for your password and installs the
-update.
-
-Needs GNOME 46, 49 or 50: Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44.
-The package includes this fork's `codexbar` CLI (upstream plus Machine Sync)
-under `/usr/libexec/usagebar`, so it doesn't conflict with another `codexbar`
-you may have installed.
-
-Verified on Fedora 43 / GNOME 49 and Fedora 44 / GNOME 50 (Wayland), and on
-Ubuntu 24.04 / GNOME 46 packages (Wayland and X11, headless).
+See [INSTALL.md](INSTALL.md#install-usagebar).
 
 ### Just the CLI
 
@@ -105,9 +108,11 @@ instead (run it with `sudo`; the script never asks for privileges itself),
 `--prefix DIR` anywhere else, and `--uninstall` removes exactly what it
 installed. It refuses to replace a `codexbar` it didn't install.
 
-On Fedora, each release also has a CLI-only package,
+On Ubuntu / Debian, each release also has a CLI-only package,
+`usagebar-cli_<version>_amd64.deb` (`_arm64.deb` on ARM):
+`sudo apt install ./usagebar-cli_*.deb`. On Fedora, it's
 `usagebar-cli-<version>-1.x86_64.rpm` (`.aarch64.rpm` on ARM):
-`sudo dnf install ./usagebar-cli-*.rpm`. It puts the CLI in
+`sudo dnf install ./usagebar-cli-*.rpm`. Either one puts the CLI in
 `/usr/lib/usagebar-cli` with `/usr/bin/codexbar` linking to it, and conflicts
 with other packages that ship a `codexbar` command. You don't need it next to
 the full `usagebar` package, which carries its own copy.
@@ -146,6 +151,14 @@ fork CLI for x86_64 and aarch64, packages it with the extension
 the extension's updater reads. The repo must be public for
 installed copies to see updates.
 
+### Merging upstream
+
+Each CodexBar release is merged in its own PR, following
+[`upstream/RUNBOOK.md`](upstream/RUNBOOK.md). A daily rehearsal
+([`usagebar-merge-rehearsal.yml`](../.github/workflows/usagebar-merge-rehearsal.yml))
+tries the merge ahead of time and reports conflicts and failing checks in the
+pinned `merge-rehearsal` issue.
+
 ### Development
 
 The from-zero dev setup (CLI install, config, verification without logging
@@ -155,7 +168,7 @@ copy, and dev installs don't self-update.
 
 ## Status
 
-Private port, moving fast; not yet on extensions.gnome.org (that, Tauri app
+Early port, moving fast; not yet on extensions.gnome.org (that, Tauri app
 packaging, and upstreaming a few CLI niceties are the roadmap). Development
 notes and the battle-tested verify loop live in
 [`codexbar-tray/NEXT_PHASE.md`](codexbar-tray/NEXT_PHASE.md).
