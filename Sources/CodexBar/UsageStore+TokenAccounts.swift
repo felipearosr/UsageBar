@@ -506,21 +506,21 @@ extension UsageStore {
     func refreshTokenAccounts(
         provider: UsageProvider,
         accounts: [ProviderTokenAccount],
-        generation: UInt64? = nil) async
+        generation: UInt64? = nil,
+        sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) async
     {
         guard let selectedAccount = self.settings.effectiveSelectedTokenAccount(for: provider) else {
             self.reconcileSelectedTokenAccountSnapshotBeforeRefresh(provider: provider, accounts: accounts)
             return
         }
         let limitedAccounts = self.limitedTokenAccounts(accounts, selected: selectedAccount)
-        let effectiveSelected = selectedAccount
 
         // Capture the prior per-account snapshot state so we can preserve last-good
         // data when an in-flight refresh is cancelled (e.g. menu tab switches). Without
         // this, cancellation produces empty/error snapshots and the menu briefly shows
         // misleading cards for accounts that previously had valid data.
         self.pruneTokenAccountSnapshots(provider: provider, accounts: accounts)
-        self.activateCachedTokenAccountSnapshot(provider: provider, accountID: effectiveSelected.id)
+        self.activateCachedTokenAccountSnapshot(provider: provider, accountID: selectedAccount.id)
         let priorSnapshots = self.accountSnapshots[provider.instanceID] ?? []
         let priorByAccountID = Dictionary(
             uniqueKeysWithValues: priorSnapshots.map { ($0.account.id, $0) })
@@ -533,7 +533,8 @@ extension UsageStore {
         var selectedAccountSnapshot: TokenAccountUsageSnapshot?
         var sawAnyNonCancellationOutcome = false
 
-        let results = await self.fetchTokenAccountOutcomes(provider: provider, accounts: limitedAccounts)
+        let results = await self.fetchTokenAccountOutcomes(
+            provider: provider, accounts: limitedAccounts, sleep: sleep)
         guard self.isCurrentProviderRefreshGeneration(provider, generation: generation) else { return }
         for result in results {
             guard let account = self.uniqueTokenAccount(provider: provider, accountID: result.account.id)
@@ -558,7 +559,7 @@ extension UsageStore {
             if let usage = resolved.freshUsage {
                 historySamples.append((account: account, snapshot: usage))
             }
-            if account.id == effectiveSelected.id {
+            if account.id == selectedAccount.id {
                 selectedOutcome = outcome
                 resolvedSelectedAccount = account
                 selectedSnapshot = resolved.usage
@@ -578,7 +579,7 @@ extension UsageStore {
         self.scheduleSupplementalUsageUpdates(
             provider: provider,
             results: results,
-            selectedAccountID: effectiveSelected.id,
+            selectedAccountID: selectedAccount.id,
             generation: generation)
 
         if let selectedOutcome, let resolvedSelectedAccount {
@@ -595,7 +596,7 @@ extension UsageStore {
         await self.recordFetchedTokenAccountPlanUtilizationHistory(
             provider: provider,
             samples: historySamples,
-            selectedAccount: effectiveSelected)
+            selectedAccount: selectedAccount)
     }
 
     private nonisolated static func codexUsageOutcomeMatchesVisibleAccount(
@@ -676,22 +677,22 @@ extension UsageStore {
 
     private func fetchTokenAccountOutcomes(
         provider: UsageProvider,
-        accounts: [ProviderTokenAccount]) async -> [TokenAccountFetchResult]
+        accounts: [ProviderTokenAccount],
+        sleep: (Duration) async throws -> Void) async -> [TokenAccountFetchResult]
     {
+        let descriptor =
+            self.providerSpecs[provider]?.descriptor
+                ?? ProviderDescriptorRegistry
+                .descriptor(for: provider)
         let requests:
             [(
                 index: Int,
                 account: ProviderTokenAccount,
-                descriptor: ProviderDescriptor,
                 context: ProviderFetchContext)] =
             accounts.enumerated().map { index, account in
                 let override = TokenAccountOverride(provider: provider, account: account)
-                let descriptor =
-                    self.providerSpecs[provider]?.descriptor
-                        ?? ProviderDescriptorRegistry
-                        .descriptor(for: provider)
                 let context = self.makeFetchContext(provider: provider, override: override)
-                return (index, account, descriptor, context)
+                return (index, account, context)
             }
 
         if let delay = TokenAccountSupportCatalog.support(for: provider)?
@@ -702,7 +703,7 @@ extension UsageStore {
             for request in requests {
                 if !results.isEmpty {
                     do {
-                        try await Task.sleep(for: delay)
+                        try await sleep(delay)
                     } catch {
                         for pending in requests.dropFirst(results.count) {
                             results.append(
@@ -716,7 +717,7 @@ extension UsageStore {
                         return results
                     }
                 }
-                let outcome = await request.descriptor.fetchOutcome(context: request.context)
+                let outcome = await descriptor.fetchOutcome(context: request.context)
                 results.append(
                     TokenAccountFetchResult(
                         index: request.index,
@@ -732,7 +733,7 @@ extension UsageStore {
         { group in
             for request in requests {
                 group.addTask {
-                    let outcome = await request.descriptor.fetchOutcome(context: request.context)
+                    let outcome = await descriptor.fetchOutcome(context: request.context)
                     return TokenAccountFetchResult(
                         index: request.index,
                         account: request.account,
@@ -1413,7 +1414,7 @@ extension UsageStore {
                 provider: .codex,
                 snapshot: snapshot,
                 accountDiscriminator: codexOwnerKey?.rawValue)
-            self.handleSessionQuotaTransition(
+            let sessionRestored = self.handleSessionQuotaTransition(
                 provider: .codex,
                 snapshot: snapshot,
                 codexOwnerKey: codexOwnerKey)
@@ -1432,7 +1433,8 @@ extension UsageStore {
             await self.recordPlanUtilizationHistorySample(
                 provider: .codex,
                 snapshot: snapshot,
-                codexLimitResetOwnerKey: limitResetOwnerKey)
+                codexLimitResetOwnerKey: limitResetOwnerKey,
+                sessionRestoredNotificationPending: sessionRestored)
             guard self.isCurrentProviderRefreshGeneration(.codex, generation: generation) else { return }
             self.emitUsageUpdatedHook(
                 provider: .codex,
@@ -1498,7 +1500,8 @@ extension UsageStore {
                 provider: provider,
                 snapshot: backfilled,
                 accountDiscriminator: warningAccountDiscriminator)
-            self.handleSessionQuotaTransition(provider: provider, snapshot: backfilled)
+            let sessionRestored = self.handleSessionQuotaTransition(
+                provider: provider, snapshot: backfilled, accountDiscriminator: warningAccountDiscriminator)
             self.handlePredictivePaceWarningTransitions(
                 provider: provider,
                 snapshot: backfilled,
@@ -1522,7 +1525,8 @@ extension UsageStore {
             await self.recordPlanUtilizationHistorySample(
                 provider: provider,
                 snapshot: backfilled,
-                account: account)
+                account: account,
+                sessionRestoredNotificationPending: sessionRestored)
             guard self.isCurrentProviderRefreshGeneration(provider, generation: generation) else { return }
             self.emitUsageUpdatedHook(
                 provider: provider,
