@@ -1,9 +1,8 @@
 {
   "uuid": "usagebar@felipearosr.github.io",
   "name": "UsageBar",
-  "description": "AI coding-provider usage limits in the GNOME panel: anchored popover with per-window progress bars, reset countdowns, pace, cost dashboard and quota notifications. Linux port of CodexBar (github.com/steipete/CodexBar), backed by its codexbar CLI (supervised `codexbar serve`).",
+  "description": "AI coding-provider usage limits in the GNOME panel: anchored popover with per-window progress bars, reset countdowns, pace, cost dashboard and quota notifications. Linux port of CodexBar (github.com/steipete/CodexBar). Requires the UsageBar CLI, which the extension runs as a supervised local `codexbar serve`.",
   "url": "https://github.com/felipearosr/UsageBar",
   "shell-version": ["46", "49", "50"],
-  "settings-schema": "org.gnome.shell.extensions.usagebar",
-  "version": 1
+  "settings-schema": "org.gnome.shell.extensions.usagebar"
 }
