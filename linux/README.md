@@ -97,6 +97,14 @@ fork CLI for x86_64 and aarch64, packages it with the extension
 the release the extension's updater reads. The repo must be public for
 installed copies to see updates.
 
+### Merging upstream
+
+Each CodexBar release is merged in its own PR, following
+[`upstream/RUNBOOK.md`](upstream/RUNBOOK.md). A daily rehearsal
+([`usagebar-merge-rehearsal.yml`](../.github/workflows/usagebar-merge-rehearsal.yml))
+tries the merge ahead of time and reports conflicts and failing checks in the
+pinned `merge-rehearsal` issue.
+
 ### Development
 
 The from-zero dev setup (CLI install, config, verification without logging
