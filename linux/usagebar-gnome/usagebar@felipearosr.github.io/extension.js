@@ -28,6 +28,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {PROVIDER_META} from './providermeta.js';
+import {monogramBadge} from './monogram.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
     buildCostDateRange,
@@ -1393,6 +1394,42 @@ function cliVersion(binary) {
     }
 }
 
+// ---------- provider marks ----------
+
+// Development checkouts carry provider logos in icons/. The build shipped to
+// extensions.gnome.org leaves them out (third-party trademarks), and
+// USAGEBAR_HIDE_PROVIDER_ICONS=1 simulates that for testing.
+function providerLogo(dir, provider) {
+    if (!dir || !provider || GLib.getenv('USAGEBAR_HIDE_PROVIDER_ICONS') === '1')
+        return null;
+    const file = dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
+    try {
+        return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
+    } catch {
+        return null;
+    }
+}
+
+// Brand-colored monogram badge standing in for a missing logo.
+function providerMonogramActor(provider, size) {
+    const badge = monogramBadge(PROVIDER_META[provider], provider, size);
+    const actor = new St.Bin({
+        style_class: 'usagebar-monogram',
+        style: `background-color: ${badge.background}; border-radius: ${badge.radiusPx}px; ` +
+            `min-width: ${size}px;`,
+        height: size,
+        y_align: Clutter.ActorAlign.CENTER,
+        child: new St.Label({
+            text: badge.text,
+            style: `color: ${badge.foreground}; font-size: ${badge.fontPx}px; font-weight: bold;`,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        }),
+    });
+    actor._usagebarMonogram = badge.text;
+    return actor;
+}
+
 // ---------- indicator ----------
 
 const Indicator = GObject.registerClass(
@@ -1402,16 +1439,7 @@ class UsageBarIndicator extends PanelMenu.Button {
         this._dir = dir;
         this._panelEntries = new Map();
         this._statusState = new StatusMessageState();
-        this._panelIconCache = new LifetimeLookupCache(provider => {
-            if (!this._dir || !provider)
-                return null;
-            const file = this._dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
-            try {
-                return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
-            } catch {
-                return null;
-            }
-        });
+        this._panelIconCache = new LifetimeLookupCache(provider => providerLogo(this._dir, provider));
 
         this._chipBox = new St.BoxLayout({style_class: 'usagebar-panel-box'});
         this.add_child(this._chipBox);
@@ -1668,12 +1696,7 @@ class UsageBarIndicator extends PanelMenu.Button {
                     style_class: 'usagebar-chip-icon',
                     y_align: Clutter.ActorAlign.CENTER,
                 })
-                : new St.Icon({
-                    icon_name: 'application-x-executable-symbolic',
-                    icon_size: 14,
-                    style_class: 'usagebar-chip-icon',
-                    y_align: Clutter.ActorAlign.CENTER,
-                }));
+                : providerMonogramActor(chip.provider, 14));
 
             if (chip.mode !== 'percent') {
                 entry.ring = new St.DrawingArea({
@@ -1875,14 +1898,7 @@ export default class UsageBarExtension extends Extension {
         this._overviewView = null;
         this._windowCatalogSignature = null;
         this._uiSmokeTimeoutIds = [];
-        this._providerIconCache = new LifetimeLookupCache(provider => {
-            const file = this.dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
-            try {
-                return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
-            } catch {
-                return null;
-            }
-        });
+        this._providerIconCache = new LifetimeLookupCache(provider => providerLogo(this.dir, provider));
         this._session = new Soup.Session({timeout: REQUEST_TIMEOUT_SECS + 10});
         this._cancellable = new Gio.Cancellable();
         this._renderScheduler = new RenderScheduler(
@@ -2906,6 +2922,11 @@ export default class UsageBarExtension extends Extension {
                         cards.every(card => card._usagebarDot.has_style_class_name('usagebar-machine-dot-active'))));
                     assertions.push(assertion('fresh data is not greyed',
                         box?._usagebarContent.opacity === 255));
+                    assertions.push(noGenericIcons('Machines tab has no generic icons', box));
+                    if (logosHidden) {
+                        assertions.push(assertion('Machines tab shows monograms',
+                            descendants(box).some(actor => actor._usagebarMonogram)));
+                    }
                 } catch (error) {
                     done(error);
                     return;
@@ -2976,6 +2997,56 @@ export default class UsageBarExtension extends Extension {
             });
         };
 
+        // Provider marks: logos when icons/ is present, brand-colored
+        // monograms when it is not (USAGEBAR_HIDE_PROVIDER_ICONS=1).
+        const logosHidden = GLib.getenv('USAGEBAR_HIDE_PROVIDER_ICONS') === '1';
+        const descendants = actor => actor
+            ? [actor, ...actor.get_children().flatMap(descendants)] : [];
+        const noGenericIcons = (name, root) => assertion(name, !descendants(root).some(actor =>
+            actor instanceof St.Icon && actor.icon_name === 'application-x-executable-symbolic'));
+        const markSmoke = (assertions, done) => {
+            const providers = ['claude', 'codex', 'opencodego', 'alibabatokenplan'];
+            let marks;
+            try {
+                this._indicator._setPanelText(providers.map(provider => ({
+                    provider, percent: 40, hasUsage: true, text: '40%', sev: 'ok', mode: 'ring-percent',
+                })));
+                // Checked before any live render can replace the fixture chips.
+                marks = new Map(providers.map(provider => [provider,
+                    this._indicator._panelEntries.get(provider)?.box.get_first_child()]));
+                for (const [provider, mark] of marks) {
+                    if (logosHidden || provider === 'alibabatokenplan') {
+                        assertions.push(assertion(`${provider} panel chip shows a monogram`,
+                            typeof mark?._usagebarMonogram === 'string' &&
+                            mark._usagebarMonogram.length > 0,
+                            {actual: mark?._usagebarMonogram ?? null}));
+                    } else {
+                        assertions.push(assertion(`${provider} panel chip shows its logo`,
+                            mark instanceof St.Icon && !!mark.gicon));
+                    }
+                }
+                assertions.push(noGenericIcons('panel chips have no generic icons',
+                    this._indicator._chipBox));
+            } catch (error) {
+                done(error);
+                return;
+            }
+            later(300, () => {
+                try {
+                    for (const [provider, mark] of marks)
+                        assertions.push(painted(`${provider} panel mark is painted`, mark));
+                } catch (error) {
+                    done(error);
+                    return;
+                }
+                capture(logosHidden ? 'panel-monograms.png' : 'panel-logos.png', () => {
+                    this._indicator._setPanelText([]);
+                    this._render();
+                    done();
+                });
+            });
+        };
+
         // Run with USAGEBAR_UI_SMOKE_NO_CLI=1: the popover shows
         // the install empty state, and its button opens the install page.
         const missingCliSmoke = assertions => {
@@ -3023,12 +3094,16 @@ export default class UsageBarExtension extends Extension {
                 missingCliSmoke(assertions);
                 return;
             }
-            machinesSmoke(assertions, error => {
+            const steps = [markSmoke, machinesSmoke];
+            const next = error => {
                 if (error)
                     finish(assertions, error);
+                else if (steps.length)
+                    steps.shift()(assertions, next);
                 else
                     costSmoke(assertions);
-            });
+            };
+            next();
         });
 
         const costSmoke = assertions => {
@@ -3044,6 +3119,11 @@ export default class UsageBarExtension extends Extension {
                 assertions.push(assertion('overview row tracks hover',
                     compact._usagebarRowState.rowBox.reactive === true &&
                     compact._usagebarRowState.rowBox.track_hover === true));
+                assertions.push(noGenericIcons('overview row has no generic icon', compact));
+                if (logosHidden) {
+                    assertions.push(assertion('overview row shows a monogram',
+                        descendants(compact).some(actor => actor._usagebarMonogram)));
+                }
                 compact.destroy();
                 const trendReport = {
                     historyDays: COST_HISTORY_DAYS,
@@ -3098,6 +3178,13 @@ export default class UsageBarExtension extends Extension {
                         assertions.push(painted('Tokens tab is painted', refs?.metricButtons.get('tokens')));
                         assertions.push(painted('Model tab is painted', refs?.modelButton));
                         assertions.push(painted('Day tab is painted', refs?.dayButton));
+                        assertions.push(noGenericIcons('cost dashboard has no generic icons',
+                            this._indicator._costPanel));
+                        if (logosHidden) {
+                            assertions.push(assertion('cost dashboard legends show monograms',
+                                descendants(this._indicator._costPanel)
+                                    .some(actor => actor._usagebarMonogram)));
+                        }
                         assertions.push(assertion('chart is capped at four providers',
                             refs?.chartProviderCount === 4,
                             {actual: refs?.chartProviderCount ?? null}));
@@ -4099,21 +4186,14 @@ export default class UsageBarExtension extends Extension {
     }
 
     _providerIcon(provider, size) {
-        this._providerIconCache ??= new LifetimeLookupCache(provider => {
-            const file = this.dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
-            try {
-                return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
-            } catch {
-                return null;
-            }
-        });
+        this._providerIconCache ??= new LifetimeLookupCache(provider => providerLogo(this.dir, provider));
         const gicon = this._providerIconCache.get(provider);
+        if (!gicon)
+            return providerMonogramActor(provider, size);
         const icon = new St.Icon({
             icon_size: size,
             y_align: Clutter.ActorAlign.CENTER,
-            ...(gicon
-                ? {gicon}
-                : {icon_name: 'application-x-executable-symbolic'}),
+            gicon,
         });
         const color = PROVIDER_META[provider]?.color;
         if (color)

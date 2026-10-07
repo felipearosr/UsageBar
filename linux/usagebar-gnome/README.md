@@ -117,6 +117,18 @@ painted on-screen, exercises each control family, checks the four-provider cap,
 and fails on extension JavaScript errors. Every run prints paths to its JSON
 result, GNOME log, and full-stage PNG screenshot under `/tmp`.
 
+## Provider logos
+
+Provider logos live in `usagebar@felipearosr.github.io/icons/` for development
+checkouts only. The build submitted to extensions.gnome.org leaves them out
+(third-party trademarks); a provider without a logo file is drawn as a
+two-letter monogram on a badge in its brand color (`monogram.js`). Providers
+whose computed monograms would collide (Codex, Copilot and Codebuff all give
+"Co") get hand-picked ones from `MONOGRAM_OVERRIDES`, so every badge is unique. Set
+`USAGEBAR_HIDE_PROVIDER_ICONS=1` to see that build's look with the logos in
+place, e.g. `USAGEBAR_HIDE_PROVIDER_ICONS=1 ./linux/run-dev.sh`. The UI smoke
+test runs once with logos and once with them hidden.
+
 ## Files
 
 - `usagebar@felipearosr.github.io/extension.js` — everything: serve
