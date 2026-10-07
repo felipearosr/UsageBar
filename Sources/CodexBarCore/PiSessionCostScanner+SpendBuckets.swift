@@ -15,6 +15,7 @@ extension PiSessionCostScanner {
         options: Options = Options(),
         checkCancellation: CostUsageScanner.CancellationCheck?) throws -> [CostUsageSpendBucket]
     {
+        // Provider-specific by design: Pi sessions fold only into the Codex and Claude local-log buckets.
         guard provider == .codex || provider == .claude else { return [] }
         // The daily report refreshes and saves the cache; the buckets then read the same entries.
         _ = try self.loadDailyReportResultCancellable(
