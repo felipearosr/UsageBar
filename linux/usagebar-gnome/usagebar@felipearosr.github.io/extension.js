@@ -2289,8 +2289,13 @@ export default class UsageBarExtension extends Extension {
         const sync = this._sync;
         if (!sync || this._syncFixture || !this._supervisor?.port)
             return;
-        if (!sync.reportChecked && !sync.reportInFlight)
-            this._fetchCapabilities();
+        // /health first: a capability report without machineSync means no
+        // /sync/* request at all. Without a report, /sync/status probes.
+        if (!sync.reportChecked) {
+            if (!sync.reportInFlight)
+                this._fetchCapabilities();
+            return;
+        }
         if (sync.readInFlight || this._syncSupport() === 'needs-upgrade')
             return;
         const plan = this._syncPlan();
@@ -2862,6 +2867,11 @@ export default class UsageBarExtension extends Extension {
             }
             steps.splice(steps.indexOf(machinesSmoke), 1);
             const before = this._sync.requests;
+            if (this._sync.report) {
+                // The report answered first, so not even a probe was sent.
+                assertions.push(assertion('a report without machineSync sends no /sync/* request',
+                    before === 0, {actual: before}));
+            }
             this._indicator.menu.open();
             for (let i = 0; i < 3; i++)
                 this._syncTick();

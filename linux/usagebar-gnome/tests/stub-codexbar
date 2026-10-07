@@ -5,6 +5,8 @@ Point the extension at it with CODEXBAR_BIN=<this file>. It never reads
 accounts, credentials or the network. STUB_CODEXBAR_SYNC=0 makes it behave
 like upstream's CLI: no `codexbar sync` and no /sync/* routes in `serve`.
 STUB_CODEXBAR_REPORT=1 adds a capability report to /health.
+STUB_CODEXBAR_PAIRED=1 (with sync) pretends this Machine is in a Sync Group
+with one other Machine, so the Machines tab and the paired Settings page show.
 """
 
 import json
@@ -17,7 +19,36 @@ from urllib.parse import urlsplit
 
 SYNC = os.environ.get("STUB_CODEXBAR_SYNC", "1") != "0"
 REPORT = os.environ.get("STUB_CODEXBAR_REPORT") == "1"
+PAIRED = SYNC and os.environ.get("STUB_CODEXBAR_PAIRED") == "1"
 VERSION = "0.69.0"
+REPORTING_DAY = {"timeZone": None, "startHour": 0, "effectiveTimeZone": "UTC"}
+
+
+def spend(cost):
+    return {"costUSD": cost, "costIncomplete": False, "totalTokens": 0, "requests": 0}
+
+
+def machine(machine_id, this, cost, provider):
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    today = time.strftime("%Y-%m-%d")
+    return {"machineId": machine_id, "displayName": machine_id, "isThisMachine": this,
+            "active": True, "retired": False, "lastSeen": now,
+            "today": spend(cost / 3), "last30Days": spend(cost),
+            "models": [{"provider": provider, "model": f"{machine_id}-model", "spend": spend(cost)}],
+            "days": [{"date": today, "spend": spend(cost / 3)}],
+            "coverage": {"from": today, "to": today}}
+
+
+def sync_status():
+    if not PAIRED:
+        return {"paired": False}
+    return {"paired": True,
+            "refreshedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "status": {"today": time.strftime("%Y-%m-%d"),
+                       "total": {"today": spend(10 / 3), "last30Days": spend(10)},
+                       "errors": [],
+                       "machines": [machine("stub-laptop", True, 6, "claude"),
+                                    machine("stub-desk", False, 4, "codex")]}}
 
 
 def unknown_command(name):
@@ -53,7 +84,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/usage", "/cost"):
             self.send_json(200, [])
         elif path == "/sync/status" and SYNC:
-            self.send_json(200, {"paired": False})
+            self.send_json(200, sync_status())
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -91,9 +122,12 @@ def main():
             print("[]")
     elif command == "sync" and SYNC:
         if argv[1:2] == ["settings"]:
-            print(json.dumps({"paired": False, "machineId": None, "displayName": "stub",
-                              "server": None, "reportingDay": {
-                                  "timeZone": None, "startHour": 0, "effectiveTimeZone": "UTC"}}))
+            print(json.dumps({"paired": PAIRED, "machineId": "stub-laptop" if PAIRED else None,
+                              "displayName": "stub-laptop",
+                              "server": "https://sync.example.invalid" if PAIRED else None,
+                              "reportingDay": REPORTING_DAY}))
+        elif argv[1:2] == ["status"] and PAIRED:
+            print(json.dumps(sync_status()["status"]))
         else:
             print(json.dumps([{"provider": "cli", "source": "cli", "error": {
                 "code": 1, "kind": "runtime", "message": "stub: not supported",
