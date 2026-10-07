@@ -27,7 +27,7 @@ enum PiSessionCostScanner {
         var calendar: Calendar
         var refreshMinIntervalSeconds: TimeInterval = 60
         var forceRescan: Bool = false
-        var environment: [String: String]
+        @ProcessEnvironment var environment: [String: String]
         var workingDirectory: URL?
         var workingDirectories: [URL]
         var processContexts: [PiSessionProcessContext]
@@ -149,7 +149,7 @@ enum PiSessionCostScanner {
 
     static let costScale = 1_000_000_000.0
     /// Bump for Pi-only cost formula changes not represented by the parser or pricing fingerprints.
-    private static let costFormulaVersion = 2
+    private static let costFormulaVersion = 4
     private static let maxLineBytes = 16 * 1024 * 1024
     private static let sessionStartFilenameRegex = try? NSRegularExpression(
         pattern: "^(\\d{4}-\\d{2}-\\d{2})T(\\d{2})-(\\d{2})-(\\d{2})-(\\d{3})Z_")
@@ -206,7 +206,7 @@ enum PiSessionCostScanner {
         options: Options = Options(),
         checkCancellation: CostUsageScanner.CancellationCheck?) throws -> DailyReportResult
     {
-        // Provider-specific by design: Pi records only OpenAI Codex and Anthropic sessions with distinct pricing.
+        // Provider-specific by design: Pi exposes native vendor mirrors and its standalone backend history.
         guard provider == .codex || provider == .claude || provider == .pi else {
             return DailyReportResult(
                 report: CostUsageDailyReport(data: [], summary: nil),
@@ -344,13 +344,13 @@ enum PiSessionCostScanner {
             try checkCancellation?()
             PiSessionCostCacheIO.save(cache: cache, cacheRoot: options.cacheRoot, calendar: range.calendar)
         }
-        // Provider-specific by design: the Pi provider aggregates its Codex and Claude-priced local sessions.
+        // Provider-specific by design: Pi aggregates native vendor mirrors and standalone Bedrock sessions.
         let lastScanAt = cache.lastScanUnixMs > 0
             ? Date(timeIntervalSince1970: TimeInterval(cache.lastScanUnixMs) / 1000)
             : nil
         if provider == .pi {
             return DailyReportResult(
-                report: CostUsageDailyReport.merged([reports.codex, reports.claude], calendar: range.calendar),
+                report: reports.pi,
                 isComplete: scanIsComplete && !self.hasUnsupportedHistory(cache: cache, range: range),
                 lastScanAt: lastScanAt,
                 scopeFingerprint: cache.sessionRootsFingerprint)
@@ -396,7 +396,7 @@ enum PiSessionCostScanner {
         options: Options? = nil,
         allowEstablishedEmpty: Bool = false) -> CachedDailyReportResult?
     {
-        // Provider-specific by design: cached Pi history is the merged Codex/Claude report above.
+        // Provider-specific by design: cached Pi history includes native mirrors and standalone backend history.
         guard provider == .codex || provider == .claude || provider == .pi else { return nil }
 
         let range = CostUsageScanner.CostUsageDayRange(since: since, until: until, calendar: calendar)
@@ -422,9 +422,9 @@ enum PiSessionCostScanner {
         guard cache.pricingKey == pricingContext.pricingKey else { return nil }
         guard let reports = self.checkedReports(cache: cache, range: range) else { return nil }
         guard provider != .pi || !self.hasUnsupportedHistory(cache: cache, range: range) else { return nil }
-        // Provider-specific by design: the Pi cache's aggregate view merges its fixed Codex and Claude tariffs.
+        // Provider-specific by design: Pi's aggregate includes Bedrock without adding it to native mirrors.
         let report = if provider == .pi {
-            CostUsageDailyReport.merged([reports.codex, reports.claude], calendar: range.calendar)
+            reports.pi
         } else {
             provider == .codex ? reports.codex : reports.claude
         }
@@ -461,7 +461,7 @@ enum PiSessionCostScanner {
                 formulaVersion: Self.costFormulaVersion,
                 parserHash: CodexParserHash.value,
                 modelsDevProviderIDs: CostUsagePricing.codexModelsDevProviderIDs.union(
-                    Set(CostUsagePricing.claudeFirstPartyModelsDevProviderIDs)),
+                    Set(CostUsagePricing.claudeFirstPartyModelsDevProviderIDs + ["amazon-bedrock"])),
                 customPricingFingerprint: customPricingFingerprint))
     }
 
@@ -1118,36 +1118,13 @@ enum PiSessionCostScanner {
             return nil
         }
 
-        if let explicitProvider,
-           let explicitModelText,
-           let explicitModel = self.normalizeModelName(explicitModelText, provider: explicitProvider)
-        {
-            return AssistantIdentity(provider: explicitProvider, modelName: explicitModel)
-        }
-
-        if let explicitProvider,
-           let fallback,
-           fallback.providerRawValue == explicitProvider.rawValue
-        {
-            return AssistantIdentity(provider: explicitProvider, modelName: fallback.modelName)
-        }
-
-        if explicitProviderText == nil,
-           let explicitModelText,
-           let fallbackProvider = fallback.flatMap({ UsageProvider(rawValue: $0.providerRawValue) }),
-           let explicitModel = self.normalizeModelName(explicitModelText, provider: fallbackProvider)
-        {
-            return AssistantIdentity(provider: fallbackProvider, modelName: explicitModel)
-        }
-
-        if explicitProviderText == nil,
-           let fallback,
-           let provider = UsageProvider(rawValue: fallback.providerRawValue)
-        {
-            return AssistantIdentity(provider: provider, modelName: fallback.modelName)
-        }
-
-        return nil
+        guard let provider = explicitProvider ?? fallback.flatMap({ UsageProvider(rawValue: $0.providerRawValue) }),
+              let rawModel = explicitModelText ?? fallback.flatMap({
+                  $0.providerRawValue == provider.rawValue ? $0.modelName : nil
+              }),
+              let model = self.normalizeModelName(rawModel, provider: provider)
+        else { return nil }
+        return AssistantIdentity(provider: provider, modelName: model)
     }
 
     private static func extractProviderText(entry: [String: Any], message: [String: Any]) -> String? {
@@ -1193,28 +1170,20 @@ enum PiSessionCostScanner {
     }
 
     private static func parseTimestampValue(_ value: Any?) -> Date? {
-        if let number = value as? NSNumber {
+        let raw: Double
+        switch value {
+        case let number as NSNumber:
             // JSON booleans bridge to NSNumber on Darwin; they are not timestamps.
             guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-            let raw = number.doubleValue
-            guard raw.isFinite else { return nil }
-            if raw > 1_000_000_000_000 {
-                return Date(timeIntervalSince1970: raw / 1000)
-            }
-            return Date(timeIntervalSince1970: raw)
+            raw = number.doubleValue
+        case let string as String:
+            guard let numeric = Double(string) else { return self.parseISO(string) }
+            raw = numeric
+        default:
+            return nil
         }
-
-        if let string = value as? String {
-            if let numeric = Double(string), numeric.isFinite {
-                if numeric > 1_000_000_000_000 {
-                    return Date(timeIntervalSince1970: numeric / 1000)
-                }
-                return Date(timeIntervalSince1970: numeric)
-            }
-            return self.parseISO(string)
-        }
-
-        return nil
+        guard raw.isFinite else { return nil }
+        return Date(timeIntervalSince1970: raw > 1_000_000_000_000 ? raw / 1000 : raw)
     }
 
     private static func extractUsage(
@@ -1252,6 +1221,13 @@ enum PiSessionCostScanner {
                 ?? usage["cache_creation_tokens"]
                 ?? usage["cacheCreationInputTokens"]
                 ?? usage["cache_creation_input_tokens"])
+        let cttl = usage["cttl"] as? [String: Any]
+        // First present spelling wins, including malformed values rejected by the shared reader.
+        let cacheWrite1h = read(
+            usage["cacheWrite1h"]
+                ?? usage["cache_write_1h"]
+                ?? cttl?["ephemeral1h"]
+                ?? cttl?["ephemeral_1h"])
         let output = read(
             usage["output"]
                 ?? usage["outputTokens"]
@@ -1265,22 +1241,23 @@ enum PiSessionCostScanner {
                 ?? usage["tokenCount"]
                 ?? usage["token_count"]
                 ?? usage["tokens"])
-        guard hasCounter, let input, let cacheRead, let cacheWrite, let output, let directTotal,
+        guard hasCounter, let input, let cacheRead, let cacheWrite, let cacheWrite1h,
+              cacheWrite1h <= cacheWrite, let output, let directTotal,
               let derivedTotal = CheckedSum.integers([input, cacheRead, cacheWrite, output])
         else { return nil }
         let totalTokens = max(directTotal, derivedTotal)
 
-        let rawUsage = PiPackedUsage(
+        var rawUsage = PiPackedUsage(
             inputTokens: input,
             cacheReadTokens: cacheRead,
             cacheWriteTokens: cacheWrite,
             outputTokens: output,
             totalTokens: totalTokens)
-        // Pi-compatible JSONL does not record Anthropic cache retention, so use Pi's persisted default tariff.
         let costUSD = totalTokens == derivedTotal ? self.computedCostUSD(
             provider: provider,
             modelName: modelName,
             usage: rawUsage,
+            cacheWrite1h: cacheWrite1h,
             pricingDate: pricingDate,
             pricingContext: pricingContext) : nil
         let costNanos = costUSD.flatMap { value -> Int64? in
@@ -1288,31 +1265,27 @@ enum PiSessionCostScanner {
             return Int64(exactly: (value * self.costScale).rounded())
         }
 
-        return PiPackedUsage(
-            inputTokens: rawUsage.inputTokens,
-            cacheReadTokens: rawUsage.cacheReadTokens,
-            cacheWriteTokens: rawUsage.cacheWriteTokens,
-            outputTokens: rawUsage.outputTokens,
-            totalTokens: rawUsage.totalTokens,
-            costNanos: costNanos ?? 0,
-            costSampleCount: costNanos == nil ? 0 : 1,
-            usageSampleCount: 1)
+        rawUsage.costNanos = costNanos ?? 0
+        rawUsage.costSampleCount = costNanos == nil ? 0 : 1
+        rawUsage.usageSampleCount = 1
+        return rawUsage
     }
 
     private static func computedCostUSD(
         provider: UsageProvider,
         modelName: String,
         usage: PiPackedUsage,
+        cacheWrite1h: Int,
         pricingDate: Date? = nil,
         pricingContext: ModelsDevPricingContext? = nil) -> Double?
     {
-        // Provider-specific by design: Pi pricing delegates to the Codex and Claude tariff calculators.
+        // Provider-specific by design: Pi delegates disjoint token costs to the shared tariff calculators.
         switch provider {
         case .codex:
             // Pi records input, cache reads, and cache writes as disjoint counts. Codex pricing
             // expects cached/write tokens to be subsets of total input, so reconstruct that total
             // here and pass writes separately (1.25x input for GPT-5.6 when rates are known).
-            CostUsagePricing.codexCostUSD(
+            return CostUsagePricing.codexCostUSD(
                 model: modelName,
                 inputTokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
                 cachedInputTokens: usage.cacheReadTokens,
@@ -1323,17 +1296,31 @@ enum PiSessionCostScanner {
                 modelsDevCacheRoot: pricingContext?.cacheRoot)
         // Provider-specific by design: Claude uses its own first-party input/cache/output tariff.
         case .claude:
-            CostUsagePricing.claudeCostUSD(
+            return CostUsagePricing.claudeCostUSD(
                 model: modelName,
                 inputTokens: usage.inputTokens,
                 cacheReadInputTokens: usage.cacheReadTokens,
                 cacheCreationInputTokens: usage.cacheWriteTokens,
+                cacheCreationInputTokens1h: cacheWrite1h,
                 outputTokens: usage.outputTokens,
                 pricingDate: pricingDate,
                 modelsDevCatalog: pricingContext?.catalog,
                 modelsDevCacheRoot: pricingContext?.cacheRoot)
+        // Provider-specific by design: Bedrock stays in Pi and must match its full regional catalog ID.
+        case .pi:
+            guard let pricing = pricingContext?.catalog?.pricing(
+                providerID: "amazon-bedrock", modelID: modelName, exactModelID: true)?.pricing
+            else { return nil }
+            return CostUsagePricing.claudeCostUSD(
+                pricing: pricing,
+                tokens: .init(
+                    input: usage.inputTokens,
+                    cacheRead: usage.cacheReadTokens,
+                    cacheCreation: usage.cacheWriteTokens,
+                    cacheCreation1h: cacheWrite1h,
+                    output: usage.outputTokens))
         default:
-            nil
+            return nil
         }
     }
 
@@ -1356,12 +1343,14 @@ enum PiSessionCostScanner {
 
 extension PiSessionCostScanner {
     private static func mappedProvider(fromPiProvider provider: String) -> UsageProvider? {
-        // Provider-specific by design: Pi currently records the Codex and Anthropic integrations it can price.
+        // Provider-specific by design: Pi keeps native mirrors separate from Bedrock-only history.
         switch provider.lowercased() {
         case "openai-codex":
             .codex
         case "anthropic":
             .claude
+        case "amazon-bedrock":
+            .pi
         default:
             nil
         }

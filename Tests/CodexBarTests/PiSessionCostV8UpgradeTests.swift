@@ -34,7 +34,7 @@ struct PiSessionCostV8UpgradeTests {
         #expect(result.lastScanAt == now)
         #expect(result.scopeFingerprint == PiSessionCostScanner.scopeFingerprint(options: fixture.options))
         let rebuilt = PiSessionCostCacheIO.load(cacheRoot: env.cacheRoot)
-        #expect(rebuilt.version == 9)
+        #expect(rebuilt.version == 10)
         #expect(rebuilt.lastScanUnixMs == Int64(now.timeIntervalSince1970 * 1000))
         #expect(Set(rebuilt.files.keys) == [Self.canonicalPath(fixture.sessionURL)])
         #expect(rebuilt.files.values.first?.parsedBytes == fixture.size)

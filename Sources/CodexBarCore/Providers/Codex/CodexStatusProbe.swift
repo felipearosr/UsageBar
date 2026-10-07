@@ -65,7 +65,7 @@ public struct CodexStatusProbe {
     public var codexBinary: String = "codex"
     public var timeout: TimeInterval = Self.defaultTimeoutSeconds
     public var keepCLISessionsAlive: Bool = false
-    public var environment: [String: String] = ProcessInfo.processInfo.environment
+    @ProcessEnvironment public var environment: [String: String] = ProcessInfo.processInfo.environment
 
     public init() {}
 
@@ -82,10 +82,7 @@ public struct CodexStatusProbe {
     }
 
     public func fetch() async throws -> CodexStatusSnapshot {
-        let env = self.environment
-        let resolved = BinaryLocator.resolveCodexBinary(env: env, loginPATH: LoginShellPathCache.shared.current)
-            ?? self.codexBinary
-        guard FileManager.default.isExecutableFile(atPath: resolved) || TTYCommandRunner.which(resolved) != nil else {
+        guard let resolved = TTYCommandRunner.which(self.codexBinary, environment: self.environment) else {
             throw CodexStatusProbeError.codexNotInstalled
         }
         if let message = CodexCLILaunchGate.shared.backgroundSkipMessage(binary: resolved) {

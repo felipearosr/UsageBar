@@ -122,6 +122,7 @@ extension CostUsageScanner {
         options: Options = Options(),
         checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
     {
+        // Provider-specific by design: only the Codex and Claude local logs have Spend Buckets.
         switch provider {
         case .codex:
             try self.loadCodexSpendBuckets(
@@ -156,6 +157,7 @@ extension CostUsageScanner {
                 let cached = min(row.cached, row.input)
                 // Codex `input` includes cached tokens; buckets count them separately. Codex logs have no
                 // cache-creation count.
+                // Provider-specific by design: this collector only ever reads Codex rows.
                 self.buckets.append(CostUsageSpendBucket(
                     hourStart: CostUsageSpendBucket.hourStart(of: timestamp),
                     provider: .codex,
@@ -179,6 +181,7 @@ extension CostUsageScanner {
         checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
     {
         // The daily report refreshes and saves the store; the buckets then read the same rows back.
+        // Provider-specific by design: Codex buckets refresh the Codex daily report store they read.
         _ = try self.loadDailyReportCancellable(
             provider: .codex,
             since: since,
