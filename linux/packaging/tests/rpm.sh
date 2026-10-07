@@ -19,7 +19,7 @@ stage_artifacts "${1:-/artifacts}"
 version=$(tarball_version "$(find_tarball /tmp/art)")
 arch=$(uname -m)
 set -- /tmp/art/usagebar-cli-*."$arch".rpm
-[ $# -eq 1 ] && [ -f "$1" ] || fail "expected exactly one usagebar-cli-*.$arch.rpm"
+if [ $# -ne 1 ] || [ ! -f "$1" ]; then fail "expected exactly one usagebar-cli-*.$arch.rpm"; fi
 rpm=$1
 
 check_package() {
