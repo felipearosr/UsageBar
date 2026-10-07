@@ -1508,8 +1508,11 @@ class UsageBarIndicator extends PanelMenu.Button {
                 this._closeCostPanel();
             }
         });
+        // PanelMenu.Button's own destroy handler runs first and has already
+        // destroyed this.menu with every widget in it (the refresh icon too),
+        // so only release sources here and leave menu children alone.
         this.connect('destroy', () => {
-            this.setRefreshing(false);
+            this._stopRefreshAnimation();
             this._tooltip?.destroy();
             this._tooltip = null;
             this._modelTable?.destroy();
@@ -1576,10 +1579,14 @@ class UsageBarIndicator extends PanelMenu.Button {
         }
     }
 
-    setRefreshing(refreshing) {
+    _stopRefreshAnimation() {
         if (this._refreshAnimationId)
             GLib.source_remove(this._refreshAnimationId);
         this._refreshAnimationId = 0;
+    }
+
+    setRefreshing(refreshing) {
+        this._stopRefreshAnimation();
         this._refreshIcon.rotation_angle_z = 0;
         if (refreshing) {
             this._refreshAnimationStartedAt = GLib.get_monotonic_time();
