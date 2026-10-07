@@ -54,6 +54,7 @@ import {
     modelColors,
     withoutHiddenModels,
 } from './modelprefs.js';
+import {INSTALL_URL, MISSING_CLI} from './onboarding.js';
 import {
     compareVersions,
     installCommand,
@@ -2002,6 +2003,7 @@ export default class UsageBarExtension extends Extension {
                 this._selectedProvider = null; // default to the All tab each open
                 this._selectedMachine = null;
                 this._view = 'providers';
+                this._checkForCli();
                 this._syncTick();
                 if (this._settings.get_boolean('refresh-on-open'))
                     this._fetchUsage();
@@ -2015,14 +2017,88 @@ export default class UsageBarExtension extends Extension {
         const uiSmokeResult = GLib.getenv('USAGEBAR_UI_SMOKE_RESULT');
         if (uiSmokeResult)
             this._scheduleUISmoke(uiSmokeResult);
+        // Test-only: the UI smoke can force the missing-CLI state on a machine
+        // that has a CLI. Ignored outside a smoke run.
+        this._smokeNoCli = Boolean(uiSmokeResult) &&
+            GLib.getenv('USAGEBAR_UI_SMOKE_NO_CLI') === '1';
 
-        const binary = findBinary();
+        const binary = this._findBinary();
+        if (binary)
+            this._startCli(binary);
+        else
+            this._showMissingCli();
+
+        const format = packageFormat(this.path, binary);
+        const version = this.metadata['version-name'];
+        if (format && version) {
+            this._updater = new PackageUpdater(format, version, this._session, ready => {
+                if (generation === this._generation)
+                    this._indicator?.setUpdateReady(ready);
+            });
+        }
+        this._updateToggleId = this._settings.connect('changed::update-check-enabled', () => {
+            if (generation !== this._generation)
+                return;
+            if (this._settings.get_boolean('update-check-enabled'))
+                this._scheduleUpdateCheck(5);
+        });
+        this._scheduleUpdateCheck(UPDATE_FIRST_CHECK_SECS);
+
+        // Countdown/"updated ago" ticker while the menu is open.
+        this._tickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, TICK_SECS, () => {
+            if (this._indicator?.menu.isOpen) {
+                // Keeps the Machines tab on the push cadence while it is open.
+                this._syncTick();
+                this._render();
+            }
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _findBinary() {
+        return this._smokeNoCli ? null : findBinary();
+    }
+
+    // No CLI yet: the popover shows the install empty state, and every
+    // refresh (the timer, the refresh button, opening the menu) looks again.
+    _showMissingCli() {
+        this._cliMissing = true;
+        this._scheduleCliCheck();
+        this._render();
+    }
+
+    _scheduleCliCheck() {
+        if (this._cliCheckId)
+            GLib.source_remove(this._cliCheckId);
+        const generation = this._generation;
+        this._cliCheckId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW,
+            this._settings.get_int('refresh-interval-secs'), () => {
+                this._cliCheckId = 0;
+                if (generation === this._generation && this._indicator)
+                    this._checkForCli();
+                return GLib.SOURCE_REMOVE;
+            });
+    }
+
+    _checkForCli() {
+        if (!this._cliMissing)
+            return;
+        const binary = this._findBinary();
         if (!binary) {
-            this._indicator.setStatus('codexbar CLI not found — reinstall UsageBar from ' +
-                'github.com/felipearosr/UsageBar/releases or set $CODEXBAR_BIN');
-            this._render();
+            this._scheduleCliCheck();
             return;
         }
+        this._cliMissing = false;
+        if (this._cliCheckId) {
+            GLib.source_remove(this._cliCheckId);
+            this._cliCheckId = 0;
+        }
+        this._startCli(binary);
+        this._render();
+    }
+
+    _startCli(binary) {
+        const generation = this._generation;
         this._binary = binary;
         this._loadDisplayNames(binary);
         this._bootstrapProviders(binary);
@@ -2064,32 +2140,6 @@ export default class UsageBarExtension extends Extension {
                     this._scheduleFetch(2);
             });
         this._supervisor.start();
-
-        const format = packageFormat(this.path, binary);
-        const version = this.metadata['version-name'];
-        if (format && version) {
-            this._updater = new PackageUpdater(format, version, this._session, ready => {
-                if (generation === this._generation)
-                    this._indicator?.setUpdateReady(ready);
-            });
-        }
-        this._updateToggleId = this._settings.connect('changed::update-check-enabled', () => {
-            if (generation !== this._generation)
-                return;
-            if (this._settings.get_boolean('update-check-enabled'))
-                this._scheduleUpdateCheck(5);
-        });
-        this._scheduleUpdateCheck(UPDATE_FIRST_CHECK_SECS);
-
-        // Countdown/"updated ago" ticker while the menu is open.
-        this._tickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, TICK_SECS, () => {
-            if (this._indicator?.menu.isOpen) {
-                // Keeps the Machines tab on the push cadence while it is open.
-                this._syncTick();
-                this._render();
-            }
-            return GLib.SOURCE_CONTINUE;
-        });
     }
 
     disable() {
@@ -2124,6 +2174,12 @@ export default class UsageBarExtension extends Extension {
             GLib.source_remove(this._tickId);
             this._tickId = 0;
         }
+        if (this._cliCheckId) {
+            GLib.source_remove(this._cliCheckId);
+            this._cliCheckId = 0;
+        }
+        this._cliMissing = false;
+        this._smokeNoCli = false;
         if (this._restartDebounceId) {
             GLib.source_remove(this._restartDebounceId);
             this._restartDebounceId = 0;
@@ -2468,6 +2524,10 @@ export default class UsageBarExtension extends Extension {
     }
 
     _fetchUsage(force) {
+        if (this._cliMissing) {
+            this._checkForCli();
+            return;
+        }
         if (this._fetchInFlight)
             return;
         const generation = this._generation;
@@ -2916,8 +2976,53 @@ export default class UsageBarExtension extends Extension {
             });
         };
 
+        // Run with USAGEBAR_UI_SMOKE_NO_CLI=1: the popover shows
+        // the install empty state, and its button opens the install page.
+        const missingCliSmoke = assertions => {
+            const opened = [];
+            this._uriLauncher = uri => opened.push(uri);
+            this._indicator.menu.open();
+            later(400, () => {
+                try {
+                    const refs = this._indicator._detailBox.get_children()
+                        .find(child => child._usagebarOnboarding)?._usagebarOnboarding;
+                    assertions.push(painted('missing-CLI title is painted', refs?.title));
+                    assertions.push(assertion('missing-CLI title text',
+                        refs?.title.text === MISSING_CLI.title, {actual: refs?.title.text ?? null}));
+                    assertions.push(painted('missing-CLI explanation is painted', refs?.body));
+                    assertions.push(painted('install button is painted', refs?.button));
+                    assertions.push(assertion('install button label',
+                        refs?.button.label === MISSING_CLI.button, {actual: refs?.button.label ?? null}));
+                    assertions.push(assertion('no status line replaces the empty state',
+                        !this._indicator._statusItem.visible,
+                        {actual: this._indicator._statusLabel.text}));
+                    capture('missing-cli.png', () => {
+                        try {
+                            refs.button.emit('clicked', 1);
+                            assertions.push(assertion('install button opens the install page',
+                                opened.length === 1 && opened[0] === INSTALL_URL, {actual: opened}));
+                            assertions.push(assertion('install button closes the menu',
+                                !this._indicator.menu.isOpen));
+                            finish(assertions);
+                        } catch (error) {
+                            finish(assertions, error);
+                        } finally {
+                            this._uriLauncher = null;
+                        }
+                    });
+                } catch (error) {
+                    this._uriLauncher = null;
+                    finish(assertions, error);
+                }
+            });
+        };
+
         later(800, () => {
             const assertions = [];
+            if (this._cliMissing) {
+                missingCliSmoke(assertions);
+                return;
+            }
             machinesSmoke(assertions, error => {
                 if (error)
                     finish(assertions, error);
@@ -3116,9 +3221,9 @@ export default class UsageBarExtension extends Extension {
         }
         this._indicator._setPanelText(chipRows.map(row => this._chipFor(row)));
 
-        this._indicator.setUpdated(this._lastFetchAt
-            ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
-            : 'fetching…');
+        this._indicator.setUpdated(this._cliMissing ? ''
+            : this._lastFetchAt ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
+                : 'fetching…');
 
         const machines = machinesView(this._sync?.payload, {
             now: Date.now(),
@@ -3137,6 +3242,12 @@ export default class UsageBarExtension extends Extension {
             return;
         }
 
+        if (this._cliMissing) {
+            this._renderMissingCli();
+            this._popupDirty = false;
+            return;
+        }
+
         if (this._view === 'machines') {
             this._renderMachines(machines);
             this._popupDirty = false;
@@ -3149,6 +3260,47 @@ export default class UsageBarExtension extends Extension {
         else
             this._renderOverview(rows);
         this._popupDirty = false;
+    }
+
+    _renderMissingCli() {
+        if (this._popupView === 'missing-cli')
+            return;
+        const detail = this._indicator._detailBox;
+        for (const child of detail.get_children()) {
+            if (child === this._overviewView?.container)
+                detail.remove_child(child);
+            else
+                child.destroy();
+        }
+        const box = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: 'usagebar-onboarding',
+        });
+        const title = new St.Label({text: MISSING_CLI.title, style_class: 'usagebar-card-title'});
+        title.clutter_text.line_wrap = true;
+        const body = new St.Label({text: MISSING_CLI.body, style_class: 'usagebar-dim'});
+        body.clutter_text.line_wrap = true;
+        const button = new St.Button({
+            label: MISSING_CLI.button,
+            can_focus: true,
+            x_align: Clutter.ActorAlign.START,
+            style_class: 'usagebar-btn usagebar-onboarding-btn',
+        });
+        button.connect('clicked', () => this._openInstallPage());
+        box.add_child(title);
+        box.add_child(body);
+        box.add_child(button);
+        box._usagebarOnboarding = {title, body, button};
+        detail.add_child(box);
+        this._popupView = 'missing-cli';
+    }
+
+    _openInstallPage() {
+        // The UI smoke swaps the launcher so it can check the URL offline.
+        const launch = this._uriLauncher ?? (uri => Gio.AppInfo.launch_default_for_uri(uri, null));
+        launch(INSTALL_URL);
+        this._indicator?.menu.close();
     }
 
     // Machines tab, laid out like Providers: an All Machines summary and one

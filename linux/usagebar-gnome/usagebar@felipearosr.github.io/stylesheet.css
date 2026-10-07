@@ -775,3 +775,16 @@
 .usagebar-theme-system .usagebar-ov-switch-button.selected {
   color: -st-foreground-color;
 }
+
+/* No codexbar CLI: install empty state */
+.usagebar-onboarding {
+  spacing: 6px;
+  padding: 4px 12px 8px 12px;
+}
+
+.usagebar-onboarding-btn {
+  margin-top: 4px;
+  padding: 6px 14px;
+  border: 1px solid rgba(160, 160, 166, 0.35);
+  background-color: rgba(88, 104, 122, 0.32);
+}
