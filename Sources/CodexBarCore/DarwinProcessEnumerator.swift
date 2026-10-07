@@ -19,34 +19,32 @@ enum DarwinProcessEnumerator {
             ["agy", "antigravity-cli", "antigravity_cli", "node", "bun"].contains(basename)
     }
 
-    /// Parses the `KERN_PROCARGS2` payload without consuming the environment
-    /// strings that follow argv.
-    static func parseProcArgs2(_ data: Data) -> String? {
-        self.parseProcArgs2Arguments(data)?.joined(separator: " ")
-    }
-
     /// Returns the original argv from a `KERN_PROCARGS2` payload. Keeping the
     /// boundaries matters for flags whose values contain whitespace.
     static func parseProcArgs2Arguments(_ data: Data) -> [String]? {
         self.parseProcArgs2Layout(data)?.arguments
     }
 
-    static func parseProcArgs2PiSelectorEnvironment(_ data: Data) -> [String: String]? {
+    static func parseProcArgs2Environment(
+        _ data: Data,
+        names: Set<String> = PiProcessEnvironment.selectorNames) -> [String: String]?
+    {
         guard let layout = self.parseProcArgs2Layout(data) else { return nil }
         let suffix = Data(data[layout.environmentOffset...])
         // Darwin can omit environment records from a successful procargs response.
         // An argv-only response or padding is not evidence of an empty environment.
-        guard let start = suffix.firstIndex(where: { $0 != 0 }) else { return nil }
+        guard let first = suffix.first, first != 0 else { return nil }
+        let start = suffix.startIndex
         var offset = start
         while offset < suffix.endIndex {
             guard let terminator = suffix[offset...].firstIndex(of: 0) else { return nil }
             if terminator == offset {
                 // The empty environment terminator may be followed by unrelated Apple vectors.
-                return PiProcessEnvironment.parseNULSeparated(Data(suffix[start..<offset]))
+                return PiProcessEnvironment.parseNULSeparated(Data(suffix[start..<offset]), names: names)
             }
             offset = terminator + 1
         }
-        return PiProcessEnvironment.parseNULSeparated(Data(suffix[start...]))
+        return PiProcessEnvironment.parseNULSeparated(Data(suffix[start...]), names: names)
     }
 
     private static func parseProcArgs2Layout(_ data: Data) -> (arguments: [String], environmentOffset: Int)? {
@@ -133,16 +131,14 @@ extension DarwinProcessEnumerator {
         guard let data = self.procArgs2Data(pid: pid),
               let layout = self.parseProcArgs2Layout(data)
         else { return nil }
-        let process = AgentProcessRecord(
-            pid: pid,
-            ppid: 0,
-            startedAt: nil,
-            command: layout.arguments.joined(separator: " "),
-            arguments: layout.arguments)
-        let environment = AgentPSOutputParser.piDialect(for: process) == nil
+        let environment = AgentPSOutputParser.piDialect(arguments: layout.arguments) == nil
             ? nil
-            : self.parseProcArgs2PiSelectorEnvironment(data)
+            : self.parseProcArgs2Environment(data)
         return (layout.arguments, environment)
+    }
+
+    static func environment(pid: Int32, names: Set<String>) -> [String: String]? {
+        self.procArgs2Data(pid: pid).flatMap { self.parseProcArgs2Environment($0, names: names) }
     }
 
     private static func procArgs2Data(pid: Int32) -> Data? {
