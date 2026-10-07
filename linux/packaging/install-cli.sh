@@ -80,7 +80,7 @@ uninstall() {
     rm -rf "$libdir"
     # Directories this script created, deepest first, only if now empty.
     printf '%s\n' "$created" | while IFS= read -r dir; do
-        [ -n "$dir" ] && rmdir "$dir" 2>/dev/null || true
+        if [ -n "$dir" ]; then rmdir "$dir" 2>/dev/null || true; fi
     done
     say "Removed codexbar from $prefix."
 }
@@ -151,15 +151,17 @@ else
     die "need sha256sum or shasum to verify the download"
 fi
 expected=$(cut -d ' ' -f 1 "$archive.sha256" | head -n 1)
-[ -n "$expected" ] && [ "$actual" = "$expected" ] \
-    || die "checksum mismatch for $(basename "$archive"); nothing was installed"
+if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+    die "checksum mismatch for $(basename "$archive"); nothing was installed"
+fi
 
 stage="$work/stage"
 mkdir "$stage"
 tar -xzo -f "$archive" -C "$stage" || die "couldn't unpack $(basename "$archive")"
-[ -f "$stage/CodexBarCLI" ] && [ -x "$stage/CodexBarCLI" ] && [ -f "$stage/VERSION" ] \
-    && [ -d "$stage/CodexBar_CodexBarCore.bundle" ] \
-    || die "unexpected tarball layout; nothing was installed"
+if [ ! -f "$stage/CodexBarCLI" ] || [ ! -x "$stage/CodexBarCLI" ] || [ ! -f "$stage/VERSION" ] \
+    || [ ! -d "$stage/CodexBar_CodexBarCore.bundle" ]; then
+    die "unexpected tarball layout; nothing was installed"
+fi
 "$stage/CodexBarCLI" --version >/dev/null 2>&1 \
     || die "the CLI doesn't run on this system (it needs glibc >= 2.38, libcurl, libsqlite3 and libstdc++); nothing was installed"
 

@@ -48,7 +48,7 @@ stage_artifacts() {
 # The single CLI tarball for this machine's architecture in $1.
 find_tarball() {
     set -- "$1"/*-linux-"$(uname -m)".tar.gz
-    [ $# -eq 1 ] && [ -f "$1" ] || fail "expected exactly one *-linux-$(uname -m).tar.gz"
+    if [ $# -ne 1 ] || [ ! -f "$1" ]; then fail "expected exactly one *-linux-$(uname -m).tar.gz"; fi
     printf '%s\n' "$1"
 }
 
