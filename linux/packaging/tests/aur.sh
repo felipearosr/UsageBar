@@ -56,7 +56,7 @@ chown -R builder: "$pkg"
 
 say "namcap on the PKGBUILD"
 namcap "$pkg/PKGBUILD" | tee /tmp/namcap.pkgbuild
-grep -q ' E: ' /tmp/namcap.pkgbuild && fail "namcap reported errors on the PKGBUILD"
+if grep -q ' E: ' /tmp/namcap.pkgbuild; then fail "namcap reported errors on the PKGBUILD"; fi
 
 say "makepkg -si, check through the PATH symlink"
 before_usr=$(snapshot /usr)
@@ -71,7 +71,7 @@ sh "$checks" codexbar "$version"
 
 say "namcap on the package"
 namcap "$built" | tee /tmp/namcap.pkg
-grep -q ' E: ' /tmp/namcap.pkg && fail "namcap reported errors on the package"
+if grep -q ' E: ' /tmp/namcap.pkg; then fail "namcap reported errors on the package"; fi
 
 say "pacman -R leaves no files behind"
 pacman -R --noconfirm usagebar-cli-bin >/dev/null
