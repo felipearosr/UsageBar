@@ -27,7 +27,8 @@ check_package() {
     before_etc=$(snapshot /etc)
     dnf install -y -q "$1" >/dev/null
     [ "$(readlink -f /usr/bin/codexbar)" = /usr/lib/usagebar-cli/CodexBarCLI ] || fail "/usr/bin/codexbar doesn't link to the CLI"
-    [ -f /usr/share/licenses/usagebar-cli/LICENSE ] || fail "no LICENSE"
+    # Container images may skip installing docs, so ask the package itself.
+    rpm -qL usagebar-cli | grep -qx /usr/share/licenses/usagebar-cli/LICENSE || fail "no LICENSE"
     sh "$checks" codexbar "$version"
     dnf remove -y -q usagebar-cli >/dev/null
     assert_unchanged "$before_usr" /usr "dnf remove left files under /usr"
