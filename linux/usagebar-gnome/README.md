@@ -9,18 +9,16 @@ notifications, and a libadwaita Settings window. This is the primary
 Linux/GNOME surface; the Tauri app in `../codexbar-tray/` is the fallback for
 non-GNOME desktops (KDE, XFCE, …).
 
-After installing an update from the UsageBar menu, log out and back in to let
-GNOME finish loading the update. UsageBar keeps this instruction in its status
-banner until the session ends.
-
 Self-contained: it supervises its own `codexbar serve` child on a free
 loopback port (restart with backoff, killed on disable) and polls
 `GET /usage` / `GET /cost`. The .deb/.rpm (see `../README.md`) ship the
 fork's `codexbar` CLI at `/usr/libexec/usagebar/codexbar`, which the
-extension prefers; otherwise it uses `$CODEXBAR_BIN` or the first `codexbar`
-on `PATH`. Machine Sync needs the fork's CLI; everything else works with
-upstream's ≥ 0.43.0 (NOT brew; the Linux formula lags and drops per-model
-limit data).
+extension prefers; otherwise it uses `$CODEXBAR_BIN`, the first `codexbar`
+on `PATH`, or `~/.local/bin`, `/home/linuxbrew/.linuxbrew/bin` and
+`/usr/local/bin`. The extension never downloads or updates the CLI;
+Settings → General → codexbar CLI shows the path in use and its version.
+Machine Sync needs the fork's CLI; everything else works with upstream's
+≥ 0.43.0 (NOT brew; the Linux formula lags and drops per-model limit data).
 
 ## Install (development)
 
@@ -82,8 +80,8 @@ in argv, and the page doesn't log.
 
 The pure state tests cover idle-render coalescing and cancellation, bounded
 cost-cache invalidation (including empty results), keyed provider-row reuse and
-order changes, positive/negative icon lookup caching, and persistent update
-completion guidance.
+order changes, and positive/negative icon lookup caching. `tests/cli.test.mjs`
+covers the codexbar lookup order and `--version` parsing.
 
 Run the rendered dashboard smoke test on a Linux host with GNOME Shell using:
 

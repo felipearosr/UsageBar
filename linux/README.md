@@ -76,9 +76,9 @@ with whatever providers upstream supports.
 
 UsageBar then turns itself on and enables Claude and Codex if you've signed
 in to Claude Code or the Codex CLI on this machine. Other providers are in
-Settings → Providers. New releases show up in the menu as "UsageBar <version>
-is available. Install now?", which asks for your password and installs the
-update.
+Settings → Providers. To update, install the newer package the same way;
+UsageBar doesn't download updates itself. Settings → General → codexbar CLI
+shows which CLI it runs and that CLI's version.
 
 Needs GNOME 46, 49 or 50: Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44.
 The package includes this fork's `codexbar` CLI (upstream plus Machine Sync)
@@ -94,15 +94,14 @@ Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).
 [`release-usagebar.yml`](../.github/workflows/release-usagebar.yml) builds the
 fork CLI for x86_64 and aarch64, packages it with the extension
 ([`packaging/build-packages.sh`](packaging/build-packages.sh)), and publishes
-the release the extension's updater reads. The repo must be public for
-installed copies to see updates.
+the release.
 
 ### Development
 
 The from-zero dev setup (CLI install, config, verification without logging
 out) is in [**BOOTSTRAP.md**](BOOTSTRAP.md). A symlinked checkout in
 `~/.local/share/gnome-shell/extensions/` takes precedence over the packaged
-copy, and dev installs don't self-update.
+copy.
 
 ## Status
 

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {updateCompletionMessage} from '../usagebar@felipearosr.github.io/updates.js';
 import {
     buildCostDateRange,
     buildDailyCostRows,
@@ -17,7 +16,6 @@ import {
     resolveProviderOrder,
     selectCostChartProviders,
     summarizeCostRange,
-    StatusMessageState,
 } from '../usagebar@felipearosr.github.io/renderstate.js';
 
 test('provider display order preserves configured entries and appends new providers', () => {
@@ -155,21 +153,6 @@ test('daily cost rows retain token-only days', () => {
     assert.deepEqual(rows, [
         {date: '2026-09-12', costs: [0], totalCost: 0, totalTokens: 42},
     ]);
-});
-
-test('update completion tells Linux users to start a new login session', () => {
-    const status = new StatusMessageState();
-    status.setTransient('Installing UsageBar update…');
-    assert.equal(status.current, 'Installing UsageBar update…');
-
-    const completion = updateCompletionMessage('1.2.0');
-    status.setPersistent(completion);
-    status.setTransient('codexbar serve exited — restarting…');
-    assert.equal(status.current, completion);
-    status.setTransient('');
-    assert.equal(
-        status.current,
-        'UsageBar 1.2.0 installed — log out and back in to finish the update');
 });
 
 test('RenderScheduler coalesces a burst and can be cancelled', () => {
