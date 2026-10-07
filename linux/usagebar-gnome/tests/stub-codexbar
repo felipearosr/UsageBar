@@ -10,6 +10,8 @@ STUB_CODEXBAR_REPORT=1 adds a capability report to /health.
 import json
 import os
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -62,8 +64,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(405, {"error": "method not allowed"})
 
 
+def exit_with_parent():
+    # GNOME Shell going away (end of a smoke run) must not leave serve behind.
+    parent = os.getppid()
+    while os.getppid() == parent:
+        time.sleep(1)
+    os._exit(0)
+
+
 def serve(argv):
     port = int(argv[argv.index("--port") + 1])
+    threading.Thread(target=exit_with_parent, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 
