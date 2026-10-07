@@ -1105,11 +1105,9 @@ function buildModelLegend(points, colors, onHoverChange) {
 // ---------- serve supervisor ----------
 
 function findBinary() {
-    // A set override wins outright: pointing it at a missing file means "no
-    // CLI", which is how the missing-CLI onboarding is tested.
     const explicit = GLib.getenv('CODEXBAR_BIN');
-    if (explicit)
-        return GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE) ? explicit : null;
+    if (explicit && GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE))
+        return explicit;
     if (GLib.file_test(PACKAGED_BIN, GLib.FileTest.IS_EXECUTABLE))
         return PACKAGED_BIN;
     const inPath = GLib.find_program_in_path('codexbar');
@@ -2006,8 +2004,12 @@ export default class UsageBarExtension extends Extension {
         const uiSmokeResult = GLib.getenv('USAGEBAR_UI_SMOKE_RESULT');
         if (uiSmokeResult)
             this._scheduleUISmoke(uiSmokeResult);
+        // Test-only: the UI smoke can force the missing-CLI state on a machine
+        // that has a CLI. Ignored outside a smoke run.
+        this._smokeNoCli = Boolean(uiSmokeResult) &&
+            GLib.getenv('USAGEBAR_UI_SMOKE_NO_CLI') === '1';
 
-        const binary = findBinary();
+        const binary = this._findBinary();
         if (binary)
             this._startCli(binary);
         else
@@ -2040,6 +2042,10 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
+    _findBinary() {
+        return this._smokeNoCli ? null : findBinary();
+    }
+
     // No CLI yet: the popover shows the install empty state, and every
     // refresh (the timer, the refresh button, opening the menu) looks again.
     _showMissingCli() {
@@ -2064,7 +2070,7 @@ export default class UsageBarExtension extends Extension {
     _checkForCli() {
         if (!this._cliMissing)
             return;
-        const binary = findBinary();
+        const binary = this._findBinary();
         if (!binary) {
             this._scheduleCliCheck();
             return;
@@ -2159,6 +2165,7 @@ export default class UsageBarExtension extends Extension {
             this._cliCheckId = 0;
         }
         this._cliMissing = false;
+        this._smokeNoCli = false;
         if (this._restartDebounceId) {
             GLib.source_remove(this._restartDebounceId);
             this._restartDebounceId = 0;
@@ -2921,7 +2928,7 @@ export default class UsageBarExtension extends Extension {
             });
         };
 
-        // Run with CODEXBAR_BIN pointing at a missing file: the popover shows
+        // Run with USAGEBAR_UI_SMOKE_NO_CLI=1: the popover shows
         // the install empty state, and its button opens the install page.
         const missingCliSmoke = assertions => {
             const opened = [];

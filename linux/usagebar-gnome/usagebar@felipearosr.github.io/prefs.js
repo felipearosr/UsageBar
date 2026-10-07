@@ -17,10 +17,9 @@ import {MachineSyncPage} from './syncpage.js';
 import {PACKAGED_BIN} from './updates.js';
 
 function findBinary() {
-    // A set override wins outright, as in extension.js.
     const explicit = GLib.getenv('CODEXBAR_BIN');
-    if (explicit)
-        return GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE) ? explicit : null;
+    if (explicit && GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE))
+        return explicit;
     if (GLib.file_test(PACKAGED_BIN, GLib.FileTest.IS_EXECUTABLE))
         return PACKAGED_BIN;
     const inPath = GLib.find_program_in_path('codexbar');
