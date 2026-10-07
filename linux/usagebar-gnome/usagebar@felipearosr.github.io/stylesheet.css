@@ -99,6 +99,28 @@
   font-size: 9.5pt;
 }
 
+/* Provider error banner: warning text over a row of small actions. */
+.usagebar-error-banner {
+  spacing: 4px;
+}
+
+.usagebar-banner-actions {
+  spacing: 6px;
+}
+
+.usagebar-banner-btn {
+  font-size: 9pt;
+  padding: 2px 8px;
+}
+
+.usagebar-banner-btn:insensitive {
+  color: rgba(200, 200, 206, 0.6);
+}
+
+.usagebar-login-btn {
+  border: 1px solid rgba(160, 160, 166, 0.4);
+}
+
 .usagebar-detail-head {
   spacing: 8px;
   margin-bottom: 6px;
@@ -650,14 +672,48 @@
   font-size: 8.5pt;
 }
 
+.usagebar-machine-body {
+  spacing: 3px;
+}
+
+.usagebar-machine-line {
+  spacing: 6px;
+}
+
 .usagebar-machine-spend {
   font-size: 10pt;
-  margin-top: 2px;
 }
 
 .usagebar-machine-model {
   spacing: 6px;
   margin-left: 16px;
+}
+
+.usagebar-machine-detail .usagebar-machine-model {
+  margin-left: 0;
+  margin-top: 2px;
+}
+
+.usagebar-machine-model-tokens {
+  font-size: 8.5pt;
+  min-width: 64px;
+  text-align: right;
+}
+
+.usagebar-machine-model-spend {
+  min-width: 52px;
+  text-align: right;
+}
+
+.usagebar-machine-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  background-color: rgba(160, 160, 166, 0.18);
+}
+
+.usagebar-machine-badge-icon {
+  color: rgba(235, 235, 240, 0.9);
 }
 
 .usagebar-machine-foot {
@@ -718,4 +774,17 @@
 .usagebar-theme-system .usagebar-ov-switch-button:focus,
 .usagebar-theme-system .usagebar-ov-switch-button.selected {
   color: -st-foreground-color;
+}
+
+/* No codexbar CLI: install empty state */
+.usagebar-onboarding {
+  spacing: 6px;
+  padding: 4px 12px 8px 12px;
+}
+
+.usagebar-onboarding-btn {
+  margin-top: 4px;
+  padding: 6px 14px;
+  border: 1px solid rgba(160, 160, 166, 0.35);
+  background-color: rgba(88, 104, 122, 0.32);
 }

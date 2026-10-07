@@ -5,6 +5,8 @@
 // The Pairing Link is the Sync Group's key. It reaches the CLI on stdin, never
 // in argv, and nothing here returns it inside an error or status string.
 
+import {machineColor} from './machinesync.js';
+
 // The CLI prints only JSON on stdout with this flag, errors included.
 const JSON_FLAG = '--json-only';
 
@@ -283,10 +285,27 @@ export function reportingDaySummary(reportingDay) {
 
 // Rows for retire / forget: every Machine but this one, from a `sync status`
 // payload.
+// Rows for the Machine Colors group: every Machine, this one included, in
+// status order with the color the Machines tab gives it.
+export function colorMachines(status, overrides = {}) {
+    return (status?.machines ?? []).map((machine, index) => {
+        const name = machine.displayName || machine.machineId;
+        return {
+            machineId: machine.machineId,
+            label: machine.isThisMachine ? `${name} (this Machine)` : name,
+            color: machineColor(index, machine.machineId, overrides),
+            custom: machine.machineId in overrides,
+        };
+    });
+}
+
 export function otherMachines(status) {
     return (status?.machines ?? [])
-        .filter(machine => !machine.isThisMachine)
-        .map(machine => ({
+        .map((machine, index) => ({machine, index}))
+        .filter(({machine}) => !machine.isThisMachine)
+        .map(({machine, index}) => ({
+            // Place in the status list, which picks the default color.
+            index,
             machineId: machine.machineId,
             label: machine.displayName || machine.machineId,
             retired: !!machine.retired,

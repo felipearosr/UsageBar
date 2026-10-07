@@ -1,0 +1,67 @@
+name: Linux packaging
+
+# Fast checks for linux/packaging: shellcheck, and the container smoke tests
+# run against a stand-in CLI tarball (tests/make-fake-tarball.sh). The real
+# CLI goes through the same tests in release-usagebar.yml.
+
+on:
+  pull_request:
+    paths:
+      - 'linux/packaging/**'
+      - '.github/workflows/linux-packaging.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'linux/packaging/**'
+      - '.github/workflows/linux-packaging.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck -x linux/packaging/install-cli.sh linux/packaging/build-cli-deb.sh linux/packaging/build-cli-rpm.sh linux/packaging/rpm/bump-spec.sh linux/packaging/tests/*.sh
+
+      - name: Stand-in CLI tarball
+        run: linux/packaging/tests/make-fake-tarball.sh "$RUNNER_TEMP/fake" 9.9.9
+
+      - name: install-cli.sh smoke test
+        run: |
+          set -euo pipefail
+          for image in debian:stable registry.fedoraproject.org/fedora:latest; do
+            echo "::group::install-cli.sh on $image"
+            linux/packaging/tests/run-in-container.sh "$image" install-script.sh "$RUNNER_TEMP/fake"
+            echo "::endgroup::"
+          done
+
+      - name: usagebar-cli .deb smoke test
+        run: |
+          set -euo pipefail
+          linux/packaging/build-cli-deb.sh "$RUNNER_TEMP"/fake/*-linux-x86_64.tar.gz 9.9.9 "$RUNNER_TEMP/fake"
+          for image in debian:stable ubuntu:latest; do
+            echo "::group::usagebar-cli .deb on $image"
+            linux/packaging/tests/run-in-container.sh "$image" deb.sh "$RUNNER_TEMP/fake"
+            echo "::endgroup::"
+          done
+
+      - name: usagebar-cli RPM and SRPM smoke test
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          linux/packaging/tests/make-fake-tarball.sh "$RUNNER_TEMP/fake-arm" 9.9.9 aarch64
+          linux/packaging/build-cli-rpm.sh 9.9.9 "$RUNNER_TEMP/fake" \
+            "$RUNNER_TEMP"/fake/*-linux-x86_64.tar.gz "$RUNNER_TEMP"/fake-arm/*-linux-aarch64.tar.gz
+          linux/packaging/tests/run-in-container.sh registry.fedoraproject.org/fedora:latest rpm.sh "$RUNNER_TEMP/fake"

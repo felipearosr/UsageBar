@@ -132,6 +132,7 @@ jobs:
         env:
           BIN_DIR: ${{ steps.build.outputs.bin_dir }}
           ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           . ./version.env
@@ -152,9 +153,25 @@ jobs:
             exit 1
           fi
 
-          tarball="$RUNNER_TEMP/CodexBarCLI-v${MARKETING_VERSION}-linux-${ARCH}.tar.gz"
+          # Published on the release for install-cli.sh and the CLI packages,
+          # named after the UsageBar version so their URLs are predictable.
+          name="usagebar-cli-${VERSION}-linux-${ARCH}.tar.gz"
+          mkdir -p "$RUNNER_TEMP/cli-tarball"
+          tarball="$RUNNER_TEMP/cli-tarball/$name"
           (cd "$out" && tar czf "$tarball" CodexBarCLI codexbar VERSION CodexBar_CodexBarCore.bundle)
+          (cd "$RUNNER_TEMP/cli-tarball" && sha256sum "$name" > "$name.sha256")
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Install-script smoke test
+        env:
+          TARBALL: ${{ steps.cli.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          for image in debian:stable registry.fedoraproject.org/fedora:latest; do
+            echo "::group::install-cli.sh on $image"
+            linux/packaging/tests/run-in-container.sh "$image" install-script.sh "$(dirname "$TARBALL")"
+            echo "::endgroup::"
+          done
 
       - name: Build .deb and .rpm
         env:
@@ -163,8 +180,23 @@ jobs:
         run: |
           set -euo pipefail
           linux/packaging/build-packages.sh "$TARBALL" "$VERSION" "$RUNNER_TEMP/packages"
-          dpkg-deb --info "$RUNNER_TEMP"/packages/*.deb
-          rpm -qpil "$RUNNER_TEMP"/packages/*.rpm | head -40
+          cp "$TARBALL" "$TARBALL.sha256" "$RUNNER_TEMP/packages/"
+          linux/packaging/build-cli-deb.sh "$TARBALL" "$VERSION" "$RUNNER_TEMP/packages"
+          linux/packaging/build-cli-rpm.sh "$VERSION" "$RUNNER_TEMP/packages" "$TARBALL"
+          for deb in "$RUNNER_TEMP"/packages/*.deb; do dpkg-deb --info "$deb"; done
+          for rpm in "$RUNNER_TEMP"/packages/*.rpm; do rpm -qpil "$rpm" | head -40; done
+
+      - name: CLI RPM smoke test
+        run: linux/packaging/tests/run-in-container.sh registry.fedoraproject.org/fedora:latest rpm.sh "$RUNNER_TEMP/packages"
+
+      - name: CLI .deb smoke test
+        run: |
+          set -euo pipefail
+          for image in debian:stable ubuntu:24.04 ubuntu:latest; do
+            echo "::group::usagebar-cli .deb on $image"
+            linux/packaging/tests/run-in-container.sh "$image" deb.sh "$RUNNER_TEMP/packages"
+            echo "::endgroup::"
+          done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -172,8 +204,48 @@ jobs:
           path: ${{ runner.temp }}/packages/*
           if-no-files-found: error
 
-  publish:
+  # A source RPM carrying both architectures' tarballs, which COPR or mock
+  # can rebuild for either one.
+  srpm:
     needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: usagebar-*
+          path: packages
+          merge-multiple: true
+
+      - name: Build SRPM
+        id: srpm
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          tarballs=(packages/usagebar-cli-*-linux-x86_64.tar.gz packages/usagebar-cli-*-linux-aarch64.tar.gz)
+          version=$(basename "${tarballs[0]}" | sed 's/^usagebar-cli-\(.*\)-linux-x86_64\.tar\.gz$/\1/')
+          linux/packaging/build-cli-rpm.sh "$version" "$RUNNER_TEMP/all" "${tarballs[@]}"
+          mkdir -p "$RUNNER_TEMP/srpm"
+          cp "$RUNNER_TEMP"/all/*.src.rpm "$RUNNER_TEMP"/all/*.src.rpm.sha256 "$RUNNER_TEMP/srpm/"
+          # The smoke test below needs the x86_64 RPM and tarball next to it.
+          cp packages/usagebar-cli-*.x86_64.rpm packages/usagebar-cli-*-linux-x86_64.tar.gz* "$RUNNER_TEMP/all/"
+
+      - name: SRPM rebuild smoke test
+        run: linux/packaging/tests/run-in-container.sh registry.fedoraproject.org/fedora:latest rpm.sh "$RUNNER_TEMP/all"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: usagebar-srpm
+          path: ${{ runner.temp }}/srpm/*
+          if-no-files-found: error
+
+  publish:
+    needs: [package, srpm]
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -197,6 +269,9 @@ jobs:
 
           - Ubuntu / Debian: \`usagebar_${version}_amd64.deb\` (ARM: \`_arm64.deb\`)
           - Fedora: \`usagebar-${version}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)
+          - Just the \`codexbar\` CLI on Ubuntu / Debian: \`usagebar-cli_${version}_amd64.deb\` (ARM: \`_arm64.deb\`)
+          - Just the \`codexbar\` CLI on Fedora: \`usagebar-cli-${version}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)
+          - Just the \`codexbar\` CLI, any distro: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/linux/packaging/install-cli.sh | sh\`
 
           Then log out and back in once. Needs GNOME 46, 49 or 50 (Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44)."
           gh release create "$TAG" packages/* \
