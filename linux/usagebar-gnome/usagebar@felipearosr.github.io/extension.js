@@ -28,6 +28,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {PROVIDER_META} from './providermeta.js';
+import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
     buildCostDateRange,
     buildDailyCostRows,
@@ -1104,6 +1105,21 @@ function findBinary() {
     return null;
 }
 
+// Provider CLIs (codex, claude, ...) often live outside GNOME Shell's PATH.
+function findLoginBinary(name) {
+    const inPath = GLib.find_program_in_path(name);
+    if (inPath)
+        return inPath;
+    const home = GLib.get_home_dir();
+    for (const dir of [`${home}/.local/bin`, `${home}/.bun/bin`, `${home}/.npm-global/bin`,
+        '/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']) {
+        const p = `${dir}/${name}`;
+        if (GLib.file_test(p, GLib.FileTest.IS_EXECUTABLE))
+            return p;
+    }
+    return null;
+}
+
 function freePort() {
     const listener = Gio.SocketListener.new();
     const port = listener.add_any_inet_port(null);
@@ -2102,6 +2118,7 @@ export default class UsageBarExtension extends Extension {
             this._fetchId = 0;
         }
         this._fetchInFlight = false;
+        this._retryInFlight = false;
         this._costInFlight = false;
         if (this._tickId) {
             GLib.source_remove(this._tickId);
@@ -2464,6 +2481,7 @@ export default class UsageBarExtension extends Extension {
             if (generation !== this._generation || !this._indicator)
                 return;
             this._fetchInFlight = false;
+            this._retryInFlight = false;
             if (force)
                 this._indicator.setRefreshing(false);
             if (error) {
@@ -3610,6 +3628,8 @@ export default class UsageBarExtension extends Extension {
             this._modelPrefsKey(provider),
             localDateKey(),
             timeBucket,
+            // The error banner's Retry button shows the busy state.
+            !!this._retryInFlight,
         ].join('|');
     }
 
@@ -4633,6 +4653,106 @@ export default class UsageBarExtension extends Extension {
             this._settings.set_strv('known-windows', encoded);
     }
 
+    // Provider error banner: the warning text, then a row of small action
+    // buttons (Retry today; more actions slot into the same actions box).
+    _addErrorBanner(card, row) {
+        const box = new St.BoxLayout({
+            vertical: true,
+            style_class: 'usagebar-error-banner',
+            x_expand: true,
+        });
+        const msg = row.error.message ?? 'provider fetch failed';
+        const suffix = row.stale ? ' — showing last known data' : '';
+        const label = new St.Label({
+            text: `⚠ ${msg}${suffix}`,
+            style_class: 'usagebar-banner',
+            x_expand: true,
+        });
+        label.clutter_text.line_wrap = true;
+        box.add_child(label);
+
+        const actions = new St.BoxLayout({style_class: 'usagebar-banner-actions'});
+        actions.add_child(this._buildRetryButton());
+        const login = this._buildLoginButton(row);
+        if (login)
+            actions.add_child(login);
+        box.add_child(actions);
+        card.add_child(box);
+    }
+
+    // Retry re-runs the header refresh (a forced /usage fetch). Serve has no
+    // per-provider forced refresh, so this refreshes every provider. The busy
+    // flag lives on the extension so re-rendered cards keep the busy state,
+    // and _fetchUsage's in-flight guard stops overlapping fetches.
+    _buildRetryButton() {
+        const button = new St.Button({
+            label: this._retryInFlight ? 'Retrying…' : 'Retry',
+            style_class: 'usagebar-link usagebar-banner-btn',
+            can_focus: true,
+            reactive: !this._retryInFlight,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        button.connect('clicked', () => {
+            if (this._retryInFlight)
+                return;
+            this._retryInFlight = true;
+            button.label = 'Retrying…';
+            button.reactive = false;
+            // A poll already in flight answers the retry; its completion
+            // clears the flag and re-renders.
+            if (!this._fetchInFlight)
+                this._fetchUsage(true);
+        });
+        return button;
+    }
+
+    // "Log in" for auth-failure banners; null when the error is not an auth
+    // problem or the provider has no login command (see authlogin.js).
+    _buildLoginButton(row) {
+        const argv = loginActionFor(row);
+        if (!argv)
+            return null;
+        const button = new St.Button({
+            label: 'Log in',
+            style_class: 'usagebar-link usagebar-banner-btn usagebar-login-btn',
+            can_focus: true,
+            reactive: true,
+            x_align: Clutter.ActorAlign.START,
+        });
+        button.connect('clicked', () => this._launchLogin(row.provider, argv));
+        return button;
+    }
+
+    _launchLogin(provider, argv) {
+        const name = PROVIDER_META[provider]?.name ?? provider;
+        const bin = findLoginBinary(argv[0]);
+        if (!bin) {
+            this._notify('UsageBar', `\`${argv[0]}\` not found. Install it, then run \`${argv.join(' ')}\` to log in to ${name}.`);
+            return;
+        }
+        const command = terminalArgv([bin, ...argv.slice(1)], p => GLib.find_program_in_path(p));
+        if (!command) {
+            console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+            this._notify('UsageBar', `No terminal found. Run \`${argv.join(' ')}\` in a terminal to log in to ${name}.`);
+            return;
+        }
+        this._indicator?.menu.close();
+        try {
+            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
+            // Launchers that hand off to a terminal server (gnome-terminal,
+            // ptyxis) exit right away, so this refresh can come early; it
+            // is best-effort.
+            const generation = this._generation;
+            proc.wait_async(null, () => {
+                if (generation === this._generation)
+                    this._fetchUsage(true);
+            });
+        } catch (e) {
+            console.warn(`usagebar: login terminal failed: ${e.message}`);
+            this._notify('UsageBar', `Could not open a terminal. Run \`${argv.join(' ')}\` to log in to ${name}.`);
+        }
+    }
+
     // flat: no card background; thin separator lines between sections
     // (usage | credits/cost | links) — used on the per-provider tabs.
     _buildCard(row, {showCost = true, flat = false, showLinks = true, showBackButton = false} = {}) {
@@ -4713,17 +4833,8 @@ export default class UsageBarExtension extends Extension {
         }
         card.add_child(head);
 
-        if (row.error) {
-            const msg = row.error.message ?? 'provider fetch failed';
-            const suffix = row.stale ? ' — showing last known data' : '';
-            const banner = new St.Label({
-                text: `⚠ ${msg}${suffix}`,
-                style_class: 'usagebar-banner',
-                x_expand: true,
-            });
-            banner.clutter_text.line_wrap = true;
-            card.add_child(banner);
-        }
+        if (row.error)
+            this._addErrorBanner(card, row);
 
         for (const {w, slot} of windowsOf(row)) {
             if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
