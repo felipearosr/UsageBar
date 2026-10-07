@@ -7,15 +7,17 @@ import argparse
 import ctypes
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,7 @@ def parse_args() -> argparse.Namespace:
         help="fail immediately when a group exits without timing out",
     )
     parser.add_argument("--list-only", action="store_true")
+    parser.add_argument("--direct-workers", type=int, help="opt-in local macOS direct test groups (1-8 workers)")
     parser.add_argument("--swift-command", default="swift")
     parser.add_argument("--swift-command-arg", action="append", default=[])
     return parser.parse_args()
@@ -570,7 +573,7 @@ def repair_sparkle_test_runtime(swift_command: list[str]) -> bool:
         return sparkle_runtime_matches_source(destination, source)
 
 
-def swift_test_list(swift_command: list[str]) -> list[TestSelection]:
+def swift_test_list(swift_command: list[str], inventory: list[str] | None = None) -> list[TestSelection]:
     command = [*swift_command, "test", "list"]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0 and is_missing_sparkle_runtime_failure(result):
@@ -584,6 +587,8 @@ def swift_test_list(swift_command: list[str]) -> list[TestSelection]:
         if result.stderr:
             print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
         result.check_returncode()
+    if inventory is not None:
+        inventory.extend(line.strip() for line in result.stdout.splitlines() if line.strip())
     selections: set[TestSelection] = set()
     unknown: list[str] = []
     for line in result.stdout.splitlines():
@@ -725,6 +730,9 @@ def main() -> int:
         shard_index=args.shard_index,
         shard_count=args.shard_count,
     )
+    if args.direct_workers is not None and not 1 <= args.direct_workers <= 8:
+        print("--direct-workers must be between 1 and 8", file=sys.stderr)
+        return 2
     if args.group_size < 1:
         print("--group-size must be positive", file=sys.stderr)
         return 2
@@ -741,7 +749,9 @@ def main() -> int:
     try:
         discovery_started = time.monotonic()
         try:
-            suites = prioritized_suites(swift_test_list(swift_command))
+            inventory: list[str] = []
+            discovered = swift_test_list(swift_command, inventory) if args.direct_workers is not None else swift_test_list(swift_command)
+            suites = prioritized_suites(discovered)
         finally:
             stats.discovery_seconds = time.monotonic() - discovery_started
         stats.discovered_selections = len(suites)
@@ -775,6 +785,41 @@ def main() -> int:
         if not suite_groups:
             print("No test groups selected.", flush=True)
             return 0
+
+        if args.direct_workers is not None:
+            from direct_swift_test_groups import InventoryMismatch, pool_timeout, prepare_runtime
+            with tempfile.TemporaryDirectory(prefix="codexbar-direct-run-") as directory:
+                root = Path(directory)
+                groups = [[asdict(selection) for selection in group] for group in suite_groups]
+                try:
+                    runtime = prepare_runtime(swift_command, groups, inventory, root)
+                except InventoryMismatch as error:
+                    print(f"Direct mode refused: {error}", file=sys.stderr, flush=True)
+                    result = 2
+                    return result
+                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                    print(f"Direct mode unavailable: {error} Falling back to serial SwiftPM.", flush=True)
+                else:
+                    print(f"Direct runtime verified {len(inventory)} test methods; using {args.direct_workers} workers.", flush=True)
+                    manifest = root / "manifest.json"
+                    manifest.write_text(json.dumps({"runtime": runtime, "groups": groups,
+                        "timeout": args.timeout, "workers": args.direct_workers,
+                        "retry_non_timeout_failures": args.retry_non_timeout_failures}))
+                    execution_started = time.monotonic()
+                    result = run_command([sys.executable, str(Path(__file__).with_name("direct_swift_test_groups.py")),
+                                          str(manifest)], timeout=pool_timeout(
+                                              groups, args.timeout, args.retry_non_timeout_failures,
+                                              len(runtime["products"])))
+                    report = root / "results.json"
+                    if report.is_file():
+                        records = json.loads(report.read_text())
+                        stats.first_pass_successful_groups = sum(record["first_code"] == 0 for record in records)
+                        stats.first_pass_failed_groups = sum(record["first_code"] != 0 for record in records)
+                        stats.full_group_retries = sum(record["full_retries"] for record in records)
+                        stats.isolated_selection_retries = sum(record["isolated_retries"] for record in records)
+                        stats.timed_out_groups = sum(record["timed_out"] for record in records)
+                        stats.recovered_groups = sum(record["first_code"] != 0 and record["code"] == 0 for record in records)
+                    return result
 
         execution_started = time.monotonic()
         for group_index, group in enumerate(suite_groups, start=1):
