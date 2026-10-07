@@ -15,10 +15,12 @@ import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 import Pango from 'gi://Pango';
 
+import {hexColor} from './modelprefs.js';
 import {
     canCreate,
     cleartextHost,
     cleartextWarning,
+    colorMachines,
     createArgs,
     createdText,
     forgetArgs,
@@ -98,18 +100,21 @@ function copyText(widget, text) {
 }
 
 export class MachineSyncPage {
-    constructor(window, binary) {
+    constructor(window, binary, settings = null) {
         this._window = window;
         this._binary = binary;
+        this._gsettings = settings; // extension GSettings (machine colors)
+        this._statusListeners = [];
         this._groups = [];
         this._alive = true;
         this._infoTimer = 0;
         this.page = new Adw.PreferencesPage({
             title: 'Machine Sync',
-            icon_name: 'emblem-synchronizing-symbolic',
+            icon_name: 'usagebar-machines-symbolic',
         });
         this.page.connect('destroy', () => {
             this._alive = false;
+            this._disconnectColors();
             if (this._infoTimer)
                 GLib.source_remove(this._infoTimer);
             this._infoTimer = 0;
@@ -127,11 +132,14 @@ export class MachineSyncPage {
         if (this._infoTimer)
             GLib.source_remove(this._infoTimer);
         this._infoTimer = 0;
+        this._disconnectColors();
         for (const group of this._groups)
             this.page.remove(group);
         this._groups = groups;
-        for (const group of groups)
+        for (const group of groups) {
             this.page.add(group);
+            group._usagebarAttach?.();
+        }
     }
 
     _toast(title) {
@@ -407,6 +415,7 @@ export class MachineSyncPage {
             this._thisMachineGroup(),
             this._reportingDayGroup(),
             this._otherMachinesGroup(),
+            ...(this._gsettings ? [this._machineColorsGroup()] : []),
             this._leaveGroup(),
         ]);
     }
@@ -585,6 +594,8 @@ export class MachineSyncPage {
                 })]);
                 return;
             }
+            for (const listener of this._statusListeners)
+                listener(result.data);
             const machines = otherMachines(result.data);
             if (!machines.length) {
                 setRows([new Adw.ActionRow({
@@ -598,6 +609,85 @@ export class MachineSyncPage {
         refresh.connect('clicked', load);
         load();
         return group;
+    }
+
+    // One color button per Machine, this one included, for the Machines
+    // tab's summary bar, chart and legend. Filled from the status the Other
+    // Machines group loads, so its reload button refreshes both.
+    _machineColorsGroup() {
+        const settings = this._gsettings;
+        const group = new Adw.PreferencesGroup({
+            title: 'Machine Colors',
+            description: 'How each Machine is colored on the Machines tab.',
+        });
+        const reset = new Gtk.Button({
+            label: 'Reset',
+            tooltip_text: 'Back to the default colors',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        });
+        reset.connect('clicked', () => settings.set_value('machine-colors', new GLib.Variant('a{ss}', {})));
+        group.header_suffix = reset;
+
+        const overrides = () => settings.get_value('machine-colors').deepUnpack();
+        let status = null;
+        let rows = [];
+        const buttons = new Map();
+        let syncing = false;
+        const syncColors = () => {
+            const current = overrides();
+            reset.sensitive = Object.keys(current).length > 0;
+            syncing = true;
+            for (const machine of colorMachines(status, current)) {
+                const button = buttons.get(machine.machineId);
+                const rgba = new Gdk.RGBA();
+                if (button && rgba.parse(machine.color) && !rgba.equal(button.rgba))
+                    button.rgba = rgba;
+            }
+            syncing = false;
+        };
+        const build = data => {
+            status = data;
+            for (const row of rows)
+                group.remove(row);
+            buttons.clear();
+            rows = colorMachines(status, overrides()).map(machine => {
+                const row = new Adw.ActionRow({title: machine.label, use_markup: false});
+                const button = new Gtk.ColorDialogButton({
+                    dialog: new Gtk.ColorDialog({title: `Color for ${machine.label}`, with_alpha: false}),
+                    valign: Gtk.Align.CENTER,
+                    tooltip_text: 'Machine color',
+                });
+                button.connect('notify::rgba', () => {
+                    if (!syncing) {
+                        settings.set_value('machine-colors', new GLib.Variant('a{ss}',
+                            {...overrides(), [machine.machineId]: hexColor(button.rgba)}));
+                    }
+                });
+                buttons.set(machine.machineId, button);
+                row.add_suffix(button);
+                row.activatable_widget = button;
+                group.add(row);
+                return row;
+            });
+            syncColors();
+        };
+        build(null);
+        // Hooked up by _setGroups once the previous page's group is gone.
+        group._usagebarAttach = () => {
+            this._statusListeners.push(build);
+            this._colorsChangedId = settings.connect('changed::machine-colors', syncColors);
+        };
+        return group;
+    }
+
+    // The Machine Colors group is rebuilt with the page's groups; drop the
+    // old one's listeners first.
+    _disconnectColors() {
+        this._statusListeners = [];
+        if (this._colorsChangedId)
+            this._gsettings?.disconnect(this._colorsChangedId);
+        this._colorsChangedId = 0;
     }
 
     _machineRow(machine, reload) {

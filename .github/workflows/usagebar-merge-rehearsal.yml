@@ -1,0 +1,223 @@
+name: UsageBar merge rehearsal
+
+# Fork-only. Merges upstream (steipete/CodexBar) into a scratch copy of fork
+# `main` inside the runner, runs the merge runbook's checks on the result, and
+# rewrites one pinned tracking issue (label `merge-rehearsal`) with the
+# conflicting files and failing checks, or a clean pass.
+#
+# It never pushes (read-only contents token, no persisted credentials) and
+# opens no PRs. Results go to the tracking issue, not to a red X: the job only
+# fails if the rehearsal itself breaks. `main`'s own CI is untouched.
+# Procedure: linux/upstream/RUNBOOK.md.
+
+on:
+  schedule:
+    # Daily: upstream ships close to a release a day.
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to rehearse: 'main' or a release tag such as v0.72.0"
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usagebar-merge-rehearsal
+  cancel-in-progress: false
+
+env:
+  SWIFT_VERSION: 6.3.3
+  SWIFTLY_VERSION: 1.1.3
+  SWIFTLY_SIGNING_FINGERPRINT: E813C892820A6FA13755B268F167DF1ACF9CE069
+
+jobs:
+  rehearse:
+    if: github.repository == 'felipearosr/UsageBar'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Self-test the rehearsal script
+        run: linux/upstream/test-merge-rehearsal.sh
+
+      - name: Resolve upstream ref
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.upstream_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          if [[ "$INPUT_REF" == main ]]; then
+            ref=upstream/main
+          elif [[ "$INPUT_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            ref="$INPUT_REF"
+          else
+            echo "upstream_ref must be 'main' or a vX.Y.Z tag, got: $INPUT_REF" >&2
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          {
+            echo "OUT=$RUNNER_TEMP/rehearsal"
+            echo "MR=$RUNNER_TEMP/merge-rehearsal.sh"
+          } >> "$GITHUB_ENV"
+
+      - name: Fetch upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/steipete/CodexBar.git
+          git fetch --no-tags upstream main
+          git fetch --force upstream 'refs/tags/v*:refs/tags/v*'
+
+      # The script is copied out first so the merge can't change the copy that runs.
+      - name: Merge into a scratch copy of main
+        id: merge
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          cp linux/upstream/merge-rehearsal.sh "$MR"
+          git switch -c merge-rehearsal-scratch
+          "$MR" merge "$REF" "$OUT"
+          echo "status=$(cat "$OUT/merge-status")" >> "$GITHUB_OUTPUT"
+
+      - name: Generated files are current
+        if: steps.merge.outputs.status != 'up-to-date'
+        run: |
+          "$MR" check "$OUT" "Generated: Codex parser hash" -- Scripts/regenerate-codex-parser-hash.sh --check
+          "$MR" check "$OUT" "Generated: provider manifests" -- Scripts/regenerate-provider-manifests.sh --check
+
+      - name: Lint (lint-linux)
+        if: steps.merge.outputs.status != 'up-to-date'
+        run: |
+          "$MR" check "$OUT" "Install lint tools" -- ./Scripts/install_lint_tools.sh swiftlint oxlint oxfmt typescript
+          "$MR" check "$OUT" "Lint (Scripts/lint.sh lint-linux)" -- ./Scripts/lint.sh lint-linux
+
+      - name: GNOME extension JS tests
+        if: steps.merge.outputs.status != 'up-to-date'
+        run: '"$MR" check "$OUT" "GNOME extension JS tests" -- sh -c "node --test linux/usagebar-gnome/tests/*.test.mjs"'
+
+      - name: Restore Swift toolchain cache
+        if: steps.merge.outputs.status != 'up-to-date'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/swiftly
+          key: swift-${{ runner.os }}-${{ runner.arch }}-${{ env.SWIFT_VERSION }}-swiftly-${{ env.SWIFTLY_VERSION }}
+
+      # Same signature-verified swiftly install as ci.yml's build-linux-cli.
+      - name: Install Swift ${{ env.SWIFT_VERSION }} via swiftly
+        if: steps.merge.outputs.status != 'up-to-date'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates gpg libcurl4-openssl-dev libsqlite3-dev
+
+          SWIFTLY_ARCH="$(uname -m)"
+          SWIFTLY_ARCHIVE="$RUNNER_TEMP/swiftly-${SWIFTLY_VERSION}-${SWIFTLY_ARCH}.tar.gz"
+          SWIFTLY_SIGNATURE="${SWIFTLY_ARCHIVE}.sig"
+          SWIFTLY_HOME_DIR="$HOME/.local/share/swiftly"
+          SWIFTLY_BIN_DIR="$HOME/.local/bin"
+          SWIFT_GNUPGHOME="$(mktemp -d)"
+          SWIFT_KEYS="$RUNNER_TEMP/swift-signing-keys.asc"
+          POST_INSTALL_SCRIPT="$(mktemp)"
+
+          mkdir -p "$SWIFTLY_BIN_DIR"
+          chmod 700 "$SWIFT_GNUPGHOME"
+          curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-${SWIFTLY_VERSION}-${SWIFTLY_ARCH}.tar.gz" -o "$SWIFTLY_ARCHIVE"
+          curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-${SWIFTLY_VERSION}-${SWIFTLY_ARCH}.tar.gz.sig" -o "$SWIFTLY_SIGNATURE"
+          curl -fsSL --compressed "https://www.swift.org/keys/all-keys.asc" -o "$SWIFT_KEYS"
+          GNUPGHOME="$SWIFT_GNUPGHOME" gpg --batch --import "$SWIFT_KEYS"
+          SIGNATURE_STATUS="$(GNUPGHOME="$SWIFT_GNUPGHOME" gpg --batch --status-fd=1 \
+            --verify "$SWIFTLY_SIGNATURE" "$SWIFTLY_ARCHIVE" 2>&1)"
+          printf '%s\n' "$SIGNATURE_STATUS"
+          grep -Fq "[GNUPG:] VALIDSIG ${SWIFTLY_SIGNING_FINGERPRINT} " <<< "$SIGNATURE_STATUS"
+          tar -xzf "$SWIFTLY_ARCHIVE" -C /tmp
+          /tmp/swiftly init --assume-yes --skip-install
+
+          . "$SWIFTLY_HOME_DIR/env.sh"
+          echo "$SWIFTLY_BIN_DIR" >> "$GITHUB_PATH"
+          echo "SWIFTLY_HOME_DIR=$SWIFTLY_HOME_DIR" >> "$GITHUB_ENV"
+          echo "SWIFTLY_BIN_DIR=$SWIFTLY_BIN_DIR" >> "$GITHUB_ENV"
+
+          swiftly install "$SWIFT_VERSION" --use --assume-yes --verify --post-install-file "$POST_INSTALL_SCRIPT"
+          if [[ -s "$POST_INSTALL_SCRIPT" ]]; then
+            sudo apt-get update
+            sudo bash "$POST_INSTALL_SCRIPT"
+          fi
+
+          hash -r
+          swift --version
+
+      - name: Swift build, Linux tests and CLI smoke
+        if: steps.merge.outputs.status != 'up-to-date'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$MR" check "$OUT" "Swift build" -- swift build --build-tests
+          if ! grep -qx pass "$OUT/checks/Swift_build.status"; then
+            "$MR" skip "$OUT" "Fork suites" "Swift build failed"
+            "$MR" skip "$OUT" "Swift tests (Linux)" "Swift build failed"
+            "$MR" skip "$OUT" "CLI smoke" "Swift build failed"
+            exit 0
+          fi
+          # Machine Sync, serve /sync/*, Spend Buckets and OpenCode on Linux first,
+          # so a fork regression reads apart from an upstream Linux test failure.
+          # shellcheck disable=SC2016 # expands in the child shell
+          "$MR" check "$OUT" "Fork suites" -- bash -c \
+            'source Scripts/test_environment.sh && swift test --skip-build --filter "MachineSync|CLIServeSync|CLISync|SpendBucket|OpenCode"'
+          # shellcheck disable=SC2016 # expands in the child shell
+          "$MR" check "$OUT" "Swift tests (Linux)" -- bash -c \
+            'source Scripts/test_environment.sh && swift test --skip-build --parallel'
+          # shellcheck disable=SC2016 # expands in the child shell
+          "$MR" check "$OUT" "CLI smoke" -- bash -c '
+            set -euo pipefail
+            bin="$(swift build --show-bin-path)/CodexBarCLI"
+            "$bin" --version
+            out="$("$bin" sync --help 2>&1 || true)"
+            printf "%s\n" "$out"
+            ! grep -q "Unknown command" <<< "$out"'
+
+      - name: Fork delta report
+        if: steps.merge.outputs.status != 'up-to-date'
+        run: |
+          if [[ -x linux/upstream/fork-delta.sh ]]; then
+            "$MR" check "$OUT" "Fork delta report" -- linux/upstream/fork-delta.sh
+          else
+            "$MR" skip "$OUT" "Fork delta report" "linux/upstream/fork-delta.sh not on main yet (#52)"
+          fi
+
+      - name: Update the tracking issue
+        if: ${{ always() && steps.merge.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/report.md"
+          "$MR" report "$OUT" > "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+          number="$(gh issue list --repo "$GITHUB_REPOSITORY" --label merge-rehearsal --state open \
+            --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$report"
+          else
+            gh label create merge-rehearsal --repo "$GITHUB_REPOSITORY" --force \
+              --color 5319e7 --description "Updated in place by the UsageBar merge rehearsal"
+            url="$(gh issue create --repo "$GITHUB_REPOSITORY" --title "Upstream merge rehearsal" \
+              --label merge-rehearsal --body-file "$report")"
+            number="${url##*/}"
+            gh issue pin "$number" --repo "$GITHUB_REPOSITORY" \
+              || echo "::warning::Created #$number but could not pin it; pin it once by hand."
+          fi
+          echo "Tracking issue: #$number"

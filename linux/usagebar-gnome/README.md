@@ -15,12 +15,10 @@ banner until the session ends.
 
 Self-contained: it supervises its own `codexbar serve` child on a free
 loopback port (restart with backoff, killed on disable) and polls
-`GET /usage` / `GET /cost`. The .deb/.rpm (see `../README.md`) ship the
-fork's `codexbar` CLI at `/usr/libexec/usagebar/codexbar`, which the
+`GET /usage` / `GET /cost`. The .deb/.rpm (see [`../INSTALL.md`](../INSTALL.md))
+ship the fork's `codexbar` CLI at `/usr/libexec/usagebar/codexbar`, which the
 extension prefers; otherwise it uses `$CODEXBAR_BIN` or the first `codexbar`
-on `PATH`. Machine Sync needs the fork's CLI; everything else works with
-upstream's ≥ 0.43.0 (NOT brew; the Linux formula lags and drops per-model
-limit data).
+on `PATH`. Machine Sync needs the fork's CLI.
 
 ## Install (development)
 
@@ -54,6 +52,28 @@ node --test linux/usagebar-gnome/tests/*.test.mjs
 node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/extension.js
 node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/renderstate.js
 ```
+
+## extensions.gnome.org ZIP
+
+Build the ZIP uploaded to extensions.gnome.org and lint it against the
+mechanically checkable review guidelines:
+
+```bash
+python3 linux/usagebar-gnome/tools/ego-zip.py build    # → linux/dist/usagebar@felipearosr.github.io.shell-extension.zip
+python3 linux/usagebar-gnome/tools/ego-zip.py lint path/to/extension.zip
+python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'
+```
+
+The ZIP holds only an allowlist: the modules `extension.js` and `prefs.js`
+import, `stylesheet.css`, `metadata.json`, the schema XML and `LICENSE` (no
+tests, tools, provider logos or compiled schema; GNOME 44+ compiles schemas on
+install). Lint errors (files outside the allowlist, binaries, bad
+`metadata.json` keys or `shell-version`, schema ID/path outside
+`org.gnome.shell.extensions`, minified JS, deprecated modules, Gtk in the shell
+process or St in prefs) fail the build; warnings (import-time work, discarded
+source/signal IDs, debug logging, interpreter subprocesses, brand logos) are
+for the reviewer. CI runs both, plus a warning-only ESLint report
+(`eslint.config.mjs`), on pull requests that touch the extension.
 
 ## Machine Sync
 
@@ -103,6 +123,10 @@ result, GNOME log, and full-stage PNG screenshot under `/tmp`.
   supervisor (Gio.Subprocess), Soup 3 HTTP client, stale-merge (port of the
   Rust `merge_stale`), panel indicator + popover UI (St widgets), quota
   notifications.
+- `usagebar@felipearosr.github.io/authlogin.js` — which provider errors are
+  auth failures, each provider's login command, and the terminal launcher
+  order for the error banner's "Log in" button (pure; tested in
+  `tests/authlogin.test.mjs`).
 - `usagebar@felipearosr.github.io/machinesync.js` — Machine Sync push/read
   cadence and the Machines tab view model (pure; tested in
   `tests/machinesync.test.mjs`).

@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck
-        run: shellcheck -x linux/packaging/install-cli.sh linux/packaging/aur/bump.sh linux/packaging/tests/*.sh
+        run: shellcheck -x linux/packaging/install-cli.sh linux/packaging/build-cli-deb.sh linux/packaging/build-cli-rpm.sh linux/packaging/rpm/bump-spec.sh linux/packaging/aur/bump.sh linux/packaging/tests/*.sh
 
       - name: Stand-in CLI tarball
         run: linux/packaging/tests/make-fake-tarball.sh "$RUNNER_TEMP/fake" 9.9.9
@@ -45,6 +45,26 @@ jobs:
             linux/packaging/tests/run-in-container.sh "$image" install-script.sh "$RUNNER_TEMP/fake"
             echo "::endgroup::"
           done
+
+      - name: usagebar-cli .deb smoke test
+        run: |
+          set -euo pipefail
+          linux/packaging/build-cli-deb.sh "$RUNNER_TEMP"/fake/*-linux-x86_64.tar.gz 9.9.9 "$RUNNER_TEMP/fake"
+          for image in debian:stable ubuntu:latest; do
+            echo "::group::usagebar-cli .deb on $image"
+            linux/packaging/tests/run-in-container.sh "$image" deb.sh "$RUNNER_TEMP/fake"
+            echo "::endgroup::"
+          done
+
+      - name: usagebar-cli RPM and SRPM smoke test
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          linux/packaging/tests/make-fake-tarball.sh "$RUNNER_TEMP/fake-arm" 9.9.9 aarch64
+          linux/packaging/build-cli-rpm.sh 9.9.9 "$RUNNER_TEMP/fake" \
+            "$RUNNER_TEMP"/fake/*-linux-x86_64.tar.gz "$RUNNER_TEMP"/fake-arm/*-linux-aarch64.tar.gz
+          linux/packaging/tests/run-in-container.sh registry.fedoraproject.org/fedora:latest rpm.sh "$RUNNER_TEMP/fake"
 
       - name: usagebar-cli-bin PKGBUILD smoke test
         run: linux/packaging/tests/run-in-container.sh archlinux:latest aur.sh "$RUNNER_TEMP/fake"

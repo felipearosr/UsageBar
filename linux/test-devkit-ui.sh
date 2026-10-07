@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Headless GNOME Shell UI smoke for the UsageBar extension.
+# USAGEBAR_UI_SMOKE_NO_CLI=1 forces the missing-CLI onboarding state even when
+# a codexbar CLI is installed (honoured only during a smoke run).
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
