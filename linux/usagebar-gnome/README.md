@@ -55,6 +55,28 @@ node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.git
 node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/renderstate.js
 ```
 
+## extensions.gnome.org ZIP
+
+Build the ZIP uploaded to extensions.gnome.org and lint it against the
+mechanically checkable review guidelines:
+
+```bash
+python3 linux/usagebar-gnome/tools/ego-zip.py build    # → linux/dist/usagebar@felipearosr.github.io.shell-extension.zip
+python3 linux/usagebar-gnome/tools/ego-zip.py lint path/to/extension.zip
+python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'
+```
+
+The ZIP holds only an allowlist: the modules `extension.js` and `prefs.js`
+import, `stylesheet.css`, `metadata.json`, the schema XML and `LICENSE` (no
+tests, tools, provider logos or compiled schema; GNOME 44+ compiles schemas on
+install). Lint errors (files outside the allowlist, binaries, bad
+`metadata.json` keys or `shell-version`, schema ID/path outside
+`org.gnome.shell.extensions`, minified JS, deprecated modules, Gtk in the shell
+process or St in prefs) fail the build; warnings (import-time work, discarded
+source/signal IDs, debug logging, interpreter subprocesses, brand logos) are
+for the reviewer. CI runs both, plus a warning-only ESLint report
+(`eslint.config.mjs`), on pull requests that touch the extension.
+
 ## Machine Sync
 
 Once this Machine is paired (`codexbar sync create` / `codexbar sync pair`),
