@@ -11,6 +11,10 @@
 %{!?sha256_x86_64:%global sha256_x86_64 0000000000000000000000000000000000000000000000000000000000000000}
 %{!?sha256_aarch64:%global sha256_aarch64 0000000000000000000000000000000000000000000000000000000000000000}
 
+# Fedora's license directory, also when built with Debian's rpm (CI runners).
+%global _defaultlicensedir %{_datadir}/licenses
+%global _docdir_fmt %%{NAME}
+
 # Prebuilt payload: no debuginfo, no stripping or other post-processing.
 %global debug_package %{nil}
 %global __os_install_post %{nil}
