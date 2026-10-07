@@ -57,7 +57,9 @@ struct CostUsageClaudeMetadataParsingTests {
                 cacheCreate1h: expectedHours[index],
                 output: 1,
                 costNanos: 0,
-                costPriced: false))
+                costPriced: false,
+                // A null usage value is an omitted field, unlike a coerced scalar.
+                omittedFields: inputs[index] is NSNull ? [.input] : nil))
         }
         let content = try env.jsonl(entries).replacingOccurrences(of: "sessionId", with: #"session\u0049d"#)
         let file = try env.writeClaudeProjectFile(relativePath: "project/subagents/scalars.jsonl", contents: content)

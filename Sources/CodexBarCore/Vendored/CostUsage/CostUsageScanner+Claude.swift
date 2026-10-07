@@ -1,4 +1,11 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 extension CostUsageScanner {
     static func loadDailyReportCancellable(
@@ -35,16 +42,6 @@ extension CostUsageScanner {
     }
 
     // MARK: - Claude
-
-    private struct ClaudeTokens {
-        let input: Int
-        let cacheRead: Int
-        let cacheCreate: Int
-        let cacheCreate1h: Int
-        let output: Int
-        let costNanos: Int
-        let costPriced: Bool
-    }
 
     private struct ClaudeDayModelKey: Hashable {
         let day: String
@@ -179,22 +176,37 @@ extension CostUsageScanner {
                     guard !line.wasTruncated else { return }
                     guard line.bytes.containsAscii(#""type":"assistant""#) else { return }
                     guard line.bytes.containsAscii(#""usage""#) else { return }
+                    let couldContainMetadata = providerFilter != .all && Self.couldContainVertexAIMetadata(line.bytes)
+                    if providerFilter == .vertexAIOnly, !couldContainMetadata,
+                       !line.bytes.containsAscii("@"), !line.bytes.containsAscii("_vrtx_")
+                    { return }
 
                     autoreleasepool {
+                        #if DEBUG
+                        recordClaudeScanWork(.claudeLineDecode)
+                        #endif
                         guard
                             let obj = try? ClaudeJSONObject.decode(line.bytes),
                             let type = obj["type"] as? String,
                             type == "assistant"
                         else { return }
                         let message = obj.dictionary("message")
-                        guard Self.matchesClaudeProviderFilter(obj: obj, message: message, filter: providerFilter)
-                        else { return }
+                        if providerFilter != .all {
+                            let isVertex = Self.isVertexAIUsageEntry(
+                                obj: obj, message: message, scanMetadata: couldContainMetadata)
+                            if isVertex != (providerFilter == .vertexAIOnly) { return }
+                        }
 
                         guard let tsText = obj["timestamp"] as? String,
                               let parsedTimestamp = Self.claudeTimestampAndDayKey(tsText, calendar: range.calendar)
                         else { return }
                         let timestamp = parsedTimestamp.date
                         let dayKey = parsedTimestamp.dayKey
+                        guard CostUsageDayRange.isInRange(
+                            dayKey: dayKey,
+                            since: range.scanSinceKey,
+                            until: range.scanUntilKey)
+                        else { return }
 
                         guard let message else { return }
                         guard let model = message["model"] as? String else { return }
@@ -202,14 +214,14 @@ extension CostUsageScanner {
 
                         let input = max(0, toInt(usage["input_tokens"]))
                         let cacheCreate = max(0, toInt(usage["cache_creation_input_tokens"]))
-                        let cacheCreate1h = Self.claudeOneHourCacheCreationTokens(
-                            usage: usage,
-                            total: cacheCreate)
                         let cacheRead = max(0, toInt(usage["cache_read_input_tokens"]))
                         let output = max(0, toInt(usage["output_tokens"]))
                         if input == 0, cacheCreate == 0, cacheRead == 0, output == 0 {
                             return
                         }
+                        let cacheCreate1h = Self.claudeOneHourCacheCreationTokens(
+                            usage: usage,
+                            total: cacheCreate)
                         let omittedFields = Self.claudeOmittedUsageFields(usage)
 
                         // Proxies may put a local, cache-unaware estimate in message_start.
@@ -217,6 +229,9 @@ extension CostUsageScanner {
                         let isIncomplete = message["stop_reason"] is NSNull && input > 0 && output == 0
                             && usage["cache_read_input_tokens"] == nil
                             && usage["cache_creation_input_tokens"] == nil
+                        #if DEBUG
+                        if !isIncomplete { recordClaudeScanWork(.claudeCostCalculation) }
+                        #endif
                         let cost = isIncomplete ? nil : pricingResolver.costUSD(
                             model: model,
                             inputTokens: input,
@@ -226,20 +241,6 @@ extension CostUsageScanner {
                             outputTokens: output,
                             pricingDate: timestamp)
                         let costNanos = cost.flatMap { Int(exactly: ($0 * costScale).rounded()) }
-                        let tokens = ClaudeTokens(
-                            input: input,
-                            cacheRead: cacheRead,
-                            cacheCreate: cacheCreate,
-                            cacheCreate1h: cacheCreate1h,
-                            output: output,
-                            costNanos: costNanos ?? 0,
-                            costPriced: costNanos != nil)
-
-                        guard CostUsageDayRange.isInRange(
-                            dayKey: dayKey,
-                            since: range.scanSinceKey,
-                            until: range.scanUntilKey)
-                        else { return }
 
                         let messageId = message["id"] as? String
                         let requestId = obj["requestId"] as? String
@@ -257,13 +258,13 @@ extension CostUsageScanner {
                             timestampUnixMs: Int64((timestamp.timeIntervalSince1970 * 1000).rounded()),
                             isSidechain: toBool(obj["isSidechain"]),
                             pathRole: pathRole,
-                            input: tokens.input,
-                            cacheRead: tokens.cacheRead,
-                            cacheCreate: tokens.cacheCreate,
-                            cacheCreate1h: tokens.cacheCreate1h,
-                            output: tokens.output,
-                            costNanos: tokens.costNanos,
-                            costPriced: tokens.costPriced,
+                            input: input,
+                            cacheRead: cacheRead,
+                            cacheCreate: cacheCreate,
+                            cacheCreate1h: cacheCreate1h,
+                            output: output,
+                            costNanos: costNanos ?? 0,
+                            costPriced: costNanos != nil,
                             isIncomplete: isIncomplete ? true : nil,
                             omittedFields: omittedFields.isEmpty ? nil : omittedFields)
 
@@ -354,7 +355,7 @@ extension CostUsageScanner {
         return lhs.path < rhs.path
     }
 
-    private static func reconciledClaudeRows(cache: CostUsageCache) -> [ClaudeUsageRow] {
+    static func reconciledClaudeRows(cache: CostUsageCache) -> [ClaudeUsageRow] {
         #if DEBUG
         recordClaudeScanWork(.reconcile)
         #endif
@@ -383,46 +384,45 @@ extension CostUsageScanner {
         return rows
     }
 
-    private static func rebuildClaudeDays(cache: inout CostUsageCache) {
+    static func rebuildClaudeDays(cache: inout CostUsageCache, rows: [ClaudeUsageRow]) {
         var days: [String: [String: [Int]]] = [:]
         var overflowed: Set<ClaudeDayModelKey> = []
 
-        for row in Self.reconciledClaudeRows(cache: cache) {
+        for row in rows {
             let key = ClaudeDayModelKey(day: row.dayKey, model: row.model)
             guard !overflowed.contains(key) else { continue }
-            var dayModels = days[row.dayKey] ?? [:]
-            let packed = dayModels[row.model] ?? [0, 0, 0, 0, 0, 0, 0, 0]
-            if row.isIncomplete == true {
-                // Retain the day/model so missing usage is visible without treating it as zero activity.
-                dayModels[row.model] = packed
-                days[row.dayKey] = dayModels
-                continue
-            }
-            let delta = [
-                row.input,
-                row.cacheRead,
-                row.cacheCreate,
-                row.output,
-                row.costNanos,
-                1,
-                (row.costPriced ?? (row.costNanos > 0)) ? 1 : 0,
-                row.cacheCreate1h ?? 0,
-            ]
-            let summed = zip(packed, delta).compactMap { current, incoming -> Int? in
-                let sum = current.addingReportingOverflow(incoming)
-                return sum.overflow ? nil : sum.partialValue
-            }
-            if summed.count == packed.count {
-                dayModels[row.model] = summed
-            } else {
+            if !Self.addClaudeRow(
+                row,
+                to: &days[row.dayKey, default: [:]][row.model, default: [0, 0, 0, 0, 0, 0, 0, 0]])
+            {
                 // Raw rows retain every metric; the legacy packed format cannot represent an unavailable total.
                 overflowed.insert(key)
-                dayModels.removeValue(forKey: row.model)
+                days[row.dayKey]?.removeValue(forKey: row.model)
             }
-            days[row.dayKey] = dayModels
         }
 
         cache.days = days
+    }
+
+    private static func addClaudeRow(_ row: ClaudeUsageRow, to packed: inout [Int]) -> Bool {
+        // Retain incomplete day/models without treating their missing usage as zero activity.
+        guard row.isIncomplete != true else { return true }
+        let delta = [
+            row.input,
+            row.cacheRead,
+            row.cacheCreate,
+            row.output,
+            row.costNanos,
+            1,
+            (row.costPriced ?? (row.costNanos > 0)) ? 1 : 0,
+            row.cacheCreate1h ?? 0,
+        ]
+        for (index, incoming) in delta.enumerated() {
+            let sum = packed[index].addingReportingOverflow(incoming)
+            guard !sum.overflow else { return false }
+            packed[index] = sum.partialValue
+        }
+        return true
     }
 
     private static let vertexProviderKeys: Set<String> = [
@@ -438,18 +438,32 @@ extension CostUsageScanner {
         "client",
     ]
 
-    private static func matchesClaudeProviderFilter(
-        obj: ClaudeJSONObject,
-        message: ClaudeJSONObject?,
-        filter: ClaudeLogProviderFilter) -> Bool
-    {
-        switch filter {
-        case .all:
-            true
-        case .vertexAIOnly:
-            self.isVertexAIUsageEntry(obj: obj, message: message)
-        case .excludeVertexAI:
-            !self.isVertexAIUsageEntry(obj: obj, message: message)
+    private static let vertexMetadataRawMarkers: [StaticString] = [
+        "vertex", "Vertex", "gcp", "Gcp", #"\u004"#, #"\u005"#, #"\u006"#, #"\u007"#,
+    ]
+
+    private static func couldContainVertexAIMetadata(_ line: Data) -> Bool {
+        line.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            guard let base = bytes.baseAddress else { return false }
+            // Foundation's lowercase/canonical substring matching cannot create these ASCII markers
+            // from non-ASCII. Combining scalars can prevent matches; the decoded classifier decides positives.
+            // Escape prefixes cover ASCII letters, @, and underscores regardless of the final hex digit's case.
+            return self.vertexMetadataRawMarkers.contains { marker in
+                marker.withUTF8Buffer { needle in
+                    var offset = 0
+                    while offset <= bytes.count - needle.count {
+                        // Skip payload bytes in libc; inspect only candidate starts in Swift.
+                        guard let found = memchr(base + offset, Int32(needle[0]), bytes.count - offset)
+                        else { return false }
+                        offset = base.distance(to: found)
+                        if needle.count <= bytes.count - offset,
+                           needle.indices.allSatisfy({ bytes[offset + $0] | 0x20 == needle[$0] | 0x20 })
+                        { return true }
+                        offset += 1
+                    }
+                    return false
+                }
+            }
         }
     }
 
@@ -462,7 +476,11 @@ extension CostUsageScanner {
         self.isVertexAIUsageEntry(obj: obj, message: obj.dictionary("message"))
     }
 
-    private static func isVertexAIUsageEntry(obj: ClaudeJSONObject, message: ClaudeJSONObject?) -> Bool {
+    private static func isVertexAIUsageEntry(
+        obj: ClaudeJSONObject,
+        message: ClaudeJSONObject?,
+        scanMetadata: Bool = true) -> Bool
+    {
         // Primary detection: Vertex AI message IDs and request IDs have "vrtx" prefix
         // e.g., "msg_vrtx_0154LUXjFVzQGUca3yK2RUeo", "req_vrtx_011CWjK86SWeFuXqZKUtgB1H"
         if let messageId = message?["id"] as? String,
@@ -479,27 +497,20 @@ extension CostUsageScanner {
         // Secondary detection: model name with @ version separator (Vertex AI format)
         // e.g., "claude-opus-4-5@20251101" vs "claude-opus-4-5-20251101"
         if let model = message?["model"] as? String,
-           Self.modelNameLooksVertex(model)
+           model.hasPrefix("claude-"), model.contains("@")
         {
             return true
         }
 
         // The recursive walk already includes root and message metadata, requests, context, and client.
-        return Self.containsVertexAIMetadata(in: obj)
-    }
-
-    /// Detects Vertex AI model names by format.
-    /// Vertex AI uses @ for version separator: claude-opus-4-5@20251101
-    /// Anthropic API uses -: claude-opus-4-5-20251101
-    private static func modelNameLooksVertex(_ model: String) -> Bool {
-        // Vertex AI model format: claude-{variant}@{version}
-        // Examples: claude-opus-4-5@20251101, claude-sonnet-4-5@20250514
-        guard model.hasPrefix("claude-") else { return false }
-        return model.contains("@")
+        return scanMetadata && Self.containsVertexAIMetadata(in: obj)
     }
 
     private static func containsVertexAIMetadata(in dict: ClaudeJSONObject) -> Bool {
-        dict.contains { key, value in
+        #if DEBUG
+        recordClaudeScanWork(.vertexMetadataWalk)
+        #endif
+        return dict.contains { key, value in
             if self.containsClaudeVertexMarker(key, includeGCP: true) {
                 return true
             }
@@ -687,7 +698,7 @@ extension CostUsageScanner {
         let cacheArtifactStamp = CostUsageClaudeFileStamp.read(at: cacheURL)
         let pricingURL = ModelsDevCache.cacheFileURL(cacheRoot: options.cacheRoot)
         let pricingArtifactStamp = CostUsageClaudeFileStamp.read(at: pricingURL)
-        let reportKey = Self.claudeReportMemoKey(
+        var reportKey = Self.claudeReportMemoKey(
             provider: provider,
             providerFilter: options.claudeLogProviderFilter,
             range: range,
@@ -780,8 +791,12 @@ extension CostUsageScanner {
             for key in cache.files.keys where sourceInventory[key] == nil {
                 cache.files.removeValue(forKey: key)
             }
+        }
 
-            Self.rebuildClaudeDays(cache: &cache)
+        // Keep the same winner and summation order for both projections of this cache snapshot.
+        let rows = Self.reconciledClaudeRows(cache: cache)
+        if shouldMutateCache {
+            Self.rebuildClaudeDays(cache: &cache, rows: rows)
             Self.pruneDays(cache: &cache, sinceKey: range.scanSinceKey, untilKey: range.scanUntilKey)
             cache.scanSinceKey = range.scanSinceKey
             cache.scanUntilKey = range.scanUntilKey
@@ -793,6 +808,7 @@ extension CostUsageScanner {
 
         let report = Self.buildClaudeReportFromCache(
             cache: cache,
+            rows: rows,
             range: range,
             pricingResolver: pricingResolver)
         try checkCancellation?()
@@ -811,24 +827,20 @@ extension CostUsageScanner {
         }
 
         let finalCacheArtifactStamp = CostUsageClaudeFileStamp.read(at: cacheURL)
-        let finalPricingArtifactStamp = CostUsageClaudeFileStamp.read(at: pricingURL)
-        let finalReportKey = Self.claudeReportMemoKey(
-            provider: provider,
-            providerFilter: providerFilter,
-            range: range,
-            roots: roots,
-            artifactStamps: (cache: finalCacheArtifactStamp, pricing: finalPricingArtifactStamp))
         let cacheArtifactIsCurrent = if shouldMutateCache {
             committedCacheStamp != nil && finalCacheArtifactStamp == committedCacheStamp
         } else {
             finalCacheArtifactStamp == cacheArtifactStamp
         }
-        if cacheArtifactIsCurrent, finalPricingArtifactStamp == pricingArtifactStamp {
+        if cacheArtifactIsCurrent {
+            // Keep the window certificate even if pricing was replaced during this pass.
+            // The earlier pricing stamp makes report reuse miss and reprice cached rows.
+            reportKey.cacheArtifactStamp = finalCacheArtifactStamp
             memo.store(
                 provider: provider,
                 canonicalCachePath: canonicalCachePath,
                 sourceInventory: sourceInventory,
-                reportKey: finalReportKey,
+                reportKey: reportKey,
                 report: report,
                 hasWindowScopedRows: hasWindowScopedBaseline || (shouldMutateCache && forceFullScan))
         }
@@ -869,12 +881,14 @@ extension CostUsageScanner {
     {
         self.buildClaudeReportFromCache(
             cache: cache,
+            rows: self.reconciledClaudeRows(cache: cache),
             range: range,
             pricingResolver: CostUsagePricing.ClaudeResolver(now: now, cacheRoot: modelsDevCacheRoot))
     }
 
     private static func buildClaudeReportFromCache(
         cache: CostUsageCache,
+        rows: [ClaudeUsageRow],
         range: CostUsageDayRange,
         pricingResolver: CostUsagePricing.ClaudeResolver) -> CostUsageDailyReport
     {
@@ -889,7 +903,7 @@ extension CostUsageScanner {
         var costSeen = false
         var hasTokens = false
         let repricedCosts = self.claudeTemporalPricing(
-            rows: Self.reconciledClaudeRows(cache: cache),
+            rows: rows,
             range: range,
             pricingResolver: pricingResolver,
             temporalBuckets: &temporalBuckets)
@@ -1082,14 +1096,14 @@ extension CostUsageScanner {
     }
 
     /// Usage fields missing (or `null`) in a log line's `usage` object.
-    private static func claudeOmittedUsageFields(_ usage: ClaudeJSONObject) -> Set<ClaudeUsageField> {
-        let usageKeys: [(String, ClaudeUsageField)] = [
+    private static func claudeOmittedUsageFields(_ usage: ClaudeJSONObject) -> ClaudeUsageFields {
+        let usageKeys: [(String, ClaudeUsageFields)] = [
             ("input_tokens", .input),
             ("output_tokens", .output),
             ("cache_read_input_tokens", .cacheRead),
             ("cache_creation_input_tokens", .cacheCreation),
         ]
-        return Set(usageKeys.filter { key, _ in usage[key] == nil || usage[key] is NSNull }.map(\.1))
+        return ClaudeUsageFields(usageKeys.filter { key, _ in usage[key] == nil || usage[key] is NSNull }.map(\.1))
     }
 
     /// Scans Claude logs into UTC-hour Spend Buckets whose hour starts in `since..<until`.
@@ -1101,6 +1115,7 @@ extension CostUsageScanner {
         checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
     {
         // The daily report refreshes and saves the cache; the buckets then read the same rows.
+        // Provider-specific by design: Claude buckets refresh and then read the Claude transcript cache.
         _ = try self.loadDailyReportCancellable(
             provider: .claude,
             since: since,
@@ -1136,6 +1151,7 @@ extension CostUsageScanner {
             guard hourStart >= since, hourStart < until else { continue }
             // An incomplete streaming estimate has no trustworthy counts or cost; it still counts as a request.
             guard row.isIncomplete != true else {
+                // Provider-specific by design: rows here come only from the Claude transcript cache.
                 buckets.append(CostUsageSpendBucket(
                     hourStart: hourStart,
                     provider: .claude,
@@ -1150,9 +1166,10 @@ extension CostUsageScanner {
                 continue
             }
             let omitted = row.omittedFields ?? []
-            func reported(_ value: Int, _ field: ClaudeUsageField) -> Int? {
+            func reported(_ value: Int, _ field: ClaudeUsageFields) -> Int? {
                 omitted.contains(field) ? nil : value
             }
+            // Provider-specific by design: rows here come only from the Claude transcript cache.
             buckets.append(CostUsageSpendBucket(
                 hourStart: hourStart,
                 provider: .claude,
