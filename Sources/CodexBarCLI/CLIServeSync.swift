@@ -49,6 +49,29 @@ struct ServeSyncStatusPayload: Encodable {
 }
 
 extension CodexBarCLI {
+    /// `/sync/*` behind the same data-route auth as `/usage` and `/cost`, never cached.
+    static func serveSyncRoute(
+        _ route: CLIServeRoute,
+        request: CLILocalHTTPRequest,
+        runtime: ServeRuntime) async -> CLILocalHTTPResponse
+    {
+        guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
+            return self.serveUnauthorizedResponse()
+        }
+        let environment = self.serveSyncEnvironment()
+        switch route {
+        case let .syncStatus(refresh):
+            return await self.addingNoStore(self.serveSyncStatus(
+                refresh: refresh,
+                environment: environment,
+                coordinator: runtime.sync))
+        case .syncPush:
+            return await self.addingNoStore(self.serveSyncPush(environment: environment, coordinator: runtime.sync))
+        default:
+            return self.serveError(status: .notFound, message: "not found")
+        }
+    }
+
     static func serveSyncEnvironment() -> MachineSyncEnvironment {
         MachineSyncEnvironment(clientVersion: currentVersion() ?? "unknown")
     }

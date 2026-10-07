@@ -74,7 +74,71 @@ struct ProcessEnvironmentTests {
             fetcher: fetcher,
             claudeFetcher: claudeFetcher,
             browserDetection: browserDetection)
-        return [fetcher, claudeFetcher, context]
+        return [
+            fetcher, claudeFetcher, context,
+            CodexStatusProbe(environment: environment),
+            ClaudeStatusProbe(environment: environment),
+            TTYCommandRunner.Options(baseEnvironment: environment),
+            CodexCLISession.CaptureOptions(
+                timeout: 1, rows: 1, cols: 1, environment: environment, extraArgs: [], workingDirectory: nil),
+            PiSessionCostScanner.Options(environment: environment),
+            PiSessionProcessContext(
+                command: "pi", workingDirectory: nil, selectorEnvironment: ["PI_PROFILE": Self.sentinel]),
+            AgentProcessRecord(
+                pid: 1, ppid: 0, startedAt: nil, command: "pi", piSelectorEnvironment: ["PI_PROFILE": Self.sentinel]),
+            DefaultCodexAccountReconciler(baseEnvironment: environment),
+            AntigravityRemoteUsageFetcher(homeDirectory: "/synthetic-home", environment: environment),
+            QwenCloudTokenPlanAPIClient.Context(
+                secToken: "",
+                secTokenSource: "fixture",
+                environment: environment,
+                apiCookieHeader: "",
+                dashboardURL: URL(string: "https://example.com")!),
+            MiniMaxUsageFetcher.WebFetchContext(
+                cookie: "",
+                authorizationToken: nil,
+                region: .global,
+                environment: environment,
+                transport: ProviderHTTPClient.shared),
+        ]
+    }
+
+    @Test
+    func `optional environments preserve absence mutation and value equality`() {
+        var absent = OptionalConfiguration()
+        let empty = OptionalConfiguration(environment: [:])
+        #expect(absent.environment == nil)
+        #expect(absent != empty)
+        #expect(absent == OptionalConfiguration())
+        absent.environment = [Self.sentinelKey: Self.sentinel]
+        #expect(absent == OptionalConfiguration(environment: [Self.sentinelKey: Self.sentinel]))
+        var copy = absent
+        copy.environment?["ORDINARY_NAME"] = Self.sentinel
+        #expect(copy != absent)
+        #expect(absent.environment?.count == 1)
+        #expect(copy.environment?.count == 2)
+        #expect(String(describing: copy) == String(describing: OptionalConfiguration(
+            environment: ["unrelated": "value", "different": "contents"])))
+        Self.expectMirrorRedacted(copy)
+        absent.environment = nil
+        #expect(absent == OptionalConfiguration())
+        Self.expectMirrorRedacted(absent)
+    }
+
+    @Test
+    func `optional wrapper counts track mutations without equating missing and empty values`() {
+        var environment = ProcessEnvironment(wrappedValue: nil as [String: String]?)
+        #expect(environment.description == "ProcessEnvironment(0 entries; redacted)")
+        #expect(environment != ProcessEnvironment(wrappedValue: [:] as [String: String]?))
+        environment.wrappedValue = [Self.sentinelKey: Self.sentinel]
+        #expect(environment.description == "ProcessEnvironment(1 entries; redacted)")
+        Self.expectMirrorRedacted(environment)
+        environment.wrappedValue?["ORDINARY_NAME"] = Self.sentinel
+        #expect(environment.description == "ProcessEnvironment(2 entries; redacted)")
+    }
+
+    private struct OptionalConfiguration: Equatable {
+        @ProcessEnvironment var environment: [String: String]?
     }
 
     private struct CapturedValue: Equatable {

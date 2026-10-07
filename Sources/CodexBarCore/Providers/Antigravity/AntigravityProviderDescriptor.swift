@@ -529,6 +529,24 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
         } else {
             nil
         }
+        #if os(macOS)
+        let scopedReportFetch: (@Sendable () async throws -> ProviderFetchResult)? = {
+            try await self.fetchScopedPrintUsage(
+                binary: binary,
+                environment: context.env,
+                credentialsUpdateHandler: { credentials in
+                    guard let accountID = context.selectedTokenAccountID,
+                          let updater = context.tokenAccountTokenUpdater
+                    else {
+                        return
+                    }
+                    let token = try AntigravityOAuthCredentialsStore.tokenAccountValue(for: credentials)
+                    await updater(.antigravity, accountID, token)
+                })
+        }
+        #else
+        let scopedReportFetch: (@Sendable () async throws -> ProviderFetchResult)? = nil
+        #endif
         return try await Self.fetchWithReportFallback(
             context: context,
             legacyFetch: {
@@ -545,13 +563,16 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
                         }
                     })
             },
-            reportFetch: { try await self.fetchPrintUsage(binary: binary, environment: context.env) })
+            reportFetch: { try await self.fetchPrintUsage(binary: binary, environment: context.env) },
+            scopedReportFetch: scopedReportFetch)
     }
 
     static func fetchWithReportFallback(
         context: ProviderFetchContext,
         legacyFetch: @Sendable () async throws -> ProviderFetchResult,
-        reportFetch: @Sendable () async throws -> ProviderFetchResult) async throws -> ProviderFetchResult
+        reportFetch: @Sendable () async throws -> ProviderFetchResult,
+        scopedReportFetch: (@Sendable () async throws -> ProviderFetchResult)? = nil)
+        async throws -> ProviderFetchResult
     {
         do {
             let result = try await legacyFetch()
@@ -563,7 +584,19 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
             // Identity-free reports must not replace a selected or injected OAuth account's fallback.
             guard context.sourceMode != .auto || (context.selectedTokenAccountID == nil &&
                 context.env[AntigravityOAuthCredentialsStore.environmentCredentialsKey] == nil)
-            else { throw error }
+            else {
+                // Scoped print verifies the effective access token before attributing usage.
+                guard let scopedReportFetch else { throw error }
+                do {
+                    return try await scopedReportFetch()
+                } catch let scopedError {
+                    try Task.checkCancellation()
+                    if scopedError is CancellationError { throw scopedError }
+                    Self.log.info(
+                        "Scoped agy usage fetch failed; preserving ambient error (reason: \(type(of: scopedError)))")
+                    throw error
+                }
+            }
         }
         return try await reportFetch()
     }
@@ -579,7 +612,23 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: directory) }
-        func run(_ arguments: [String], timeout: TimeInterval) async throws -> SubprocessResult {
+        let snapshot = try await Self.runPrintUsage(
+            binary: binary, environment: environment, directory: directory, timeout: timeout)
+        return try self.makeResult(usage: snapshot.toUsageSnapshot(), sourceLabel: Self.sourceLabel)
+    }
+
+    static func runPrintUsage(
+        binary: String,
+        environment: [String: String],
+        directory: URL,
+        timeout: TimeInterval) async throws -> AntigravityStatusSnapshot
+    {
+        try Task.checkCancellation()
+        func run(
+            _ arguments: [String],
+            timeout: TimeInterval,
+            reapDescendants: Bool = false) async throws -> SubprocessResult
+        {
             try await SubprocessRunner.run(
                 binary: binary,
                 arguments: arguments,
@@ -588,6 +637,7 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
                 maxOutputBytes: 1_048_576,
                 standardInput: FileHandle.nullDevice,
                 currentDirectoryURL: directory,
+                reapDescendants: reapDescendants,
                 label: "antigravity-cli-usage")
         }
         let result: SubprocessResult
@@ -597,15 +647,17 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
             guard let version, version >= (1, 1, 11)
             else { throw AntigravityStatusProbeError.parseFailed("CLI usage reports require agy 1.1.11 or later") }
             result = try await run(
-                ["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"], timeout: timeout)
+                ["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"],
+                timeout: timeout,
+                reapDescendants: true)
         } catch let error as SubprocessRunnerError {
             try Task.checkCancellation()
             // Subprocess errors may contain raw stderr; classify them into safe,
             // fixed diagnostics instead of surfacing the process output.
             throw AntigravityCLIPrintFailure.error(for: error)
         }
-        let snapshot = try AntigravityStatusProbe.parseCLIUsageReport(Data(result.stdout.utf8))
-        return try self.makeResult(usage: snapshot.toUsageSnapshot(), sourceLabel: Self.sourceLabel)
+        try Task.checkCancellation()
+        return try AntigravityStatusProbe.parseCLIUsageReport(Data(result.stdout.utf8))
     }
 
     /// First `agy` release whose local server answers tokenless requests with
