@@ -6,7 +6,7 @@
 #
 # ARCH comes from the tarball name (x86_64 or aarch64). Needs dpkg-deb,
 # rpmbuild, glib-compile-schemas and python3. Writes usagebar_<v>_<arch>.deb,
-# usagebar-<v>-1.<arch>.rpm and a .sha256 for each (names match updates.js).
+# usagebar-<v>-1.<arch>.rpm and a .sha256 for each (release asset names).
 set -euo pipefail
 
 cli_tarball="$(realpath "$1")"
@@ -38,7 +38,7 @@ install -m 0755 "$repo/linux/packaging/usagebar-first-login" "$libexec/usagebar-
 install -Dm 0644 "$repo/linux/packaging/usagebar-first-login.desktop" \
     "$root/etc/xdg/autostart/usagebar-first-login.desktop"
 
-# The extension, stamped with the release version the updater compares.
+# The extension, stamped with the release version.
 ext="$root/usr/share/gnome-shell/extensions/$uuid"
 mkdir -p "$ext"
 src="$repo/linux/usagebar-gnome/$uuid"
@@ -77,7 +77,7 @@ installed_kb="$(du -sk "$root" | cut -f1)"
     echo "Architecture: $deb_arch"
     echo "Maintainer: $maintainer"
     echo "Installed-Size: $installed_kb"
-    echo "Depends: gnome-shell (>= 46), gjs, libcurl4t64 | libcurl4, libsqlite3-0, libstdc++6, curl, pkexec | policykit-1"
+    echo "Depends: gnome-shell (>= 46), gjs, libcurl4t64 | libcurl4, libsqlite3-0, libstdc++6, curl"
     echo "Recommends: librsvg2-common"
     echo "Section: gnome"
     echo "Priority: optional"
@@ -111,7 +111,6 @@ Requires:       gnome-shell >= 46
 Requires:       gjs
 Requires:       curl
 Requires:       libcurl
-Requires:       polkit
 Recommends:     librsvg2
 
 %description

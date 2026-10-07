@@ -23,24 +23,50 @@ import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
 import {INSTALL_URL} from './onboarding.js';
 import {MachineSyncPage} from './syncpage.js';
-import {PACKAGED_BIN} from './updates.js';
+import {findCodexbar, parseCliVersion} from './cli.js';
 
+// Same lookup as the extension, so Settings names the CLI it runs.
 function findBinary() {
-    const explicit = GLib.getenv('CODEXBAR_BIN');
-    if (explicit && GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE))
-        return explicit;
-    if (GLib.file_test(PACKAGED_BIN, GLib.FileTest.IS_EXECUTABLE))
-        return PACKAGED_BIN;
-    const inPath = GLib.find_program_in_path('codexbar');
-    if (inPath)
-        return inPath;
-    for (const dir of [`${GLib.get_home_dir()}/.local/bin`,
-        '/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']) {
-        const p = `${dir}/codexbar`;
-        if (GLib.file_test(p, GLib.FileTest.IS_EXECUTABLE))
-            return p;
+    return findCodexbar({
+        getenv: name => GLib.getenv(name),
+        isExecutable: file => GLib.file_test(file, GLib.FileTest.IS_EXECUTABLE),
+        findInPath: name => GLib.find_program_in_path(name),
+        home: GLib.get_home_dir(),
+    });
+}
+
+// Read-only row: the resolved codexbar path and the version it reports.
+function cliRow(binary) {
+    const row = new Adw.ActionRow({
+        title: 'CLI',
+        subtitle: binary ? `${binary} · checking version…` : 'not found',
+        subtitle_selectable: true,
+    });
+    const link = new Gtk.LinkButton({
+        label: binary ? 'Install guide' : 'Install',
+        uri: INSTALL_URL,
+        valign: Gtk.Align.CENTER,
+    });
+    row.add_suffix(link);
+    if (!binary)
+        return row;
+    try {
+        const proc = Gio.Subprocess.new([binary, '--version'],
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
+        proc.communicate_utf8_async(null, null, (p, res) => {
+            let version = null;
+            try {
+                const [, out] = p.communicate_utf8_finish(res);
+                version = parseCliVersion(out);
+            } catch {
+                // reported as unknown below
+            }
+            row.subtitle = `${binary} · ${version ? `version ${version}` : 'version unknown'}`;
+        });
+    } catch {
+        row.subtitle = `${binary} · version unknown`;
     }
-    return null;
+    return row;
 }
 
 // Every provider the CLI knows, enabled state included. Falls back to the
@@ -516,9 +542,15 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             'Poll public status pages for the incident history strips'));
         behavior.add(switchRow(settings, 'sort-alphabetical', 'Sort providers alphabetically',
             'Off keeps the codexbar config order'));
-        behavior.add(switchRow(settings, 'update-check-enabled', 'Check for UsageBar updates',
-            'Download verified releases from GitHub and offer to install them'));
         general.add(behavior);
+
+        const cli = new Adw.PreferencesGroup({
+            title: 'codexbar CLI',
+            description: 'UsageBar reads usage through this command. Install or ' +
+                'update it yourself; UsageBar never downloads it.',
+        });
+        cli.add(cliRow(findBinary()));
+        general.add(cli);
         window.add(general);
 
         // --- Notifications ---

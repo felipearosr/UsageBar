@@ -43,7 +43,6 @@ import {
     RenderScheduler,
     selectCostChartProviders,
     summarizeCostRange,
-    StatusMessageState,
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
 import {machineDetailView, machinesView, nextPushDelaySecs, planSyncTick} from './machinesync.js';
@@ -56,17 +55,7 @@ import {
     withoutHiddenModels,
 } from './modelprefs.js';
 import {INSTALL_URL, MISSING_CLI} from './onboarding.js';
-import {
-    compareVersions,
-    installCommand,
-    latestUsageBarRelease,
-    PACKAGED_BIN,
-    packageAssetName,
-    RELEASES_API,
-    updateCompletionMessage,
-    updateReadyText,
-    withClaudeOAuth,
-} from './updates.js';
+import {findCodexbar, withClaudeOAuth} from './cli.js';
 
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
@@ -1090,21 +1079,12 @@ function buildModelLegend(points, colors, onHoverChange) {
 // ---------- serve supervisor ----------
 
 function findBinary() {
-    const explicit = GLib.getenv('CODEXBAR_BIN');
-    if (explicit && GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE))
-        return explicit;
-    if (GLib.file_test(PACKAGED_BIN, GLib.FileTest.IS_EXECUTABLE))
-        return PACKAGED_BIN;
-    const inPath = GLib.find_program_in_path('codexbar');
-    if (inPath)
-        return inPath;
-    for (const dir of [`${GLib.get_home_dir()}/.local/bin`,
-        '/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']) {
-        const p = `${dir}/codexbar`;
-        if (GLib.file_test(p, GLib.FileTest.IS_EXECUTABLE))
-            return p;
-    }
-    return null;
+    return findCodexbar({
+        getenv: name => GLib.getenv(name),
+        isExecutable: file => GLib.file_test(file, GLib.FileTest.IS_EXECUTABLE),
+        findInPath: name => GLib.find_program_in_path(name),
+        home: GLib.get_home_dir(),
+    });
 }
 
 // Provider CLIs (codex, claude, ...) often live outside GNOME Shell's PATH.
@@ -1218,18 +1198,9 @@ class ServeSupervisor {
     }
 }
 
-// ---------- self-update ----------
-//
-// The macOS app updates through Sparkle. Here, a .deb/.rpm install checks
-// UsageBar's own GitHub releases, stages the matching package (sha256-verified)
-// under the cache dir, and on "Install now" hands it to the package manager
-// behind a pkexec password prompt. Extension and CLI update together, so the
-// fork's CLI is never swapped for an upstream build. Dev installs (symlinked
-// checkout, hand-installed CLI) update from git and get no updater.
+// ---------- subprocess & CLI helpers ----------
 
 const UPSTREAM_URL = 'https://github.com/steipete/CodexBar';
-const UPDATE_FIRST_CHECK_SECS = 30;
-const UPDATE_CHECK_SECS = 6 * 3600;
 
 function runAsync(argv, cancellable) {
     return new Promise((resolve, reject) => {
@@ -1260,123 +1231,6 @@ function runAsync(argv, cancellable) {
             }
         });
     });
-}
-
-// 'deb' or 'rpm' when this extension and its CLI came from the package,
-// null for dev installs.
-function packageFormat(extensionPath, binary) {
-    if (binary !== PACKAGED_BIN || !extensionPath.startsWith('/usr/share/gnome-shell/extensions/'))
-        return null;
-    if (GLib.file_test('/var/lib/dpkg/info/usagebar.list', GLib.FileTest.EXISTS))
-        return 'deb';
-    if (GLib.find_program_in_path('rpm'))
-        return 'rpm';
-    return null;
-}
-
-class PackageUpdater {
-    constructor(format, version, session, onReady) {
-        this._format = format;
-        this._version = version;
-        this._session = session;
-        this._onReady = onReady; // (version)
-        this._cancellable = new Gio.Cancellable();
-        this._stageRoot = GLib.build_filenamev(
-            [GLib.get_user_cache_dir(), 'usagebar', 'update']);
-        this._busy = false;
-        this.ready = null; // {version, file} once a verified package is staged
-    }
-
-    async check() {
-        if (this._busy)
-            return;
-        this._busy = true;
-        try {
-            const latest = latestUsageBarRelease(await this._fetchReleases());
-            if (!latest || compareVersions(latest.version, this._version) <= 0)
-                return;
-            const file = await this._stage(latest.release, latest.version);
-            this.ready = {version: latest.version, file};
-            this._onReady(latest.version);
-        } catch (e) {
-            if (!this._cancellable.is_cancelled())
-                console.warn(`usagebar: update check failed: ${e.message}`);
-        } finally {
-            this._busy = false;
-        }
-    }
-
-    _fetchReleases() {
-        return new Promise((resolve, reject) => {
-            const msg = Soup.Message.new('GET', RELEASES_API);
-            // GitHub rejects requests without a User-Agent.
-            msg.request_headers.append('User-Agent', 'UsageBar-GNOME');
-            msg.request_headers.append('Accept', 'application/vnd.github+json');
-            this._session.send_and_read_async(msg, GLib.PRIORITY_LOW, this._cancellable,
-                (session, res) => {
-                    try {
-                        const bytes = session.send_and_read_finish(res);
-                        if (msg.get_status() !== Soup.Status.OK)
-                            throw new Error(`GitHub HTTP ${msg.get_status()}`);
-                        resolve(JSON.parse(new TextDecoder().decode(bytes.get_data())));
-                    } catch (e) {
-                        reject(e);
-                    }
-                });
-        });
-    }
-
-    async _stage(release, version) {
-        const c = this._cancellable;
-        const machine = (await runAsync(['uname', '-m'], c)).trim();
-        const name = packageAssetName(this._format, version, machine);
-        if (!name)
-            throw new Error(`no ${this._format} package for ${machine}`);
-        const file = `${this._stageRoot}/${name}`;
-        const marker = `${file}.verified`;
-        if (GLib.file_test(marker, GLib.FileTest.EXISTS))
-            return file;
-        const assetUrl = n => release.assets?.find(a => a.name === n)?.browser_download_url;
-        const url = assetUrl(name);
-        const sumUrl = assetUrl(`${name}.sha256`);
-        if (!url || !sumUrl)
-            throw new Error(`release has no ${name}`);
-
-        // A newer release supersedes anything staged before.
-        await runAsync(['rm', '-rf', this._stageRoot], c);
-        GLib.mkdir_with_parents(this._stageRoot, 0o755);
-        // curl, not Soup: a large body shouldn't sit in the shell's heap.
-        await runAsync(['curl', '-fsSL', '--max-time', '900', '-o', file, url], c);
-        const expected = (await runAsync(['curl', '-fsSL', '--max-time', '60', sumUrl], c))
-            .trim().split(/\s+/)[0];
-        const actual = (await runAsync(['sha256sum', file], c)).trim().split(/\s+/)[0];
-        if (!expected || expected !== actual)
-            throw new Error(`checksum mismatch for ${name}`);
-        GLib.file_set_contents(marker, version);
-        return file;
-    }
-
-    // Install the staged package; the new code loads at the next login.
-    async apply() {
-        const ready = this.ready;
-        if (!ready)
-            throw new Error('no update staged');
-        if (this._busy)
-            throw new Error('update check in progress');
-        this._busy = true;
-        try {
-            await runAsync(installCommand(this._format, ready.file), this._cancellable);
-            this.ready = null;
-            await runAsync(['rm', '-rf', this._stageRoot], this._cancellable).catch(() => {});
-            return ready.version;
-        } finally {
-            this._busy = false;
-        }
-    }
-
-    stop() {
-        this._cancellable.cancel();
-    }
 }
 
 // The CLI's version sits in a VERSION file beside the binary (the release
@@ -1438,7 +1292,6 @@ class UsageBarIndicator extends PanelMenu.Button {
         super._init(0.5, 'UsageBar', false);
         this._dir = dir;
         this._panelEntries = new Map();
-        this._statusState = new StatusMessageState();
         this._panelIconCache = new LifetimeLookupCache(provider => providerLogo(this._dir, provider));
 
         this._chipBox = new St.BoxLayout({style_class: 'usagebar-panel-box'});
@@ -1573,8 +1426,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             this._panelEmptyLabel = null;
         });
 
-        // Footer, mirroring the macOS app menu. The update row only shows
-        // once a verified package update is staged.
+        // Footer, mirroring the macOS app menu.
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const footerItem = (text, icon, accel) => {
             const item = new PopupMenu.PopupImageMenuItem(text, icon);
@@ -1591,8 +1443,6 @@ class UsageBarIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(item);
             return item;
         };
-        this._updateItem = footerItem('', 'software-update-available-symbolic');
-        this._updateItem.visible = false;
         this._settingsItem = footerItem('Settings…', 'emblem-system-symbolic', 'Ctrl+,');
         this._aboutItem = footerItem('About UsageBar', 'help-about-symbolic');
         this._quitItem = footerItem('Quit', 'application-exit-symbolic', 'Ctrl+Q');
@@ -1641,12 +1491,6 @@ class UsageBarIndicator extends PanelMenu.Button {
                 return GLib.SOURCE_CONTINUE;
             });
         }
-    }
-
-    setUpdateReady(version) {
-        this._updateItem.visible = !!version;
-        if (version)
-            this._updateItem.label.text = updateReadyText(version);
     }
 
     _openCostPanel() {
@@ -1827,17 +1671,6 @@ class UsageBarIndicator extends PanelMenu.Button {
     }
 
     setStatus(message) {
-        this._statusState.setTransient(message);
-        this._syncStatus();
-    }
-
-    setPersistentStatus(message) {
-        this._statusState.setPersistent(message);
-        this._syncStatus();
-    }
-
-    _syncStatus() {
-        const message = this._statusState.current;
         this._statusItem.visible = !!message;
         this._statusLabel.text = message ? `⚠ ${message}` : '';
     }
@@ -2004,7 +1837,6 @@ export default class UsageBarExtension extends Extension {
             this._render();
         });
         this._indicator._aboutItem.connect('activate', () => this._showAbout());
-        this._indicator._updateItem.connect('activate', () => this._applyUpdate());
         this._indicator._quitItem.connect('activate', () => {
             // Deferred: disabling destroys the menu emitting this signal.
             GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
@@ -2043,22 +1875,6 @@ export default class UsageBarExtension extends Extension {
             this._startCli(binary);
         else
             this._showMissingCli();
-
-        const format = packageFormat(this.path, binary);
-        const version = this.metadata['version-name'];
-        if (format && version) {
-            this._updater = new PackageUpdater(format, version, this._session, ready => {
-                if (generation === this._generation)
-                    this._indicator?.setUpdateReady(ready);
-            });
-        }
-        this._updateToggleId = this._settings.connect('changed::update-check-enabled', () => {
-            if (generation !== this._generation)
-                return;
-            if (this._settings.get_boolean('update-check-enabled'))
-                this._scheduleUpdateCheck(5);
-        });
-        this._scheduleUpdateCheck(UPDATE_FIRST_CHECK_SECS);
 
         // Countdown/"updated ago" ticker while the menu is open.
         this._tickId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, TICK_SECS, () => {
@@ -2166,16 +1982,6 @@ export default class UsageBarExtension extends Extension {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = 0;
         }
-        if (this._updateToggleId) {
-            this._settings.disconnect(this._updateToggleId);
-            this._updateToggleId = 0;
-        }
-        if (this._updateCheckId) {
-            GLib.source_remove(this._updateCheckId);
-            this._updateCheckId = 0;
-        }
-        this._updater?.stop();
-        this._updater = null;
         this._aboutDialog?.destroy();
         this._aboutDialog = null;
         this._settings = null;
@@ -2256,42 +2062,6 @@ export default class UsageBarExtension extends Extension {
     }
 
     // ----- footer actions -----
-
-    _scheduleUpdateCheck(secs) {
-        if (this._updateCheckId)
-            GLib.source_remove(this._updateCheckId);
-        const generation = this._generation;
-        this._updateCheckId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW, secs, () => {
-            this._updateCheckId = 0;
-            if (generation !== this._generation)
-                return GLib.SOURCE_REMOVE;
-            if (this._settings.get_boolean('update-check-enabled'))
-                this._updater?.check();
-            this._scheduleUpdateCheck(UPDATE_CHECK_SECS);
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    async _applyUpdate() {
-        const generation = this._generation;
-        this._indicator.setUpdateReady(null);
-        this._indicator.setStatus('Installing UsageBar update…');
-        try {
-            const version = await this._updater.apply();
-            if (generation !== this._generation || !this._indicator)
-                return;
-            const message = updateCompletionMessage(version);
-            this._indicator.setStatus('');
-            this._indicator.setPersistentStatus(message);
-            Main.notify('UsageBar', message);
-        } catch (e) {
-            if (generation !== this._generation || !this._indicator)
-                return;
-            this._indicator.setStatus(`UsageBar update failed: ${e.message}`);
-            if (this._updater?.ready)
-                this._indicator.setUpdateReady(this._updater.ready.version);
-        }
-    }
 
     _showAbout() {
         this._aboutDialog?.destroy();
@@ -3089,7 +2859,12 @@ export default class UsageBarExtension extends Extension {
         };
 
         later(800, () => {
-            const assertions = [];
+            const menuLabels = this._indicator.menu._getMenuItems()
+                .map(item => item.label?.text ?? '');
+            const assertions = [
+                assertion('menu has no update item', menuLabels.length > 0 &&
+                    !menuLabels.some(text => /update/i.test(text)), {menuLabels}),
+            ];
             if (this._cliMissing) {
                 missingCliSmoke(assertions);
                 return;

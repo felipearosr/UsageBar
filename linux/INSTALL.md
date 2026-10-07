@@ -34,13 +34,14 @@ Needs GNOME 46, 49 or 50: Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44.
 
 UsageBar then turns itself on and enables Claude and Codex if you've signed
 in to Claude Code or the Codex CLI on this machine. Other providers are in
-Settings → Providers. New releases show up in the menu as "UsageBar <version>
-is available. Install now?", which asks for your password and installs the
-update.
+Settings → Providers. To update, install the newer package the same way;
+UsageBar doesn't download updates itself. Settings → General → codexbar CLI
+shows which CLI it runs and that CLI's version.
 
 The package puts its CLI at `/usr/libexec/usagebar/codexbar`, which is not on
 `PATH`, so it doesn't conflict with another `codexbar` you may have
-installed. The extension uses that copy first. To run it from a terminal, call
+installed. The extension uses that copy unless `CODEXBAR_BIN` points at
+another executable. To run it from a terminal, call
 it by its full path, or also install a [CLI channel](#the-command-line-helper)
 below; you don't need one for the extension.
 

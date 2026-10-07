@@ -180,13 +180,6 @@
       <description>Show Gemini 5h and weekly limits in the All view for Antigravity; off shows Claude and GPT limits instead.</description>
     </key>
 
-    <!-- self-update (.deb/.rpm installs) -->
-    <key name="update-check-enabled" type="b">
-      <default>true</default>
-      <summary>Check for UsageBar updates</summary>
-      <description>Poll UsageBar's GitHub releases every few hours, stage the verified package for this system, and offer to install it from the menu. Only packaged installs update this way.</description>
-    </key>
-
     <!-- first-run setup -->
     <key name="providers-bootstrapped" type="b">
       <default>false</default>

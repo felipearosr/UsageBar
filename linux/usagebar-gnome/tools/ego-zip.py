@@ -6,10 +6,11 @@ Usage (from anywhere):
     python3 linux/usagebar-gnome/tools/ego-zip.py lint ZIP
 
 `build` packs an allowlist (the GJS modules reachable from extension.js and
-prefs.js, stylesheet.css, metadata.json, the settings schema XML and the
-repo LICENSE) into DIR/<uuid>.shell-extension.zip, the name
-`gnome-extensions pack` uses, then lints it. Tests, tools, provider logos
-and the compiled schema stay out: GNOME 44+ compiles schemas on install.
+prefs.js, stylesheet.css, metadata.json, the settings schema XML, UsageBar's
+own symbolic icons and the repo LICENSE) into DIR/<uuid>.shell-extension.zip,
+the name `gnome-extensions pack` uses, then lints it. Tests, tools, provider
+logos and the compiled schema stay out: GNOME 44+ compiles schemas on
+install.
 
 `lint` checks the review guidelines that can be checked mechanically
 (https://gjs.guide/extensions/review-guidelines/review-guidelines.html).
@@ -35,6 +36,13 @@ SRC = os.path.join(GNOME_DIR, UUID)
 LICENSE = os.path.join(REPO, 'LICENSE')
 DEFAULT_OUT = os.path.join(REPO, 'linux', 'dist')
 
+# UsageBar's own (non-brand) icons under icons/. Everything else there is a
+# provider brand logo and stays out of the ZIP.
+OWN_ICONS = (
+    'usagebar-machine-symbolic.svg',
+    'usagebar-machines-symbolic.svg',
+)
+
 # Paths allowed inside the ZIP, relative to its root.
 ALLOWED = [
     re.compile(r'^[A-Za-z0-9_-]+\.js$'),
@@ -42,6 +50,7 @@ ALLOWED = [
     re.compile(r'^metadata\.json$'),
     re.compile(r'^schemas/[A-Za-z0-9_.-]+\.gschema\.xml$'),
     re.compile(r'^LICENSE$'),
+    *(re.compile('^icons/%s$' % re.escape(name)) for name in OWN_ICONS),
 ]
 
 # https://gjs.guide/extensions/overview/anatomy.html#metadata-json-required
@@ -109,6 +118,8 @@ def build(out_dir, version_name=None, src=SRC, license_path=LICENSE):
     for name in sorted(os.listdir(schemas)):
         if name.endswith('.gschema.xml'):
             entries.append((f'schemas/{name}', os.path.join(schemas, name)))
+    for name in OWN_ICONS:
+        entries.append((f'icons/{name}', os.path.join(src, 'icons', name)))
     entries.append(('LICENSE', license_path))
 
     os.makedirs(out_dir, exist_ok=True)

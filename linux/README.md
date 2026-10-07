@@ -160,9 +160,7 @@ fork CLI for x86_64 and aarch64, packages it with the extension
 ([`packaging/build-packages.sh`](packaging/build-packages.sh)), smoke-tests
 `install-cli.sh` against the CLI tarball in clean containers
 ([`packaging/tests/`](packaging/tests/)), and publishes the packages plus
-`usagebar-cli-<version>-linux-<arch>.tar.gz` (and `.sha256`) as the release
-the extension's updater reads. The repo must be public for
-installed copies to see updates.
+`usagebar-cli-<version>-linux-<arch>.tar.gz` (and `.sha256`) as the release.
 
 ### Merging upstream
 
@@ -177,7 +175,7 @@ pinned `merge-rehearsal` issue.
 The from-zero dev setup (CLI install, config, verification without logging
 out) is in [**BOOTSTRAP.md**](BOOTSTRAP.md). A symlinked checkout in
 `~/.local/share/gnome-shell/extensions/` takes precedence over the packaged
-copy, and dev installs don't self-update.
+copy.
 
 ## Status
 

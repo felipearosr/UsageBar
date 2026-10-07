@@ -33,27 +33,6 @@ export class RenderScheduler {
     }
 }
 
-// A completed update needs a new GNOME login session. Keep that instruction
-// visible even when the old serve child exits or a fetch later succeeds.
-export class StatusMessageState {
-    constructor() {
-        this._transient = '';
-        this._persistent = '';
-    }
-
-    setTransient(message) {
-        this._transient = message;
-    }
-
-    setPersistent(message) {
-        this._persistent = message;
-    }
-
-    get current() {
-        return this._persistent || this._transient;
-    }
-}
-
 export function buildCostDateRange(days, now = new Date()) {
     const count = Math.max(1, Math.trunc(days));
     const dates = [];
