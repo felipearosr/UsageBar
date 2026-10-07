@@ -47,7 +47,14 @@ actor CostUsageStore {
         }
 
         func sync<T>(_ operation: () throws -> T) rethrows -> T {
-            try self.queue.sync(execute: operation)
+            #if DEBUG
+            let hooks = CostUsageStoreTestHooks.current
+            return try self.queue.sync {
+                try CostUsageStoreTestHooks.$current.withValue(hooks, operation: operation)
+            }
+            #else
+            return try self.queue.sync(execute: operation)
+            #endif
         }
     }
 
@@ -80,6 +87,10 @@ actor CostUsageStore {
         parserHash: CodexParserHash.value)
     static let cacheGeneration = "sqlite:\(CostUsageStore.schemaVersion)"
     static let compatiblePredecessorParserHashes: Set<String> = [
+        "029fe80aa98f27e8", // Revision 7 caches retain history during bounded JSON-fallback reparsing.
+        "c61aebb9cf043a72", // Revision 6 ledger caches reparse through the shared ownership router.
+        "4a4c4ef34ce6f037", // Request-ledger accounting uses bounded native parser-revision migration.
+        "04a6361469a4ff77", // Settled orphan scheduling preserves rows, replay buffers, and checkpoints.
         "98de5f52231e524e", // 0.68.0 rows and checkpoints survive sparse priority-day reconciliation.
         "9972dad7f7aeff21", // Direct-fork baseline corrections use bounded parser-revision migration.
         "4dd9e5769818370a", // Linux Priority trace support preserves native rows and checkpoints.
@@ -131,20 +142,6 @@ actor CostUsageStore {
         "2d17f4981b78d07f",
         "8050a4faf4fddb96",
     ]
-
-    /// Test-only crash injection: invoked inside `saveCodexCache`'s transaction after each
-    /// persisted file with the running count, so a crash-safety harness can SIGKILL the
-    /// process at a deterministic mid-save point. Never set in production.
-    nonisolated(unsafe) static var saveCycleCheckpointForTesting: ((Int) -> Void)?
-    /// Test-only interleaving point scoped to one database so parallel store fixtures stay isolated.
-    nonisolated(unsafe) static var identicalContentPreLockCheckpointForTesting: (
-        databaseURL: URL,
-        checkpoint: () -> Void)?
-
-    /// Test-only traversal proof for persisted Codex catch-up reconciliation. Never set in production.
-    nonisolated(unsafe) static var codexCatchUpReconciliationVisitForTesting: (() -> Void)?
-    /// Test-only read failures scoped by database and path. Never set in production.
-    nonisolated(unsafe) static var codexTokenSnapshotReadFailureForTesting: ((URL, String) -> Bool)?
 
     /// Process-wide serialization keeps every writable store connection on the same queue.
     /// This matches the scan pipeline's single-writer contract without multiplying executor
@@ -248,13 +245,17 @@ extension CostUsageStore {
                 let persisted = try Self.inReadTransaction(database) {
                     var snapshots: [String: [CostUsageStoreTokenSnapshot]] = [:]
                     for path in paths.sorted() {
-                        if Self.codexTokenSnapshotReadFailureForTesting?(store.databaseURL, path) == true {
+                        #if DEBUG
+                        if CostUsageStoreTestHooks.current
+                            .codexTokenSnapshotReadFailure?(store.databaseURL, path) == true
+                        {
                             throw StoreError.sqlite(SQLITE_IOERR)
                         }
+                        #endif
                         snapshots[path] = try Self.readTokenSnapshots(
                             database, path: path, recorder: store.scopedReadWorkRecorderForTesting)
                         #if DEBUG
-                        if let checkpoint = Self.codexTokenHydrationCheckpointForTesting,
+                        if let checkpoint = CostUsageStoreTestHooks.current.codexTokenHydrationCheckpoint,
                            checkpoint.databaseURL == store.databaseURL
                         {
                             try checkpoint.checkpoint()
