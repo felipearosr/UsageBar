@@ -147,6 +147,7 @@ public enum MachineSyncReader {
                 Self.apply(blob, keys: keys, to: &cache)
             }
             fetched += page.blobs.count
+            // Provider-specific by design: no provider here; `cursor` is the sync pagination cursor.
             let advanced = page.cursor != cache.cursor
             cache.cursor = page.cursor
             // A server that says `hasMore` without moving the cursor would otherwise loop forever.
