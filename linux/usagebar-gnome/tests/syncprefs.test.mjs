@@ -12,6 +12,7 @@ import {
     hourLabels,
     infoArgs,
     leaveArgs,
+    colorMachines,
     otherMachines,
     pairArgs,
     pairedText,
@@ -26,6 +27,7 @@ import {
     timeZoneChoices,
     tokenField,
 } from '../usagebar@felipearosr.github.io/syncprefs.js';
+import {MACHINE_PALETTE} from '../usagebar@felipearosr.github.io/machinesync.js';
 
 const LINK = 'codexbar-sync://sync.example.com/base#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
 const HTTP_LINK = 'codexbar-sync+http://nas.lan:8080#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
@@ -211,8 +213,20 @@ test('other Machines leave out this one and keep retired state', () => {
         {machineId: 'A', displayName: '', isThisMachine: false, active: true, retired: false},
     ]});
     assert.deepEqual(rows, [
-        {machineId: 'A', label: 'A', retired: false, active: true},
-        {machineId: 'B', label: 'workstation', retired: true, active: false},
+        {index: 2, machineId: 'A', label: 'A', retired: false, active: true},
+        {index: 1, machineId: 'B', label: 'workstation', retired: true, active: false},
     ]);
     assert.deepEqual(otherMachines(null), []);
+});
+
+test('machine colors list every Machine in status order with its color', () => {
+    const rows = colorMachines({machines: [
+        {machineId: 'me', displayName: 'laptop', isThisMachine: true},
+        {machineId: 'B', displayName: 'workstation', isThisMachine: false},
+    ]}, {B: '#ff0000'});
+    assert.deepEqual(rows, [
+        {machineId: 'me', label: 'laptop (this Machine)', color: MACHINE_PALETTE[0], custom: false},
+        {machineId: 'B', label: 'workstation', color: '#ff0000', custom: true},
+    ]);
+    assert.deepEqual(colorMachines(null), []);
 });

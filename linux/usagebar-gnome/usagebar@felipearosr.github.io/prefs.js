@@ -3,12 +3,21 @@
 // Preferences shape: General / Notifications / Providers, plus Machine Sync.
 
 import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import {
+    decodeCatalog,
+    hexColor,
+    isModelHidden,
+    modelColors,
+    modelKey,
+    providerModels,
+} from './modelprefs.js';
 import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
@@ -122,6 +131,101 @@ function windowToggleRows(settings, provider) {
     }
     return known.map(e => strvMemberRow(settings, 'hidden-windows', `${e.p}:${e.k}`,
         {title: `Show ${e.l} bar`}));
+}
+
+// Models: one row per model the extension has seen for this provider, with
+// its chart color on the left and an include switch on the right. Excluded
+// models leave chart bars, legends and model lists; totals keep them.
+function modelsExpanderRow(settings, provider) {
+    const catalog = decodeCatalog(settings.get_strv('known-models'));
+    const models = providerModels(catalog, provider);
+    const expander = new Adw.ExpanderRow({title: 'Models', use_markup: false});
+    if (!models.length) {
+        expander.subtitle = 'None seen yet. Models appear once cost or Machine Sync data arrives.';
+        expander.enable_expansion = false;
+        return expander;
+    }
+
+    const brand = PROVIDER_META[provider]?.color ?? null;
+    const overrides = () => settings.get_value('model-colors').deepUnpack();
+    const ownOverrides = () => Object.keys(overrides()).filter(key => key.startsWith(`${provider}:`));
+    const writeOverrides = next => settings.set_value('model-colors', new GLib.Variant('a{ss}', next));
+    const updateSubtitle = () => {
+        const hidden = new Set(settings.get_strv('hidden-models'));
+        const shown = models.filter(model => !isModelHidden(hidden, provider, model)).length;
+        expander.subtitle = shown === models.length
+            ? `All ${models.length} included in charts and lists`
+            : `${shown} of ${models.length} included in charts and lists`;
+    };
+
+    const buttons = new Map();
+    let syncing = false;
+    const syncColors = () => {
+        const colors = modelColors(provider, {catalog, overrides: overrides(), brand});
+        syncing = true;
+        for (const [model, button] of buttons) {
+            const rgba = new Gdk.RGBA();
+            if (rgba.parse(colors.get(model)) && !rgba.equal(button.rgba))
+                button.rgba = rgba;
+        }
+        syncing = false;
+        resetButton.sensitive = ownOverrides().length > 0;
+    };
+
+    const hidden = new Set(settings.get_strv('hidden-models'));
+    for (const model of models) {
+        const key = modelKey(provider, model);
+        const row = new Adw.ActionRow({title: model, use_markup: false});
+        const button = new Gtk.ColorDialogButton({
+            dialog: new Gtk.ColorDialog({title: `Chart color for ${model}`, with_alpha: false}),
+            valign: Gtk.Align.CENTER,
+            tooltip_text: 'Chart color',
+        });
+        button.connect('notify::rgba', () => {
+            if (!syncing)
+                writeOverrides({...overrides(), [key]: hexColor(button.rgba)});
+        });
+        buttons.set(model, button);
+        row.add_prefix(button);
+
+        const toggle = new Gtk.Switch({
+            active: !hidden.has(key),
+            valign: Gtk.Align.CENTER,
+            tooltip_text: 'Include in charts and model lists',
+        });
+        toggle.connect('notify::active', () => {
+            const next = new Set(settings.get_strv('hidden-models'));
+            if (toggle.active)
+                next.delete(key);
+            else
+                next.add(key);
+            settings.set_strv('hidden-models', [...next].sort());
+            updateSubtitle();
+        });
+        row.add_suffix(toggle);
+        row.activatable_widget = toggle;
+        expander.add_row(row);
+    }
+
+    const resetRow = new Adw.ActionRow({
+        title: 'Default colors',
+        subtitle: 'Largest model in the brand color, the rest from the palette',
+    });
+    const resetButton = new Gtk.Button({label: 'Reset', valign: Gtk.Align.CENTER});
+    resetButton.connect('clicked', () => {
+        const next = overrides();
+        for (const key of ownOverrides())
+            delete next[key];
+        writeOverrides(next);
+    });
+    resetRow.add_suffix(resetButton);
+    expander.add_row(resetRow);
+
+    const changedId = settings.connect('changed::model-colors', syncColors);
+    expander.connect('destroy', () => settings.disconnect(changedId));
+    syncColors();
+    updateSubtitle();
+    return expander;
 }
 
 function spinRow(settings, key, title, subtitle, {lower = 1, upper = 100, step = 1} = {}) {
@@ -324,6 +428,11 @@ function checkSource(binary, id, cb) {
 export default class UsageBarPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
+        // Our own symbolic icons (Machine Sync page), looked up by name.
+        const iconTheme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
+        const iconDir = this.dir.get_child('icons').get_path();
+        if (!iconTheme.get_search_path().includes(iconDir))
+            iconTheme.add_search_path(iconDir);
 
         // --- General ---
         const general = new Adw.PreferencesPage({
@@ -517,12 +626,13 @@ export default class UsageBarPreferences extends ExtensionPreferences {
                 group.add(scopeRow);
             for (const row of windowToggleRows(settings, id))
                 group.add(row);
+            group.add(modelsExpanderRow(settings, id));
             page.add(group);
         }
         window.add(page);
 
         // --- Machine Sync ---
-        window.add(new MachineSyncPage(window, binary).page);
+        window.add(new MachineSyncPage(window, binary, settings).page);
     }
 
     // Paste-a-cookie section for web-backed providers, with step-by-step
