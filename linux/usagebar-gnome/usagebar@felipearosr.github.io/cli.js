@@ -1,18 +1,19 @@
 // The codexbar CLI the extension drives: where it is looked up, how its
 // version is read, and the first-run provider setup. The extension never
-// installs or updates the CLI; the user installs it (see INSTALL_URL).
+// installs or updates the CLI; the user installs it (onboarding.js's
+// INSTALL_URL links to the instructions).
 // Dependency-free so the Node tests can exercise it without GJS.
 
 // The .deb/.rpm ship the fork's CLI (upstream + `codexbar sync`) here, so a
 // separate upstream `codexbar` on PATH never shadows it.
 export const PACKAGED_BIN = '/usr/libexec/usagebar/codexbar';
 
-export const INSTALL_URL = 'https://github.com/felipearosr/UsageBar/tree/main/linux#readme';
-
-// Lookup order: $CODEXBAR_BIN, the packaged CLI, PATH, then the usual
-// install directories a GNOME Shell PATH may lack. `env` supplies the
-// GLib lookups (getenv, isExecutable, findInPath, home) so the extension
-// and the preferences window resolve the very same binary.
+// The single definition of CLI lookup. Order: $CODEXBAR_BIN when it names an
+// executable (set but unusable falls through, it never means "missing"), the
+// packaged CLI, PATH, then the usual install directories a GNOME Shell PATH
+// may lack. `env` supplies the GLib lookups (getenv, isExecutable,
+// findInPath, home) so the extension and the preferences window resolve the
+// very same binary.
 export function findCodexbar(env) {
     const explicit = env.getenv('CODEXBAR_BIN');
     if (explicit && env.isExecutable(explicit))

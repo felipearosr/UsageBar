@@ -31,6 +31,20 @@ test('findCodexbar prefers $CODEXBAR_BIN, then the packaged CLI, then PATH', () 
     })), '/usr/bin/codexbar');
 });
 
+test('findCodexbar falls back when $CODEXBAR_BIN is set but unusable', () => {
+    const env = lookupEnv({
+        vars: {CODEXBAR_BIN: '/opt/not-executable'},
+        executables: [PACKAGED_BIN, '/usr/local/bin/codexbar'],
+        path: {codexbar: '/usr/bin/codexbar'},
+    });
+    assert.equal(findCodexbar(env), PACKAGED_BIN);
+    assert.equal(findCodexbar({...env, isExecutable: file => file === '/usr/local/bin/codexbar',
+        findInPath: () => null}), '/usr/local/bin/codexbar');
+    assert.equal(findCodexbar(lookupEnv({vars: {CODEXBAR_BIN: ''},
+        executables: ['/home/linuxbrew/.linuxbrew/bin/codexbar']})),
+    '/home/linuxbrew/.linuxbrew/bin/codexbar');
+});
+
 test('findCodexbar finds a manual ~/.local/bin install off PATH', () => {
     assert.equal(findCodexbar(lookupEnv({executables: ['/home/u/.local/bin/codexbar']})),
         '/home/u/.local/bin/codexbar');

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Headless GNOME Shell UI smoke for the UsageBar extension.
+# USAGEBAR_UI_SMOKE_NO_CLI=1 forces the missing-CLI onboarding state even when
+# a codexbar CLI is installed (honoured only during a smoke run).
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,6 +15,7 @@ dconf_profile="$artifact_dir/dconf-profile"
 assert_script="$repo_dir/linux/usagebar-gnome/tests/assert-ui-smoke.mjs"
 
 mkdir -p "$artifact_dir"
+rm -f "$result_path" "$screenshot_path" # a reused dir must not pass on a stale result
 glib-compile-schemas "$extension_dir/schemas"
 mkdir -p "$HOME/.local/share/gnome-shell/extensions"
 ln -sfn "$extension_dir" \
@@ -80,3 +84,10 @@ printf 'Screenshot: %s\n' "$screenshot_path"
 printf 'Result: %s\n' "$result_path"
 printf 'Log: %s\n' "$log_path"
 printf 'Session log: %s\n' "$session_log_path"
+
+# The extensions.gnome.org build ships without provider logos; run the smoke
+# again with them hidden so monogram marks are covered too.
+if [[ -z ${USAGEBAR_HIDE_PROVIDER_ICONS:-} ]]; then
+    printf '\nRe-running the UI smoke with provider logos hidden\n'
+    USAGEBAR_HIDE_PROVIDER_ICONS=1 "$0" "$artifact_dir/no-logos"
+fi

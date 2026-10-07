@@ -79,6 +79,26 @@
       <summary>Usage bars discovered at render time</summary>
       <description>Catalog the extension publishes for the preferences window; each entry is a JSON object {"p":provider,"k":key,"l":label}.</description>
     </key>
+    <key name="hidden-models" type="as">
+      <default>[]</default>
+      <summary>Models left out of charts and model lists</summary>
+      <description>"provider:model" entries hidden from chart bars, legends and model lists. Spend and token totals still include them.</description>
+    </key>
+    <key name="model-colors" type="a{ss}">
+      <default>{}</default>
+      <summary>Chart color per model</summary>
+      <description>"provider:model" → "#rrggbb" overrides; models without one take the provider's brand color (largest) or the palette in rank order.</description>
+    </key>
+    <key name="machine-colors" type="a{ss}">
+      <default>{}</default>
+      <summary>Color per Machine</summary>
+      <description>Machine id → "#rrggbb" overrides for the Machines tab; Machines without one take the palette by their place in the Sync Group.</description>
+    </key>
+    <key name="known-models" type="as">
+      <default>[]</default>
+      <summary>Models discovered in cost and sync data</summary>
+      <description>Catalog the extension publishes for the preferences window; each entry is a JSON object {"p":provider,"m":model,"c":rounded 30-day cost}, ranked by cost within each provider.</description>
+    </key>
     <key name="status-scopes" type="as">
       <default>[]</default>
       <summary>Status strip scopes</summary>

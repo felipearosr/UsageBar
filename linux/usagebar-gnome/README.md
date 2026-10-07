@@ -11,14 +11,13 @@ non-GNOME desktops (KDE, XFCE, …).
 
 Self-contained: it supervises its own `codexbar serve` child on a free
 loopback port (restart with backoff, killed on disable) and polls
-`GET /usage` / `GET /cost`. The .deb/.rpm (see `../README.md`) ship the
-fork's `codexbar` CLI at `/usr/libexec/usagebar/codexbar`, which the
-extension prefers; otherwise it uses `$CODEXBAR_BIN`, the first `codexbar`
-on `PATH`, or `~/.local/bin`, `/home/linuxbrew/.linuxbrew/bin` and
-`/usr/local/bin`. The extension never downloads or updates the CLI;
-Settings → General → codexbar CLI shows the path in use and its version.
-Machine Sync needs the fork's CLI; everything else works with upstream's
-≥ 0.43.0 (NOT brew; the Linux formula lags and drops per-model limit data).
+`GET /usage` / `GET /cost`. It runs `$CODEXBAR_BIN` when that points at an
+executable; otherwise the fork's CLI that the .deb/.rpm (see
+[`../INSTALL.md`](../INSTALL.md)) ship at `/usr/libexec/usagebar/codexbar`,
+then the first `codexbar` on `PATH`, then `~/.local/bin`,
+`/home/linuxbrew/.linuxbrew/bin` and `/usr/local/bin`. The extension never
+downloads or updates the CLI; Settings → General → codexbar CLI shows the path
+in use and its version. Machine Sync needs the fork's CLI.
 
 ## Install (development)
 
@@ -52,6 +51,28 @@ node --test linux/usagebar-gnome/tests/*.test.mjs
 node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/extension.js
 node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/renderstate.js
 ```
+
+## extensions.gnome.org ZIP
+
+Build the ZIP uploaded to extensions.gnome.org and lint it against the
+mechanically checkable review guidelines:
+
+```bash
+python3 linux/usagebar-gnome/tools/ego-zip.py build    # → linux/dist/usagebar@felipearosr.github.io.shell-extension.zip
+python3 linux/usagebar-gnome/tools/ego-zip.py lint path/to/extension.zip
+python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'
+```
+
+The ZIP holds only an allowlist: the modules `extension.js` and `prefs.js`
+import, `stylesheet.css`, `metadata.json`, the schema XML and `LICENSE` (no
+tests, tools, provider logos or compiled schema; GNOME 44+ compiles schemas on
+install). Lint errors (files outside the allowlist, binaries, bad
+`metadata.json` keys or `shell-version`, schema ID/path outside
+`org.gnome.shell.extensions`, minified JS, deprecated modules, Gtk in the shell
+process or St in prefs) fail the build; warnings (import-time work, discarded
+source/signal IDs, debug logging, interpreter subprocesses, brand logos) are
+for the reviewer. CI runs both, plus a warning-only ESLint report
+(`eslint.config.mjs`), on pull requests that touch the extension.
 
 ## Machine Sync
 
@@ -95,12 +116,28 @@ painted on-screen, exercises each control family, checks the four-provider cap,
 and fails on extension JavaScript errors. Every run prints paths to its JSON
 result, GNOME log, and full-stage PNG screenshot under `/tmp`.
 
+## Provider logos
+
+Provider logos live in `usagebar@felipearosr.github.io/icons/` for development
+checkouts only. The build submitted to extensions.gnome.org leaves them out
+(third-party trademarks); a provider without a logo file is drawn as a
+two-letter monogram on a badge in its brand color (`monogram.js`). Providers
+whose computed monograms would collide (Codex, Copilot and Codebuff all give
+"Co") get hand-picked ones from `MONOGRAM_OVERRIDES`, so every badge is unique. Set
+`USAGEBAR_HIDE_PROVIDER_ICONS=1` to see that build's look with the logos in
+place, e.g. `USAGEBAR_HIDE_PROVIDER_ICONS=1 ./linux/run-dev.sh`. The UI smoke
+test runs once with logos and once with them hidden.
+
 ## Files
 
 - `usagebar@felipearosr.github.io/extension.js` — everything: serve
   supervisor (Gio.Subprocess), Soup 3 HTTP client, stale-merge (port of the
   Rust `merge_stale`), panel indicator + popover UI (St widgets), quota
   notifications.
+- `usagebar@felipearosr.github.io/authlogin.js` — which provider errors are
+  auth failures, each provider's login command, and the terminal launcher
+  order for the error banner's "Log in" button (pure; tested in
+  `tests/authlogin.test.mjs`).
 - `usagebar@felipearosr.github.io/machinesync.js` — Machine Sync push/read
   cadence and the Machines tab view model (pure; tested in
   `tests/machinesync.test.mjs`).

@@ -1,0 +1,39 @@
+# Maintainer: Felipe Aros <21047325+felipearosr@users.noreply.github.com>
+#
+# The UsageBar fork's codexbar CLI (upstream CodexBar plus `codexbar sync`),
+# repackaged from the release tarball. Same layout as the .deb and .rpm: the
+# CLI in /usr/lib/usagebar-cli, /usr/bin/codexbar linking to it.
+# Bump with: linux/packaging/aur/bump.sh <version>
+
+pkgname=usagebar-cli-bin
+pkgver=1.0.0
+pkgrel=1
+# The Swift toolchain the release workflow builds with; its runtime is linked in.
+_swiftver=6.3.3
+pkgdesc="UsageBar's codexbar CLI: AI coding-provider usage limits, with Machine Sync"
+arch=('x86_64' 'aarch64')
+url="https://github.com/felipearosr/UsageBar"
+license=('MIT' 'Apache-2.0 WITH Swift-exception')
+depends=('glibc' 'libgcc' 'libstdc++' 'curl' 'sqlite')
+provides=('codexbar')
+conflicts=('codexbar' 'codexbar-bin' 'codexbar-cli' 'codexbar-cli-bin' 'codexbar-git')
+options=('!strip' '!debug')
+source=("LICENSE-$pkgver::https://raw.githubusercontent.com/felipearosr/UsageBar/usagebar-v$pkgver/LICENSE"
+        "LICENSE-swift-$_swiftver::https://raw.githubusercontent.com/swiftlang/swift/swift-$_swiftver-RELEASE/LICENSE.txt")
+source_x86_64=("$url/releases/download/usagebar-v$pkgver/usagebar-cli-$pkgver-linux-x86_64.tar.gz")
+source_aarch64=("$url/releases/download/usagebar-v$pkgver/usagebar-cli-$pkgver-linux-aarch64.tar.gz")
+noextract=("usagebar-cli-$pkgver-linux-x86_64.tar.gz" "usagebar-cli-$pkgver-linux-aarch64.tar.gz")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000'
+            '770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55')
+sha256sums_x86_64=('0000000000000000000000000000000000000000000000000000000000000000')
+sha256sums_aarch64=('0000000000000000000000000000000000000000000000000000000000000000')
+
+package() {
+    local lib="$pkgdir/usr/lib/usagebar-cli"
+    install -d "$lib" "$pkgdir/usr/bin"
+    bsdtar -xf "$srcdir/usagebar-cli-$pkgver-linux-$CARCH.tar.gz" -C "$lib" --no-same-owner
+    test -x "$lib/CodexBarCLI" -a -f "$lib/VERSION" -a -d "$lib/CodexBar_CodexBarCore.bundle"
+    ln -s ../lib/usagebar-cli/CodexBarCLI "$pkgdir/usr/bin/codexbar"
+    install -Dm644 "$srcdir/LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/LICENSE-swift-$_swiftver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-swift"
+}

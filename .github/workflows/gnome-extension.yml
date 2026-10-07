@@ -1,0 +1,62 @@
+name: GNOME extension
+
+# Builds the extensions.gnome.org ZIP and lints it against the review
+# guidelines on every pull request that touches the extension. ESLint runs
+# as a warning-only report.
+
+on:
+  pull_request:
+    paths:
+      - 'linux/usagebar-gnome/**'
+      - 'LICENSE'
+      - '.github/workflows/gnome-extension.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'linux/usagebar-gnome/**'
+      - 'LICENSE'
+      - '.github/workflows/gnome-extension.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gnome-extension-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ego-zip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Unit tests
+        run: node --test linux/usagebar-gnome/tests/*.test.mjs
+
+      - name: Syntax check
+        run: |
+          set -euo pipefail
+          for f in linux/usagebar-gnome/usagebar@felipearosr.github.io/*.js; do
+            node --input-type=module --check < "$f"
+          done
+
+      - name: EGO ZIP lint tests
+        run: python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py' -v
+
+      - name: Build and lint the EGO ZIP
+        run: python3 linux/usagebar-gnome/tools/ego-zip.py build --out "$RUNNER_TEMP/ego"
+
+      - name: ESLint (warnings only)
+        continue-on-error: true
+        run: |
+          npx --yes eslint@9 --config linux/usagebar-gnome/eslint.config.mjs \
+            linux/usagebar-gnome/usagebar@felipearosr.github.io
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: usagebar-ego-zip
+          path: ${{ runner.temp }}/ego/*.zip
+          if-no-files-found: error
