@@ -170,6 +170,11 @@ Each CodexBar release is merged in its own PR, following
 tries the merge ahead of time and reports conflicts and failing checks in the
 pinned `merge-rehearsal` issue.
 
+To keep those merges small, the fork changes upstream's files only through
+declared hooks. [`upstream/FORK-DELTA.md`](upstream/FORK-DELTA.md) explains
+fork-owned vs upstream files and how to add a hook; CI runs
+`linux/upstream/fork-delta.sh` on every PR.
+
 ### Development
 
 The from-zero dev setup (CLI install, config, verification without logging

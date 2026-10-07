@@ -1,0 +1,58 @@
+# Fork delta allowlist: every upstream (steipete/CodexBar) file UsageBar edits, and why.
+# Read by linux/upstream/fork-delta.sh and the merge rehearsal. See linux/upstream/FORK-DELTA.md.
+# Columns are TAB-separated: <upstream path> <TAB> <fork feature> <TAB> <note: what the edit is, which ticket shrinks it>
+# Adding a line grows the fork delta: do it on purpose and say so in the PR. Remove lines as isolation tickets land.
+
+# Machine Sync: `codexbar sync` registration and help (isolation: #57)
+Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	sync dispatch case and command descriptor; #57
+Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	syncHelp text; also the /cost?days help example (#54); #57
+Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	`help sync` case; #57
+Tests/CodexBarTests/CLIEntryTests.swift	Machine Sync: sync command	sync descriptor tests; also the OpenCode Auto-mode web-support exemption (#53); #57
+docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54); #56
+
+# Machine Sync: serve /sync/status and /sync/push (isolation: #58)
+Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	/sync/* routes, ServeRuntime.sync, serveJSON/serveError made internal; also /cost?days (#54); #58
+Sources/CodexBarCLI/CLILocalHTTPServer.swift	Machine Sync: serve /sync routes	409 and 502 status cases; #58
+
+# serve /cost?days=N rolling window (upstream candidate: #54)
+Tests/CodexBarTests/CLIServeRouterTests.swift	serve /cost?days	route test for days=; #54
+
+# Machine-readable `reason` on CLI error payloads (upstream candidate: #55)
+Sources/CodexBarCLI/CLIErrorReporting.swift	CLI error reason	ProviderErrorPayload.reason and exit(reason:); #55
+
+# Spend Buckets: per-row hooks in the cost scanners (isolation: #59, upstream candidate: #60)
+Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner.swift	Spend Buckets	ClaudeUsageFields and ClaudeUsageRow.omittedFields; #59
+Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+Claude.swift	Spend Buckets	Claude Spend Bucket loaders, per-row cost, omitted-field capture; #59
+Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+CacheHelpers.swift	Spend Buckets	CodexSpendBucketCollector parameter on buildCodexReportFromCache; #59
+Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+TemporalBuckets.swift	Spend Buckets	codexRowCost factored out of the report loop; #59
+Sources/CodexBarCore/Vendored/CostUsage/CostUsageStore+ReadView.swift	Spend Buckets	spendBuckets passthrough on dailyReport; #59
+Sources/CodexBarCore/Vendored/CostUsage/CostUsageClaudeCache.swift	Spend Buckets	schemaVersion bump for omittedFields; #59
+Sources/CodexBarCore/PiSessionCostScanner.swift	Spend Buckets	Pi hourContributions and hourKey; #59
+Sources/CodexBarCore/PiSessionCostCache.swift	Spend Buckets	Pi cache artifactVersion bump for hour data; #59
+Sources/CodexBarCore/Generated/CodexParserHash.generated.swift	Spend Buckets	generated: hash of the edited Codex scanner files; goes when the scanner hooks do; #59
+Tests/CodexBarTests/CostUsageClaudeFragmentTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
+Tests/CodexBarTests/CostUsageClaudeMetadataParsingTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
+Tests/CodexBarTests/CostUsageClaudePersistenceBenchmarkTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
+Tests/CodexBarTests/CostUsageClaudePriceRangeTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
+Tests/CodexBarTests/CostUsageClaudeWriteAmplificationTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
+Tests/CodexBarTests/CostUsageScannerClaudeCacheUpgradeTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
+Tests/CodexBarTests/PiSessionCostScannerTests.swift	Spend Buckets	Pi cache artifact version in fixtures; #59
+Tests/CodexBarTests/PiSessionCostV8UpgradeTests.swift	Spend Buckets	Pi cache artifact version in fixtures; #59
+
+# OpenCode on Linux: local-history fallback in Auto mode (upstream candidate: #53)
+Sources/CodexBarCore/Providers/OpenCode/OpenCodeProviderDescriptor.swift	OpenCode on Linux	Auto-mode local-history fallback and web-support exemption; #53
+docs/opencode.md	OpenCode on Linux	local-history source and Auto-mode order; #53
+
+# Codex app-server exit diagnostics (upstream candidate, no ticket yet)
+Sources/CodexBarCore/UsageFetcher.swift	Codex app-server exit diagnostics	RPCWireError.processExited with exit status and stderr tail
+Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift	Codex app-server exit diagnostics	CodexUIErrorMapper treats app-server exits as connection errors
+
+# Repo plumbing (isolation: #56)
+CHANGELOG.md	Repo plumbing	fork changelog entries; #56
+AGENTS.md	Repo plumbing	GNOME dev-kit agent note; #56
+Makefile	Repo plumbing	test-linux-ui target; #56
+Scripts/lint.sh	Repo plumbing	Machine Sync protocol vector check; #56
+.gitignore	Repo plumbing	linux/ build outputs and .scratch/; #56
+
+# Launch housekeeping (stays)
+LICENSE	Launch: license attribution	UsageBar copyright line next to upstream's; required attribution, not shrinkable

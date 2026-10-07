@@ -1,0 +1,61 @@
+name: UsageBar fork delta
+
+# Fork-only. Lints and tests the linux/upstream/ scripts, then runs the fork
+# delta report: it fails when a change edits an upstream (steipete/CodexBar)
+# file that isn't on linux/upstream/hook-allowlist.tsv. Upstream has no copy
+# of this file, so merging upstream never changes or triggers it.
+# See linux/upstream/FORK-DELTA.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usagebar-fork-delta-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fork-delta:
+    if: github.repository == 'felipearosr/UsageBar'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: ShellCheck linux/upstream scripts
+        run: shellcheck linux/upstream/*.sh
+
+      - name: Self-test the fork delta report
+        run: linux/upstream/test-fork-delta.sh
+
+      - name: Self-test the merge rehearsal script
+        run: linux/upstream/test-merge-rehearsal.sh
+
+      - name: Fetch upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/steipete/CodexBar.git
+          git fetch --no-tags upstream main
+          git fetch --force upstream 'refs/tags/v*:refs/tags/v*'
+
+      - name: Fork delta report
+        run: |
+          set -euo pipefail
+          status=0
+          linux/upstream/fork-delta.sh > "$RUNNER_TEMP/fork-delta.txt" || status=$?
+          cat "$RUNNER_TEMP/fork-delta.txt"
+          {
+            echo '## Fork delta report'
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/fork-delta.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
