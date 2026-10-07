@@ -154,6 +154,30 @@ release don't depend on COPR.
 
 ### Releasing
 
+UsageBar has its own semver, independent of CodexBar's numbers.
+[`release/usagebar-release.env`](release/usagebar-release.env) records two
+facts:
+
+- `USAGEBAR_VERSION`: the UsageBar release this commit becomes (`1.1.0`, or
+  `1.2.0-rc.1` for a pre-release). Release prep bumps it.
+- `UPSTREAM_BASE`: the CodexBar release last merged in (`0.72.0`). **Upstream
+  merge PRs bump the base**
+  ([`upstream/RUNBOOK.md`](upstream/RUNBOOK.md), step 1).
+
+[`release/resolve-version.sh`](release/resolve-version.sh) turns a
+`usagebar-v<semver>` tag plus that file into every value a release uses: the
+version, the base, the CLI version string `<base>+usagebar.<semver>` (what
+`codexbar --version` prints after `CodexBar`), whether it's a pre-release, and
+every asset name. It refuses a tag that doesn't match `USAGEBAR_VERSION`, an
+upstream-style `v0.x.y` tag, and anything that isn't a semver. Run it with no
+tag to see what the current commit would release:
+
+```sh
+linux/release/resolve-version.sh                    # from the metadata alone
+linux/release/resolve-version.sh usagebar-v1.1.0    # validates a tag
+linux/release/tests/resolve-version.test.sh         # its tests (also in PR CI)
+```
+
 Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).
 [`release-usagebar.yml`](../.github/workflows/release-usagebar.yml) builds the
 fork CLI for x86_64 and aarch64, packages it with the extension
