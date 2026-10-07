@@ -28,7 +28,8 @@ if [ "${CODEXBAR_RESOURCE_SMOKE:-}" = 1 ]; then
 fi
 case "${1:-}" in
     --version | -V) echo "CodexBar $(cat "$dir/VERSION")" ;;
-    sync) echo "Usage: codexbar sync ..." ;;
+    --help | -h) printf 'CodexBar %s\n\nUsage:\n  codexbar usage\n' "$(cat "$dir/VERSION")" ;;
+    sync) printf 'Usage:\n  codexbar sync status\n' ;;
     *) echo "fake codexbar" ;;
 esac
 EOF

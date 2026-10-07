@@ -1,19 +1,23 @@
 name: UsageBar release scripts
 
 # Tests for the scripts release-usagebar.yml runs (linux/release/): the
-# release version resolver and the release metadata it reads. Runs whenever
-# those scripts, the metadata or the release workflow change.
+# release version resolver and the metadata it reads, the release asset
+# verifier, and the CLI smoke test (against the stand-in CLI from
+# linux/packaging/tests/make-fake-tarball.sh). Runs whenever those, or the
+# release workflow, change.
 
 on:
   pull_request:
     paths:
       - 'linux/release/**'
+      - 'linux/packaging/tests/make-fake-tarball.sh'
       - '.github/workflows/release-usagebar.yml'
       - '.github/workflows/usagebar-release-scripts.yml'
   push:
     branches: [main]
     paths:
       - 'linux/release/**'
+      - 'linux/packaging/tests/make-fake-tarball.sh'
       - '.github/workflows/release-usagebar.yml'
       - '.github/workflows/usagebar-release-scripts.yml'
 
@@ -41,3 +45,9 @@ jobs:
 
       - name: Checked-in release metadata resolves
         run: linux/release/resolve-version.sh
+
+      - name: Release asset verifier tests
+        run: linux/release/tests/verify-assets.test.sh
+
+      - name: CLI smoke script tests
+        run: linux/release/tests/smoke-cli.test.sh

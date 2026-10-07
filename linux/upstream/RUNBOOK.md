@@ -197,9 +197,10 @@ git tag usagebar-v<version> && git push origin usagebar-v<version>
 ```
 
 The tag runs `.github/workflows/release-usagebar.yml`, which builds the CLI (x86_64, aarch64), packages the
-`.deb`/`.rpm`, checks that `codexbar sync` is present, and publishes the release. Do a dry run first with
-`gh workflow run release-usagebar.yml -R felipearosr/UsageBar --ref main -f version=<version>`. The release
-checklist lives with the release workflow (#48).
+`.deb`/`.rpm`, smoke-tests everything, runs the release asset verifier, and publishes the release
+([`linux/README.md`](../README.md#releasing)). Do a dry run first, after the metadata bump lands:
+`gh workflow run release-usagebar.yml -R felipearosr/UsageBar --ref main`. The release checklist lives with
+the release workflow (#48).
 
 ## The merge rehearsal
 

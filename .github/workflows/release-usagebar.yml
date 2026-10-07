@@ -1,22 +1,32 @@
 name: Release UsageBar
 
-# UsageBar's Linux packages: the GNOME extension plus this fork's codexbar CLI
-# (upstream + `codexbar sync`) in one .deb and one .rpm per architecture.
-# Pushing a usagebar-v<version> tag builds them and publishes the GitHub
-# release the extension's updater reads. The release is created with
-# GITHUB_TOKEN, so upstream's release-triggered workflows (release-cli.yml and
-# its Homebrew tap dispatch, release-linux-desktop.yml) don't fire for it.
+# UsageBar's own release (#36), built from one commit:
+#
+#   resolve  linux/release/resolve-version.sh: the tag (or, for a dispatch, the
+#            metadata alone) -> version, CLI version string, asset names.
+#   package  per arch: the fork's codexbar CLI (static Swift stdlib), packed in
+#            upstream's tarball layout, smoke-tested, then (final releases
+#            only) the .deb/.rpm packages and their container smoke tests.
+#   srpm     final releases only: a source RPM with both arches' tarballs.
+#   verify   linux/release/verify-assets.sh over the whole asset set.
+#   publish  tags only, after verify: the GitHub release (pre-release for a
+#            semver pre-release).
+#
+# Pushing a usagebar-v<semver> tag publishes. A manual dispatch builds and
+# verifies the selected ref and uploads the assets to the run, never
+# publishing. The release is created with GITHUB_TOKEN, so upstream's
+# release-triggered workflows (release-cli.yml and its Homebrew tap dispatch,
+# release-linux-desktop.yml) don't fire for it; see linux/README.md.
+#
+# Adding an asset (extension zip #46, tray #47): build it in its own job (or a
+# step of package), upload it in an artifact named usagebar-*, add its job to
+# verify's needs, and teach verify-assets.sh to expect and check it. Its name
+# comes from the resolve job's outputs.
 
 on:
   push:
     tags: ['usagebar-v*']
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version for a test build of the selected ref; never publishes'
-        required: true
-        default: '0.0.0'
-        type: string
 
 permissions:
   contents: read
@@ -31,7 +41,46 @@ env:
   SWIFTLY_SIGNING_FINGERPRINT: E813C892820A6FA13755B268F167DF1ACF9CE069
 
 jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      upstream_base: ${{ steps.resolve.outputs.upstream_base }}
+      upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
+      cli_version: ${{ steps.resolve.outputs.cli_version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      distro_packages: ${{ steps.resolve.outputs.distro_packages }}
+      cli_asset_x86_64: ${{ steps.resolve.outputs.cli_asset_x86_64 }}
+      cli_asset_aarch64: ${{ steps.resolve.outputs.cli_asset_aarch64 }}
+      extension_asset: ${{ steps.resolve.outputs.extension_asset }}
+      tray_asset_x86_64: ${{ steps.resolve.outputs.tray_asset_x86_64 }}
+      tray_asset_aarch64: ${{ steps.resolve.outputs.tray_asset_aarch64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: resolve
+        env:
+          # A dispatch resolves from the metadata at the selected ref.
+          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          linux/release/resolve-version.sh --format github ${TAG:+"$TAG"} | tee "$RUNNER_TEMP/resolved"
+          {
+            echo '### UsageBar release values'
+            echo
+            if [[ -z "$TAG" ]]; then echo 'Dry run: builds and verifies, never publishes.'; echo; fi
+            echo '```'
+            cat "$RUNNER_TEMP/resolved"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   package:
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -46,23 +95,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Resolve version
-        id: version
-        env:
-          EVENT: ${{ github.event_name }}
-          TAG: ${{ github.ref_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT" == push ]]; then
-            version=${TAG#usagebar-v}
-          else
-            version=$INPUT_VERSION
-          fi
-          # Dotted numbers only: the updater compares them numerically.
-          [[ "$version" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "Invalid version: $version" >&2; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Extension unit tests
         run: node --test linux/usagebar-gnome/tests/*.test.mjs
@@ -125,42 +157,33 @@ jobs:
           swift build -c release --product CodexBarCLI --static-swift-stdlib
           echo "bin_dir=$(swift build -c release --product CodexBarCLI --static-swift-stdlib --show-bin-path)" >> "$GITHUB_OUTPUT"
 
-      # Same layout as upstream's release tarball, which build-packages.sh
-      # unpacks into /usr/libexec/usagebar.
+      # Upstream's tarball layout, with VERSION set to the CLI version string
+      # (<base>+usagebar.<semver>). install-cli.sh, the CLI packages and
+      # build-packages.sh all unpack it as is.
       - name: Package CLI tarball
         id: cli
         env:
           BIN_DIR: ${{ steps.build.outputs.bin_dir }}
-          ARCH: ${{ matrix.arch }}
-          VERSION: ${{ steps.version.outputs.version }}
+          CLI_VERSION: ${{ needs.resolve.outputs.cli_version }}
+          ASSET: ${{ needs.resolve.outputs[format('cli_asset_{0}', matrix.arch)] }}
         run: |
           set -euo pipefail
-          . ./version.env
-          out="$RUNNER_TEMP/cli"
-          mkdir -p "$out"
-          install -m 0755 "$BIN_DIR/CodexBarCLI" "$out/CodexBarCLI"
-          ln -s CodexBarCLI "$out/codexbar"
-          printf '%s\n' "$MARKETING_VERSION" > "$out/VERSION"
-          cp -R "$BIN_DIR/CodexBar_CodexBarCore.resources" "$out/CodexBar_CodexBarCore.bundle" 2>/dev/null \
-            || cp -R "$BIN_DIR/CodexBar_CodexBarCore.bundle" "$out/CodexBar_CodexBarCore.bundle"
-
-          # Resources resolve, and this is the fork build with Machine Sync.
-          CODEXBAR_RESOURCE_SMOKE=1 "$out/codexbar" | grep -Fx CODEXBAR_RESOURCE_SMOKE_OK
-          # (Unpaired here, so only an unknown-command answer is a failure.)
-          sync_out="$("$out/codexbar" sync status --json-only 2>&1 || true)"
-          if grep -q "Unknown command" <<< "$sync_out"; then
-            echo "CLI build lacks codexbar sync" >&2
-            exit 1
-          fi
-
-          # Published on the release for install-cli.sh and the CLI packages,
-          # named after the UsageBar version so their URLs are predictable.
-          name="usagebar-cli-${VERSION}-linux-${ARCH}.tar.gz"
-          mkdir -p "$RUNNER_TEMP/cli-tarball"
-          tarball="$RUNNER_TEMP/cli-tarball/$name"
-          (cd "$out" && tar czf "$tarball" CodexBarCLI codexbar VERSION CodexBar_CodexBarCore.bundle)
-          (cd "$RUNNER_TEMP/cli-tarball" && sha256sum "$name" > "$name.sha256")
+          tarball=$(linux/release/package-cli.sh "$BIN_DIR" "$CLI_VERSION" "$RUNNER_TEMP/cli-tarball" "$ASSET")
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: CLI smoke test
+        env:
+          TARBALL: ${{ steps.cli.outputs.tarball }}
+          CLI_VERSION: ${{ needs.resolve.outputs.cli_version }}
+        run: linux/release/smoke-cli.sh "$TARBALL" "$CLI_VERSION"
+
+      - name: Collect release assets
+        env:
+          TARBALL: ${{ steps.cli.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/packages"
+          cp "$TARBALL" "$TARBALL.sha256" "$RUNNER_TEMP/packages/"
 
       - name: Install-script smoke test
         env:
@@ -173,23 +196,27 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Distro packages can't carry a semver pre-release in their version
+      # fields, so pre-releases ship the tarballs only (distro_packages=false).
       - name: Build .deb and .rpm
+        if: needs.resolve.outputs.distro_packages == 'true'
         env:
           TARBALL: ${{ steps.cli.outputs.tarball }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           linux/packaging/build-packages.sh "$TARBALL" "$VERSION" "$RUNNER_TEMP/packages"
-          cp "$TARBALL" "$TARBALL.sha256" "$RUNNER_TEMP/packages/"
           linux/packaging/build-cli-deb.sh "$TARBALL" "$VERSION" "$RUNNER_TEMP/packages"
           linux/packaging/build-cli-rpm.sh "$VERSION" "$RUNNER_TEMP/packages" "$TARBALL"
           for deb in "$RUNNER_TEMP"/packages/*.deb; do dpkg-deb --info "$deb"; done
           for rpm in "$RUNNER_TEMP"/packages/*.rpm; do rpm -qpil "$rpm" | head -40; done
 
       - name: CLI RPM smoke test
+        if: needs.resolve.outputs.distro_packages == 'true'
         run: linux/packaging/tests/run-in-container.sh registry.fedoraproject.org/fedora:latest rpm.sh "$RUNNER_TEMP/packages"
 
       - name: CLI .deb smoke test
+        if: needs.resolve.outputs.distro_packages == 'true'
         run: |
           set -euo pipefail
           for image in debian:stable ubuntu:24.04 ubuntu:latest; do
@@ -200,7 +227,7 @@ jobs:
 
       - name: AUR PKGBUILD smoke test
         # The archlinux image is x86_64 only.
-        if: matrix.arch == 'x86_64'
+        if: matrix.arch == 'x86_64' && needs.resolve.outputs.distro_packages == 'true'
         env:
           TARBALL: ${{ steps.cli.outputs.tarball }}
         run: linux/packaging/tests/run-in-container.sh archlinux:latest aur.sh "$(dirname "$TARBALL")"
@@ -214,7 +241,8 @@ jobs:
   # A source RPM carrying both architectures' tarballs, which COPR or mock
   # can rebuild for either one.
   srpm:
-    needs: package
+    needs: [resolve, package]
+    if: needs.resolve.outputs.distro_packages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -230,17 +258,19 @@ jobs:
 
       - name: Build SRPM
         id: srpm
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          CLI_X86_64: ${{ needs.resolve.outputs.cli_asset_x86_64 }}
+          CLI_AARCH64: ${{ needs.resolve.outputs.cli_asset_aarch64 }}
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y rpm
-          tarballs=(packages/usagebar-cli-*-linux-x86_64.tar.gz packages/usagebar-cli-*-linux-aarch64.tar.gz)
-          version=$(basename "${tarballs[0]}" | sed 's/^usagebar-cli-\(.*\)-linux-x86_64\.tar\.gz$/\1/')
-          linux/packaging/build-cli-rpm.sh "$version" "$RUNNER_TEMP/all" "${tarballs[@]}"
+          linux/packaging/build-cli-rpm.sh "$VERSION" "$RUNNER_TEMP/all" "packages/$CLI_X86_64" "packages/$CLI_AARCH64"
           mkdir -p "$RUNNER_TEMP/srpm"
           cp "$RUNNER_TEMP"/all/*.src.rpm "$RUNNER_TEMP"/all/*.src.rpm.sha256 "$RUNNER_TEMP/srpm/"
           # The smoke test below needs the x86_64 RPM and tarball next to it.
-          cp packages/usagebar-cli-*.x86_64.rpm packages/usagebar-cli-*-linux-x86_64.tar.gz* "$RUNNER_TEMP/all/"
+          cp packages/usagebar-cli-*.x86_64.rpm "packages/$CLI_X86_64" "packages/$CLI_X86_64.sha256" "$RUNNER_TEMP/all/"
 
       - name: SRPM rebuild smoke test
         run: linux/packaging/tests/run-in-container.sh registry.fedoraproject.org/fedora:latest rpm.sh "$RUNNER_TEMP/all"
@@ -251,9 +281,37 @@ jobs:
           path: ${{ runner.temp }}/srpm/*
           if-no-files-found: error
 
+  # The release asset verifier over everything publish would attach. srpm is
+  # skipped for pre-releases; any failed or cancelled job skips verify, and
+  # with it publish.
+  verify:
+    needs: [resolve, package, srpm]
+    if: ${{ !cancelled() && needs.package.result == 'success' && (needs.srpm.result == 'success' || needs.srpm.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: usagebar-*
+          path: assets
+          merge-multiple: true
+
+      - name: Verify release assets
+        env:
+          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          linux/release/resolve-version.sh ${TAG:+"$TAG"} > "$RUNNER_TEMP/resolved"
+          ls -l assets
+          linux/release/verify-assets.sh "$RUNNER_TEMP/resolved" assets
+
   publish:
-    needs: [package, srpm]
-    if: github.event_name == 'push'
+    needs: [resolve, verify]
+    if: ${{ !cancelled() && needs.verify.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/usagebar-v') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -265,42 +323,78 @@ jobs:
           path: packages
           merge-multiple: true
 
+      # Placeholder notes; #48 replaces this step with generated ones.
+      - name: Release notes
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          UPSTREAM_BASE: ${{ needs.resolve.outputs.upstream_base }}
+          UPSTREAM_TAG: ${{ needs.resolve.outputs.upstream_tag }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+          DISTRO_PACKAGES: ${{ needs.resolve.outputs.distro_packages }}
+        run: |
+          set -euo pipefail
+          notes=$RUNNER_TEMP/notes.md
+          {
+            echo "Based on [CodexBar $UPSTREAM_BASE](https://github.com/steipete/CodexBar/releases/tag/$UPSTREAM_TAG)."
+            echo
+            if [[ "$PRERELEASE" == true ]]; then
+              echo "**Pre-release** for testing: only the CLI tarballs, no .deb/.rpm packages."
+              echo
+            fi
+            if [[ "$DISTRO_PACKAGES" == true ]]; then
+              echo "Download the file for your system and open it to install:"
+              echo
+              echo "- Ubuntu / Debian: \`usagebar_${VERSION}_amd64.deb\` (ARM: \`_arm64.deb\`)"
+              echo "- Fedora: \`usagebar-${VERSION}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)"
+              echo "- Just the \`codexbar\` CLI on Ubuntu / Debian: \`usagebar-cli_${VERSION}_amd64.deb\` (ARM: \`_arm64.deb\`)"
+              echo "- Just the \`codexbar\` CLI on Fedora: \`usagebar-cli-${VERSION}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)"
+              echo "- Just the \`codexbar\` CLI on Arch: the \`usagebar-cli-bin\` PKGBUILD in \`linux/packaging/aur\`"
+            fi
+            echo "- Just the \`codexbar\` CLI, any distro: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/linux/packaging/install-cli.sh | sh -s -- ${VERSION}\`"
+            echo
+            echo "Every file has a \`.sha256\`: \`sha256sum -c <file>.sha256\`."
+            if [[ "$DISTRO_PACKAGES" == true ]]; then
+              echo
+              echo "Then log out and back in once. Needs GNOME 46, 49 or 50 (Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44)."
+            fi
+          } > "$notes"
+          cat "$notes"
+          echo "notes=$notes" >> "$GITHUB_ENV"
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         run: |
           set -euo pipefail
-          version=${TAG#usagebar-v}
-          notes="Download the file for your system and open it to install:
-
-          - Ubuntu / Debian: \`usagebar_${version}_amd64.deb\` (ARM: \`_arm64.deb\`)
-          - Fedora: \`usagebar-${version}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)
-          - Just the \`codexbar\` CLI on Ubuntu / Debian: \`usagebar-cli_${version}_amd64.deb\` (ARM: \`_arm64.deb\`)
-          - Just the \`codexbar\` CLI on Fedora: \`usagebar-cli-${version}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)
-          - Just the \`codexbar\` CLI on Arch: the \`usagebar-cli-bin\` PKGBUILD in \`linux/packaging/aur\`
-          - Just the \`codexbar\` CLI, any distro: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/linux/packaging/install-cli.sh | sh\`
-
-          Then log out and back in once. Needs GNOME 46, 49 or 50 (Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44)."
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
           gh release create "$TAG" packages/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "UsageBar $version" \
-            --notes "$notes"
+            --title "UsageBar $VERSION" \
+            --notes-file "$notes" \
+            "${flags[@]}"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.resolve.outputs.distro_packages == 'true'
         with:
           path: src
           persist-credentials: false
 
       # The PKGBUILD and .SRCINFO for this release, for whoever pushes to the AUR.
       - name: Bump AUR PKGBUILD
+        if: needs.resolve.outputs.distro_packages == 'true'
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.resolve.outputs.version }}
           USAGEBAR_REPO: ${{ github.repository }}
-        run: src/linux/packaging/aur/bump.sh "${TAG#usagebar-v}"
+        run: src/linux/packaging/aur/bump.sh "$VERSION"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: needs.resolve.outputs.distro_packages == 'true'
         with:
           name: aur-usagebar-cli-bin
           path: |

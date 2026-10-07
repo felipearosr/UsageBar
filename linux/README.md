@@ -178,13 +178,50 @@ linux/release/resolve-version.sh usagebar-v1.1.0    # validates a tag
 linux/release/tests/resolve-version.test.sh         # its tests (also in PR CI)
 ```
 
-Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).
-[`release-usagebar.yml`](../.github/workflows/release-usagebar.yml) builds the
-fork CLI for x86_64 and aarch64, packages it with the extension
-([`packaging/build-packages.sh`](packaging/build-packages.sh)), smoke-tests
-`install-cli.sh` against the CLI tarball in clean containers
-([`packaging/tests/`](packaging/tests/)), and publishes the packages plus
-`usagebar-cli-<version>-linux-<arch>.tar.gz` (and `.sha256`) as the release.
+Push a `usagebar-v<version>` tag matching `USAGEBAR_VERSION` (for example
+`usagebar-v1.1.0`).
+[`release-usagebar.yml`](../.github/workflows/release-usagebar.yml) then:
+
+1. resolves the version (above);
+2. builds the fork CLI for x86_64 and aarch64 with a static Swift stdlib
+   (swiftly, pinned and signature-checked), packs it in upstream's tarball
+   layout as `usagebar-cli-<version>-linux-<arch>.tar.gz` with `VERSION` set
+   to the CLI version string
+   ([`release/package-cli.sh`](release/package-cli.sh)), and smoke-tests the
+   packed tarball ([`release/smoke-cli.sh`](release/smoke-cli.sh):
+   `--version`, `sync --help`, the resource bundle through the binary and the
+   symlink, `config validate`; scratch `HOME`, no accounts);
+3. for a final release, builds the `.deb`/`.rpm` packages with the extension
+   ([`packaging/build-packages.sh`](packaging/build-packages.sh)), the CLI-only
+   packages and the SRPM, and smoke-tests them and `install-cli.sh` in clean
+   containers ([`packaging/tests/`](packaging/tests/)). A pre-release
+   (`1.2.0-rc.1`) skips the distro packages, whose version fields can't carry
+   it, and ships the tarballs only;
+4. runs the release asset verifier
+   ([`release/verify-assets.sh`](release/verify-assets.sh)) over everything
+   it's about to attach: every expected asset present, every `.sha256` valid,
+   the CLI tarballs' layout, `VERSION` and architecture;
+5. only then publishes the GitHub release, marked as a pre-release for a
+   semver pre-release.
+
+A dry run builds and verifies any ref without publishing; the assets land on
+the run as artifacts:
+
+```sh
+gh workflow run release-usagebar.yml -R felipearosr/UsageBar --ref main
+linux/release/verify-assets.sh <(linux/release/resolve-version.sh) <downloaded-assets-dir>
+```
+
+The verifier works the same on a downloaded release. Its tests, and the CLI
+smoke test's, run in PR CI
+([`usagebar-release-scripts.yml`](../.github/workflows/usagebar-release-scripts.yml)).
+
+The release is created with the workflow's `GITHUB_TOKEN`, and GitHub doesn't
+start workflows for events that token causes, so publishing a UsageBar
+release doesn't run the `release: published` workflows inherited from
+upstream (`release-cli.yml` with its Homebrew tap dispatch,
+`release-linux-desktop.yml`). A release published by hand (as
+`cli-fork-f05433b` was) does run them; #42 disables them for good.
 
 ### Merging upstream
 
