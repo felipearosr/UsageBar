@@ -105,6 +105,35 @@ instead (run it with `sudo`; the script never asks for privileges itself),
 `--prefix DIR` anywhere else, and `--uninstall` removes exactly what it
 installed. It refuses to replace a `codexbar` it didn't install.
 
+On Fedora, each release also has a CLI-only package,
+`usagebar-cli-<version>-1.x86_64.rpm` (`.aarch64.rpm` on ARM):
+`sudo dnf install ./usagebar-cli-*.rpm`. It puts the CLI in
+`/usr/lib/usagebar-cli` with `/usr/bin/codexbar` linking to it, and conflicts
+with other packages that ship a `codexbar` command. You don't need it next to
+the full `usagebar` package, which carries its own copy.
+
+#### COPR
+
+[`packaging/rpm/usagebar-cli.spec`](packaging/rpm/usagebar-cli.spec)
+repackages the release tarball (checked against pinned SHA-256s in `%prep`),
+and COPR accepts that: its rules
+([What I can build in Copr?](https://docs.copr.fedorainfracloud.org/user_documentation.html#what-i-can-build-in-copr))
+only restrict licenses and legality, and say packages "do **not** need to
+follow the Fedora Packaging Guidelines", the document that asks for builds
+from source. So the chosen path is a COPR project that builds this spec as
+is. Either:
+
+- point a COPR package at this repo with the SCM source type and spec path
+  `linux/packaging/rpm/usagebar-cli.spec`. COPR downloads the `Source` URLs
+  from the release itself. Or
+- upload the release's `usagebar-cli-<version>-1.src.rpm`
+  (`copr-cli build <project> usagebar-cli-*.src.rpm`).
+
+After each release, run `linux/packaging/rpm/bump-spec.sh <version>` and
+commit the result. It sets the version and both checksums from the release's
+`.sha256` files and adds a changelog entry. The `.rpm` files attached to each
+release don't depend on COPR.
+
 ### Releasing
 
 Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).
