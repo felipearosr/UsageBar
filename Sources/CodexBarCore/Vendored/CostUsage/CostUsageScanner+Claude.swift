@@ -1082,14 +1082,14 @@ extension CostUsageScanner {
     }
 
     /// Usage fields missing (or `null`) in a log line's `usage` object.
-    private static func claudeOmittedUsageFields(_ usage: ClaudeJSONObject) -> Set<ClaudeUsageField> {
-        let usageKeys: [(String, ClaudeUsageField)] = [
+    private static func claudeOmittedUsageFields(_ usage: ClaudeJSONObject) -> ClaudeUsageFields {
+        let usageKeys: [(String, ClaudeUsageFields)] = [
             ("input_tokens", .input),
             ("output_tokens", .output),
             ("cache_read_input_tokens", .cacheRead),
             ("cache_creation_input_tokens", .cacheCreation),
         ]
-        return Set(usageKeys.filter { key, _ in usage[key] == nil || usage[key] is NSNull }.map(\.1))
+        return ClaudeUsageFields(usageKeys.filter { key, _ in usage[key] == nil || usage[key] is NSNull }.map(\.1))
     }
 
     /// Scans Claude logs into UTC-hour Spend Buckets whose hour starts in `since..<until`.
@@ -1101,6 +1101,7 @@ extension CostUsageScanner {
         checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
     {
         // The daily report refreshes and saves the cache; the buckets then read the same rows.
+        // Provider-specific by design: Claude buckets refresh and then read the Claude transcript cache.
         _ = try self.loadDailyReportCancellable(
             provider: .claude,
             since: since,
@@ -1136,6 +1137,7 @@ extension CostUsageScanner {
             guard hourStart >= since, hourStart < until else { continue }
             // An incomplete streaming estimate has no trustworthy counts or cost; it still counts as a request.
             guard row.isIncomplete != true else {
+                // Provider-specific by design: rows here come only from the Claude transcript cache.
                 buckets.append(CostUsageSpendBucket(
                     hourStart: hourStart,
                     provider: .claude,
@@ -1150,9 +1152,10 @@ extension CostUsageScanner {
                 continue
             }
             let omitted = row.omittedFields ?? []
-            func reported(_ value: Int, _ field: ClaudeUsageField) -> Int? {
+            func reported(_ value: Int, _ field: ClaudeUsageFields) -> Int? {
                 omitted.contains(field) ? nil : value
             }
+            // Provider-specific by design: rows here come only from the Claude transcript cache.
             buckets.append(CostUsageSpendBucket(
                 hourStart: hourStart,
                 provider: .claude,

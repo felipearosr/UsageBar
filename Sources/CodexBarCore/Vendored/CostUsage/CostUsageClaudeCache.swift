@@ -347,6 +347,7 @@ extension CostUsageScanner.ClaudeUsageRow {
         case costNanos = "c"
         case costPriced = "priced"
         case isIncomplete = "partial"
+        case omittedFields = "omit"
     }
 }
 
@@ -354,7 +355,8 @@ extension CostUsageScanner.ClaudeUsageRow {
 /// through this JSON I/O boundary; its only persistence authority is `CostUsageStore`.
 enum CostUsageClaudeCacheIO {
     /// Compact row keys; older artifacts rebuild from their source transcripts.
-    private static let schemaVersion = 5
+    /// Version 6 persists `omittedFields`; version 5 artifacts were written without it.
+    private static let schemaVersion = 6
 
     /// NSCache provides synchronized, memory-pressure-aware storage for the four app artifacts.
     /// This caches decoded bytes only; the scanner still validates source scope and reprices rows.

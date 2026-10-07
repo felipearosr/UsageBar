@@ -104,12 +104,13 @@ struct CostUsageClaudeWriteAmplificationTests {
             output: 5,
             costNanos: 6,
             costPriced: false,
-            isIncomplete: true)
+            isIncomplete: true,
+            omittedFields: [.cacheRead])
         let data = try JSONEncoder().encode(row)
         #expect(data.count < 240)
         #expect(try JSONDecoder().decode(CostUsageScanner.ClaudeUsageRow.self, from: data) == row)
         let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(fields.count == 16)
+        #expect(fields.count == 17)
         #expect(fields["d"] as? String == row.dayKey)
     }
 
@@ -214,7 +215,7 @@ struct CostUsageClaudeWriteAmplificationTests {
         #expect(upgraded.quotaSlices == initial.quotaSlices)
         #expect(recorder.snapshot().transcriptParses == 1)
         #expect(recorder.snapshot().incrementalTranscriptParses == 0)
-        #expect(CostUsageClaudeCacheIO.load(provider: .claude, cacheRoot: fixture.env.cacheRoot).usage.version == 4)
+        #expect(CostUsageClaudeCacheIO.load(provider: .claude, cacheRoot: fixture.env.cacheRoot).usage.version == 6)
     }
 
     @Test
