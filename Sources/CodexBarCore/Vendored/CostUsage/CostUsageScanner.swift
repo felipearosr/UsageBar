@@ -1989,11 +1989,14 @@ enum CostUsageScanner {
         case subagent
     }
 
-    enum ClaudeUsageField: String, Codable {
-        case input
-        case output
-        case cacheRead
-        case cacheCreation
+    /// Encoded as its raw bitmask so identical rows always persist identical bytes.
+    struct ClaudeUsageFields: OptionSet, Codable, Hashable {
+        let rawValue: UInt8
+
+        static let input = Self(rawValue: 1 << 0)
+        static let output = Self(rawValue: 1 << 1)
+        static let cacheRead = Self(rawValue: 1 << 2)
+        static let cacheCreation = Self(rawValue: 1 << 3)
     }
 
     struct ClaudeUsageRow: Codable, Equatable {
@@ -2014,7 +2017,7 @@ enum CostUsageScanner {
         let costPriced: Bool?
         var isIncomplete: Bool?
         /// Usage fields absent from the log line (recorded as 0 above). `nil` when every field was present.
-        var omittedFields: Set<ClaudeUsageField>?
+        var omittedFields: ClaudeUsageFields?
     }
 
     static func loadDailyReport(

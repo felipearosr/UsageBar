@@ -196,9 +196,11 @@ struct ClaudeSpendBucketLinuxTests {
             costNanos: 0,
             costPriced: true,
             omittedFields: [.cacheRead, .cacheCreation])
-        let decoded = try JSONDecoder().decode(
-            CostUsageScanner.ClaudeUsageRow.self,
-            from: JSONEncoder().encode(row))
+        let data = try JSONEncoder().encode(row)
+        let decoded = try JSONDecoder().decode(CostUsageScanner.ClaudeUsageRow.self, from: data)
         #expect(decoded.omittedFields == [.cacheRead, .cacheCreation])
+        // A bitmask, not a Set array, so rescans of identical rows rewrite identical bytes.
+        let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(fields["omit"] as? Int == 12)
     }
 }
