@@ -105,6 +105,19 @@ instead (run it with `sudo`; the script never asks for privileges itself),
 `--prefix DIR` anywhere else, and `--uninstall` removes exactly what it
 installed. It refuses to replace a `codexbar` it didn't install.
 
+On Arch, [`packaging/aur/`](packaging/aur/) holds the `usagebar-cli-bin`
+PKGBUILD and `.SRCINFO`. It downloads the release tarball with pinned
+checksums, uses the same layout (`/usr/lib/usagebar-cli`, `/usr/bin/codexbar`),
+and conflicts with other `codexbar` packages. Until it is on the AUR, build it
+from a checkout with `makepkg -si` in that directory.
+
+To bump it for a new release, run one command:
+`linux/packaging/aur/bump.sh <version>`. It sets `pkgver`, resets `pkgrel`,
+pins the checksums from the release's `.sha256` files and the LICENSE at the
+tag, and regenerates `.SRCINFO`, in an archlinux container when `makepkg`
+isn't installed. The release workflow runs it after publishing and uploads
+the result as the `aur-usagebar-cli-bin` artifact.
+
 ### Releasing
 
 Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).

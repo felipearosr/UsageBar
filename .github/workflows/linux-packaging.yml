@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck
-        run: shellcheck -x linux/packaging/install-cli.sh linux/packaging/tests/*.sh
+        run: shellcheck -x linux/packaging/install-cli.sh linux/packaging/aur/bump.sh linux/packaging/tests/*.sh
 
       - name: Stand-in CLI tarball
         run: linux/packaging/tests/make-fake-tarball.sh "$RUNNER_TEMP/fake" 9.9.9
@@ -45,3 +45,6 @@ jobs:
             linux/packaging/tests/run-in-container.sh "$image" install-script.sh "$RUNNER_TEMP/fake"
             echo "::endgroup::"
           done
+
+      - name: usagebar-cli-bin PKGBUILD smoke test
+        run: linux/packaging/tests/run-in-container.sh archlinux:latest aur.sh "$RUNNER_TEMP/fake"

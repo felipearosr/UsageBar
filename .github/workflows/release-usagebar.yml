@@ -184,6 +184,13 @@ jobs:
           dpkg-deb --info "$RUNNER_TEMP"/packages/*.deb
           rpm -qpil "$RUNNER_TEMP"/packages/*.rpm | head -40
 
+      - name: AUR PKGBUILD smoke test
+        # The archlinux image is x86_64 only.
+        if: matrix.arch == 'x86_64'
+        env:
+          TARBALL: ${{ steps.cli.outputs.tarball }}
+        run: linux/packaging/tests/run-in-container.sh archlinux:latest aur.sh "$(dirname "$TARBALL")"
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: usagebar-${{ matrix.arch }}
@@ -215,6 +222,7 @@ jobs:
 
           - Ubuntu / Debian: \`usagebar_${version}_amd64.deb\` (ARM: \`_arm64.deb\`)
           - Fedora: \`usagebar-${version}-1.x86_64.rpm\` (ARM: \`.aarch64.rpm\`)
+          - Just the \`codexbar\` CLI on Arch: the \`usagebar-cli-bin\` PKGBUILD in \`linux/packaging/aur\`
           - Just the \`codexbar\` CLI, any distro: \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/linux/packaging/install-cli.sh | sh\`
 
           Then log out and back in once. Needs GNOME 46, 49 or 50 (Ubuntu 24.04 / 25.10 / 26.04, Fedora 43 / 44)."
@@ -223,3 +231,24 @@ jobs:
             --verify-tag \
             --title "UsageBar $version" \
             --notes "$notes"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src
+          persist-credentials: false
+
+      # The PKGBUILD and .SRCINFO for this release, for whoever pushes to the AUR.
+      - name: Bump AUR PKGBUILD
+        env:
+          TAG: ${{ github.ref_name }}
+          USAGEBAR_REPO: ${{ github.repository }}
+        run: src/linux/packaging/aur/bump.sh "${TAG#usagebar-v}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aur-usagebar-cli-bin
+          path: |
+            src/linux/packaging/aur/PKGBUILD
+            src/linux/packaging/aur/.SRCINFO
+          include-hidden-files: true
+          if-no-files-found: error
