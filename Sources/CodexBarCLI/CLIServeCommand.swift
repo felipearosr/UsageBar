@@ -911,21 +911,8 @@ extension CodexBarCLI {
                 ?? Self.serveError(status: .notFound, message: "not found")
         case .health:
             return Self.serveHealthResponse(version: runtime.healthVersion)
-        case let .syncStatus(refresh):
-            guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
-                return Self.serveUnauthorizedResponse()
-            }
-            return await Self.addingNoStore(Self.serveSyncStatus(
-                refresh: refresh,
-                environment: Self.serveSyncEnvironment(),
-                coordinator: runtime.sync))
-        case .syncPush:
-            guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
-                return Self.serveUnauthorizedResponse()
-            }
-            return await Self.addingNoStore(Self.serveSyncPush(
-                environment: Self.serveSyncEnvironment(),
-                coordinator: runtime.sync))
+        case .syncStatus, .syncPush:
+            return await Self.serveSyncRoute(route, request: request, runtime: runtime)
         case let .usage(provider):
             // On non-loopback binds every data route requires the bearer token,
             // checked before any cache access so unauthenticated requests can
