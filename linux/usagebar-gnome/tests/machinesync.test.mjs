@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    countText,
     coverageText,
+    MACHINE_PALETTE,
+    machineDetailView,
     machinesView,
     nextPushDelaySecs,
     planSyncTick,
@@ -166,4 +169,117 @@ test('spend and coverage text', () => {
     assert.equal(spendText(spend(12.7)), '$12');
     assert.equal(coverageText(null), null);
     assert.equal(coverageText({from: '2026-01-02', to: '2026-02-03'}), 'Coverage Jan 2 – Feb 3');
+});
+
+function detailPayload() {
+    const p = payload();
+    const [laptop, desk] = p.status.machines;
+    Object.assign(laptop, {
+        platform: 'linux',
+        clientVersion: '0.20.0',
+        last30Days: spend(3, {totalTokens: 1_500_000, requests: 40}),
+        days: [
+            {date: '2026-09-23', spend: spend(1, {totalTokens: 500_000})},
+            {date: '2026-09-24', spend: spend(2, {totalTokens: 1_000_000})},
+        ],
+    });
+    Object.assign(desk, {
+        last30Days: spend(1, {costIncomplete: true, totalTokens: 200_000, requests: 5}),
+        models: [
+            {provider: 'codex', model: 'gpt-5', spend: spend(0.5, {totalTokens: 100_000})},
+            {provider: 'claude', model: 'claude-sonnet-4-5', spend: spend(0.5, {totalTokens: 100_000})},
+        ],
+        days: [{date: '2026-09-24', spend: spend(1, {totalTokens: 200_000})}],
+    });
+    return p;
+}
+
+test('each Machine keeps a stable color by its place in the list', () => {
+    const view = machinesView(detailPayload(), {now: NOW});
+    assert.deepEqual(view.machines.map(m => m.color), MACHINE_PALETTE.slice(0, 2));
+    assert.deepEqual(view.machines.map(m => m.cost30), [3, 1]);
+});
+
+test('one Machine detail shows its own spend, chart and models only', () => {
+    const view = machineDetailView(detailPayload(), 'deskAAAAAAAAAAAAAAAAAA', {now: NOW});
+    assert.equal(view.title, 'desk');
+    assert.equal(view.all, false);
+    assert.equal(view.state, 'active');
+    assert.equal(view.thisMachine, false);
+    assert.equal(view.share, 0.25);
+    assert.deepEqual(view.kpis.map(k => k.value), ['$0.50+', '$1.00+', '200K', '5']);
+    assert.equal(view.chart.points.length, 30);
+    assert.equal(view.chart.points.at(-1).date, '2026-09-24');
+    assert.deepEqual(view.chart.points.at(-1).models, [['desk', 1]]);
+    assert.equal(view.chart.points.at(-2).value, 0);
+    assert.deepEqual(view.chart.colors, [['desk', MACHINE_PALETTE[1]]]);
+    // Equal spend ties break by model name.
+    assert.deepEqual(view.models.map(m => m.model), ['claude-sonnet-4-5', 'gpt-5']);
+    assert.deepEqual(view.info, ['Coverage Sep 24', 'Last seen 3 min ago']);
+});
+
+test('the All detail merges every Machine', () => {
+    const view = machineDetailView(detailPayload(), 'all', {now: NOW});
+    assert.equal(view.title, 'All Machines');
+    assert.equal(view.share, null);
+    assert.deepEqual(view.kpis.map(k => k.value), ['$2.50+', '$4.00+', '1.7M', '45']);
+    const today = view.chart.points.at(-1);
+    assert.equal(today.value, 3);
+    assert.deepEqual(today.models, [['laptop', 2], ['desk', 1]]);
+    assert.deepEqual(view.chart.points.at(-2).models, [['laptop', 1]]);
+    // Same model on both Machines is one row.
+    assert.deepEqual(view.models.map(m => [m.model, m.spend]),
+        [['claude-sonnet-4-5', '$2.50'], ['gpt-5', '$1.50']]);
+    assert.deepEqual(view.info, ['2 Machines · 2 active']);
+});
+
+test('a single Machine detail lists platform and client version', () => {
+    const view = machineDetailView(detailPayload(), 'laptopAAAAAAAAAAAAAAAA', {now: NOW});
+    assert.equal(view.thisMachine, true);
+    assert.equal(view.info[0], 'linux · codexbar 0.20.0');
+});
+
+test('the chart falls back to tokens when nothing is priced', () => {
+    const p = detailPayload();
+    for (const machine of p.status.machines)
+        machine.days = machine.days.map(day => ({...day, spend: {...day.spend, costUSD: 0}}));
+    const view = machineDetailView(p, 'all', {now: NOW});
+    assert.equal(view.chart.points.at(-1).cost, null);
+    assert.equal(view.chart.points.at(-1).value, 1_200_000);
+});
+
+test('detail is null for a Machine that left, and has no chart without history', () => {
+    assert.equal(machineDetailView(detailPayload(), 'goneAAAAAAAAAAAAAAAAAA', {now: NOW}), null);
+    assert.equal(machineDetailView({paired: true}, 'all', {now: NOW}), null);
+    assert.equal(machineDetailView(payload(), 'all', {now: NOW}).chart, null);
+});
+
+test('token and request counts are compact', () => {
+    assert.equal(countText(0), '0');
+    assert.equal(countText(999), '999');
+    assert.equal(countText(1000), '1K');
+    assert.equal(countText(1_250_000), '1.3M');
+    assert.equal(countText(2_000_000_000), '2B');
+});
+
+test('hidden models leave the detail list but not the totals', () => {
+    const view = machineDetailView(detailPayload(), 'all', {
+        now: NOW,
+        hiddenModels: new Set(['codex:gpt-5']),
+    });
+    assert.deepEqual(view.models.map(m => m.model), ['claude-sonnet-4-5']);
+    assert.equal(view.kpis[1].value, '$4.00+');
+});
+
+test('a Machine color set in prefs replaces its palette color everywhere', () => {
+    const colors = {deskAAAAAAAAAAAAAAAAAA: '#ff00ff'};
+    const view = machinesView(detailPayload(), {now: NOW, colors});
+    assert.deepEqual(view.machines.map(m => m.color), [MACHINE_PALETTE[0], '#ff00ff']);
+    const all = machineDetailView(detailPayload(), 'all', {now: NOW, colors});
+    assert.deepEqual(all.chart.colors, [['laptop', MACHINE_PALETTE[0]], ['desk', '#ff00ff']]);
+    assert.equal(machineDetailView(detailPayload(), 'deskAAAAAAAAAAAAAAAAAA', {now: NOW, colors}).color, '#ff00ff');
+});
+
+test('the first Machines get far-apart default colors', () => {
+    assert.deepEqual(MACHINE_PALETTE.slice(0, 3), ['#3584e4', '#e66100', '#9141ac']);
 });

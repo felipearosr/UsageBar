@@ -44,7 +44,15 @@ import {
     StatusMessageState,
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
-import {machinesView, nextPushDelaySecs, planSyncTick} from './machinesync.js';
+import {machineDetailView, machinesView, nextPushDelaySecs, planSyncTick} from './machinesync.js';
+import {
+    decodeCatalog,
+    encodeCatalog,
+    isModelHidden,
+    modelCatalog,
+    modelColors,
+    withoutHiddenModels,
+} from './modelprefs.js';
 import {
     compareVersions,
     installCommand,
@@ -491,6 +499,11 @@ const DISPLAY = {
     hiddenChips: new Set(),
     hiddenWindows: new Set(),
     hiddenCostChartProviders: new Set(),
+    // Per-model chart preferences (modelprefs.js).
+    hiddenModels: new Set(),
+    modelColors: {},
+    machineColors: {},
+    knownModels: [],
 };
 
 function resetText(w) {
@@ -586,36 +599,6 @@ function chartPoints(report, limit = TREND_CHART_DAYS) {
         });
     }
     return points;
-}
-
-// Per-model colors for the stacked chart: the biggest model keeps the
-// provider's brand color, the rest walk a fixed distinguishable palette.
-const MODEL_PALETTE = [
-    '#3584e4', // blue
-    '#2ec27e', // green
-    '#f5c211', // yellow
-    '#9141ac', // purple
-    '#e66100', // orange
-    '#ed333b', // red
-    '#62a0ea', // light blue
-    '#33d17a', // light green
-    '#f8e45c', // light yellow
-    '#c061cb', // light purple
-];
-
-function modelColorsFromPoints(points, brand) {
-    const totals = new Map();
-    for (const p of points) {
-        for (const [name, v] of p.models)
-            totals.set(name, (totals.get(name) ?? 0) + v);
-    }
-    const sorted = [...totals.entries()].sort((a, b) => b[1] - a[1]);
-    const colors = new Map();
-    sorted.forEach(([name], i) => {
-        colors.set(name,
-            i === 0 && brand ? brand : MODEL_PALETTE[(i - 1) % MODEL_PALETTE.length]);
-    });
-    return colors;
 }
 
 function chartTooltipText(point) {
@@ -1837,6 +1820,7 @@ export default class UsageBarExtension extends Extension {
         this._names = {};
         this._namesVersion = 0;
         this._selectedProvider = null;
+        this._selectedMachine = null;
         this._notified = new Map();
         this._costs = null;
         this._costVersion = 0;
@@ -1906,6 +1890,10 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.hiddenWindows = new Set(this._settings.get_strv('hidden-windows'));
             DISPLAY.hiddenCostChartProviders = new Set(
                 this._settings.get_strv('hidden-cost-chart-providers'));
+            DISPLAY.hiddenModels = new Set(this._settings.get_strv('hidden-models'));
+            DISPLAY.modelColors = this._settings.get_value('model-colors').deepUnpack();
+            DISPLAY.machineColors = this._settings.get_value('machine-colors').deepUnpack();
+            DISPLAY.knownModels = decodeCatalog(this._settings.get_strv('known-models'));
         };
         applySettings();
         this._statusScopes = scopeMap(this._settings);
@@ -1917,7 +1905,8 @@ export default class UsageBarExtension extends Extension {
             'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
             'show-reset-when-exhausted', 'chip-display-mode',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
-            'hidden-cost-chart-providers',
+            'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
+            'machine-colors',
             'status-scopes', 'status-checks-enabled',
         ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
@@ -1988,6 +1977,7 @@ export default class UsageBarExtension extends Extension {
         this._indicator.menu.connect('open-state-changed', (_menu, open) => {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
+                this._selectedMachine = null;
                 this._view = 'providers';
                 this._syncTick();
                 if (this._settings.get_boolean('refresh-on-open'))
@@ -2409,6 +2399,7 @@ export default class UsageBarExtension extends Extension {
                 if (!refresh && sync.payload?.error && payload.refreshedAt === sync.payload.refreshedAt)
                     payload.error = sync.payload.error;
                 sync.payload = payload;
+                this._publishModelCatalog();
             }
             if (!refresh && sync.paired && !wasPaired) {
                 // Just paired (or serve just started): push and read right away.
@@ -2620,6 +2611,7 @@ export default class UsageBarExtension extends Extension {
             this._costOverviewReports = {};
         }
         this._costOverview(); // prepare the small aggregation off the click path
+        this._publishModelCatalog();
         this._requestRender();
     }
 
@@ -2787,6 +2779,7 @@ export default class UsageBarExtension extends Extension {
                 .find(child => child._usagebarMachineCards);
             const iso = new Date().toISOString();
             const spend = costUSD => ({costUSD, costIncomplete: false, totalTokens: 0, requests: 0});
+            const today = localDateKey();
             const machine = (id, thisMachine, cost, provider) => ({
                 machineId: id,
                 displayName: id,
@@ -2797,6 +2790,7 @@ export default class UsageBarExtension extends Extension {
                 today: spend(cost / 3),
                 last30Days: spend(cost),
                 models: [{provider, model: `${id}-model`, spend: spend(cost)}],
+                days: [{date: today, spend: spend(cost / 3)}],
                 coverage: {from: '2026-06-25', to: '2026-09-24'},
             });
             this._indicator._closeCostPanel();
@@ -2807,6 +2801,7 @@ export default class UsageBarExtension extends Extension {
                 paired: true,
                 refreshedAt: iso,
                 status: {
+                    today,
                     total: {today: spend(10 / 3), last30Days: spend(10)},
                     errors: [],
                     machines: [machine('qa-laptop', true, 6, 'claude'), machine('qa-desk', false, 4, 'codex')],
@@ -2830,7 +2825,26 @@ export default class UsageBarExtension extends Extension {
                     done(error);
                     return;
                 }
-                capture('machines-tab.png', () => {
+                // Drill into one Machine, then into All Machines, like a provider.
+                const openDetail = (select, name, file, next) => {
+                    select();
+                    later(200, () => {
+                        try {
+                            const detailCard = machinesBox()?._usagebarMachineDetail;
+                            assertions.push(painted(`${name} detail is painted`, detailCard));
+                            assertions.push(assertion(`${name} detail has a chart`, !!detailCard?.get_children()
+                                .some(child => child.has_style_class_name?.('usagebar-chart-wrap'))));
+                        } catch (error) {
+                            done(error);
+                            return;
+                        }
+                        capture(file, () => {
+                            this._selectMachine(null);
+                            next();
+                        });
+                    });
+                };
+                const staleStep = () => {
                     this._sync.payload = {...this._sync.payload, error: "Couldn't reach the Sync Server"};
                     this._render();
                     later(200, () => {
@@ -2864,6 +2878,15 @@ export default class UsageBarExtension extends Extension {
                             }
                         });
                     });
+                };
+                capture('machines-tab.png', () => {
+                    openDetail(() => machinesBox()._usagebarMachineCards.get('qa-desk').emit('clicked', 1),
+                        'Machine', 'machines-detail.png', () => openDetail(() => this._selectMachine('all'),
+                            'All Machines', 'machines-all.png', () => later(200, () => {
+                                assertions.push(assertion('back returns to the Machines list',
+                                    machinesBox()?._usagebarMachineCards.size === 2));
+                                staleStep();
+                            })));
                 });
             });
         };
@@ -3075,6 +3098,7 @@ export default class UsageBarExtension extends Extension {
         const machines = machinesView(this._sync?.payload, {
             now: Date.now(),
             fetchError: this._sync?.fetchError,
+            colors: DISPLAY.machineColors,
         });
         if (machines.hidden && this._view === 'machines')
             this._view = 'providers';
@@ -3102,12 +3126,26 @@ export default class UsageBarExtension extends Extension {
         this._popupDirty = false;
     }
 
-    // Machines tab: every Machine in the Sync Group with an active dot, its
-    // Spend today and over 30 days, its share, a provider/model breakdown,
-    // and Coverage. Provider cards on the other tab stay this Machine only.
+    // Machines tab, laid out like Providers: an All Machines summary and one
+    // row per Machine in the Sync Group. Clicking either opens its detail —
+    // Spend, a daily chart and the provider/model breakdown — for that
+    // Machine alone or for every Machine combined. Provider cards on the
+    // other tab stay this Machine only.
     _renderMachines(view) {
-        const key = JSON.stringify(view);
-        if (this._popupView === 'machines' && this._machinesRenderKey === key)
+        let detailView = null;
+        if (this._selectedMachine && !view.hidden) {
+            detailView = machineDetailView(this._sync?.payload, this._selectedMachine, {
+                now: Date.now(),
+                hiddenModels: DISPLAY.hiddenModels,
+                colors: DISPLAY.machineColors,
+            });
+            if (!detailView)
+                this._selectedMachine = null; // it left the Sync Group
+        }
+        const key = JSON.stringify({view, detailView, colors: detailView ? DISPLAY.modelColors : null,
+            ranked: detailView ? DISPLAY.knownModels : null});
+        const popupView = detailView ? `machine:${detailView.id}` : 'machines';
+        if (this._popupView === popupView && this._machinesRenderKey === key)
             return;
         const detail = this._indicator._detailBox;
         this._indicator._closeCostPanel();
@@ -3143,67 +3181,143 @@ export default class UsageBarExtension extends Extension {
         }
         box.add_child(content);
 
-        if (view.loading || (!view.machines.length && !view.banner)) {
-            content.add_child(new St.Label({
-                text: view.loading ? 'Reading Machines…' : 'No Machines have synced yet.',
-                style_class: 'usagebar-dim usagebar-detail-empty',
-            }));
-        }
-
-        if (view.total && view.machines.length) {
-            const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machines-head'});
-            head.add_child(new St.Label({
-                text: 'All Machines',
-                style_class: 'usagebar-card-title',
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            head.add_child(new St.Label({
-                text: `Today ${view.total.today} · 30 days ${view.total.last30}`,
-                style_class: 'usagebar-dim',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            content.add_child(head);
-        }
-
         const refs = new Map();
-        for (const machine of view.machines) {
-            const card = this._buildMachineCard(machine);
-            refs.set(machine.id, card);
-            content.add_child(card);
-        }
-
-        if (view.errors) {
+        let detailCard = null;
+        if (detailView) {
+            detailCard = this._buildMachineDetail(detailView);
+            content.add_child(detailCard);
+        } else {
+            if (view.loading || (!view.machines.length && !view.banner)) {
+                content.add_child(new St.Label({
+                    text: view.loading ? 'Reading Machines…' : 'No Machines have synced yet.',
+                    style_class: 'usagebar-dim usagebar-detail-empty',
+                }));
+            }
+            if (view.total && view.machines.length) {
+                content.add_child(this._buildMachinesSummary(view));
+                content.add_child(new St.Widget({
+                    style_class: 'usagebar-separator usagebar-row-sep',
+                    height: 1,
+                    x_expand: true,
+                }));
+            }
+            view.machines.forEach((machine, index) => {
+                if (index > 0) {
+                    content.add_child(new St.Widget({
+                        style_class: 'usagebar-separator usagebar-row-sep',
+                        height: 1,
+                        x_expand: true,
+                    }));
+                }
+                const row = this._buildMachineRow(machine);
+                refs.set(machine.id, row);
+                content.add_child(row);
+            });
+            if (view.errors) {
+                content.add_child(new St.Label({
+                    text: `${view.errors} synced item${view.errors === 1 ? '' : 's'} couldn't be read.`,
+                    style_class: 'usagebar-dim usagebar-machines-note',
+                }));
+            }
             content.add_child(new St.Label({
-                text: `${view.errors} synced item${view.errors === 1 ? '' : 's'} couldn't be read.`,
+                text: 'Cost on the Providers tab covers this Machine only.',
                 style_class: 'usagebar-dim usagebar-machines-note',
             }));
         }
-        content.add_child(new St.Label({
-            text: 'Cost on the Providers tab covers this Machine only.',
-            style_class: 'usagebar-dim usagebar-machines-note',
-        }));
 
         box._usagebarMachineCards = refs;
+        box._usagebarMachineDetail = detailCard;
         box._usagebarContent = content;
         detail.add_child(box);
-        this._popupView = 'machines';
+        this._popupView = popupView;
         this._machinesRenderKey = key;
     }
 
-    _buildMachineCard(machine) {
-        const card = new St.BoxLayout({
-            vertical: true,
+    _selectMachine(id) {
+        this._selectedMachine = id;
+        this._render();
+    }
+
+    // All Machines row: 30-day total, a Machine-colored split bar and
+    // per-Machine totals, like the Providers spend summary.
+    _buildMachinesSummary(view) {
+        const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-summary'});
+        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-head'});
+        head.add_child(new St.Label({
+            text: 'All Machines',
+            style_class: 'usagebar-compact-title',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        head.add_child(new St.Label({
+            text: `Today ${view.total.today}`,
+            style_class: 'usagebar-dim usagebar-compact-subtitle',
             x_expand: true,
-            style_class: 'usagebar-card usagebar-machine-card',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        head.add_child(new St.Label({
+            text: view.total.last30,
+            style_class: 'usagebar-kpi-value',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        row.add_child(head);
+
+        const total30 = view.machines.reduce((sum, machine) => sum + machine.cost30, 0);
+        const visible = view.machines
+            .filter(machine => machine.cost30 > 0)
+            .map(machine => ({cost: machine.cost30, color: machine.color}));
+        if (visible.length) {
+            const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
+            const segs = visible.map(machine => {
+                const seg = new St.Widget({height: 4});
+                split.add_child(seg);
+                return [seg, machine];
+            });
+            split.connect('notify::allocation', () => {
+                const layout = buildSummaryBarSegments(visible, total30, split.allocation.get_width());
+                segs.forEach(([seg, machine], index) => {
+                    const {width, radius} = layout[index];
+                    seg.set_style(`background-color: ${machine.color}; border-radius: ${radius};`);
+                    if (seg.width !== width)
+                        seg.set_width(width);
+                });
+            });
+            row.add_child(split);
+        }
+
+        const legend = new St.BoxLayout({style_class: 'usagebar-ov-summary-legend'});
+        for (const machine of view.machines) {
+            const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
+            entry.add_child(new St.Widget({
+                style: `width: 8px; height: 8px; border-radius: 4px; background-color: ${machine.color};`,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            entry.add_child(new St.Label({
+                text: `${machine.name} ${machine.last30}`,
+                style_class: 'usagebar-dim',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            legend.add_child(entry);
+        }
+        row.add_child(legend);
+
+        const button = new St.Button({
+            child: row,
+            x_expand: true,
+            can_focus: true,
+            style_class: 'usagebar-compact-row',
         });
+        button.connect('clicked', () => this._selectMachine('all'));
+        return button;
+    }
+
+    _buildMachineRow(machine) {
+        const body = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-machine-body'});
         const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-head'});
         const state = machine.retired ? 'retired' : machine.active ? 'active' : 'idle';
         const dot = new St.Widget({
             style_class: `usagebar-machine-dot usagebar-machine-dot-${state}`,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        card._usagebarDot = dot;
         head.add_child(dot);
         head.add_child(new St.Label({
             text: machine.name,
@@ -3230,42 +3344,194 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
-        card.add_child(head);
+        body.add_child(head);
 
-        card.add_child(new St.Label({
+        // Spend on the left; the providers this Machine used on the right.
+        const line = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-line'});
+        line.add_child(new St.Widget({
+            style: `width: 3px; height: 12px; border-radius: 2px; background-color: ${machine.color};`,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        line.add_child(new St.Label({
             text: `Today ${machine.today} · 30 days ${machine.last30}`,
             style_class: 'usagebar-machine-spend',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
         }));
+        const providers = [...new Set(machine.models.map(model => model.provider))];
+        for (const provider of providers)
+            line.add_child(this._providerIcon(provider, 12));
+        body.add_child(line);
 
-        for (const model of machine.models) {
-            const row = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-model'});
-            const icon = this._providerIcon(model.provider, 12);
-            if (icon)
-                row.add_child(icon);
-            row.add_child(new St.Label({
-                text: model.model,
-                style_class: 'usagebar-dim',
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            row.add_child(new St.Label({
-                text: model.spend,
-                style_class: 'usagebar-dim',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            card.add_child(row);
-        }
-        if (machine.moreModels) {
-            card.add_child(new St.Label({
-                text: `+${machine.moreModels} more`,
-                style_class: 'usagebar-dim usagebar-machine-model',
-            }));
-        }
-
-        card.add_child(new St.Label({
+        body.add_child(new St.Label({
             text: [machine.coverage, machine.lastSeen].filter(Boolean).join(' · '),
             style_class: 'usagebar-dim usagebar-machine-foot',
         }));
+
+        const button = new St.Button({
+            child: body,
+            x_expand: true,
+            can_focus: true,
+            style_class: 'usagebar-compact-row usagebar-machine-row',
+        });
+        button._usagebarDot = dot;
+        button.connect('clicked', () => this._selectMachine(machine.id));
+        return button;
+    }
+
+    // One Machine's detail, or every Machine's combined ('all').
+    _buildMachineDetail(d) {
+        const card = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: 'usagebar-card-flat usagebar-machine-detail',
+        });
+        const addSeparator = () => card.add_child(new St.Widget({
+            style_class: 'usagebar-separator',
+            height: 1,
+            x_expand: true,
+        }));
+
+        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-detail-head'});
+        const backBtn = new St.Button({
+            style_class: 'usagebar-btn usagebar-back-btn',
+            can_focus: true,
+            reactive: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        backBtn.add_child(new St.Icon({
+            icon_name: 'go-previous-symbolic',
+            icon_size: 14,
+            style_class: 'usagebar-btn-icon',
+        }));
+        backBtn.connect('clicked', () => this._selectMachine(null));
+        head.add_child(backBtn);
+        // Our own laptop / devices glyph in a badge tinted with the
+        // Machine's color (neutral for All Machines).
+        const iconFile = this.dir.get_child('icons')
+            .get_child(d.all ? 'usagebar-machines-symbolic.svg' : 'usagebar-machine-symbolic.svg');
+        const icon = new St.Icon({
+            gicon: new Gio.FileIcon({file: iconFile}),
+            icon_size: 16,
+            style_class: 'usagebar-machine-badge-icon',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const badge = new St.Bin({
+            style_class: 'usagebar-machine-badge',
+            y_align: Clutter.ActorAlign.CENTER,
+            child: icon,
+        });
+        if (d.color) {
+            const [r, g, b] = hexRGB(d.color).map(v => Math.round(v * 255));
+            badge.set_style(`background-color: rgba(${r}, ${g}, ${b}, 0.18);`);
+            icon.set_style(`color: ${d.color};`);
+        }
+        head.add_child(badge);
+        head.add_child(new St.Label({
+            text: d.title,
+            style_class: 'usagebar-card-title',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        if (d.thisMachine) {
+            head.add_child(new St.Label({
+                text: 'this Machine',
+                style_class: 'usagebar-badge',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        if (d.state && d.state !== 'idle') {
+            head.add_child(new St.Label({
+                text: d.state,
+                style_class: `usagebar-badge${d.state === 'retired' ? ' usagebar-badge-stale' : ''}`,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        head.add_child(new St.Widget({x_expand: true}));
+        if (d.share !== null) {
+            head.add_child(new St.Label({
+                text: `${Math.round(d.share * 100)}%`,
+                style_class: 'usagebar-worst',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        card.add_child(head);
+
+        for (let i = 0; i < d.kpis.length; i += 2) {
+            const kpiRow = new St.BoxLayout({x_expand: true, style_class: 'usagebar-kpi-row'});
+            d.kpis.slice(i, i + 2).forEach((kpi, col) => {
+                const cell = new St.BoxLayout({
+                    vertical: true,
+                    ...(col === 0 ? {width: KPI_COL_WIDTH} : {x_expand: true}),
+                });
+                cell.add_child(new St.Label({text: kpi.title, style_class: 'usagebar-dim'}));
+                cell.add_child(new St.Label({text: kpi.value, style_class: 'usagebar-kpi-value'}));
+                kpiRow.add_child(cell);
+            });
+            card.add_child(kpiRow);
+        }
+
+        if (d.chart) {
+            const colors = new Map(d.chart.colors);
+            card.add_child(this._buildTrendChart(d.chart.points, d.color, colors));
+            // Only the combined chart is split by Machine.
+            const legend = d.all ? buildModelLegend(d.chart.points, colors, (anchor, rows) => {
+                if (anchor)
+                    this._showModelTable(anchor, rows);
+                else
+                    this._hideModelTable();
+            }) : null;
+            if (legend)
+                card.add_child(legend);
+        }
+
+        if (d.models.length) {
+            addSeparator();
+            card.add_child(new St.Label({text: 'Models · 30 days', style_class: 'usagebar-window-label'}));
+            const colorsByProvider = new Map();
+            for (const model of d.models) {
+                if (!colorsByProvider.has(model.provider)) {
+                    colorsByProvider.set(model.provider, this._modelColors(model.provider, [],
+                        d.models.filter(x => x.provider === model.provider).map(x => x.model)));
+                }
+                const row = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-model'});
+                row.add_child(this._providerIcon(model.provider, 12));
+                row.add_child(this._modelDot(colorsByProvider.get(model.provider).get(model.model)));
+                row.add_child(new St.Label({
+                    text: model.model,
+                    style_class: 'usagebar-dim',
+                    x_expand: true,
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+                if (model.tokens !== '0') {
+                    row.add_child(new St.Label({
+                        text: `${model.tokens} tok`,
+                        style_class: 'usagebar-dim usagebar-machine-model-tokens',
+                        y_align: Clutter.ActorAlign.CENTER,
+                    }));
+                }
+                row.add_child(new St.Label({
+                    text: model.spend,
+                    style_class: 'usagebar-machine-model-spend',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+                card.add_child(row);
+            }
+            if (d.moreModels) {
+                card.add_child(new St.Label({
+                    text: `+${d.moreModels} more`,
+                    style_class: 'usagebar-dim usagebar-machine-model',
+                }));
+            }
+        }
+
+        addSeparator();
+        for (const line of d.info) {
+            card.add_child(new St.Label({
+                text: line,
+                style_class: 'usagebar-dim usagebar-machine-foot',
+            }));
+        }
         return card;
     }
 
@@ -3334,6 +3600,7 @@ export default class UsageBarExtension extends Extension {
             scope,
             status?.fetchedAt ?? 0,
             costVersion,
+            this._modelPrefsKey(provider),
             localDateKey(),
             timeBucket,
         ].join('|');
@@ -3365,7 +3632,10 @@ export default class UsageBarExtension extends Extension {
             .map(provider => `${provider.provider}:${this._displayName(provider.provider)}`)
             .join('|');
         const hiddenChartProviders = [...DISPLAY.hiddenCostChartProviders].sort().join(',');
-        return `${this._costVersion}:${localDateKey()}:${this._namesVersion}:${names}:${hiddenChartProviders}`;
+        const modelPrefs = JSON.stringify([[...DISPLAY.hiddenModels].sort(), DISPLAY.modelColors,
+            DISPLAY.knownModels.map(entry => `${entry.p}:${entry.m}`)]);
+        return `${this._costVersion}:${localDateKey()}:${this._namesVersion}:${names}:` +
+            `${hiddenChartProviders}:${modelPrefs}`;
     }
 
     _renderOverview(rows) {
@@ -3640,6 +3910,13 @@ export default class UsageBarExtension extends Extension {
 
     _hideModelTable() {
         this._indicator?._modelTable?.hide();
+    }
+
+    _modelDot(color) {
+        return new St.Widget({
+            style: `width: 8px; height: 8px; border-radius: 4px; background-color: ${color ?? '#9a9996'};`,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
     }
 
     _providerIcon(provider, size) {
@@ -3952,9 +4229,16 @@ export default class UsageBarExtension extends Extension {
             num('Share', 'usagebar-ov-small'),
             num('Tokens', 'usagebar-ov-small'),
         ], 'usagebar-ov-table-head'));
-        for (const m of ov.models.slice(0, OV_MAX_MODELS)) {
+        const shownModels = ov.models.filter(m => !isModelHidden(DISPLAY.hiddenModels, m.provider, m.name));
+        const colorsByProvider = new Map();
+        for (const m of shownModels.slice(0, OV_MAX_MODELS)) {
+            if (!colorsByProvider.has(m.provider)) {
+                colorsByProvider.set(m.provider, this._modelColors(m.provider, [],
+                    shownModels.filter(x => x.provider === m.provider).map(x => x.name)));
+            }
             const name = new St.BoxLayout({x_expand: true, style_class: 'usagebar-model-entry'});
             name.add_child(this._providerIcon(m.provider, 14));
+            name.add_child(this._modelDot(colorsByProvider.get(m.provider).get(m.name)));
             name.add_child(new St.Label({
                 text: m.name,
                 style_class: 'usagebar-ov-text',
@@ -3967,7 +4251,7 @@ export default class UsageBarExtension extends Extension {
                 num(fmtTokens(m.tokens), 'usagebar-ov-dimtext'),
             ], 'usagebar-ov-table-row'));
         }
-        const hidden = ov.models.length - OV_MAX_MODELS;
+        const hidden = shownModels.length - OV_MAX_MODELS;
         if (hidden > 0) {
             modelTable.add_child(new St.Label({
                 text: `+${hidden} more models`,
@@ -4277,6 +4561,47 @@ export default class UsageBarExtension extends Extension {
         card.add_child(foot);
     }
 
+    // Publish every model seen in cost and sync data so the prefs window can
+    // offer an include switch and a color per model. Writes only on change.
+    _publishModelCatalog() {
+        if (!this._settings)
+            return;
+        const encoded = encodeCatalog(modelCatalog({
+            reports: this._costs ?? [],
+            syncStatus: this._sync?.payload?.status,
+            previous: DISPLAY.knownModels,
+        }));
+        const prev = this._settings.get_strv('known-models');
+        if (encoded.length !== prev.length || encoded.some((v, i) => v !== prev[i]))
+            this._settings.set_strv('known-models', encoded);
+    }
+
+    // Chart colors for a provider's models: prefs overrides first, then rank
+    // order from the published catalog. `points` and `extra` (names, biggest
+    // first) add models not in it yet.
+    _modelColors(provider, points = [], extra = []) {
+        const totals = new Map();
+        for (const point of points) {
+            for (const [name, value] of point.models)
+                totals.set(name, (totals.get(name) ?? 0) + value);
+        }
+        return modelColors(provider, {
+            catalog: DISPLAY.knownModels,
+            overrides: DISPLAY.modelColors,
+            brand: PROVIDER_META[provider]?.color,
+            names: [...[...totals.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name), ...extra],
+        });
+    }
+
+    // Changes whenever a model preference that affects `provider` changes.
+    _modelPrefsKey(provider) {
+        const prefix = `${provider}:`;
+        const hidden = [...DISPLAY.hiddenModels].filter(key => key.startsWith(prefix)).sort();
+        const colors = Object.entries(DISPLAY.modelColors).filter(([key]) => key.startsWith(prefix)).sort();
+        const ranked = DISPLAY.knownModels.filter(entry => entry.p === provider).map(entry => entry.m);
+        return JSON.stringify([hidden, colors, ranked]);
+    }
+
     // Publish the set of bars that can currently render so the prefs window can
     // show one hide toggle per bar without fetching usage itself. Writes only on
     // change — set_strv with an equal value emits no 'changed', but guarding
@@ -4422,8 +4747,8 @@ export default class UsageBarExtension extends Extension {
         const credits = showCost && DISPLAY.showExtras ? creditsInfo(row) : null;
         const kpis = costKpis(report);
         const brand = PROVIDER_META[row.provider]?.color;
-        const trend = chartPoints(report);
-        const colors = trend ? modelColorsFromPoints(trend, brand) : new Map();
+        const trend = withoutHiddenModels(chartPoints(report), row.provider, DISPLAY.hiddenModels);
+        const colors = trend ? this._modelColors(row.provider, trend) : new Map();
         const legend = trend ? buildModelLegend(trend, colors, (anchor, rows) => {
             if (anchor)
                 this._showModelTable(anchor, rows);
