@@ -142,6 +142,8 @@ struct CostUsageClaudePriceRangeTests {
             output: output,
             costNanos: nanos,
             costPriced: !incomplete,
-            isIncomplete: incomplete ? true : nil)
+            isIncomplete: incomplete ? true : nil,
+            // Incomplete entries carry no cache fields; the fork records them as omitted, not zero.
+            omittedFields: incomplete ? [.cacheRead, .cacheCreation] : nil)
     }
 }

@@ -214,7 +214,7 @@ struct CostUsageClaudeFragmentTests {
             }
             #expect(recorder.snapshot().fragmentEncodes == 4)
             #expect(recorder.snapshot().fragmentFallbacks == 0)
-            cache.usage.version = 4
+            cache.usage.version = 6
             cache.usage.timeZoneIdentifier = Calendar.current.timeZone.identifier
             let url = CostUsageClaudeCacheIO.cacheFileURL(provider: .claude, cacheRoot: root)
             #expect(try Data(contentsOf: url) == self.encoder.encode(cache))
