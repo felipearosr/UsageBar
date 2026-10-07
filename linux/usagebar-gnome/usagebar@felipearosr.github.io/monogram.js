@@ -24,6 +24,29 @@ export function providerMonogram(name, fallback = '') {
     return word[0].toUpperCase() + (word[1] ?? '').toLowerCase();
 }
 
+// Hand-picked marks for providers whose computed monograms would collide
+// ("Codex"/"Copilot"/"Codebuff" all compute "Co"). Keyed by provider id; they
+// override the computed rule, so every known provider's badge is unique.
+export const MONOGRAM_OVERRIDES = Object.freeze({
+    codex: 'Cx',
+    copilot: 'Cp',
+    codebuff: 'Cb',
+    deepgram: 'Dg',
+    devin: 'Dv',
+    grok: 'Gk',
+    groq: 'Gq',
+    kilo: 'Kl',
+    kimi: 'Km',
+    kiro: 'Kr',
+    warp: 'Wp',
+    wayfinder: 'Wf',
+});
+
+// The monogram a provider's badge shows: its override, else the computed one.
+export function monogramFor(provider, name) {
+    return MONOGRAM_OVERRIDES[provider] ?? providerMonogram(name, provider);
+}
+
 function normalizeHex(color) {
     const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color ?? '').trim());
     if (!match)
@@ -50,7 +73,7 @@ export function monogramTextColor(background) {
 export function monogramBadge(meta, provider, size) {
     const background = normalizeHex(meta?.color) ?? FALLBACK_COLOR;
     return {
-        text: providerMonogram(meta?.name, provider),
+        text: monogramFor(provider, meta?.name),
         background,
         foreground: monogramTextColor(background),
         fontPx: Math.max(7, Math.round(size * 0.62)),

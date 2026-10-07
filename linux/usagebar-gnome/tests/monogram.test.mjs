@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {PROVIDER_META} from '../usagebar@felipearosr.github.io/providermeta.js';
 import {
+    MONOGRAM_OVERRIDES,
     monogramBadge,
+    monogramFor,
     monogramTextColor,
     providerMonogram,
 } from '../usagebar@felipearosr.github.io/monogram.js';
@@ -31,6 +33,25 @@ test('every known provider gets a short readable monogram', () => {
         const text = providerMonogram(meta.name, id);
         assert.ok(text.length >= 1 && text.length <= 2, `${id}: ${text}`);
         assert.match(text, /^[\p{L}\p{N}?]+$/u, id);
+    }
+});
+
+test('every known provider has a unique monogram', () => {
+    const owners = new Map();
+    for (const [id, meta] of Object.entries(PROVIDER_META)) {
+        const text = monogramFor(id, meta.name);
+        assert.ok(!owners.has(text), `${id} and ${owners.get(text)} both show "${text}"`);
+        owners.set(text, id);
+    }
+});
+
+test('overrides replace the computed monogram and name known providers', () => {
+    assert.equal(monogramFor('codex', 'Codex'), 'Cx');
+    assert.equal(monogramBadge(PROVIDER_META.codex, 'codex', 14).text, 'Cx');
+    assert.equal(monogramFor('claude', 'Claude'), 'Cl');
+    for (const [id, text] of Object.entries(MONOGRAM_OVERRIDES)) {
+        assert.ok(PROVIDER_META[id], `override for unknown provider ${id}`);
+        assert.match(text, /^\p{Lu}\p{Ll}?$|^\p{Lu}{2}$/u, id);
     }
 });
 
