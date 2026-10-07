@@ -175,4 +175,30 @@ struct ClaudeSpendBucketLinuxTests {
         #expect(bucket.cacheCreationTokens == nil)
         #expect(bucket.totalTokens == 48)
     }
+
+    @Test
+    func `omitted fields survive the persisted row encoding`() throws {
+        // The cache artifact memo can hide a lossy encoding, so check the bytes directly.
+        let row = CostUsageScanner.ClaudeUsageRow(
+            dayKey: "2025-12-20",
+            model: Self.pricedModel,
+            sessionId: nil,
+            messageId: "msg_1",
+            requestId: "req_1",
+            timestampUnixMs: 0,
+            isSidechain: false,
+            pathRole: .parent,
+            input: 40,
+            cacheRead: 0,
+            cacheCreate: 0,
+            cacheCreate1h: nil,
+            output: 8,
+            costNanos: 0,
+            costPriced: true,
+            omittedFields: [.cacheRead, .cacheCreation])
+        let decoded = try JSONDecoder().decode(
+            CostUsageScanner.ClaudeUsageRow.self,
+            from: JSONEncoder().encode(row))
+        #expect(decoded.omittedFields == [.cacheRead, .cacheCreation])
+    }
 }
