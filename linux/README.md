@@ -88,13 +88,33 @@ you may have installed.
 Verified on Fedora 43 / GNOME 49 and Fedora 44 / GNOME 50 (Wayland), and on
 Ubuntu 24.04 / GNOME 46 packages (Wayland and X11, headless).
 
+### Just the CLI
+
+To get only this fork's `codexbar` CLI (with `codexbar sync`) on any x86_64
+or aarch64 distro with glibc 2.38 or newer, libcurl, libsqlite3 and libstdc++:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh
+```
+
+[`packaging/install-cli.sh`](packaging/install-cli.sh) downloads the CLI
+tarball from the latest release (or the one you name: `| sh -s -- 1.0.1`),
+checks its `.sha256`, and installs it into `~/.local/lib/usagebar-cli` with
+`~/.local/bin/codexbar` pointing at it. `--system` installs under `/usr/local`
+instead (run it with `sudo`; the script never asks for privileges itself),
+`--prefix DIR` anywhere else, and `--uninstall` removes exactly what it
+installed. It refuses to replace a `codexbar` it didn't install.
+
 ### Releasing
 
 Push a `usagebar-v<version>` tag (for example `usagebar-v1.0.1`).
 [`release-usagebar.yml`](../.github/workflows/release-usagebar.yml) builds the
 fork CLI for x86_64 and aarch64, packages it with the extension
-([`packaging/build-packages.sh`](packaging/build-packages.sh)), and publishes
-the release the extension's updater reads. The repo must be public for
+([`packaging/build-packages.sh`](packaging/build-packages.sh)), smoke-tests
+`install-cli.sh` against the CLI tarball in clean containers
+([`packaging/tests/`](packaging/tests/)), and publishes the packages plus
+`usagebar-cli-<version>-linux-<arch>.tar.gz` (and `.sha256`) as the release
+the extension's updater reads. The repo must be public for
 installed copies to see updates.
 
 ### Development
