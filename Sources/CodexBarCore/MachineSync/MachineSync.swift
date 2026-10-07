@@ -8,6 +8,7 @@ public typealias MachineSyncSpendSource = @Sendable (_ since: Date, _ until: Dat
 public enum MachineSyncSpend {
     /// Local-log providers only (§5.2): Codex and Claude session logs, with Pi sessions folded into each.
     /// Account Billing sources never feed Machine Sync.
+    /// Provider-specific by design: Machine Sync only carries the two local-log providers.
     public static let providers: [UsageProvider] = [.codex, .claude]
 
     public static func localLogs(cacheRoot: URL? = nil) -> MachineSyncSpendSource {
