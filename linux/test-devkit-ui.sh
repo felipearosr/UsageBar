@@ -12,6 +12,7 @@ dconf_profile="$artifact_dir/dconf-profile"
 assert_script="$repo_dir/linux/usagebar-gnome/tests/assert-ui-smoke.mjs"
 
 mkdir -p "$artifact_dir"
+rm -f "$result_path" "$screenshot_path" # a reused dir must not pass on a stale result
 glib-compile-schemas "$extension_dir/schemas"
 mkdir -p "$HOME/.local/share/gnome-shell/extensions"
 ln -sfn "$extension_dir" \
