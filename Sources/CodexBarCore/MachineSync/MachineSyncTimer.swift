@@ -236,7 +236,7 @@ public struct MachineSyncTimerResult: Sendable, Equatable {
 public struct MachineSyncTimerInstaller: Sendable {
     public var platform: MachineSyncTimer.Platform
     public var home: URL
-    public var environment: [String: String]
+    @ProcessEnvironment public var environment: [String: String]
     public var userName: String
     public var userID: UInt32
     /// Directory systemd-logind marks lingering users in (`/var/lib/systemd/linger`).
