@@ -77,7 +77,7 @@ installed_kb="$(du -sk "$root" | cut -f1)"
     echo "Architecture: $deb_arch"
     echo "Maintainer: $maintainer"
     echo "Installed-Size: $installed_kb"
-    echo "Depends: gnome-shell (>= 46), gjs, libcurl4t64 | libcurl4, libsqlite3-0, libstdc++6, curl, pkexec | policykit-1"
+    echo "Depends: gnome-shell (>= 46), gjs, libcurl4t64 | libcurl4, libsqlite3-0, libstdc++6, curl"
     echo "Recommends: librsvg2-common"
     echo "Section: gnome"
     echo "Priority: optional"
@@ -111,7 +111,6 @@ Requires:       gnome-shell >= 46
 Requires:       gjs
 Requires:       curl
 Requires:       libcurl
-Requires:       polkit
 Recommends:     librsvg2
 
 %description
