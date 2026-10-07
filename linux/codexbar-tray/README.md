@@ -7,8 +7,10 @@ this app supervises as a `codexbar serve` child process.
 
 ## Requirements
 
-- The `codexbar` CLI on `$PATH` (or `$CODEXBAR_BIN`):
-  `brew install steipete/tap/codexbar`, AUR `codexbar-cli`, or a release tarball.
+- The `codexbar` CLI on `$PATH`, in `~/.local/bin`, or at `$CODEXBAR_BIN`. The
+  UsageBar packages in [`../INSTALL.md`](../INSTALL.md) install it at
+  `/usr/libexec/usagebar/codexbar`, which isn't on `PATH`, so set
+  `CODEXBAR_BIN=/usr/libexec/usagebar/codexbar`.
 - A StatusNotifier tray host. KDE, Cinnamon, and XFCE have one; on GNOME install the
   AppIndicator extension (`gnome-shell-extension-appindicator` — Ubuntu preinstalls it,
   stock Fedora Workstation does not).
