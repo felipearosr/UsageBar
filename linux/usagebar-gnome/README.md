@@ -64,9 +64,10 @@ python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'
 ```
 
 The ZIP holds only an allowlist: the modules `extension.js` and `prefs.js`
-import, `stylesheet.css`, `metadata.json`, the schema XML and `LICENSE` (no
-tests, tools, provider logos or compiled schema; GNOME 44+ compiles schemas on
-install). Lint errors (files outside the allowlist, binaries, bad
+import, `stylesheet.css`, `metadata.json`, the schema XML, UsageBar's own
+`icons/usagebar-machine{,s}-symbolic.svg` and `LICENSE` (no tests, tools,
+provider logos or compiled schema; GNOME 44+ compiles schemas on install).
+Lint errors (files outside the allowlist, provider logos, binaries, bad
 `metadata.json` keys or `shell-version`, schema ID/path outside
 `org.gnome.shell.extensions`, minified JS, deprecated modules, Gtk in the shell
 process or St in prefs) fail the build; warnings (import-time work, discarded

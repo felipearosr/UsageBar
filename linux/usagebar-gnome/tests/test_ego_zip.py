@@ -59,7 +59,9 @@ class EgoZipTests(unittest.TestCase):
         self.assertIn('extension.js', names)
         self.assertIn('prefs.js', names)
         self.assertIn(SCHEMA, names)
-        self.assertFalse([n for n in names if 'ProviderIcon' in n or n.startswith(('icons/', 'tests/', 'tools/'))])
+        self.assertFalse([n for n in names if 'ProviderIcon' in n or n.startswith(('tests/', 'tools/'))])
+        self.assertEqual(sorted(n for n in names if n.startswith('icons/')),
+                         ['icons/usagebar-machine-symbolic.svg', 'icons/usagebar-machines-symbolic.svg'])
         self.assertNotIn('schemas/gschemas.compiled', names)
         self.assertNotIn('version', json.loads(self.entries['metadata.json']))
 
@@ -76,6 +78,17 @@ class EgoZipTests(unittest.TestCase):
 
     def test_provider_logo_fails(self):
         self.assert_error(self.fixture('logo', {'icons/ProviderIcon-claude.svg': b'<svg/>'}), 'provider brand logo')
+
+    def test_own_symbolic_icons_pass_but_other_icons_fail(self):
+        for name in ego.OWN_ICONS:
+            self.assertIn(f'icons/{name}', self.entries)
+        report = self.fixture('brand', {'icons/claude-symbolic.svg': b'<svg/>',
+                                        'icons/ProviderIcon-codex.svg': b'<svg/>'})
+        self.assertEqual(sorted(e for e in report.errors if e.startswith('icons/')), [
+            'icons/ProviderIcon-codex.svg: not in the EGO allowlist',
+            'icons/ProviderIcon-codex.svg: provider brand logo',
+            'icons/claude-symbolic.svg: not in the EGO allowlist',
+        ])
 
     def test_version_key_fails(self):
         self.assert_error(self.fixture('version', self.metadata_with(version=3)), '"version"')
