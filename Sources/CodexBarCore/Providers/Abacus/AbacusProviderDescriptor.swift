@@ -6,13 +6,24 @@ import SweetCookieKit
 
 public enum AbacusProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    static let maximumCookieCandidates = 5
+    private static let credentials = ProviderCredentialAdapter(tokenAccountSupport: TokenAccountSupport(
+        title: "Session tokens",
+        subtitle: "Store multiple Abacus AI Cookie headers.",
+        placeholder: "Cookie: …",
+        injection: .cookieHeader,
+        requiresManualCookieSource: true,
+        cookieName: nil))
 
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .abacus,
+            settingsSection: .init(AbacusProviderSettingsKey.self, cookieSettings: AbacusProviderSettings.self),
+            credentials: self.credentials,
             metadata: ProviderMetadata(
                 id: .abacus,
                 displayName: "Abacus AI",
+                shortDisplayName: "Abacus",
                 sessionLabel: "Credits",
                 weeklyLabel: "Weekly",
                 opusLabel: nil,
@@ -22,70 +33,82 @@ public enum AbacusProviderDescriptor {
                 toggleTitle: "Show Abacus AI usage",
                 cliName: "abacusai",
                 defaultEnabled: false,
+                widgetSelectable: false,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
+                sharePlanLabels: ["basic": "Basic", "pro": "Pro", "team": "Team", "enterprise": "Enterprise"],
+                usesDetailBackedWindow: true,
                 browserCookieOrder: ProviderBrowserCookieDefaults.defaultImportOrder,
                 dashboardURL: "https://apps.abacus.ai/chatllm/admin/compute-points-usage",
                 statusPageURL: nil,
                 statusLinkURL: nil),
             branding: ProviderBranding(
-                iconStyle: .abacus,
+                iconStyle: .init(provider: .abacus),
                 iconResourceName: "ProviderIcon-abacus",
-                color: ProviderColor(red: 56 / 255, green: 189 / 255, blue: 248 / 255)),
+                color: ProviderColor(red: 56 / 255, green: 189 / 255, blue: 248 / 255),
+                confettiPalette: [
+                    ProviderColor(hex: 0x35BEE2),
+                    ProviderColor(hex: 0xC64AF9),
+                    ProviderColor(hex: 0xFFFFFF),
+                ]),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Abacus AI cost summary is not supported." }),
+            presentation: ProviderUsagePresentation(
+                semanticWindowResolver: { .init(session: $0.primary, weekly: nil) },
+                menuBarLayoutPrimaryLabel: "Credits",
+                menuCard: ProviderMenuCardPresentation(usesAbacusPace: true),
+                menu: ProviderMenuDescriptorPresentation(
+                    primaryDescriptionIsDetail: { _ in true },
+                    showsPrimaryWeeklyPace: true)),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .web],
-                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in
-                    [AbacusWebFetchStrategy()]
+                pipeline: ProviderFetchPipeline(resolveStrategies: { context in
+                    [Self.scriptStrategy(timeout: context.webTimeout)]
                 })),
             cli: ProviderCLIConfig(
                 name: "abacusai",
                 aliases: ["abacus-ai"],
                 versionDetector: nil))
     }
-}
 
-// MARK: - Fetch Strategy
-
-struct AbacusWebFetchStrategy: ProviderFetchStrategy {
-    let id: String = "abacus.web"
-    let kind: ProviderFetchKind = .web
-
-    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        context.settings?.abacus?.cookieSource != .off
+    static func refreshTimeout(for requestTimeout: TimeInterval) -> TimeInterval {
+        min(90, requestTimeout * Double(self.maximumCookieCandidates) + min(requestTimeout, 5))
     }
 
-    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        let manual: String?
-        if context.settings?.abacus?.cookieSource == .manual {
-            guard let header = Self.manualCookieHeader(from: context) else {
-                throw AbacusUsageError.noSessionCookie
-            }
-            manual = header
-        } else {
-            manual = nil
-        }
-        let logger: ((String) -> Void)? = context.verbose
-            ? { msg in CodexBarLog.logger(LogCategories.abacusUsage).verbose(msg) }
-            : nil
-        let snap = try await AbacusUsageFetcher.fetchUsage(
-            cookieHeaderOverride: manual,
-            browserDetection: context.browserDetection,
-            timeout: context.webTimeout,
-            logger: logger)
-        return self.makeResult(
-            usage: snap.toUsageSnapshot(),
-            sourceLabel: "web")
-    }
-
-    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        false
-    }
-
-    private static func manualCookieHeader(from context: ProviderFetchContext) -> String? {
-        guard context.settings?.abacus?.cookieSource == .manual else { return nil }
-        return CookieHeaderNormalizer.normalize(context.settings?.abacus?.manualCookieHeader)
+    static func scriptStrategy(
+        timeout: TimeInterval = 15,
+        transport: any ProviderHTTPTransport = ProviderHTTPClient.shared) -> ScriptFetchStrategy
+    {
+        let requestTimeout = min(90, max(1, timeout))
+        return ScriptFetchStrategy(
+            id: "abacus.js",
+            provider: .abacus,
+            bundledPlugin: "abacus",
+            sourceLabel: "web",
+            kind: .web,
+            transport: transport,
+            timeout: Self.refreshTimeout(for: requestTimeout),
+            cookieImport: { context, _, batch in
+                #if os(macOS)
+                guard batch < 2 else { return nil }
+                let browsers = batch == 0 ? [Browser.chrome] :
+                    (ProviderBrowserCookieDefaults.defaultImportOrder ?? Browser.defaultImportOrder)
+                    .filter { $0 != .chrome }
+                guard !browsers.isEmpty else { return nil }
+                return AbacusCookieImporter.importSessions(
+                    browserDetection: context.browserDetection, preferredBrowsers: browsers)
+                    .map { ($0.cookieHeader, $0.sourceLabel) }
+                #else
+                return nil
+                #endif
+            },
+            resolveValues: { context in
+                guard context.settings?.abacus?.cookieSource != .off else { return nil }
+                return .init(settings: [
+                    "REQUEST_TIMEOUT": String(requestTimeout),
+                    "MAX_COOKIE_CANDIDATES": String(Self.maximumCookieCandidates),
+                ])
+            }, isEnabled: { _ in true })
     }
 }

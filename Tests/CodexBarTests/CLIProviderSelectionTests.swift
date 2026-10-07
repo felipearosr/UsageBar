@@ -21,6 +21,13 @@ struct CLIProviderSelectionTests {
             "|kiro|",
             "|warp|",
             "|ollama|",
+            "|devpass|",
+            "|atlascloud|",
+            "|vercel|",
+            "|llmman|",
+            "|aixy|",
+            "|raycast|",
+            "|xkiro|",
             "|both|",
             "|all]",
         ]
@@ -61,6 +68,17 @@ struct CLIProviderSelectionTests {
         #expect(!tokens(root).contains("--web"))
         #expect(!tokens(usage).contains("--claude-source"))
         #expect(!tokens(root).contains("--claude-source"))
+    }
+
+    @Test
+    func `help advertises the toon output format`() {
+        let usage = CodexBarCLI.usageHelp(version: "0.0.0")
+        let root = CodexBarCLI.rootHelp(version: "0.0.0")
+
+        #expect(usage.contains("--format text|json|toon"))
+        #expect(root.contains("--format text|json|toon"))
+        #expect(usage.contains("codexbar usage --format toon"))
+        #expect(root.contains("codexbar --format toon"))
     }
 
     @Test

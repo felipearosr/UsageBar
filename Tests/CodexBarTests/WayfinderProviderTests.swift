@@ -14,7 +14,7 @@ struct WayfinderProviderTests {
         #expect(!descriptor.metadata.defaultEnabled)
         #expect(descriptor.branding.iconResourceName == "ProviderIcon-wayfinder")
 
-        let implementation = try #require(ProviderImplementationRegistry.implementation(for: .wayfinder))
+        let implementation = try #require(ProviderCatalog.implementation(for: .wayfinder))
         #expect(implementation.id == .wayfinder)
     }
 
@@ -29,7 +29,7 @@ struct WayfinderProviderTests {
             configStore: testConfigStore(suiteName: suite),
             zaiTokenStore: NoopZaiTokenStore(),
             syntheticTokenStore: NoopSyntheticTokenStore())
-        settings.wayfinderGatewayURL = "http://localhost:9191/wayfinder"
+        settings[providerConfig: .wayfinder, field: .endpoint] = "http://localhost:9191/wayfinder"
 
         #expect(WayfinderProviderImplementation.dashboardURL(
             settings: settings,

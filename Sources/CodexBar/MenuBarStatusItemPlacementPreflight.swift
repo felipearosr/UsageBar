@@ -1,4 +1,5 @@
 import AppKit
+import CodexBarCore
 
 @MainActor
 enum MenuBarStatusItemPlacementPreflight {
@@ -17,45 +18,27 @@ enum MenuBarStatusItemPlacementPreflight {
         maximumPreferredPosition: Double? = currentMaximumPreferredPosition())
         -> Bool
     {
-        let key = self.preferredPositionKey(autosaveName: autosaveName)
-        var repaired = self.clearPreferredPositionIfNeeded(
-            defaults: defaults,
-            key: key,
-            maximumPreferredPosition: maximumPreferredPosition)
-        if let legacyDefaultItemIndex {
-            let legacyKey = self.preferredPositionKey(autosaveName: "Item-\(legacyDefaultItemIndex)")
-            repaired = self.clearPreferredPositionIfNeeded(
-                defaults: defaults,
-                key: legacyKey,
-                maximumPreferredPosition: maximumPreferredPosition) || repaired
+        let names = [autosaveName] + (legacyDefaultItemIndex.map { ["Item-\($0)"] } ?? [])
+        let keys = names.map { self.preferredPositionKey(autosaveName: $0) }.filter { key in
+            defaults.object(forKey: key).map {
+                self.shouldClearPreferredPosition($0, maximumPreferredPosition: maximumPreferredPosition)
+            } ?? false
         }
-        return repaired
+        for key in keys {
+            defaults.removeObject(forKey: key)
+            CodexBarLog.logger(LogCategories.app).info(
+                "Repaired macOS status-item preferred position", metadata: ["key": key])
+        }
+        return !keys.isEmpty
     }
 
     static func shouldClearPreferredPosition(_ value: Any, maximumPreferredPosition: Double?) -> Bool {
-        guard let number = value as? NSNumber else { return true }
-        let position = number.doubleValue
-        if position <= 0 {
-            return true
-        }
-        guard let maximumPreferredPosition else { return false }
-        return position > maximumPreferredPosition + self.suspiciousPreferredPositionPadding
+        guard let position = (value as? NSNumber)?.doubleValue,
+              position.isFinite, position > 0 else { return true }
+        return maximumPreferredPosition.map { position > $0 + self.suspiciousPreferredPositionPadding } ?? false
     }
 
-    private static func clearPreferredPositionIfNeeded(
-        defaults: UserDefaults,
-        key: String,
-        maximumPreferredPosition: Double?)
-        -> Bool
-    {
-        guard let value = defaults.object(forKey: key),
-              self.shouldClearPreferredPosition(value, maximumPreferredPosition: maximumPreferredPosition)
-        else { return false }
-        defaults.removeObject(forKey: key)
-        return true
-    }
-
-    private static func currentMaximumPreferredPosition() -> Double? {
-        NSScreen.screens.map { Double($0.frame.maxX) }.max()
+    static func currentMaximumPreferredPosition(screenFrames: [CGRect] = NSScreen.screens.map(\.frame)) -> Double? {
+        screenFrames.map { Double($0.width) }.max()
     }
 }

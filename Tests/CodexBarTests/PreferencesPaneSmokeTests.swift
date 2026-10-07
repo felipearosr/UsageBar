@@ -12,10 +12,12 @@ struct PreferencesPaneSmokeTests {
         let store = Self.makeUsageStore(settings: settings)
 
         _ = GeneralPane(settings: settings).body
+        _ = ICloudSyncPane(settings: settings, state: CloudSyncState()).body
         _ = NotificationsPane(settings: settings).body
         _ = MenuBarPane(settings: settings, store: store).body
         _ = MenuPane(settings: settings, store: store).body
         _ = AdvancedPane(settings: settings, store: store).body
+        _ = HooksPane(settings: settings).body
         _ = ProvidersPane(settings: settings, store: store).body
         _ = DebugPane(settings: settings, store: store).body
         _ = AboutPane(updater: DisabledUpdaterController()).body
@@ -28,6 +30,7 @@ struct PreferencesPaneSmokeTests {
     func `builds preference panes with toggled settings`() {
         let settings = Self.makeSettingsStore(suite: "PreferencesPaneSmokeTests-toggled")
         settings.menuBarShowsBrandIconWithPercent = true
+        settings.menuBarHighContrastOnInactiveDisplays = true
         settings.menuBarShowsHighestUsage = true
         settings.multiAccountMenuLayout = .stacked
         settings.hidePersonalInfo = true
@@ -43,6 +46,7 @@ struct PreferencesPaneSmokeTests {
         store._setErrorForTesting("Example error", provider: .codex)
 
         _ = GeneralPane(settings: settings).body
+        _ = ICloudSyncPane(settings: settings, state: CloudSyncState()).body
         _ = NotificationsPane(settings: settings).body
         _ = MenuBarPane(settings: settings, store: store).body
         _ = MenuPane(settings: settings, store: store).body
@@ -93,6 +97,8 @@ struct PreferencesPaneSmokeTests {
         #expect(MenuBarSettingsMenuOptions.iconStyles == MenuBarIconStyle.allCases)
         #expect(MenuBarSettingsMenuOptions.switcherRows == SwitcherRowsOption.allCases)
         #expect(MenuSettingsMenuOptions.weeklyProgressWorkDays == [nil, 4, 5, 7])
+        #expect(MenuSettingsMenuOptions.weeklyProgressWorkDaysLabel(nil) == L("Automatic"))
+        #expect(MenuSettingsMenuOptions.workdayTickAppearances == WorkdayTickAppearance.allCases)
         #expect(MenuSettingsMenuOptions.multiAccountLayouts == MultiAccountMenuLayout.allCases)
         #expect(MenuSettingsMenuOptions.usageBarsFill == UsageBarsFillOption.allCases)
         #expect(MenuSettingsMenuOptions.resetTimes == ResetTimesOption.allCases)
@@ -103,22 +109,31 @@ struct PreferencesPaneSmokeTests {
         let settings = Self.makeSettingsStore(suite: suite)
         settings.menuBarDisplayMode = .resetTime
         settings.weeklyProgressWorkDays = 7
+        settings.workdayTickAppearance = .highContrast
         settings.multiAccountMenuLayout = .stacked
         settings.costSummaryDisplayStyle = .costSubmenu
 
         let reloaded = Self.makeSettingsStore(suite: suite, reset: false)
         #expect(reloaded.menuBarDisplayMode == .resetTime)
         #expect(reloaded.weeklyProgressWorkDays == 7)
+        #expect(reloaded.workdayTickAppearance == .highContrast)
         #expect(reloaded.multiAccountMenuLayout == .stacked)
         #expect(reloaded.costSummaryDisplayStyle == .costSubmenu)
     }
 
     @Test
-    func `overview provider limit text formats numeric limit as object argument`() {
-        let text = MenuBarPane.overviewProviderLimitText(limit: 3)
+    func `overview provider limit text shows the configured maximum`() {
+        let text = MenuBarPane.overviewProviderLimitText()
 
-        #expect(text.contains("3"))
+        #expect(text.contains("6"))
         #expect(!text.contains("%@"))
+    }
+
+    @Test
+    func `inactive display contrast is available only for icon and percent`() {
+        #expect(!MenuBarPane.inactiveDisplayContrastAvailable(for: .critters))
+        #expect(!MenuBarPane.inactiveDisplayContrastAvailable(for: .bars))
+        #expect(MenuBarPane.inactiveDisplayContrastAvailable(for: .iconAndPercent))
     }
 
     @Test
@@ -196,6 +211,24 @@ struct PreferencesPaneSmokeTests {
         #expect(!CostHistoryDaysEditor.title(days: 365).contains("%d"))
 
         _ = CostHistoryDaysEditor(settings: settings).body
+    }
+
+    @Test
+    func `agent session hosts editor builds for empty disabled and populated states`() {
+        let suite = "PreferencesPaneSmokeTests-agent-session-hosts"
+        let settings = Self.makeSettingsStore(suite: suite)
+
+        settings.agentSessionsEnabled = false
+        settings.agentSessionsManualHosts = ""
+        _ = AgentSessionHostsEditor(settings: settings).body
+        #expect(AgentSessionHostsEditor.inputFormatHint == "user@host, user@host")
+
+        settings.agentSessionsEnabled = true
+        settings.agentSessionsManualHosts = "developer@example-host"
+        _ = AgentSessionHostsEditor(settings: settings).body
+
+        let reloaded = Self.makeSettingsStore(suite: suite, reset: false)
+        #expect(reloaded.agentSessionsManualHosts == "developer@example-host")
     }
 
     @Test
@@ -507,6 +540,16 @@ struct PreferencesPaneSmokeTests {
     }
 
     @Test
+    func `english quit app label resolves without format placeholders`() {
+        CodexBarLocalizationOverride.$appLanguage.withValue("en") {
+            let label = L("quit_app")
+            #expect(label == "Quit CodexBar")
+            #expect(!label.contains("%@"))
+            #expect(!label.contains("%d"))
+        }
+    }
+
+    @Test
     func `german app language resolves localized labels`() {
         let settings = Self.makeSettingsStore(suite: "PreferencesPaneSmokeTests-language-de")
         settings.appLanguage = "de"
@@ -559,7 +602,6 @@ struct PreferencesPaneSmokeTests {
             minimaxCookieStore: InMemoryMiniMaxCookieStore(),
             minimaxAPITokenStore: InMemoryMiniMaxAPITokenStore(),
             kimiTokenStore: InMemoryKimiTokenStore(),
-            kimiK2TokenStore: InMemoryKimiK2TokenStore(),
             augmentCookieStore: InMemoryCookieHeaderStore(),
             ampCookieStore: InMemoryCookieHeaderStore(),
             copilotTokenStore: InMemoryCopilotTokenStore(),

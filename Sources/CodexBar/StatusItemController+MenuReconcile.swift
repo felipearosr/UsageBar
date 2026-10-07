@@ -55,7 +55,9 @@ extension StatusItemController {
 
         func updatable(_ shape: MenuRowShape, _ newItem: NSMenuItem) -> Bool {
             guard shape.isSeparator == newItem.isSeparatorItem else { return false }
-            if shape.isSeparator { return true }
+            if shape.isSeparator {
+                return true
+            }
             guard !shape.requiresNativeImageReplacement,
                   !self.shouldReplaceNativeImageItemDuringReconcile(newItem)
             else { return false }
@@ -118,7 +120,13 @@ extension StatusItemController {
             let requiresNativeImageReplacement =
                 self.shouldReplaceNativeImageItemDuringReconcile(liveItem) ||
                 self.shouldReplaceNativeImageItemDuringReconcile(newItem)
-            if liveItem.isSeparatorItem == newItem.isSeparatorItem, !requiresNativeImageReplacement {
+            let hasCompatibleItemClass =
+                ObjectIdentifier(type(of: liveItem)) == ObjectIdentifier(type(of: newItem))
+            if liveItem.isSeparatorItem == newItem.isSeparatorItem,
+               hasCompatibleItemClass,
+               !requiresNativeImageReplacement,
+               self.hasMatchingCardRowHeight(liveItem, newItem)
+            {
                 if !liveItem.isSeparatorItem {
                     self.swapMenuItemContents(liveItem, newItem)
                 }
@@ -129,28 +137,52 @@ extension StatusItemController {
                 displacedItems.append(liveItem)
             }
         }
-        if newItems.count > liveCount {
-            for offset in liveCount..<newItems.count {
-                menu.insertItem(newItems[offset], at: fromIndex + offset)
-            }
-        } else if liveCount > newItems.count {
-            for offset in newItems.count..<liveCount {
-                menu.removeItem(liveItems[offset])
-                displacedItems.append(liveItems[offset])
-            }
+        for (offset, item) in newItems.enumerated().dropFirst(sharedCount) {
+            menu.insertItem(item, at: fromIndex + offset)
+        }
+        for item in liveItems.dropFirst(sharedCount) {
+            menu.removeItem(item)
+            displacedItems.append(item)
         }
         return displacedItems
+    }
+
+    /// Card payloads swap inside an attached row only when the row keeps its height. AppKit's table-backed
+    /// menu keeps a reused row's measured height, so a taller or shorter card in the same slot would
+    /// leave empty space or clip (#3549); presenting the incoming item instead makes AppKit measure it.
+    private func hasMatchingCardRowHeight(_ liveItem: NSMenuItem, _ newItem: NSMenuItem) -> Bool {
+        guard let liveHosting = liveItem.view as? ErasedMenuCardHostingView,
+              let newHosting = newItem.view as? ErasedMenuCardHostingView
+        else { return true }
+        return abs(liveHosting.intrinsicContentSize.height - newHosting.intrinsicContentSize.height) <= 0.5
+    }
+
+    /// Forces hosted rows to lay out and draw inside the caller's disabled-actions
+    /// transaction. `NSHostingView` commits SwiftUI updates asynchronously by
+    /// default, so a provider-tab switch could paint the previous card content for
+    /// a frame after the item mutation — visible as a brief flicker. Flushing
+    /// synchronously makes the content swap composite atomically with the menu
+    /// update. Views without a window (closed or detached menus) are skipped.
+    func flushHostedMenuRowRendering(in menu: NSMenu) {
+        // Freshly inserted item views may not be parented into the menu window yet
+        // when this runs, so lay out every hosted row unconditionally and then flush
+        // pending drawing once at the window level.
+        var menuWindow: NSWindow?
+        for item in menu.items {
+            guard let view = item.view else { continue }
+            view.layoutSubtreeIfNeeded()
+            if menuWindow == nil {
+                menuWindow = view.window
+            }
+        }
+        menuWindow?.displayIfNeeded()
     }
 
     private func finishReconciledHighlightTracking(in menu: NSMenu) {
         let menuKey = ObjectIdentifier(menu)
         guard let highlightedItem = self.highlightedMenuItems[menuKey] else { return }
-        guard highlightedItem.menu === menu else {
-            self.highlightedMenuItems.removeValue(forKey: menuKey)
-            (highlightedItem.view as? MenuCardHighlighting)?.setHighlighted(false)
-            return
-        }
-        guard highlightedItem.isEnabled,
+        guard highlightedItem.menu === menu,
+              highlightedItem.isEnabled,
               (highlightedItem.view as? MenuCardHighlighting)?.allowsMenuHighlight != false
         else {
             self.highlightedMenuItems.removeValue(forKey: menuKey)
@@ -170,7 +202,9 @@ extension StatusItemController {
     }
 
     private func updateMenuItemInPlace(_ liveItem: NSMenuItem, from newItem: NSMenuItem) {
-        if liveItem.isSeparatorItem { return }
+        if liveItem.isSeparatorItem {
+            return
+        }
         let remainsHighlighted = liveItem.menu.map {
             self.highlightedMenuItems[ObjectIdentifier($0)] === liveItem
         } ?? false
@@ -213,9 +247,67 @@ extension StatusItemController {
     }
 
     private func swapMenuItemContents(_ liveItem: NSMenuItem, _ cachedItem: NSMenuItem) {
+        // Flash-free path: when both rows use the shared container, exchange
+        // their payloads and keep both `item.view`s in place. Detaching
+        // the live view makes Tahoe's NSMenu paint the row's fallback title
+        // ("NSMenuItem") for a few frames — the tab-switch content flash.
+        if let liveHosting = liveItem.view as? ErasedMenuCardHostingView,
+           let cachedHosting = cachedItem.view as? ErasedMenuCardHostingView
+        {
+            let livePayload = liveHosting.rowPayload
+            let cachedPayload = cachedHosting.rowPayload
+            let liveSize = liveHosting.intrinsicContentSize
+            let cachedSize = cachedHosting.intrinsicContentSize
+            self.replantMenuCardRowPayload(cachedPayload, into: liveHosting)
+            self.replantMenuCardRowPayload(livePayload, into: cachedHosting)
+            liveHosting.applyMeasuredSize(width: cachedSize.width, height: cachedSize.height)
+            cachedHosting.applyMeasuredSize(width: liveSize.width, height: liveSize.height)
+            self.swapMenuItemMetadataKeepingViews(liveItem, cachedItem)
+            return
+        }
         let holder = NSMenuItem()
         self.updateMenuItemInPlace(holder, from: liveItem)
         self.updateMenuItemInPlace(liveItem, from: cachedItem)
         self.updateMenuItemInPlace(cachedItem, from: holder)
+    }
+
+    /// Rebuilds the hosting view's container around its own highlight state and
+    /// interactive-region store with the given payload's content and behavior.
+    func replantMenuCardRowPayload(
+        _ payload: MenuCardRowPayload,
+        into hosting: ErasedMenuCardHostingView)
+    {
+        hosting.replant(payload, refreshMonitor: self.menuCardRefreshMonitor)
+    }
+
+    /// The metadata half of a content swap: everything `updateMenuItemInPlace`
+    /// moves except `view` (which stays attached on both sides).
+    private func swapMenuItemMetadataKeepingViews(_ liveItem: NSMenuItem, _ cachedItem: NSMenuItem) {
+        let liveRemainsHighlighted = liveItem.menu.map {
+            self.highlightedMenuItems[ObjectIdentifier($0)] === liveItem
+        } ?? false
+        swap(&liveItem.title, &cachedItem.title)
+        swap(&liveItem.attributedTitle, &cachedItem.attributedTitle)
+        let liveSubmenu = liveItem.submenu
+        let cachedSubmenu = cachedItem.submenu
+        liveItem.submenu = nil
+        cachedItem.submenu = nil
+        liveItem.submenu = cachedSubmenu
+        cachedItem.submenu = liveSubmenu
+        let liveAction = (liveItem.action, liveItem.target)
+        liveItem.action = cachedItem.action
+        liveItem.target = cachedItem.target
+        cachedItem.action = liveAction.0
+        cachedItem.target = liveAction.1
+        swap(&liveItem.representedObject, &cachedItem.representedObject)
+        swap(&liveItem.state, &cachedItem.state)
+        swap(&liveItem.isEnabled, &cachedItem.isEnabled)
+        let liveHosting = liveItem.view as? MenuCardHighlighting
+        let allowsHighlight = liveHosting?.allowsMenuHighlight != false
+        liveHosting?.setHighlighted(liveItem.isEnabled && allowsHighlight && liveRemainsHighlighted)
+        (cachedItem.view as? MenuCardHighlighting)?.setHighlighted(false)
+        if self.isPersistentRefreshItem(liveItem) {
+            self.persistentRefreshItems.add(liveItem)
+        }
     }
 }

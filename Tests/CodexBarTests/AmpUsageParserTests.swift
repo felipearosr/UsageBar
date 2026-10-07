@@ -3,6 +3,192 @@ import Testing
 @testable import CodexBarCore
 
 struct AmpUsageParserTests {
+    private func loadFixture(_ name: String) throws -> String {
+        let url = try #require(Bundle.module.url(
+            forResource: name,
+            withExtension: "txt",
+            subdirectory: "Fixtures/Providers/Amp"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func date(_ value: String) throws -> Date {
+        try #require(ISO8601DateFormatter().date(from: value))
+    }
+
+    @Test
+    func `parses megawatt tier agent dollars separately from individual credits`() throws {
+        let now = try self.date("2026-09-16T12:00:00Z")
+        let output = """
+        Signed in as user@example.com
+        Amp Megawatt Tier: agent usage $18.57 of $20 remaining (93%), \
+        orb usage 732.8h of 750h a1.small orb hours remaining (98%) - \
+        period 2026-09-13 to 2026-10-13, resets upon renewal in 27 days
+        Individual credits: $20 remaining (replenishes automatically) - https://ampcode.com/settings
+        """
+        let data = try JSONSerialization.data(withJSONObject: [
+            "ok": true,
+            "result": ["displayText": output],
+        ])
+
+        let snapshot = try AmpUsageFetcher.parseUsageAPIResponse(data, now: now)
+        let usage = snapshot.toUsageSnapshot(now: now)
+
+        #expect(snapshot.subscription?.plan == "Megawatt")
+        #expect(snapshot.subscription?.agentRemaining == 18.57)
+        #expect(snapshot.subscription?.agentLimit == 20)
+        #expect(try abs(#require(usage.primary?.usedPercent) - 7.15) < 0.0001)
+        #expect(try usage.primary?.resetsAt == self.date("2026-10-13T00:00:00Z"))
+        #expect(usage.primary?.windowMinutes == 30 * 24 * 60)
+        #expect(usage.primary?.resetDescription == "renews in 27 days")
+        #expect(try abs(#require(usage.secondary?.usedPercent) - 2.2933333333) < 0.0001)
+        #expect(usage.secondary?.resetsAt == usage.primary?.resetsAt)
+        #expect(snapshot.subscription?.orbHoursRemaining == 732.8)
+        #expect(snapshot.subscription?.orbHoursLimit == 750)
+        #expect(usage.details.map(\.title) == ["Monthly allowances", "Credits"])
+        #expect(usage.details.first?.rows.map(\.label) == ["Agent", "Orb"])
+        #expect(usage.detailRow(label: "Orb")?.value == "732h")
+        #expect(usage.detailRow(label: "Orb")?.secondaryValue == "a1.small-equivalent hours")
+        #expect(usage.identity?.loginMethod == "Megawatt")
+        #expect(usage.detailRow(label: "Agent")?.value == "$18.57")
+        #expect(usage.detailRow(label: "Individual")?.value == "$20.00")
+        #expect(usage.detailRow(label: "Individual")?.secondaryValue == "For agent and orb usage")
+        #expect(AmpProviderDescriptor.primaryLabel(snapshot: usage) == "Agent usage")
+        #expect(AmpProviderDescriptor.secondaryLabel(snapshot: usage) == "Orb usage")
+
+        let decoded = try JSONDecoder().decode(UsageSnapshot.self, from: JSONEncoder().encode(usage))
+        #expect(decoded.details == usage.details)
+        #expect(AmpProviderDescriptor.primaryLabel(snapshot: decoded) == "Agent usage")
+    }
+
+    @Test(arguments: [("18", -15.0), ("10", 25.0)])
+    func `tier pace uses fixed billing dates rather than rounded renewal days`(
+        remaining: String,
+        delta: Double) throws
+    {
+        let now = try self.date("2026-02-20T00:00:00Z")
+        let output = """
+        Amp Example Tier: agent usage $\(remaining) of $20 remaining - \
+        period 2026-02-13 to 2026-03-13, resets upon renewal in 20 days
+        """
+        let usage = try AmpUsageParser.parse(displayText: output, now: now).toUsageSnapshot()
+        let window = try #require(usage.primary)
+        let capability = AmpProviderDescriptor.descriptor.pace
+        #expect(window.windowMinutes == 28 * 24 * 60)
+        #expect(capability.supportsResetWindowPace(window: window, now: now))
+        #expect(capability.resolvedResetWindowForPace(window) == window)
+        let pace = try #require(UsagePace.weekly(window: window, now: now))
+        #expect(pace.expectedUsedPercent == 25)
+        #expect(pace.deltaPercent == delta)
+        let later = try AmpUsageParser.parse(displayText: output, now: now.addingTimeInterval(3600))
+            .toUsageSnapshot()
+        #expect(later.primary?.resetsAt == window.resetsAt)
+    }
+
+    @Test
+    func `tier pace respects period boundaries and explicit thirty day periods`() throws {
+        let start = try self.date("2026-07-01T00:00:00Z")
+        let end = try self.date("2026-07-31T00:00:00Z")
+        let output = """
+        Amp Example Tier: agent usage $20 of $20 remaining - \
+        period 2026-07-01 to 2026-07-31, resets upon renewal in 30 days
+        """
+        let window = try #require(AmpUsageParser.parse(displayText: output, now: start).toUsageSnapshot().primary)
+        let resolved = AmpProviderDescriptor.descriptor.pace.resolvedResetWindowForPace(window)
+        #expect(resolved.windowMinutes == 30 * 24 * 60)
+        #expect(UsagePace.weekly(window: resolved, now: start.addingTimeInterval(-1)) == nil)
+        #expect(UsagePace.weekly(window: resolved, now: start)?.expectedUsedPercent == 0)
+        #expect(UsagePace.weekly(window: resolved, now: end.addingTimeInterval(-1)) != nil)
+        #expect(UsagePace.weekly(window: resolved, now: end) == nil)
+    }
+
+    @Test(arguments: ["", "period 2026-02-30 to 2026-03-30", "period 2026-10-13 to 2026-09-13"])
+    func `tier without valid dates does not fabricate pace`(period: String) throws {
+        let output = """
+        Amp Example Tier: agent usage $18 of $20 remaining - \(period), resets upon renewal in 27 days
+        """
+        let window = try #require(AmpUsageParser.parse(displayText: output).toUsageSnapshot().primary)
+        #expect(window.usedPercent == 10)
+        #expect(window.windowMinutes == nil)
+        #expect(!AmpProviderDescriptor.descriptor.pace.supportsResetWindowPace(window: window, now: Date()))
+    }
+
+    @Test(arguments: [("0", 100.0), ("1,500", 0.0), ("1,600", 0.0), ("375.75", 74.95)])
+    func `tier orb allowance uses exact hours and its own limit`(
+        remaining: String,
+        expectedUsedPercent: Double) throws
+    {
+        let output = """
+        Amp Example Tier: agent usage $18.57 of $20 remaining (93%), \
+        orb usage \(remaining)h of 1,500h a1.small orb hours remaining (99%) - resets upon renewal in 2 days
+        """
+        let usage = try AmpUsageParser.parse(displayText: output).toUsageSnapshot()
+
+        #expect(try abs(#require(usage.secondary?.usedPercent) - expectedUsedPercent) < 0.0001)
+        #expect(try abs(#require(usage.primary?.usedPercent) - 7.15) < 0.0001)
+    }
+
+    @Test(arguments: [(0.0, "0h"), (0.01, "< 1h"), (0.99, "< 1h"), (1.0, "1h"), (1.99, "1h"), (732.8, "732h")])
+    func `orb display floors hours without rounding balances or usage`(remaining: Double, expected: String) throws {
+        let output = """
+        Amp Example Tier: agent usage $18.57 of $20 remaining, \
+        orb usage \(remaining)h of 750h a1.small orb hours remaining - resets upon renewal in 2 days
+        """
+        let snapshot = try AmpUsageParser.parse(displayText: output)
+        let usage = snapshot.toUsageSnapshot()
+        #expect(snapshot.subscription?.orbHoursRemaining == remaining)
+        #expect(usage.detailRow(label: "Orb")?.value == expected)
+        #expect(try abs(#require(usage.secondary?.usedPercent) - (750 - remaining) / 750 * 100) < 0.0001)
+    }
+
+    @Test(arguments: [
+        "",
+        "orb usage unavailable",
+        "orb usage 0h of 0h a1.small orb hours remaining",
+        "orb usage 12h of 50h a1.large orb hours remaining",
+    ])
+    func `missing or drifting orb allowance preserves agent credits`(orb: String) throws {
+        let output = """
+        Amp Example Tier: agent usage $3 of $20 remaining (15%), \(orb) - resets upon renewal in 2 days
+        Individual credits: $11 remaining
+        """
+        let usage = try AmpUsageParser.parse(displayText: output).toUsageSnapshot()
+
+        #expect(usage.primary?.usedPercent == 85)
+        #expect(usage.secondary == nil)
+        #expect(usage.detailRow(label: "Orb") == nil)
+        #expect(usage.detailRow(label: "Agent")?.value == "$3.00")
+        #expect(usage.detailRow(label: "Individual")?.value == "$11.00")
+    }
+
+    @Test(arguments: [("0", 100.0), ("1,000", 0.0), ("1,100", 0.0), ("250", 75.0)])
+    func `tier agent usage does not depend on orb text or a fixed allowance`(
+        remaining: String,
+        expectedUsedPercent: Double) throws
+    {
+        let output = """
+        **Amp Example Tier:** agent usage $\(remaining) of $1,000 remaining - resets upon renewal in 1 month
+        """
+        let usage = try AmpUsageParser.parse(displayText: output).toUsageSnapshot()
+
+        #expect(usage.primary?.usedPercent == expectedUsedPercent)
+        #expect(usage.secondary == nil)
+        #expect(usage.identity?.loginMethod == "Example")
+        #expect(AmpProviderDescriptor.primaryLabel(snapshot: usage) == "Agent usage")
+    }
+
+    @Test
+    func `invalid tier allowance preserves individual credits without inventing usage`() throws {
+        let output = """
+        Amp Megawatt Tier: agent usage $0 of $0 remaining - resets upon renewal in 27 days
+        Individual credits: $12 remaining
+        """
+        let usage = try AmpUsageParser.parse(displayText: output).toUsageSnapshot()
+
+        #expect(usage.primary == nil)
+        #expect(usage.detailRow(label: "Agent") == nil)
+        #expect(usage.detailRow(label: "Individual")?.value == "$12.00")
+    }
+
     @Test
     func `amp cli probe runs usage and parses balances`() async throws {
         let script = """
@@ -47,15 +233,12 @@ struct AmpUsageParserTests {
         #expect(snapshot.workspaceBalances == [AmpWorkspaceBalance(name: "meow", remaining: 10.22)])
         #expect(snapshot.accountEmail == "ampcode@3kh0.net")
         #expect(snapshot.accountOrganization == "echo")
-        #expect(snapshot.toUsageSnapshot(now: now).ampUsage == AmpUsageDetails(
-            individualCredits: 25.64,
-            workspaceBalances: [AmpWorkspaceBalance(name: "meow", remaining: 10.22)]))
+        #expect(snapshot.toUsageSnapshot(now: now).detailRow(label: "Individual")?.value == "$25.64")
+        #expect(snapshot.toUsageSnapshot(now: now).detailRow(label: "Workspace meow")?.value == "$10.22")
 
         let encoded = try JSONEncoder().encode(snapshot.toUsageSnapshot(now: now))
         let decoded = try JSONDecoder().decode(UsageSnapshot.self, from: encoded)
-        #expect(decoded.ampUsage == AmpUsageDetails(
-            individualCredits: 25.64,
-            workspaceBalances: [AmpWorkspaceBalance(name: "meow", remaining: 10.22)]))
+        #expect(decoded.details == snapshot.toUsageSnapshot(now: now).details)
     }
 
     @Test
@@ -70,6 +253,7 @@ struct AmpUsageParserTests {
 
         let snapshot = try AmpUsageParser.parse(displayText: output, now: now)
         let usage = snapshot.toUsageSnapshot(now: now)
+        let expectedReset = try self.date("2023-11-15T01:00:00Z")
 
         #expect(snapshot.freeQuota == 100)
         #expect(snapshot.freeUsed == 39)
@@ -81,8 +265,174 @@ struct AmpUsageParserTests {
         #expect(snapshot.accountOrganization == "example")
         #expect(usage.primary?.usedPercent == 39)
         #expect(usage.primary?.windowMinutes == 1440)
-        #expect(usage.primary?.resetsAt == nil)
+        #expect(usage.primary?.resetsAt == expectedReset)
         #expect(usage.primary?.resetDescription == "resets daily")
+    }
+
+    @Test
+    func `parses bold amp free subscription and individual credits labels`() throws {
+        let now = try self.date("2026-08-24T12:00:00Z")
+        let output = """
+        Signed in as you@example.com (name)
+        **Amp Free:** 0% remaining today (resets daily) - https://ampcode.com/settings
+        **Amp Megawatt Subscription:** 68% other usage and 97% orb usage remaining - resets upon renewal in 5 days
+        **Individual credits:** $3.23 remaining (set up auto-reload to avoid running out) - https://ampcode.com/settings
+        """
+
+        let snapshot = try AmpUsageParser.parse(displayText: output, now: now)
+        let usage = snapshot.toUsageSnapshot(now: now)
+
+        #expect(snapshot.freeQuota == 100)
+        #expect(snapshot.freeUsed == 100)
+        #expect(snapshot.freeResetDescription == "resets daily")
+        #expect(snapshot.subscription == AmpSubscriptionUsage(
+            plan: "Megawatt",
+            otherUsedPercent: 32,
+            orbUsedPercent: 3,
+            resetsAt: now.addingTimeInterval(5 * 24 * 60 * 60),
+            resetDescription: "renews in 5 days"))
+        #expect(snapshot.individualCredits == 3.23)
+        #expect(snapshot.accountEmail == "you@example.com")
+        #expect(snapshot.accountOrganization == "name")
+        #expect(usage.primary?.usedPercent == 32)
+        #expect(usage.secondary?.usedPercent == 3)
+        #expect(usage.extraRateWindows?.first?.window.usedPercent == 100)
+        #expect(usage.detailRow(label: "Individual")?.value == "$3.23")
+    }
+
+    @Test
+    func `parses bold legacy amp free and workspace labels`() throws {
+        let output = """
+        Signed in as user@example.com (team)
+        **Amp Free:** $6/$10 remaining (replenishes +$0.5/hour)
+        **Workspace Test Team:** $7.25 remaining
+        """
+
+        let snapshot = try AmpUsageParser.parse(displayText: output)
+
+        #expect(snapshot.freeQuota == 10)
+        #expect(snapshot.freeUsed == 4)
+        #expect(snapshot.hourlyReplenishment == 0.5)
+        #expect(snapshot.workspaceBalances == [AmpWorkspaceBalance(name: "Test Team", remaining: 7.25)])
+    }
+
+    @Test
+    func `does not infer daily reset from percentage alone`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = try AmpUsageParser.parse(
+            displayText: "Signed in as user@example.com\nAmp Free: 61% remaining",
+            now: now)
+        let usage = snapshot.toUsageSnapshot(now: now)
+
+        #expect(snapshot.freeUsed == 39)
+        #expect(snapshot.freeResetDescription == nil)
+        #expect(usage.primary?.resetsAt == nil)
+        #expect(usage.primary?.resetDescription == nil)
+    }
+
+    @Test
+    func `parses monthly subscription fixture and both metered pools`() throws {
+        let now = try self.date("2026-08-03T22:00:00Z")
+        let snapshot = try AmpUsageParser.parse(displayText: self.loadFixture("monthly-subscription"), now: now)
+        let usage = snapshot.toUsageSnapshot(now: now)
+
+        #expect(try snapshot.subscription == AmpSubscriptionUsage(
+            plan: "Gigawatt",
+            otherUsedPercent: 27,
+            orbUsedPercent: 9,
+            resetsAt: self.date("2026-09-03T22:00:00Z"),
+            resetDescription: "renews in 1 month"))
+        #expect(snapshot.individualCredits == 17.23)
+        #expect(snapshot.workspaceBalances == [AmpWorkspaceBalance(name: "meow", remaining: 5.33)])
+        #expect(try usage.extraRateWindows == [NamedRateWindow(
+            id: "amp-free",
+            title: "Amp Free",
+            window: RateWindow(
+                usedPercent: 39,
+                windowMinutes: 1440,
+                resetsAt: self.date("2026-08-04T00:00:00Z"),
+                resetDescription: "resets daily"))])
+        #expect(usage.primary?.usedPercent == 27)
+        #expect(usage.secondary?.usedPercent == 9)
+    }
+
+    @Test
+    func `parses day based subscription fixture`() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = try AmpUsageParser.parse(displayText: self.loadFixture("day-subscription"), now: now)
+        let usage = snapshot.toUsageSnapshot(now: now)
+
+        #expect(snapshot.subscription == AmpSubscriptionUsage(
+            plan: "Megawatt",
+            otherUsedPercent: 3,
+            orbUsedPercent: 0,
+            resetsAt: now.addingTimeInterval(29 * 24 * 60 * 60),
+            resetDescription: "renews in 29 days"))
+        #expect(usage.primary?.usedPercent == 3)
+        #expect(usage.secondary?.usedPercent == 0)
+        #expect(usage.primary?.windowMinutes == ProviderPaceCapability.monthlyWindowSentinelMinutes)
+        #expect(usage.secondary?.resetsAt == now.addingTimeInterval(29 * 24 * 60 * 60))
+        #expect(usage.identity?.loginMethod == "Megawatt")
+        #expect(AmpProviderDescriptor.primaryLabel(snapshot: usage) == "Other usage")
+        #expect(AmpProviderDescriptor.secondaryLabel(snapshot: usage) == "Orb usage")
+    }
+
+    @Test
+    func `free tier reset observes New York boundary and daylight saving time`() throws {
+        let fixture = try self.loadFixture("monthly-subscription")
+
+        let summerBefore = try self.date("2026-08-03T23:59:59Z")
+        let summerAtBoundary = try self.date("2026-08-04T00:00:00Z")
+        let winterBefore = try self.date("2026-01-16T00:59:59Z")
+        let summerReset = try self.date("2026-08-04T00:00:00Z")
+        let nextSummerReset = try self.date("2026-08-05T00:00:00Z")
+        let winterReset = try self.date("2026-01-16T01:00:00Z")
+
+        #expect(try AmpUsageParser.parse(displayText: fixture, now: summerBefore)
+            .toUsageSnapshot(now: summerBefore).extraRateWindows?.first?.window.resetsAt ==
+            summerReset)
+        #expect(try AmpUsageParser.parse(displayText: fixture, now: summerAtBoundary)
+            .toUsageSnapshot(now: summerAtBoundary).extraRateWindows?.first?.window.resetsAt ==
+            nextSummerReset)
+        #expect(try AmpUsageParser.parse(displayText: fixture, now: winterBefore)
+            .toUsageSnapshot(now: winterBefore).extraRateWindows?.first?.window.resetsAt ==
+            winterReset)
+    }
+
+    @Test
+    func `parses current amp subscription line and keeps credits detail`() throws {
+        let now = try self.date("2026-08-18T12:00:00Z")
+        let output = """
+        Signed in as you@example.com (username)
+        Amp Megawatt Subscription: 100% other usage and 100% orb usage remaining - resets upon renewal in 1 month
+        Individual credits: $4.35 remaining (set up auto-reload to avoid running out) - https://ampcode.com/settings
+        """
+
+        let snapshot = try AmpUsageParser.parse(displayText: output, now: now)
+        let usage = snapshot.toUsageSnapshot(now: now)
+
+        #expect(snapshot.subscription?.plan == "Megawatt")
+        #expect(usage.primary?.usedPercent == 0)
+        #expect(usage.secondary?.usedPercent == 0)
+        #expect(usage.primary?.windowMinutes == 31 * 24 * 60)
+        #expect(try usage.primary?.resetsAt == self.date("2026-09-18T12:00:00Z"))
+        #expect(usage.secondary?.resetsAt == usage.primary?.resetsAt)
+        #expect(usage.identity?.loginMethod == "Megawatt")
+        #expect(usage.detailRow(label: "Individual")?.value == "$4.35")
+    }
+
+    @Test
+    func `parses legacy amp subscription line format with settings link`() throws {
+        let output = """
+        Subscription Megawatt: 97% other usage and 100% orb usage remaining - resets upon renewal in 29 days \
+        - https://ampcode.com/settings#subscription
+        """
+
+        let snapshot = try AmpUsageParser.parse(displayText: output)
+
+        #expect(snapshot.subscription?.plan == "Megawatt")
+        #expect(snapshot.subscription?.otherUsedPercent == 3)
+        #expect(snapshot.subscription?.orbUsedPercent == 0)
     }
 
     @Test
@@ -114,9 +464,10 @@ struct AmpUsageParserTests {
             now: now).toUsageSnapshot(now: now)
 
         let published = daily.backfillingResetTimes(from: legacy, now: now)
+        let expectedReset = try self.date("2023-11-15T01:00:00Z")
 
         #expect(legacy.primary?.resetsAt == now.addingTimeInterval(8 * 3600))
-        #expect(published.primary?.resetsAt == nil)
+        #expect(published.primary?.resetsAt == expectedReset)
         #expect(published.primary?.resetDescription == "resets daily")
     }
 
@@ -134,8 +485,11 @@ struct AmpUsageParserTests {
         #expect(snapshot.freeUsed == nil)
         #expect(snapshot.individualCredits == 25.64)
         #expect(usage.primary == nil)
-        #expect(usage.ampUsage == AmpUsageDetails(individualCredits: 25.64, workspaceBalances: []))
+        #expect(usage.secondary == nil)
+        #expect(usage.detailRow(label: "Individual")?.value == "$25.64")
         #expect(usage.identity?.loginMethod == "Amp")
+        #expect(AmpProviderDescriptor.primaryLabel(snapshot: usage) == nil)
+        #expect(AmpProviderDescriptor.secondaryLabel(snapshot: usage) == nil)
     }
 
     @Test
@@ -155,9 +509,8 @@ struct AmpUsageParserTests {
             AmpWorkspaceBalance(name: "Beta", remaining: 7),
         ])
         #expect(usage.primary == nil)
-        #expect(usage.ampUsage == AmpUsageDetails(
-            individualCredits: nil,
-            workspaceBalances: snapshot.workspaceBalances))
+        #expect(usage.detailRow(label: "Workspace Alpha Team")?.value == "$1,234.56")
+        #expect(usage.detailRow(label: "Workspace Beta")?.value == "$7.00")
     }
 
     @Test

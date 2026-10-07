@@ -26,11 +26,23 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
         return Data(json.utf8)
     }
 
+    private func withDeterministicCacheService<T>(
+        _ service: String,
+        operation: () throws -> T) rethrows -> T
+    {
+        let pendingStore = ClaudeOAuthCredentialsStore.PendingCacheClearMemoryStore()
+        return try ClaudeOAuthKeychainPromptPreference.withTaskOverrideForTesting(.onlyOnUserAction) {
+            try ClaudeOAuthCredentialsStore.withPendingCacheClearStoreOverrideForTesting(pendingStore) {
+                try KeychainCacheStore.withServiceOverrideForTesting(service, operation: operation)
+            }
+        }
+    }
+
     #if os(macOS)
     @Test
     func `credentials file invalidation preserves keychain cache when temporarily unavailable`() throws {
         let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
-        try KeychainCacheStore.withServiceOverrideForTesting(service) {
+        try self.withDeterministicCacheService(service) {
             KeychainCacheStore.setTestStoreForTesting(true)
             defer { KeychainCacheStore.setTestStoreForTesting(false) }
 
@@ -78,7 +90,7 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
                         case let .found(entry):
                             let parsed = try ClaudeOAuthCredentials.parse(data: entry.data)
                             #expect(parsed.accessToken == "cached-token")
-                        case .missing, .temporarilyUnavailable, .invalid:
+                        case .interactionRequired, .missing, .temporarilyUnavailable, .invalid:
                             #expect(Bool(false), "Expected temporary unavailability not to clear Claude cache")
                         }
 
@@ -90,7 +102,7 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
                         {
                         case .missing:
                             #expect(true)
-                        case .found, .temporarilyUnavailable, .invalid:
+                        case .found, .interactionRequired, .temporarilyUnavailable, .invalid:
                             #expect(Bool(false), "Expected pending invalidation to clear stale Claude cache")
                         }
                     }
@@ -102,7 +114,7 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
     @Test
     func `temporary keychain cache unavailability does not overwrite cache from credentials file fallback`() throws {
         let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
-        try KeychainCacheStore.withServiceOverrideForTesting(service) {
+        try self.withDeterministicCacheService(service) {
             try KeychainAccessGate.withTaskOverrideForTesting(true) {
                 KeychainCacheStore.setTestStoreForTesting(true)
                 defer { KeychainCacheStore.setTestStoreForTesting(false) }
@@ -148,7 +160,7 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
                             case let .found(entry):
                                 let parsed = try ClaudeOAuthCredentials.parse(data: entry.data)
                                 #expect(parsed.accessToken == "cached-token")
-                            case .missing, .temporarilyUnavailable, .invalid:
+                            case .interactionRequired, .missing, .temporarilyUnavailable, .invalid:
                                 #expect(Bool(false), "Expected file fallback not to overwrite unavailable cache")
                             }
                         }
@@ -161,7 +173,7 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
     @Test
     func `has cached credentials treats temporary keychain cache unavailability as present`() {
         let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
-        KeychainCacheStore.withServiceOverrideForTesting(service) {
+        self.withDeterministicCacheService(service) {
             KeychainCacheStore.setTestStoreForTesting(true)
             defer { KeychainCacheStore.setTestStoreForTesting(false) }
 
@@ -191,7 +203,7 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
     @Test
     func `invalid keychain cache is cleared by load`() throws {
         let service = "com.steipete.codexbar.cache.tests.\(UUID().uuidString)"
-        try KeychainCacheStore.withServiceOverrideForTesting(service) {
+        try self.withDeterministicCacheService(service) {
             try KeychainAccessGate.withTaskOverrideForTesting(true) {
                 KeychainCacheStore.setTestStoreForTesting(true)
                 defer { KeychainCacheStore.setTestStoreForTesting(false) }
@@ -225,7 +237,7 @@ struct ClaudeOAuthCredentialsStoreTemporaryKeychainCacheTests {
                             {
                             case .missing:
                                 #expect(true)
-                            case .found, .temporarilyUnavailable, .invalid:
+                            case .found, .interactionRequired, .temporarilyUnavailable, .invalid:
                                 #expect(Bool(false), "Expected invalid Claude cache to be cleared")
                             }
                         }

@@ -29,14 +29,13 @@ extension CodexBarCLI {
         ProviderErrorPayload(code: code.rawValue, message: message, kind: kind)
     }
 
-    static func makeCLIErrorPayload(
+    static func makeCLIErrorProviderPayload(
         message: String,
         code: ExitCode,
         kind: CLIErrorKind,
-        reason: String? = nil,
-        pretty: Bool) -> String?
+        reason: String? = nil) -> ProviderPayload
     {
-        let payload = ProviderPayload(
+        ProviderPayload(
             providerID: "cli",
             account: nil,
             version: nil,
@@ -47,6 +46,16 @@ extension CodexBarCLI {
             antigravityPlanInfo: nil,
             openaiDashboard: nil,
             error: ProviderErrorPayload(code: code.rawValue, message: message, kind: kind, reason: reason))
+    }
+
+    static func makeCLIErrorPayload(
+        message: String,
+        code: ExitCode,
+        kind: CLIErrorKind,
+        reason: String? = nil,
+        pretty: Bool) -> String?
+    {
+        let payload = self.makeCLIErrorProviderPayload(message: message, code: code, kind: kind, reason: reason)
         return self.encodeJSON([payload], pretty: pretty)
     }
 
@@ -87,6 +96,20 @@ extension CodexBarCLI {
         }
     }
 
+    /// Renders as TOON when the caller requested `usage --format toon`, JSON otherwise. Error/exit
+    /// paths must honor this too, or `--format toon` silently falls back to JSON on any early failure
+    /// (invalid arguments, config load errors, provider errors).
+    static func renderProviderPayloads(_ payloads: [ProviderPayload], output: CLIOutputPreferences) -> String {
+        if output.toonRequested {
+            return ToonFormatter.encode(payloads)
+        }
+        return self.encodeJSON(payloads, pretty: output.pretty) ?? ""
+    }
+
+    static func printProviderPayloads(_ payloads: [ProviderPayload], output: CLIOutputPreferences) {
+        print(self.renderProviderPayloads(payloads, output: output))
+    }
+
     static func exit(
         code: ExitCode,
         message: String? = nil,
@@ -96,15 +119,9 @@ extension CodexBarCLI {
     {
         if self.shouldPrintExitError(code: code, message: message) {
             if let output, output.usesJSONOutput {
-                let payload = self.makeCLIErrorPayload(
-                    message: message ?? "",
-                    code: code,
-                    kind: kind,
-                    reason: reason,
-                    pretty: output.pretty)
-                if let payload {
-                    print(payload)
-                }
+                self.printProviderPayloads(
+                    [self.makeCLIErrorProviderPayload(message: message ?? "", code: code, kind: kind, reason: reason)],
+                    output: output)
             } else if let message {
                 self.writeStderr("\(message)\n")
             }
@@ -114,24 +131,5 @@ extension CodexBarCLI {
 
     static func shouldPrintExitError(code: ExitCode, message: String?) -> Bool {
         code != .success && message != nil
-    }
-
-    static func printError(_ error: Error, output: CLIOutputPreferences, kind: CLIErrorKind = .runtime) {
-        if output.usesJSONOutput {
-            let payload = ProviderPayload(
-                providerID: "cli",
-                account: nil,
-                version: nil,
-                source: "cli",
-                status: nil,
-                usage: nil,
-                credits: nil,
-                antigravityPlanInfo: nil,
-                openaiDashboard: nil,
-                error: self.makeErrorPayload(error, kind: kind))
-            self.printJSON([payload], pretty: output.pretty)
-        } else {
-            self.writeStderr("Error: \(error.localizedDescription)\n")
-        }
     }
 }

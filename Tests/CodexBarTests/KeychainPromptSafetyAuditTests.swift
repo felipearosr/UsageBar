@@ -3,6 +3,15 @@ import Testing
 
 struct KeychainPromptSafetyAuditTests {
     @Test
+    func `app startup resolves shared keychain preferences before constructing settings`() throws {
+        let source = try Self.readRepoFile("Sources/CodexBar/CodexbarApp.swift")
+        let policy = try #require(source.range(of:
+            "KeychainAccessGate.isDisabled = SettingsStore.loadDebugDisableKeychainAccess(userDefaults: .standard)"))
+        let settings = try #require(source.range(of: "let settings = SettingsStore()"))
+        #expect(policy.upperBound < settings.lowerBound)
+    }
+
+    @Test
     func `agent instructions forbid keychain prompt validation`() throws {
         let agents = try Self.readRepoFile("AGENTS.md")
 
@@ -12,10 +21,16 @@ struct KeychainPromptSafetyAuditTests {
 
     @Test
     func `default test runner explicitly suppresses real keychain access`() throws {
-        let script = try Self.readRepoFile("Scripts/test.sh")
+        let script = try Self.readRepoFile("Scripts/test_environment.sh")
 
         #expect(script.contains("CODEXBAR_ALLOW_TEST_KEYCHAIN_ACCESS"))
         #expect(script.contains("export CODEXBAR_SUPPRESS_TEST_KEYCHAIN_ACCESS=1"))
+        for runner in ["Scripts/test.sh", "Scripts/test_fast.sh"] {
+            let source = try Self.readRepoFile(runner)
+            let environment = try #require(source.range(of: "source \"${ROOT_DIR}/Scripts/test_environment.sh\""))
+            let launch = try #require(source.range(of: "exec python3"))
+            #expect(environment.upperBound < launch.lowerBound)
+        }
     }
 
     @Test
@@ -26,6 +41,21 @@ struct KeychainPromptSafetyAuditTests {
         #expect(ttyTests.contains("LIVE_CLAUDE_TTY"))
         #expect(ttyTests.contains("guard ProcessInfo.processInfo.environment[\"LIVE_CODEX_TTY\"] == \"1\""))
         #expect(ttyTests.contains("guard ProcessInfo.processInfo.environment[\"LIVE_CLAUDE_TTY\"] == \"1\""))
+    }
+
+    @Test
+    func `live Claude fetch gates the provider and raw diagnostic subprocess`() throws {
+        let source = try Self.readRepoFile("Tests/CodexBarTests/ClaudeUsageTests.swift")
+        let start = try #require(source.range(of: "func `live claude fetch PTY`()"))
+        let end = try #require(source.range(of: "private static func captureClaudeUsageRaw("))
+        let liveTest = source[start.lowerBound..<end.lowerBound]
+        let gate = try #require(liveTest.range(of:
+            "guard Self.allowsLiveClaudeFetch(environment: ProcessInfo.processInfo.environment) else"))
+        let fetch = try #require(liveTest.range(of: "let fetcher = ClaudeUsageFetcher("))
+        let diagnostic = try #require(liveTest.range(of: "Self.captureClaudeUsageRaw("))
+
+        #expect(gate.upperBound < fetch.lowerBound)
+        #expect(gate.upperBound < diagnostic.lowerBound)
     }
 
     @Test
@@ -104,13 +134,23 @@ struct KeychainPromptSafetyAuditTests {
     }
 
     @Test
-    func `tests do not call Security item APIs except no UI query coverage`() throws {
+    func `prompt audit accepts interactive Claude keychain read double`() {
+        let lines: [Substring] = [
+            "ClaudeOAuthCredentialsStore.withInteractiveClaudeKeychainReadOverridesForTesting(",
+            "    operation: {",
+            "        allowKeychainPrompt: true",
+            "    })",
+        ]
+
+        #expect(Self.hasOpenKeychainTestDouble(lines: lines, before: 3))
+    }
+
+    @Test
+    func `tests do not call Security item APIs outside this source audit`() throws {
         let securityItemCalls = ["SecItemCopyMatching", "SecItemUpdate", "SecItemAdd", "SecItemDelete"]
-        let offenders = try Self.swiftTestFiles().filter { file in
+        let offenders = try Self.swiftTestFiles(excludingSelf: true).filter { file in
             let text = try Self.readFile(file)
             return securityItemCalls.contains(where: text.contains)
-                && !file.path.hasSuffix("Tests/CodexBarTests/KeychainNoUIQueryTests.swift")
-                && !file.path.hasSuffix("Tests/CodexBarTests/KeychainPromptSafetyAuditTests.swift")
         }
 
         #expect(offenders.isEmpty, "Unexpected direct Security item access in tests: \(offenders.map(\.path))")
@@ -128,6 +168,53 @@ struct KeychainPromptSafetyAuditTests {
             }
 
         #expect(offenders.isEmpty, "Security item access bypasses KeychainSecurity: \(offenders.map(\.path))")
+    }
+
+    @Test
+    func `production Security item gateway consumes the user access gate`() throws {
+        let source = try Self.readRepoFile("Sources/CodexBarCore/KeychainSecurity.swift")
+        #expect(source.contains("keychainAccessDisabled: KeychainAccessGate.isDisabled"))
+
+        let operationCalls = [
+            ("public static func copyMatching(", "SecItemCopyMatching"),
+            ("public static func update(", "SecItemUpdate"),
+            ("public static func add(", "SecItemAdd"),
+            ("public static func delete(", "SecItemDelete"),
+        ]
+        for (declaration, securityCall) in operationCalls {
+            let declarationRange = try #require(source.range(of: declaration))
+            let operationSource = source[declarationRange.lowerBound...]
+            let securityCallRange = try #require(operationSource.range(of: securityCall))
+            let gatewayPath = operationSource[..<securityCallRange.lowerBound]
+            #expect(gatewayPath.contains("guard self.currentItemOperationBlockReason() == nil else"))
+        }
+    }
+
+    @Test
+    func `production source resolves Security symbols via dlsym only in audited files`() throws {
+        // dlsym-resolved Security APIs (deprecated ACL/interaction functions) bypass
+        // a plain "SecItem*" grep; keep them enumerable so new runtime-resolved
+        // Security calls cannot slip past this audit unseen.
+        let allowedFiles = [
+            "Sources/CodexBarCore/KeychainCacheStore.swift",
+            // Audited 2026-08-02: resolves only read-only ACL inspection functions
+            // (SecKeychainItemCopyAccess, SecAccessCopyMatchingACLList, SecACLCopyContents,
+            // SecTrustedApplicationValidateWithPath, SecTrustedApplicationCopyExternalRepresentation);
+            // attributes-only, cannot prompt (#2528, #3837).
+            "Sources/CodexBarCore/KeychainAccessPreflight.swift",
+            "Sources/CodexBarCore/KeychainNoUIQuery.swift",
+            "Sources/CodexBarCore/KeychainSecurity.swift",
+        ]
+        let offenders = try Self.swiftFiles(
+            under: Self.repoRoot().appendingPathComponent("Sources", isDirectory: true))
+            .filter { file in
+                guard !allowedFiles.contains(where: file.path.hasSuffix) else { return false }
+                let text = try Self.readFile(file)
+                guard text.contains("dlsym") else { return false }
+                return text.contains("\"Sec") || text.contains("Security.framework")
+            }
+
+        #expect(offenders.isEmpty, "Unaudited dlsym-resolved Security access: \(offenders.map(\.path))")
     }
 
     private static func repoRoot() -> URL {
@@ -176,6 +263,7 @@ struct KeychainPromptSafetyAuditTests {
     private static func hasOpenKeychainTestDouble(lines: [Substring], before oneBasedLineNumber: Int) -> Bool {
         let helperNames = [
             "withClaudeKeychainOverridesForTesting",
+            "withInteractiveClaudeKeychainReadOverridesForTesting",
             "withKeychainAccessOverrideForTesting(true)",
             "withSecurityCLIReadOverrideForTesting",
             "KeychainAccessPreflight.withCheckGenericPasswordOverrideForTesting",

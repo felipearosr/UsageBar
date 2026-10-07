@@ -47,9 +47,9 @@ struct OpenCodeLinuxTests {
 
         let data = "{\"time\":{\"created\":\(createdMs)},\"cost\":6,\"providerID\":\"opencode\",\"role\":\"assistant\"}"
         let sql = """
-            CREATE TABLE message (id TEXT PRIMARY KEY, time_created INTEGER NOT NULL, data TEXT NOT NULL);
-            INSERT INTO message (id, time_created, data) VALUES ('message-1', \(createdMs), '\(data)');
-            """
+        CREATE TABLE message (id TEXT PRIMARY KEY, time_created INTEGER NOT NULL, data TEXT NOT NULL);
+        INSERT INTO message (id, time_created, data) VALUES ('message-1', \(createdMs), '\(data)');
+        """
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
             throw OpenCodeLocalUsageError.sqliteFailed("fixture creation failed")
         }

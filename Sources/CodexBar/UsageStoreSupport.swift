@@ -1,21 +1,7 @@
 import CodexBarCore
 import Foundation
 
-enum ProviderStatusIndicator: String {
-    case none
-    case minor
-    case major
-    case critical
-    case maintenance
-    case unknown
-
-    var hasIssue: Bool {
-        switch self {
-        case .none: false
-        default: true
-        }
-    }
-
+extension ProviderStatusIndicator {
     var label: String {
         switch self {
         case .none: L("status_operational")
@@ -28,43 +14,28 @@ enum ProviderStatusIndicator: String {
     }
 }
 
-struct ProviderStatus {
-    let indicator: ProviderStatusIndicator
-    let description: String?
-    let updatedAt: Date?
+struct ProviderRefreshPublicationContext {
+    let generation: UInt64
+    let enablementRevision: UInt64
+    var configRevision: UInt64
+    let tokenCostScopeSignature: String?
+    let allowDisabled: Bool
 }
 
-/// A single component/service row on a statuspage.io-style status page
-/// (e.g. "Codex API", "CLI", "FedRAMP") with its current state. A row with non-empty
-/// `children` is a component group and renders as an expandable dropdown.
-struct ProviderStatusComponent: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let indicator: ProviderStatusIndicator
-    /// Raw provider status. The display label is localized when the row renders so changing
-    /// the app language does not require another network refresh.
-    let status: String
-    /// Child rows for a component group; empty for leaf components.
-    var children: [ProviderStatusComponent] = []
+struct TokenAccountFetchResult {
+    let index: Int
+    let account: ProviderTokenAccount
+    let outcome: ProviderFetchOutcome
+}
 
-    var isGroup: Bool {
-        !self.children.isEmpty
-    }
+struct CodexManagedVisibleAccountRuntimeState {
+    let authFingerprint: String?
+    let workspaceAccountID: String?
+}
 
+extension ProviderStatusComponent {
     var statusLabel: String {
         Self.label(forStatuspageStatus: self.status)
-    }
-
-    /// Maps a statuspage.io component `status` string to our indicator + display label.
-    static func indicator(forStatuspageStatus status: String) -> ProviderStatusIndicator {
-        switch status {
-        case "operational": .none
-        case "degraded_performance": .minor
-        case "partial_outage": .major
-        case "major_outage", "full_outage": .critical
-        case "under_maintenance": .maintenance
-        default: .unknown
-        }
     }
 
     static func label(forStatuspageStatus status: String) -> String {
@@ -94,7 +65,9 @@ struct ConsecutiveFailureGate {
     /// Returns true when the caller should surface the error to the UI.
     mutating func shouldSurfaceError(onFailureWithPriorData hadPriorData: Bool) -> Bool {
         self.streak += 1
-        if hadPriorData, self.streak == 1 { return false }
+        if hadPriorData, self.streak == 1 {
+            return false
+        }
         return true
     }
 }
@@ -102,26 +75,36 @@ struct ConsecutiveFailureGate {
 #if DEBUG
 extension UsageStore {
     func _setSnapshotForTesting(_ snapshot: UsageSnapshot?, provider: UsageProvider) {
-        self.snapshots[provider] = snapshot?.scoped(to: provider)
+        self.snapshots[provider.instanceID] = snapshot?.scoped(to: provider)
     }
 
     func _setTokenSnapshotForTesting(_ snapshot: CostUsageTokenSnapshot?, provider: UsageProvider) {
-        self.tokenSnapshots[provider] = snapshot
+        if let snapshot {
+            self.publishTokenSnapshot(snapshot, for: provider)
+            if Self.usesSpendDashboardIndependentTokenSnapshot(provider) {
+                self._setSpendDashboardTokenSnapshotForTesting(snapshot, for: provider)
+            }
+        } else {
+            self.clearTokenSnapshot(for: provider)
+            if Self.usesSpendDashboardIndependentTokenSnapshot(provider) {
+                self.clearSpendDashboardTokenSnapshot(for: provider)
+            }
+        }
     }
 
     func _setTokenErrorForTesting(_ error: String?, provider: UsageProvider) {
-        self.tokenErrors[provider] = error
+        self.tokenErrors[provider.instanceID] = error
     }
 
     func _setErrorForTesting(_ error: String?, provider: UsageProvider) {
-        self.errors[provider] = error
+        self.errors[provider.instanceID] = error
     }
 
     func _setKnownLimitsAvailabilityForTesting(
         _ availability: UsageLimitsAvailability?,
         provider: UsageProvider)
     {
-        self.knownLimitsAvailabilityByProvider[provider] = availability
+        self.knownLimitsAvailabilityByProvider[provider.instanceID] = availability
     }
 
     func _setCodexHistoricalDatasetForTesting(_ dataset: CodexHistoricalDataset?, accountKey: String? = nil) {

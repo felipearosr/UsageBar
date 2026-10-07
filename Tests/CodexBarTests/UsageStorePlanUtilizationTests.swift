@@ -119,6 +119,75 @@ struct UsageStorePlanUtilizationTests {
         #expect(updated.last == appended)
     }
 
+    @Test
+    func `equal capturedAt lands in the same hour range as a linear upper bound`() throws {
+        let hourStart = Date(timeIntervalSince1970: 1_699_999_200)
+        let equalCapturedAt = hourStart.addingTimeInterval(10 * 60)
+        let laterHour = hourStart.addingTimeInterval(3600)
+        let existing = [
+            planEntry(at: equalCapturedAt, usedPercent: 10),
+            planEntry(at: laterHour, usedPercent: 50),
+        ]
+        let incoming = planEntry(at: equalCapturedAt, usedPercent: 40)
+
+        let updated = try #require(
+            UsageStore._updatedPlanUtilizationEntriesForTesting(
+                existingEntries: existing,
+                entry: incoming))
+
+        #expect(updated == [
+            incoming,
+            planEntry(at: laterHour, usedPercent: 50),
+        ])
+    }
+
+    @Test
+    func `duplicate capturedAt in the same hour is a no-op`() {
+        let hourStart = Date(timeIntervalSince1970: 1_699_999_200)
+        let existing = [
+            planEntry(at: hourStart.addingTimeInterval(10 * 60), usedPercent: 22, resetsAt: hourStart),
+        ]
+
+        let updated = UsageStore._updatedPlanUtilizationEntriesForTesting(
+            existingEntries: existing,
+            entry: existing[0])
+
+        #expect(updated == nil)
+    }
+
+    @Test
+    func `hour bucket edges stay in separate ranges`() throws {
+        let hourStart = Date(timeIntervalSince1970: 1_699_999_200)
+        let nextHour = hourStart.addingTimeInterval(3600)
+        let justBeforeNextHour = hourStart.addingTimeInterval(3599)
+
+        let splitAcrossBoundary = try #require(
+            UsageStore._updatedPlanUtilizationEntriesForTesting(
+                existingEntries: [planEntry(at: hourStart, usedPercent: 10)],
+                entry: planEntry(at: nextHour, usedPercent: 20)))
+        #expect(splitAcrossBoundary == [
+            planEntry(at: hourStart, usedPercent: 10),
+            planEntry(at: nextHour, usedPercent: 20),
+        ])
+
+        let previousBucketFromExactEdge = try #require(
+            UsageStore._updatedPlanUtilizationEntriesForTesting(
+                existingEntries: [planEntry(at: nextHour, usedPercent: 10)],
+                entry: planEntry(at: justBeforeNextHour, usedPercent: 20)))
+        #expect(previousBucketFromExactEdge == [
+            planEntry(at: justBeforeNextHour, usedPercent: 20),
+            planEntry(at: nextHour, usedPercent: 10),
+        ])
+
+        let sameBucketBeforeEdge = try #require(
+            UsageStore._updatedPlanUtilizationEntriesForTesting(
+                existingEntries: [planEntry(at: hourStart, usedPercent: 10)],
+                entry: planEntry(at: justBeforeNextHour, usedPercent: 20)))
+        #expect(sameBucketBeforeEdge == [
+            planEntry(at: justBeforeNextHour, usedPercent: 20),
+        ])
+    }
+
     @MainActor
     @Test
     func `native chart shows visible series tabs only`() {
@@ -170,6 +239,59 @@ struct UsageStorePlanUtilizationTests {
 
     @MainActor
     @Test
+    func `native chart shows monthly codex tab for a thirty day primary`() {
+        let histories = [
+            planSeries(name: .monthly, windowMinutes: 43200, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_000_000), usedPercent: 55),
+            ]),
+            planSeries(name: .weekly, windowMinutes: 10080, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_086_400), usedPercent: 5),
+            ]),
+        ]
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 55, windowMinutes: 43200, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 5, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+
+        let model = PlanUtilizationHistoryChartMenuView._modelSnapshotForTesting(
+            histories: histories,
+            provider: .codex,
+            snapshot: snapshot)
+
+        #expect(model.visibleSeries == ["weekly:10080", "monthly:43200"])
+        #expect(model.selectedSeries == "weekly:10080")
+    }
+
+    @MainActor
+    @Test
+    func `native chart folds legacy thirty day session and weekly history into monthly`() {
+        let histories = [
+            planSeries(name: .session, windowMinutes: 43200, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_000_000), usedPercent: 80),
+            ]),
+            planSeries(name: .weekly, windowMinutes: 43200, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_086_400), usedPercent: 70),
+            ]),
+            planSeries(name: .monthly, windowMinutes: 43200, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_172_800), usedPercent: 55),
+            ]),
+        ]
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 55, windowMinutes: 43200, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 5, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+
+        let model = PlanUtilizationHistoryChartMenuView._modelSnapshotForTesting(
+            histories: histories,
+            provider: .codex,
+            snapshot: snapshot)
+
+        #expect(model.visibleSeries == ["monthly:43200"])
+        #expect(model.selectedSeries == "monthly:43200")
+    }
+
+    @MainActor
+    @Test
     func `claude history tabs match current snapshot bars`() {
         let histories = [
             planSeries(name: .session, windowMinutes: 300, entries: [
@@ -195,6 +317,36 @@ struct UsageStorePlanUtilizationTests {
             snapshot: snapshot)
 
         #expect(model.visibleSeries == ["session:300", "weekly:10080"])
+        #expect(model.selectedSeries == "session:300")
+    }
+
+    @MainActor
+    @Test
+    func `opencodego history tabs include the monthly series`() {
+        let histories = [
+            planSeries(name: .session, windowMinutes: 300, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_000_000), usedPercent: 12),
+            ]),
+            planSeries(name: .weekly, windowMinutes: 10080, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_086_400), usedPercent: 57),
+            ]),
+            planSeries(name: .monthly, windowMinutes: 43200, entries: [
+                planEntry(at: Date(timeIntervalSince1970: 1_700_086_400), usedPercent: 34),
+            ]),
+        ]
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 12, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 57, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            tertiary: RateWindow(usedPercent: 34, windowMinutes: 43200, resetsAt: nil, resetDescription: nil),
+            updatedAt: Date(timeIntervalSince1970: 1_700_086_400),
+            identity: nil)
+
+        let model = PlanUtilizationHistoryChartMenuView._modelSnapshotForTesting(
+            histories: histories,
+            provider: .opencodego,
+            snapshot: snapshot)
+
+        #expect(model.visibleSeries == ["session:300", "weekly:10080", "monthly:43200"])
         #expect(model.selectedSeries == "session:300")
     }
 
@@ -497,6 +649,41 @@ struct UsageStorePlanUtilizationTests {
 
     @MainActor
     @Test
+    func `plan history records thirty day codex window as monthly series`() async {
+        let store = Self.makeStore()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 55,
+                windowMinutes: 43200,
+                resetsAt: now.addingTimeInterval(24 * 86400),
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 5,
+                windowMinutes: 10080,
+                resetsAt: now.addingTimeInterval(7 * 86400),
+                resetDescription: nil),
+            updatedAt: now,
+            identity: ProviderIdentitySnapshot(
+                providerID: .codex,
+                accountEmail: "codex@example.com",
+                accountOrganization: nil,
+                loginMethod: "plus"))
+        store._setSnapshotForTesting(snapshot, provider: .codex)
+
+        await store.recordPlanUtilizationHistorySample(
+            provider: .codex,
+            snapshot: snapshot,
+            now: now)
+
+        let histories = store.planUtilizationHistory(for: .codex)
+        #expect(histories.contains { $0.name == .monthly && $0.windowMinutes == 43200 })
+        #expect(histories.contains { $0.name == .weekly && $0.windowMinutes == 10080 })
+        #expect(!histories.contains { $0.name == .session })
+    }
+
+    @MainActor
+    @Test
     func `plan history selects current account bucket`() throws {
         let store = Self.makeStore()
         let aliceSnapshot = Self.makeSnapshot(provider: .codex, email: "alice@example.com")
@@ -537,6 +724,44 @@ struct UsageStorePlanUtilizationTests {
         let bobHistory = store.planUtilizationHistory(for: .codex)
         #expect(store.planUtilizationHistory[.codex]?.preferredAccountKey == bobKey)
         #expect(bobHistory == [bobWeekly])
+    }
+
+    @MainActor
+    @Test
+    func `cursor automatic history ignores dormant saved token account`() async throws {
+        let store = Self.makeStore()
+        store.settings.historicalTrackingEnabled = true
+        store.settings.addTokenAccount(
+            provider: .cursor,
+            label: "Dormant manual account",
+            token: "fixture")
+        let dormantAccount = try #require(store.settings.selectedTokenAccount(for: .cursor))
+        let dormantAccountKey = try #require(
+            UsageStore._planUtilizationTokenAccountKeyForTesting(
+                provider: .cursor,
+                account: dormantAccount))
+        store.settings.cursorCookieSource = .auto
+
+        let browserSnapshot = Self.makeSnapshot(provider: .cursor, email: "browser@example.com")
+        let browserAccountKey = try #require(
+            UsageStore._planUtilizationAccountKeyForTesting(
+                provider: .cursor,
+                snapshot: browserSnapshot))
+        store._setSnapshotForTesting(browserSnapshot, provider: .cursor)
+
+        await store.recordPlanUtilizationHistorySample(
+            provider: .cursor,
+            snapshot: browserSnapshot,
+            now: Date(timeIntervalSince1970: 1_700_000_000))
+
+        let histories = store.planUtilizationHistory(for: .cursor)
+        let buckets = try #require(store.planUtilizationHistory[.cursor])
+        #expect(store.settings.selectedTokenAccount(for: .cursor)?.id == dormantAccount.id)
+        #expect(store.settings.effectiveSelectedTokenAccount(for: .cursor) == nil)
+        #expect(buckets.preferredAccountKey == browserAccountKey)
+        #expect(buckets.accounts[dormantAccountKey] == nil)
+        #expect(histories == buckets.accounts[browserAccountKey])
+        #expect(!histories.isEmpty)
     }
 
     @MainActor
@@ -736,6 +961,128 @@ struct UsageStorePlanUtilizationTests {
 
     @MainActor
     @Test
+    func `opencodego plan history is always supported like codex and claude`() {
+        let store = Self.makeStore()
+        #expect(store.settings.historicalTrackingEnabled == false)
+        #expect(store.supportsPlanUtilizationHistory(for: .opencodego))
+    }
+
+    @MainActor
+    @Test
+    func `record plan history stores opencodego monthly series`() async {
+        let store = Self.makeStore()
+        // historicalTrackingEnabled defaults to false; opencodego must still record, like codex/claude.
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 12, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 57, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            tertiary: RateWindow(usedPercent: 34, windowMinutes: 43200, resetsAt: nil, resetDescription: nil),
+            updatedAt: Date(),
+            identity: ProviderIdentitySnapshot(
+                providerID: .opencodego,
+                accountEmail: nil,
+                accountOrganization: nil,
+                loginMethod: nil))
+        store._setSnapshotForTesting(snapshot, provider: .opencodego)
+
+        await store.recordPlanUtilizationHistorySample(
+            provider: .opencodego,
+            snapshot: snapshot,
+            now: Date(timeIntervalSince1970: 1_700_000_000))
+
+        let histories = store.planUtilizationHistory(for: .opencodego)
+        #expect(findSeries(histories, name: .session, windowMinutes: 300)?.entries.last?.usedPercent == 12)
+        #expect(findSeries(histories, name: .weekly, windowMinutes: 10080)?.entries.last?.usedPercent == 57)
+        #expect(findSeries(histories, name: .monthly, windowMinutes: 43200)?.entries.last?.usedPercent == 34)
+    }
+
+    @MainActor
+    @Test
+    func `record plan history stores mimo monthly series`() async {
+        let store = Self.makeStore()
+        store.settings.historicalTrackingEnabled = true
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 34,
+                windowMinutes: ProviderPaceCapability.monthlyWindowSentinelMinutes,
+                resetsAt: now.addingTimeInterval(20 * 24 * 60 * 60),
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now)
+
+        await store.recordPlanUtilizationHistorySample(provider: .mimo, snapshot: snapshot, now: now)
+
+        let histories = store.planUtilizationHistory(for: .mimo)
+        #expect(findSeries(histories, name: .monthly, windowMinutes: 43200)?.entries.last?.usedPercent == 34)
+    }
+
+    @MainActor
+    @Test
+    func `record plan history stores stepfun monthly series`() async {
+        let store = Self.makeStore()
+        store.settings.historicalTrackingEnabled = true
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 58,
+                windowMinutes: ProviderPaceCapability.monthlyWindowSentinelMinutes,
+                resetsAt: now.addingTimeInterval(20 * 24 * 60 * 60),
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now)
+
+        await store.recordPlanUtilizationHistorySample(provider: .stepfun, snapshot: snapshot, now: now)
+
+        let histories = store.planUtilizationHistory(for: .stepfun)
+        #expect(findSeries(histories, name: .monthly, windowMinutes: 43200)?.entries.last?.usedPercent == 58)
+    }
+
+    @MainActor
+    @Test(arguments: [false, true])
+    func `ollama monthly history records all currently reported lanes`(hasWeekly: Bool) async {
+        let store = Self.makeStore()
+        store.settings.historicalTrackingEnabled = true
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 12.5,
+                windowMinutes: ProviderPaceCapability.monthlyWindowSentinelMinutes,
+                resetsAt: now.addingTimeInterval(20 * 24 * 60 * 60),
+                resetDescription: nil),
+            secondary: hasWeekly
+                ? RateWindow(usedPercent: 40, windowMinutes: 10080, resetsAt: nil, resetDescription: nil)
+                : nil,
+            updatedAt: now)
+
+        await store.recordPlanUtilizationHistorySample(provider: .ollama, snapshot: snapshot, now: now)
+
+        let histories = store.planUtilizationHistory(for: .ollama)
+        #expect(findSeries(histories, name: .monthly, windowMinutes: 43200)?.entries.last?.usedPercent == 12.5)
+        #expect(findSeries(histories, name: .session, windowMinutes: 300) == nil)
+        #expect(findSeries(histories, name: .weekly, windowMinutes: 10080)?.entries.last?.usedPercent
+            == (hasWeekly ? 40 : nil))
+    }
+
+    @MainActor
+    @Test
+    func `stepfun rolling windows keep their session and weekly history lanes`() async {
+        let store = Self.makeStore()
+        store.settings.historicalTrackingEnabled = true
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = UsageSnapshot(
+            primary: RateWindow(usedPercent: 25, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
+            secondary: RateWindow(usedPercent: 40, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
+            updatedAt: now)
+
+        await store.recordPlanUtilizationHistorySample(provider: .stepfun, snapshot: snapshot, now: now)
+
+        let histories = store.planUtilizationHistory(for: .stepfun)
+        #expect(findSeries(histories, name: .session, windowMinutes: 300)?.entries.last?.usedPercent == 25)
+        #expect(findSeries(histories, name: .weekly, windowMinutes: 10080)?.entries.last?.usedPercent == 40)
+    }
+
+    @MainActor
+    @Test
     func `generic provider weekly lane is persisted to provider history json`() async throws {
         let store = Self.makeStore()
         store.settings.historicalTrackingEnabled = true
@@ -765,7 +1112,7 @@ struct UsageStorePlanUtilizationTests {
 
         let histories = store.planUtilizationHistory(for: .zai)
         #expect(findSeries(histories, name: .weekly, windowMinutes: 10080)?.entries.map(\.usedPercent) == [42, 58])
-        #expect(findSeries(histories, name: .session, windowMinutes: 300) == nil)
+        #expect(findSeries(histories, name: .session, windowMinutes: 300)?.entries.map(\.usedPercent) == [15, 25])
 
         let providerURL = try #require(store.planUtilizationHistoryStore.directoryURL?
             .appendingPathComponent("zai.json", isDirectory: false))
@@ -1038,7 +1385,7 @@ struct UsageStorePlanUtilizationTests {
             .appendingPathComponent("com.steipete.codexbar", isDirectory: true)
             .appendingPathComponent("history", isDirectory: true)
         let store = PlanUtilizationHistoryStore(directoryURL: directoryURL)
-        let buckets = PlanUtilizationHistoryBuckets(
+        var buckets = PlanUtilizationHistoryBuckets(
             preferredAccountKey: "alice",
             unscoped: [
                 planSeries(name: .session, windowMinutes: 300, entries: [
@@ -1055,11 +1402,124 @@ struct UsageStorePlanUtilizationTests {
                     ]),
                 ],
             ])
+        buckets.setSessionEquivalentWindowPairIdentity("session:standard|weekly:standard", for: "alice")
 
         store.save([.codex: buckets])
         let loaded = store.load()
 
         #expect(loaded == [.codex: buckets])
+    }
+
+    @Test
+    func `store persists an invalidated pair identity without histories`() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directoryURL = root
+            .appendingPathComponent("com.steipete.codexbar", isDirectory: true)
+            .appendingPathComponent("history", isDirectory: true)
+        let store = PlanUtilizationHistoryStore(directoryURL: directoryURL)
+        var buckets = PlanUtilizationHistoryBuckets()
+        buckets.invalidateSessionEquivalentWindowPairIdentity(for: nil)
+
+        store.save([.zai: buckets])
+
+        #expect(store.load() == [.zai: buckets])
+    }
+
+    @Test
+    func `store preserves unchanged provider file identity`() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directoryURL = root
+            .appendingPathComponent("com.steipete.codexbar", isDirectory: true)
+            .appendingPathComponent("history", isDirectory: true)
+        let providerURL = directoryURL.appendingPathComponent("codex.json")
+        let store = PlanUtilizationHistoryStore(directoryURL: directoryURL)
+        let buckets = Self.persistedBuckets(usedPercent: 12)
+
+        store.save([.codex: buckets])
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_600_000_000)],
+            ofItemAtPath: providerURL.path)
+        let before = try Self.persistedFileState(at: providerURL)
+
+        store.save([.codex: buckets])
+        let after = try Self.persistedFileState(at: providerURL)
+
+        #expect(after == before)
+    }
+
+    @Test
+    func `changing one provider leaves unchanged sibling file untouched`() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directoryURL = root
+            .appendingPathComponent("com.steipete.codexbar", isDirectory: true)
+            .appendingPathComponent("history", isDirectory: true)
+        let codexURL = directoryURL.appendingPathComponent("codex.json")
+        let claudeURL = directoryURL.appendingPathComponent("claude.json")
+        let store = PlanUtilizationHistoryStore(directoryURL: directoryURL)
+        let initialCodex = Self.persistedBuckets(usedPercent: 12)
+        let changedCodex = Self.persistedBuckets(usedPercent: 64)
+        let claude = Self.persistedBuckets(usedPercent: 37)
+
+        store.save([.codex: initialCodex, .claude: claude])
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_600_000_000)],
+            ofItemAtPath: claudeURL.path)
+        let codexBefore = try Self.persistedFileState(at: codexURL)
+        let claudeBefore = try Self.persistedFileState(at: claudeURL)
+
+        store.save([.codex: changedCodex, .claude: claude])
+
+        let loaded = store.load()
+        let codexAfter = try Self.persistedFileState(at: codexURL)
+        let claudeAfter = try Self.persistedFileState(at: claudeURL)
+        #expect(loaded[.codex] == changedCodex)
+        #expect(loaded[.claude] == claude)
+        #expect(codexAfter.data != codexBefore.data)
+        #expect(claudeAfter == claudeBefore)
+    }
+
+    @Test
+    func `saving empty provider removes existing history file`() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directoryURL = root
+            .appendingPathComponent("com.steipete.codexbar", isDirectory: true)
+            .appendingPathComponent("history", isDirectory: true)
+        let providerURL = directoryURL.appendingPathComponent("codex.json")
+        let store = PlanUtilizationHistoryStore(directoryURL: directoryURL)
+
+        store.save([.codex: Self.persistedBuckets(usedPercent: 12)])
+        #expect(FileManager.default.fileExists(atPath: providerURL.path))
+
+        store.save([:])
+
+        #expect(!FileManager.default.fileExists(atPath: providerURL.path))
+    }
+
+    @Test
+    func `saving replaces malformed provider history with canonical document`() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directoryURL = root
+            .appendingPathComponent("com.steipete.codexbar", isDirectory: true)
+            .appendingPathComponent("history", isDirectory: true)
+        let providerURL = directoryURL.appendingPathComponent("codex.json")
+        let store = PlanUtilizationHistoryStore(directoryURL: directoryURL)
+        let buckets = Self.persistedBuckets(usedPercent: 12)
+        let malformed = Data("{not-json".utf8)
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true)
+        try malformed.write(to: providerURL)
+
+        store.save([.codex: buckets])
+        let rewritten = try Data(contentsOf: providerURL)
+
+        #expect(rewritten != malformed)
+        #expect(store.load() == [.codex: buckets])
     }
 }
 
@@ -1069,6 +1529,33 @@ extension UsageStorePlanUtilizationTests {
         let preferredAccountKey: String?
         let unscoped: [PlanUtilizationSeriesHistory]
         let accounts: [String: [PlanUtilizationSeriesHistory]]
+    }
+
+    private struct PersistedFileState: Equatable {
+        let data: Data
+        let modificationDate: Date
+        let fileNumber: UInt64
+    }
+
+    private static func persistedBuckets(usedPercent: Double) -> PlanUtilizationHistoryBuckets {
+        PlanUtilizationHistoryBuckets(
+            preferredAccountKey: nil,
+            unscoped: [
+                planSeries(name: .session, windowMinutes: 300, entries: [
+                    planEntry(at: Date(timeIntervalSince1970: 1_700_000_000), usedPercent: usedPercent),
+                ]),
+            ])
+    }
+
+    private static func persistedFileState(at url: URL) throws -> PersistedFileState {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let modificationDate = try #require(attributes[.modificationDate] as? Date)
+        let fileNumber = try #require(attributes[.systemFileNumber] as? NSNumber)
+        let data = try Data(contentsOf: url)
+        return PersistedFileState(
+            data: data,
+            modificationDate: modificationDate,
+            fileNumber: fileNumber.uint64Value)
     }
 
     private struct FixtureDocument: Decodable {
@@ -1129,7 +1616,7 @@ extension UsageStorePlanUtilizationTests {
             secondary: RateWindow(usedPercent: 20, windowMinutes: 10080, resetsAt: nil, resetDescription: nil),
             updatedAt: Date(),
             identity: ProviderIdentitySnapshot(
-                providerID: provider,
+                providerID: provider.instanceID,
                 accountEmail: email,
                 accountOrganization: nil,
                 loginMethod: "plus"))

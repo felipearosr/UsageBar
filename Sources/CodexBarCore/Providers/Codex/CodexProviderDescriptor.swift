@@ -1,11 +1,34 @@
 import Foundation
+import SweetCookieKit
+
+extension ProviderFetchContext {
+    /// The managed Codex workspace identity is app metadata, not a mutation of Codex's auth file.
+    public var codexWorkspaceID: String? {
+        self.settings?.codex?.managedWorkspaceAccountID
+    }
+}
 
 public enum CodexProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
 
+    /// Preserve the legacy prompt behavior before probing Chromium variants that may trigger Safe Storage prompts.
+    private static var browserCookieOrder: BrowserCookieImportOrder? {
+        #if os(macOS)
+        let preferredPrefix: [Browser] = [.safari, .chrome, .firefox]
+        return preferredPrefix + Browser.defaultImportOrder.filter { !preferredPrefix.contains($0) }
+        #else
+        return nil
+        #endif
+    }
+
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .codex,
+            menuBarMetrics: ProviderMenuBarMetricCapabilities(
+                supported: [.automatic, .primary, .secondary, .primaryAndSecondary, .extraUsage]),
+            settingsSection: .init(CodexProviderSettingsKey.self),
+            // PAT lives in Codex CLI `auth.json`, not ProviderConfig.apiKey.
+            credentials: ProviderCredentialAdapter(requiresAPIKeyForAPISource: false),
             metadata: ProviderMetadata(
                 id: .codex,
                 displayName: "Codex",
@@ -20,63 +43,212 @@ public enum CodexProviderDescriptor {
                 defaultEnabled: true,
                 isPrimaryProvider: true,
                 usesAccountFallback: true,
-                browserCookieOrder: ProviderBrowserCookieDefaults.codexCookieImportOrder
+                sharePlanLabels: [
+                    "guest": "Guest", "free": "Free", "go": "Go", "plus": "Plus", "plus plan": "Plus",
+                    "chatgpt plus": "Plus", "chatgpt-plus": "Plus", "chatgpt_plus": "Plus",
+                    "pro": "Pro 20x", "codex pro": "Pro 20x",
+                    "prolite": "Pro 5x", "pro_lite": "Pro 5x", "pro-lite": "Pro 5x",
+                    "pro lite": "Pro 5x", "codex pro lite": "Pro 5x",
+                    "free_workspace": "Free Workspace", "team": "Team", "business": "Business",
+                    "education": "Education", "quorum": "Quorum", "k12": "K12",
+                    "enterprise": "Enterprise", "edu": "Edu",
+                ],
+                debugPane: ProviderDebugPaneCapabilities(
+                    probeLogOrder: 0,
+                    notificationSimulationOrder: 0,
+                    errorSimulationOrder: 0),
+                browserCookieOrder: self.browserCookieOrder
                     ?? ProviderBrowserCookieDefaults.defaultImportOrder,
-                dashboardURL: "https://chatgpt.com/codex/settings/usage",
+                dashboardURL: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
                 changelogURL: "https://github.com/openai/codex/releases",
                 statusPageURL: "https://status.openai.com/"),
             branding: ProviderBranding(
-                iconStyle: .codex,
+                iconStyle: .init(provider: .codex),
                 iconResourceName: "ProviderIcon-codex",
-                color: ProviderColor(red: 73 / 255, green: 163 / 255, blue: 176 / 255)),
+                color: ProviderColor(red: 73 / 255, green: 163 / 255, blue: 176 / 255),
+                confettiPalette: [
+                    ProviderColor(hex: 0x736BD4),
+                    ProviderColor(hex: 0x97A9F7),
+                    ProviderColor(hex: 0xCFD4F7),
+                ],
+                burnDownWidgetColor: ProviderColor(red: 0.120, green: 0.780, blue: 0.598)),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: true,
-                noDataMessage: self.noDataMessage),
+                noDataMessage: self.noDataMessage,
+                menuHintLines: [.localized("codex_api_estimate_hint")],
+                supportsTokenSnapshot: true,
+                settingsStatusOrder: 1,
+                showsHintInProviderDetails: true,
+                historyTitleStyle: .compact,
+                hintPlacement: .beforeRequestHistory,
+                chartEstimateDisclaimer: .localized("codex_api_estimate_hint"),
+                preservesCalendarDaysInCharts: true),
+            pace: ProviderPaceCapability(
+                primary: .session(maximumMinutes: 300),
+                secondary: .weekly,
+                showsHeadroomHint: true,
+                sessionPaceWindowRule: .custom { window, _ in
+                    guard let minutes = window.windowMinutes else { return true }
+                    return minutes != 7 * 24 * 60 && minutes != 30 * 24 * 60
+                }),
+            history: .alwaysTracked,
+            presentation: ProviderUsagePresentation(
+                identityPresenter: { provider, snapshot in
+                    guard let plan = snapshot.loginMethod(for: provider), !plan.isEmpty else {
+                        return ProviderIdentityPresentation(badge: nil, plan: nil)
+                    }
+                    let display = CodexPlanFormatting.displayName(plan) ?? plan
+                    return ProviderIdentityPresentation(badge: display, plan: display)
+                },
+                costPresenter: { snapshot in
+                    guard let cost = snapshot.providerCost,
+                          cost.currencyCode == CodexExtraUsageCost.currencyCode
+                    else {
+                        return ProviderCostPresentation()
+                    }
+                    let balances = cost.balance.map {
+                        [ProviderCostPresentation.Balance(
+                            label: "Extra usage balance",
+                            amount: $0,
+                            currencyCode: cost.currencyCode)]
+                    } ?? []
+                    return ProviderCostPresentation(
+                        showsGenericFallback: !(cost.used == 0 && cost.limit == 0),
+                        balances: balances,
+                        menuCardStyle: .creditsUsage)
+                },
+                creditResolver: { $0.displayRemaining },
+                iconWindowResolver: self.iconWindows,
+                iconDecorations: [.face],
+                automaticSelectionPrioritizesExhaustedWindow: false,
+                planUtilizationSeriesResolver: self.planUtilizationSeries,
+                planUtilizationSeriesNormalizer: { series, windowMinutes in
+                    guard windowMinutes == 30 * 24 * 60,
+                          series == .session || series == .weekly
+                    else { return series }
+                    return .monthly
+                },
+                secondaryGloballyCapsPrimary: true,
+                menuCard: ProviderMenuCardPresentation(
+                    creditsVisibility: .requiresValueOrError,
+                    costVisibilityResolver: { $0.showOptionalUsage },
+                    supportsInlineTokenCostDashboard: true,
+                    showsQuotaWeekCost: true)),
             fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto, .web, .cli, .oauth],
+                sourceModes: [.auto, .web, .cli, .oauth, .api],
                 pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
             cli: ProviderCLIConfig(
                 name: "codex",
-                versionDetector: { _ in ProviderVersionDetector.codexVersion() }))
+                binaryLocator: { BinaryLocator.resolveCodexBinary() },
+                versionDetector: { _ in ProviderVersionDetector.codexVersion() },
+                supportsCostCommand: true,
+                prefersBinaryLocatorForWhich: true,
+                ttyStatusCommand: "/status",
+                browserSupportExemption: { sourceMode, _, _ in sourceMode == .auto }))
     }
 
     private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
+        let pat = CodexPATFetchStrategy()
         let cli = CodexCLIUsageStrategy()
         let oauth = CodexOAuthFetchStrategy()
         let web = CodexWebDashboardStrategy()
+        let oauthWithNativeRefresh: [any ProviderFetchStrategy] = [oauth, CodexOAuthNativeRefreshCLIStrategy()]
+        let autoStrategies: [any ProviderFetchStrategy] = context.codexWorkspaceID == nil
+            ? [pat, oauth, cli]
+            : [pat, oauth]
 
-        switch context.runtime {
+        switch context.sourceMode {
+        case .oauth:
+            return oauthWithNativeRefresh
+        case .web:
+            return [web]
         case .cli:
-            switch context.sourceMode {
-            case .oauth:
-                return [oauth]
-            case .web:
-                return [web]
-            case .cli:
-                return [cli]
-            case .api:
-                return []
-            case .auto:
-                return [oauth, cli]
-            }
-        case .app:
-            switch context.sourceMode {
-            case .oauth:
-                return [oauth]
-            case .cli:
-                return [cli]
-            case .web:
-                return [web]
-            case .api:
-                return []
-            case .auto:
-                return [oauth, cli]
-            }
+            return [cli]
+        case .api:
+            return [pat]
+        case .auto:
+            return autoStrategies
         }
     }
 
     private static func noDataMessage() -> String {
         self.noDataMessage(env: ProcessInfo.processInfo.environment)
+    }
+
+    private enum UsageLane: Hashable {
+        case session
+        case weekly
+        case monthly
+    }
+
+    private static func iconWindows(context: ProviderIconWindowContext) -> ProviderUsageWindowPair {
+        let windows = self.visibleWindows(snapshot: context.snapshot, now: context.now)
+        return ProviderUsageWindowPair(primary: windows.first, secondary: windows.dropFirst().first)
+    }
+
+    private static func planUtilizationSeries(
+        snapshot: UsageSnapshot) -> Set<ProviderPlanUtilizationSeries>?
+    {
+        let lanes = Set(self.windowsByLane(snapshot: snapshot).keys)
+        return Set(lanes.map { lane in
+            switch lane {
+            case .session: .session
+            case .weekly: .weekly
+            case .monthly: .monthly
+            }
+        })
+    }
+
+    private static func visibleWindows(snapshot: UsageSnapshot, now: Date) -> [RateWindow] {
+        let slotted = [
+            self.classified(snapshot.primary, fallback: .session),
+            self.classified(snapshot.secondary, fallback: .weekly),
+        ].compactMap(\.self)
+        let windowsByLane = self.windowsByLane(snapshot: snapshot)
+        let weekly = windowsByLane[.weekly]
+        var seen: Set<UsageLane> = []
+        return slotted.compactMap { lane, _ in
+            guard seen.insert(lane).inserted, var window = windowsByLane[lane] else { return nil }
+            if lane == .session, self.weeklyCapsSession(weekly, now: now) {
+                window = RateWindow(
+                    usedPercent: 100,
+                    windowMinutes: window.windowMinutes,
+                    resetsAt: window.resetsAt,
+                    resetDescription: window.resetDescription,
+                    nextRegenPercent: window.nextRegenPercent,
+                    isSyntheticPlaceholder: window.isSyntheticPlaceholder)
+            }
+            guard window.remainingPercent > 0 || window.resetsAt.map({ $0 > now }) != false else { return nil }
+            return window
+        }
+    }
+
+    private static func windowsByLane(snapshot: UsageSnapshot) -> [UsageLane: RateWindow] {
+        let slotted = [
+            self.classified(snapshot.primary, fallback: .session),
+            self.classified(snapshot.secondary, fallback: .weekly),
+        ].compactMap(\.self)
+        var result: [UsageLane: RateWindow] = [:]
+        for (lane, window) in slotted {
+            result[lane] = window
+        }
+        return result
+    }
+
+    private static func classified(_ window: RateWindow?, fallback: UsageLane) -> (UsageLane, RateWindow)? {
+        guard let window else { return nil }
+        let lane: UsageLane = switch window.windowMinutes {
+        case 5 * 60: .session
+        case 7 * 24 * 60: .weekly
+        case 30 * 24 * 60: .monthly
+        default: fallback
+        }
+        return (lane, window)
+    }
+
+    private static func weeklyCapsSession(_ weekly: RateWindow?, now: Date) -> Bool {
+        guard let weekly, weekly.remainingPercent <= 0 else { return false }
+        return weekly.resetsAt.map { $0 > now } ?? true
     }
 
     private static func noDataMessage(env: [String: String], fileManager: FileManager = .default) -> String {
@@ -88,9 +260,13 @@ public enum CodexProviderDescriptor {
 
     public static func resolveUsageStrategy(
         selectedDataSource: CodexUsageDataSource,
-        hasOAuthCredentials: Bool) -> CodexUsageStrategy
+        hasOAuthCredentials: Bool,
+        hasPATCredentials: Bool = false) -> CodexUsageStrategy
     {
         if selectedDataSource == .auto {
+            if hasPATCredentials {
+                return CodexUsageStrategy(dataSource: .pat)
+            }
             if hasOAuthCredentials {
                 return CodexUsageStrategy(dataSource: .oauth)
             }
@@ -120,17 +296,19 @@ struct CodexCLIUsageStrategy: ProviderFetchStrategy {
             }
             // Credits refresh can succeed even when RPC omits rate-limit windows.
             return self.makeResult(
-                usage: UsageSnapshot(
-                    primary: nil,
-                    secondary: nil,
-                    updatedAt: credits.updatedAt,
-                    identity: snapshot.identity),
+                usage: CodexExtraUsageCost.attaching(
+                    to: UsageSnapshot(
+                        primary: nil,
+                        secondary: nil,
+                        updatedAt: credits.updatedAt,
+                        identity: snapshot.identity),
+                    credits: credits),
                 credits: credits,
                 sourceLabel: "codex-cli")
         }
         let credits = context.includeCredits ? snapshot.credits : nil
         return self.makeResult(
-            usage: usage,
+            usage: CodexExtraUsageCost.attaching(to: usage, credits: credits),
             credits: credits,
             sourceLabel: "codex-cli")
     }
@@ -158,26 +336,107 @@ struct CodexCLIUsageStrategy: ProviderFetchStrategy {
     }
 }
 
+/// Explicit OAuth may recover stale native credentials through the Codex CLI, without allowing
+/// missing or external credentials to silently switch sources.
+struct CodexOAuthNativeRefreshCLIStrategy: ProviderFetchStrategy {
+    let id: String = "codex.oauth-native-refresh-cli"
+    let kind: ProviderFetchKind = .cli
+    private let binaryResolver: @Sendable (ProviderFetchContext) -> String?
+
+    init(
+        binaryResolver: @escaping @Sendable (ProviderFetchContext) -> String? = {
+            CodexCLIUsageStrategy.resolvedBinary(env: $0.env)
+        })
+    {
+        self.binaryResolver = binaryResolver
+    }
+
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        // The Codex CLI app-server has no supported way to receive CodexBar's selected managed
+        // workspace account header. Falling back to it would therefore report the auth.json
+        // workspace under a different selected workspace. Keep this path unavailable until the
+        // owner CLI can carry that scope explicitly.
+        guard context.codexWorkspaceID == nil,
+              context.sourceMode == .oauth,
+              self.binaryResolver(context) != nil,
+              let credentials = try? CodexOAuthCredentialsStore.loadForUsage(
+                  env: context.env,
+                  allowExternalSources: context.settings?.codex?.allowExternalOAuthSources == true)
+        else { return false }
+        return credentials.source == .codexHome && credentials.needsRefresh
+    }
+
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        try await CodexCLIUsageStrategy().fetch(context)
+    }
+
+    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
+        false
+    }
+}
+
 struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
     let id: String = "codex.oauth"
     let kind: ProviderFetchKind = .oauth
 
     func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        (try? CodexOAuthCredentialsStore.load(env: context.env)) != nil
+        await (try? Self.loadCredentials(context, retryStale: false)) != nil
     }
 
     func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        var credentials = try CodexOAuthCredentialsStore.load(env: context.env)
+        let credentials = try await Self.loadCredentials(context, retryStale: true)
+        return try await Self.fetch(context: context, credentials: credentials)
+    }
 
-        if credentials.needsRefresh, !credentials.refreshToken.isEmpty {
-            credentials = try await CodexTokenRefresher.refresh(credentials)
-            try CodexOAuthCredentialsStore.save(credentials, env: context.env)
+    private static func loadCredentials(
+        _ context: ProviderFetchContext,
+        retryStale: Bool) async throws -> CodexOAuthCredentials
+    {
+        var retriesRemaining = 2
+        while true {
+            try Task.checkCancellation()
+            do {
+                let credentials = try CodexOAuthCredentialsStore.loadForUsage(
+                    env: context.env,
+                    allowExternalSources: context.settings?.codex?.allowExternalOAuthSources == true)
+                if !retryStale || credentials.source != .codexHome || !credentials
+                    .needsRefresh || retriesRemaining == 0
+                {
+                    return credentials
+                }
+            } catch {
+                guard retriesRemaining > 0 else { throw error }
+            }
+            // The owner may be publishing replacement credentials. Reread without redeeming its token.
+            retriesRemaining -= 1
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    private static func fetch(
+        context: ProviderFetchContext,
+        credentials initialCredentials: CodexOAuthCredentials) async throws -> ProviderFetchResult
+    {
+        var credentials = try Self.prepareCredentialsForUsage(initialCredentials)
+        if let managedWorkspaceAccountID = context.settings?.codex?.managedWorkspaceAccountID,
+           !managedWorkspaceAccountID.isEmpty
+        {
+            credentials = CodexOAuthCredentials(
+                accessToken: credentials.accessToken,
+                refreshToken: credentials.refreshToken,
+                idToken: credentials.idToken,
+                accountId: managedWorkspaceAccountID,
+                lastRefresh: credentials.lastRefresh,
+                expiresAt: credentials.expiresAt,
+                source: credentials.source,
+                isAPIKey: credentials.isAPIKey)
         }
 
         let usage = try await CodexOAuthUsageFetcher.fetchUsage(
             accessToken: credentials.accessToken,
             accountId: credentials.accountId,
             env: context.env)
+        let resetCreditsAttempted = Self.shouldFetchResetCredits(context)
         let resetCredits = try await Self.fetchResetCreditsIfRequested(
             context: context,
             credentials: credentials)
@@ -187,17 +446,57 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
             resetCredits: resetCredits,
             credentials: credentials,
             updatedAt: updatedAt,
-            allowEmptyUsageForResetCreditEnrichment: Self.defersResetCreditFetchToApp(context))
-        return try await Self.replacingWithCLIMonthlyLimitIfAvailable(oauthResult, context: context)
+            includeCredits: context.includeCredits,
+            allowEmptyUsageForResetCreditEnrichment: context.runtime == .app,
+            codexResetCreditsAttempted: resetCreditsAttempted)
+        let workspaceBalanceResult = try await Self.applyingWorkspaceRemainingBalance(
+            oauthResult,
+            usage: usage,
+            credentials: credentials,
+            context: context)
+        let spendControlsResult = try await Self.applyingSpendControlsMonthlyLimit(
+            workspaceBalanceResult,
+            usage: usage,
+            credentials: credentials,
+            context: context)
+        return try await Self.replacingWithCLIMonthlyLimitIfAvailable(spendControlsResult, context: context)
+    }
+
+    private static func prepareCredentialsForUsage(
+        _ credentials: CodexOAuthCredentials) throws -> CodexOAuthCredentials
+    {
+        guard credentials.needsRefresh else { return credentials }
+        // Native Codex CLI and external applications own their refresh tokens. Redeeming a
+        // shared token without publishing the rotated response strands its owner with the old
+        // token. No source has a safe writer handoff from the usage path.
+        throw credentials.source == .codexHome
+            ? CodexOAuthCredentialsError.nativeRefreshRequired
+            : CodexOAuthCredentialsError.readOnlySource
     }
 
     private static func shouldFetchResetCredits(_ context: ProviderFetchContext) -> Bool {
-        guard case .cli = context.runtime else { return false }
-        return context.includeCredits
+        switch context.runtime {
+        case .app:
+            // Fetch with the winning in-memory OAuth credentials before UsageStore's generic
+            // enrichment hook runs. Reloading auth.json there can still observe the stale source
+            // snapshot after an in-memory refresh and would silently drop reset-credit inventory.
+            true
+        case .cli:
+            context.includeCredits
+        }
     }
 
     func shouldFallback(on error: Error, context: ProviderFetchContext) -> Bool {
-        guard context.sourceMode == .auto else { return false }
+        let isExplicitNativeRefresh = if let credentialsError = error as? CodexOAuthCredentialsError,
+                                         case .nativeRefreshRequired = credentialsError
+        {
+            true
+        } else {
+            false
+        }
+        guard context.sourceMode == .auto || (context.sourceMode == .oauth && isExplicitNativeRefresh) else {
+            return false
+        }
         // Auto mode may launch the CLI as the next strategy. Keep that fallback
         // limited to OAuth states the CLI can actually repair, otherwise
         // transient API or decode failures can spawn `codex app-server`
@@ -212,9 +511,9 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
         }
         if let credentialsError = error as? CodexOAuthCredentialsError {
             switch credentialsError {
-            case .notFound, .missingTokens:
+            case .notFound, .unreadable, .missingTokens, .nativeRefreshRequired:
                 return true
-            case .decodeFailed:
+            case .decodeFailed, .readOnlySource:
                 return false
             }
         }
@@ -228,17 +527,90 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
 
     private static func mapCredits(
         response: CodexUsageResponse,
-        updatedAt: Date) -> CreditsSnapshot?
+        updatedAt: Date,
+        includeCredits: Bool) -> CreditsSnapshot?
     {
         let balance = response.credits?.balance
-        let creditLimit = (response.individualLimit ?? response.rateLimit?.individualLimit)?
-            .codexCreditLimitSnapshot(updatedAt: updatedAt)
-        guard balance != nil || creditLimit != nil else { return nil }
+        let creditLimit = response.resolvedIndividualLimit?.codexCreditLimitSnapshot(updatedAt: updatedAt)
+        let creditsAvailable = response.credits.map { $0.hasCredits && !$0.unlimited }
+        guard balance != nil || creditLimit != nil || creditsAvailable == true else { return nil }
         return CreditsSnapshot(
             remaining: balance ?? 0,
             events: [],
             updatedAt: updatedAt,
-            codexCreditLimit: creditLimit)
+            codexCreditLimit: creditLimit,
+            // A cap-only response omits the balance entirely; that placeholder zero is unread, not spent.
+            balanceReadSucceeded: balance != nil,
+            // Usage-only refreshes skip the workspace lookup, so a missing amount is not a failed balance read.
+            creditsAvailable: includeCredits || balance != nil ? creditsAvailable : nil)
+    }
+
+    private static func replacingCredits(
+        in result: ProviderFetchResult,
+        with credits: CreditsSnapshot?) -> ProviderFetchResult
+    {
+        ProviderFetchResult(
+            usage: CodexExtraUsageCost.attaching(to: result.usage, credits: credits),
+            credits: credits,
+            dashboard: result.dashboard,
+            sourceLabel: result.sourceLabel,
+            strategyID: result.strategyID,
+            strategyKind: result.strategyKind,
+            codexResetCreditsAttempted: result.codexResetCreditsAttempted,
+            codexMonthlyLimitEnrichmentFailed: result.codexMonthlyLimitEnrichmentFailed,
+            diagnostic: result.diagnostic,
+            claudeOAuthKeychainPersistentRefHash: result.claudeOAuthKeychainPersistentRefHash,
+            claudeOAuthHistoryOwnerIdentifier: result.claudeOAuthHistoryOwnerIdentifier,
+            claudeOAuthCredentialOwner: result.claudeOAuthCredentialOwner,
+            claudeOAuthKeychainCredentialMismatch: result.claudeOAuthKeychainCredentialMismatch,
+            claudeOAuthKeychainCredentialAbsent: result.claudeOAuthKeychainCredentialAbsent,
+            claudeOAuthKeychainCredentialUnavailable: result.claudeOAuthKeychainCredentialUnavailable)
+    }
+
+    private static func applyingWorkspaceRemainingBalance(
+        _ result: ProviderFetchResult,
+        usage: CodexUsageResponse,
+        credentials: CodexOAuthCredentials,
+        context: ProviderFetchContext,
+        fetcher: (@Sendable (String) async throws -> CodexWorkspaceRemainingBalanceResponse)? = nil) async throws
+        -> ProviderFetchResult
+    {
+        guard context.includeCredits,
+              usage.credits?.hasCredits == true,
+              usage.credits?.unlimited != true,
+              usage.credits?.balance == nil,
+              let accountId = self.firstNonEmptyAccountId(usage.accountId)
+        else { return result }
+
+        if let credentialAccount = self.firstNonEmptyAccountId(credentials.accountId), credentialAccount != accountId {
+            return result
+        }
+
+        let fetcher = fetcher ?? { accountId in
+            try await CodexOAuthUsageFetcher.fetchWorkspaceRemainingBalance(
+                accessToken: credentials.accessToken,
+                accountId: accountId,
+                env: context.env)
+        }
+        do {
+            guard let balance = try await fetcher(accountId).balance else { return result }
+            let existing = result.credits
+            let credits = CreditsSnapshot(
+                remaining: balance,
+                events: existing?.events ?? [],
+                updatedAt: Date(),
+                codexCreditLimit: existing?.codexCreditLimit,
+                balanceReadSucceeded: true,
+                creditsAvailable: true,
+                balanceIsWorkspace: true)
+            return self.replacingCredits(in: result, with: credits)
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
+            // This endpoint is owner-scoped. A member response or an endpoint change must not discard usage data.
+            return result
+        }
     }
 
     private static func makeResult(
@@ -246,48 +618,55 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
         resetCredits: CodexRateLimitResetCreditsSnapshot? = nil,
         credentials: CodexOAuthCredentials,
         updatedAt: Date,
-        allowEmptyUsageForResetCreditEnrichment: Bool = false) throws -> ProviderFetchResult
+        includeCredits: Bool,
+        allowEmptyUsageForResetCreditEnrichment: Bool = false,
+        codexResetCreditsAttempted: Bool = false) throws -> ProviderFetchResult
     {
-        let credits = Self.mapCredits(response: usageResponse, updatedAt: updatedAt)
+        let credits = Self.mapCredits(
+            response: usageResponse,
+            updatedAt: updatedAt,
+            includeCredits: includeCredits)
         let reconciled = CodexReconciledState.fromOAuth(
             response: usageResponse,
             credentials: credentials,
             updatedAt: updatedAt)
 
+        let usage: UsageSnapshot
         if let reconciled {
             let dataConfidence: UsageDataConfidence = usageResponse.rateLimit?.hasWindowDecodeFailure == true
                 || usageResponse.additionalRateLimitsDecodeFailed
                 ? .unknown
                 : .exact
-            return CodexOAuthFetchStrategy().makeResult(
-                usage: reconciled.toUsageSnapshot()
-                    .withCodexResetCredits(resetCredits)
-                    .withDataConfidence(dataConfidence),
-                credits: credits,
-                sourceLabel: "oauth")
-        }
-
-        guard credits != nil
-            || (resetCredits?.availableInventory(at: updatedAt).count ?? 0) > 0
-            || allowEmptyUsageForResetCreditEnrichment
-        else {
-            throw UsageError.noRateLimitsFound
-        }
-
-        // Credit balances and manual resets remain useful when OAuth omits
-        // rate-limit windows. Keep the partial result instead of discarding it.
-        return CodexOAuthFetchStrategy().makeResult(
-            usage: UsageSnapshot(
+            usage = reconciled.toUsageSnapshot()
+                .withCodexResetCredits(resetCredits)
+                .withDataConfidence(dataConfidence)
+        } else {
+            guard credits != nil
+                || (resetCredits?.availableInventory(at: updatedAt).count ?? 0) > 0
+                || allowEmptyUsageForResetCreditEnrichment
+            else {
+                throw UsageError.noRateLimitsFound
+            }
+            // Credit balances and manual resets remain useful when OAuth omits
+            // rate-limit windows. Keep the partial result instead of discarding it.
+            usage = UsageSnapshot(
                 primary: nil,
                 secondary: nil,
-                tertiary: nil,
                 codexResetCredits: resetCredits,
                 updatedAt: updatedAt,
                 identity: CodexReconciledState.oauthIdentity(
                     response: usageResponse,
-                    credentials: credentials)),
+                    credentials: credentials))
+        }
+        let strategy = Self()
+        return ProviderFetchResult(
+            usage: CodexExtraUsageCost.attaching(to: usage, credits: credits),
             credits: credits,
-            sourceLabel: "oauth")
+            dashboard: nil,
+            sourceLabel: "oauth",
+            strategyID: strategy.id,
+            strategyKind: strategy.kind,
+            codexResetCreditsAttempted: codexResetCreditsAttempted)
     }
 
     private static func replacingWithCLIMonthlyLimitIfAvailable(
@@ -296,6 +675,7 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
         cliStrategy: any ProviderFetchStrategy = CodexCLIUsageStrategy()) async throws -> ProviderFetchResult
     {
         guard context.sourceMode == .auto,
+              context.codexWorkspaceID == nil,
               context.includeCredits,
               self.shouldTryCLIForMonthlyLimit(oauthResult)
         else { return oauthResult }
@@ -304,24 +684,100 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
         do {
             cliResult = try await cliStrategy.fetch(context)
         } catch {
-            if error is CancellationError { throw error }
+            if error is CancellationError {
+                throw error
+            }
             return oauthResult
         }
         guard let cliLimit = cliResult.credits?.codexCreditLimit,
               self.identitiesAreCompatible(oauth: oauthResult.usage.identity, cli: cliResult.usage.identity),
               let oauthCredits = oauthResult.credits
         else { return oauthResult }
-        return ProviderFetchResult(
-            usage: oauthResult.usage,
-            credits: CreditsSnapshot(
+        return Self.replacingCredits(
+            in: oauthResult,
+            with: CreditsSnapshot(
                 remaining: oauthCredits.remaining,
                 events: oauthCredits.events,
                 updatedAt: oauthCredits.updatedAt,
-                codexCreditLimit: cliLimit),
-            dashboard: oauthResult.dashboard,
-            sourceLabel: oauthResult.sourceLabel,
-            strategyID: oauthResult.strategyID,
-            strategyKind: oauthResult.strategyKind)
+                codexCreditLimit: cliLimit,
+                balanceReadSucceeded: oauthCredits.balanceReadSucceeded,
+                creditsAvailable: oauthCredits.creditsAvailable,
+                balanceIsWorkspace: oauthCredits.balanceIsWorkspace))
+    }
+
+    private static func applyingSpendControlsMonthlyLimit(
+        _ result: ProviderFetchResult,
+        usage: CodexUsageResponse,
+        credentials: CodexOAuthCredentials,
+        context: ProviderFetchContext) async throws -> ProviderFetchResult
+    {
+        try await self.applyingSpendControlsMonthlyLimit(
+            result,
+            usage: usage,
+            credentials: credentials,
+            context: context,
+            fetcher: { accountId in
+                try await CodexOAuthUsageFetcher.fetchSpendControlsMonthlyUsage(
+                    accessToken: credentials.accessToken,
+                    accountId: accountId,
+                    env: context.env)
+            })
+    }
+
+    private static func applyingSpendControlsMonthlyLimit(
+        _ result: ProviderFetchResult,
+        usage: CodexUsageResponse,
+        credentials: CodexOAuthCredentials,
+        context: ProviderFetchContext,
+        fetcher: @escaping @Sendable (String) async throws -> CodexSpendControlsMonthlyUsageResponse) async throws
+        -> ProviderFetchResult
+    {
+        guard context.includeCredits,
+              CodexSpendControlsMonthlyUsageGate.shouldFetch(response: usage)
+        else { return result }
+        guard let accountId = self.firstNonEmptyAccountId(credentials.accountId, usage.accountId) else {
+            return result.markingMonthlyLimitEnrichmentFailed()
+        }
+
+        do {
+            let response = try await fetcher(accountId)
+            if response.monthlyLimitMappingFailed {
+                return result.markingMonthlyLimitEnrichmentFailed()
+            }
+            let updatedAt = result.credits?.updatedAt ?? result.usage.updatedAt
+            guard let limit = response.codexCreditLimitSnapshot(updatedAt: updatedAt) else { return result }
+            let credits = result.credits.map {
+                CreditsSnapshot(
+                    remaining: $0.remaining,
+                    events: $0.events,
+                    updatedAt: $0.updatedAt,
+                    codexCreditLimit: limit,
+                    balanceReadSucceeded: $0.balanceReadSucceeded,
+                    creditsAvailable: $0.creditsAvailable,
+                    balanceIsWorkspace: $0.balanceIsWorkspace)
+            } ?? CreditsSnapshot(
+                remaining: 0,
+                events: [],
+                updatedAt: updatedAt,
+                codexCreditLimit: limit,
+                // Spend controls supply only the cap, so this snapshot carries no balance reading.
+                balanceReadSucceeded: false)
+            return Self.replacingCredits(in: result, with: credits)
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
+            return result.markingMonthlyLimitEnrichmentFailed()
+        }
+    }
+
+    private static func firstNonEmptyAccountId(_ candidates: String?...) -> String? {
+        for candidate in candidates {
+            if let candidate = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !candidate.isEmpty {
+                return candidate
+            }
+        }
+        return nil
     }
 
     private static func fetchResetCreditsIfRequested(
@@ -339,11 +795,6 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
             })
     }
 
-    private static func defersResetCreditFetchToApp(_ context: ProviderFetchContext) -> Bool {
-        if case .app = context.runtime { return true }
-        return false
-    }
-
     private static func fetchResetCreditsIfRequested(
         context: ProviderFetchContext,
         credentials: CodexOAuthCredentials,
@@ -356,7 +807,9 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
         do {
             return try await fetcher(credentials)
         } catch {
-            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
             return nil
         }
     }
@@ -388,6 +841,51 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
 
 #if DEBUG
 extension CodexOAuthFetchStrategy {
+    static func _fetchForTesting(
+        context: ProviderFetchContext,
+        credentials: CodexOAuthCredentials) async throws -> ProviderFetchResult
+    {
+        try await self.fetch(context: context, credentials: credentials)
+    }
+
+    static func _prepareCredentialsForTesting(
+        _ credentials: CodexOAuthCredentials) async throws -> CodexOAuthCredentials
+    {
+        try self.prepareCredentialsForUsage(credentials)
+    }
+
+    static func _applySpendControlsMonthlyLimitForTesting(
+        _ result: ProviderFetchResult,
+        usage: CodexUsageResponse,
+        credentials: CodexOAuthCredentials,
+        context: ProviderFetchContext,
+        fetcher: @escaping @Sendable (String) async throws -> CodexSpendControlsMonthlyUsageResponse) async throws
+        -> ProviderFetchResult
+    {
+        try await self.applyingSpendControlsMonthlyLimit(
+            result,
+            usage: usage,
+            credentials: credentials,
+            context: context,
+            fetcher: fetcher)
+    }
+
+    static func _applyWorkspaceRemainingBalanceForTesting(
+        _ result: ProviderFetchResult,
+        usage: CodexUsageResponse,
+        credentials: CodexOAuthCredentials,
+        context: ProviderFetchContext,
+        fetcher: @escaping @Sendable (String) async throws -> CodexWorkspaceRemainingBalanceResponse) async throws
+        -> ProviderFetchResult
+    {
+        try await self.applyingWorkspaceRemainingBalance(
+            result,
+            usage: usage,
+            credentials: credentials,
+            context: context,
+            fetcher: fetcher)
+    }
+
     static func _fetchResetCreditsForTesting(
         context: ProviderFetchContext,
         credentials: CodexOAuthCredentials,
@@ -418,7 +916,8 @@ extension CodexOAuthFetchStrategy {
         credentials: CodexOAuthCredentials,
         resetCredits: CodexRateLimitResetCreditsSnapshot? = nil,
         sourceMode: ProviderSourceMode = .oauth,
-        allowEmptyUsageForResetCreditEnrichment: Bool = false) throws -> ProviderFetchResult
+        allowEmptyUsageForResetCreditEnrichment: Bool = false,
+        includeCredits: Bool = true) throws -> ProviderFetchResult
     {
         let usageResponse = try JSONDecoder().decode(CodexUsageResponse.self, from: data)
         _ = sourceMode
@@ -427,6 +926,7 @@ extension CodexOAuthFetchStrategy {
             resetCredits: resetCredits,
             credentials: credentials,
             updatedAt: Date(),
+            includeCredits: includeCredits,
             allowEmptyUsageForResetCreditEnrichment: allowEmptyUsageForResetCreditEnrichment)
     }
 

@@ -5,6 +5,14 @@ import Testing
 
 struct CodexBarWidgetProviderTests {
     @Test
+    func `widget token counts use compact shared formatting`() {
+        #expect(WidgetFormat.tokenCount(999) == "999 tokens")
+        #expect(WidgetFormat.tokenCount(9_400_000) == "9.4M tokens")
+        #expect(WidgetFormat.tokenCount(94_500_000) == "94M tokens")
+        #expect(WidgetFormat.tokenCount(10_600_000_000) == "11B tokens")
+    }
+
+    @Test
     func `usage display follows remaining and used preference`() {
         #expect(WidgetUsageDisplay.percent(fromRemaining: 48, showUsed: false) == 48)
         #expect(WidgetUsageDisplay.percent(fromRemaining: 48, showUsed: true) == 52)
@@ -385,9 +393,9 @@ struct CodexBarWidgetProviderTests {
             secondary: RateWindow(usedPercent: 50, windowMinutes: 300, resetsAt: nil, resetDescription: nil),
             tertiary: nil,
             usageRows: [
-                WidgetSnapshot.WidgetUsageRowSnapshot(id: "primary", title: "Weekly", percentLeft: 75),
-                WidgetSnapshot.WidgetUsageRowSnapshot(id: "secondary", title: "Rate Limit", percentLeft: 50),
-                WidgetSnapshot.WidgetUsageRowSnapshot(id: "kimi-monthly", title: "Monthly", percentLeft: 25),
+                WidgetSnapshot.WidgetUsageRowSnapshot(id: "primary", title: "7-day usage", percentLeft: 75),
+                WidgetSnapshot.WidgetUsageRowSnapshot(id: "secondary", title: "5-hour usage", percentLeft: 50),
+                WidgetSnapshot.WidgetUsageRowSnapshot(id: "kimi-monthly", title: "Total usage", percentLeft: 25),
                 WidgetSnapshot.WidgetUsageRowSnapshot(id: "kimi-code-7d", title: "Code 7-day", percentLeft: 90),
             ],
             creditsRemaining: nil,
@@ -818,11 +826,25 @@ struct CodexBarWidgetProviderTests {
             provider: .codex,
             primaryUsed: 20,
             secondaryUsed: 30,
+            primaryReset: now.addingTimeInterval(360),
+            secondaryReset: now.addingTimeInterval(420))
+
+        #expect(BurnDownRefreshSchedule.nextRefresh(snapshot: snapshot, provider: .codex, now: now)
+            == now.addingTimeInterval(361))
+    }
+
+    @Test
+    func `burn down refresh clamps to minimum interval`() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = Self.burnSnapshot(
+            provider: .codex,
+            primaryUsed: 20,
+            secondaryUsed: 30,
             primaryReset: now.addingTimeInterval(60),
             secondaryReset: now.addingTimeInterval(120))
 
         #expect(BurnDownRefreshSchedule.nextRefresh(snapshot: snapshot, provider: .codex, now: now)
-            == now.addingTimeInterval(61))
+            == now.addingTimeInterval(300))
     }
 
     @Test
@@ -844,8 +866,8 @@ struct CodexBarWidgetProviderTests {
         provider: UsageProvider,
         primaryUsed: Double?,
         secondaryUsed: Double?,
-        primaryReset: Date? = nil,
-        secondaryReset: Date? = nil,
+        primaryReset: Date? = Date(timeIntervalSince1970: 1_800_000_000),
+        secondaryReset: Date? = Date(timeIntervalSince1970: 1_800_000_000),
         primaryWindowMinutes: Int = 5 * 60,
         secondaryWindowMinutes: Int = 7 * 24 * 60) -> WidgetSnapshot
     {
@@ -901,7 +923,7 @@ extension CodexBarWidgetProviderTests {
     }
 
     @Test
-    func `widget token titles disclose stale age for today and history rows`() {
+    func `compact cost labels retain billing disclosure without baking in a stale age`() {
         let entryUpdatedAt = Date()
         let staleToken = WidgetSnapshot.TokenUsageSummary(
             sessionCostUSD: 1.25,
@@ -909,29 +931,6 @@ extension CodexBarWidgetProviderTests {
             last30DaysCostUSD: 12.50,
             last30DaysTokens: 42000,
             updatedAt: entryUpdatedAt.addingTimeInterval(-45 * 60))
-        let freshToken = WidgetSnapshot.TokenUsageSummary(
-            sessionCostUSD: 1.25,
-            sessionTokens: 4200,
-            last30DaysCostUSD: 12.50,
-            last30DaysTokens: 42000,
-            updatedAt: entryUpdatedAt.addingTimeInterval(-5 * 60))
-
-        let todayTitle = WidgetFormat.tokenRowTitle(
-            staleToken.sessionLabel,
-            summary: staleToken,
-            entryUpdatedAt: entryUpdatedAt)
-        let historyTitle = WidgetFormat.tokenRowTitle(
-            staleToken.last30DaysLabel,
-            summary: staleToken,
-            entryUpdatedAt: entryUpdatedAt)
-
-        #expect(todayTitle.hasPrefix("Today · "))
-        #expect(historyTitle.hasPrefix("30d · "))
-        #expect(WidgetFormat.tokenRowTitle(
-            freshToken.sessionLabel,
-            summary: freshToken,
-            entryUpdatedAt: entryUpdatedAt) == "Today")
-
         let entry = WidgetSnapshot.ProviderEntry(
             provider: .codex,
             updatedAt: entryUpdatedAt,
@@ -945,8 +944,15 @@ extension CodexBarWidgetProviderTests {
         let todayMetric = CompactMetricFormatter.display(for: entry, metric: .todayCost)
         let historyMetric = CompactMetricFormatter.display(for: entry, metric: .last30DaysCost)
 
-        #expect(todayMetric.label.hasPrefix("Today cost · "))
-        #expect(historyMetric.label.hasPrefix("30d cost · "))
+        #expect(todayMetric.label == "Today API est. · not billed")
+        #expect(historyMetric.label == "30d API est. · not billed")
+        #expect(CompactMetricFormatter.costMetricLabel("7d", provider: .codex) == "7d API est. · not billed")
+        #expect(CompactMetricFormatter.costMetricLabel("90d", provider: .codex) == "90d API est. · not billed")
+        #expect(CompactMetricFormatter.costMetricLabel("This month", provider: .codex) ==
+            "This month API est. · not billed")
+        #expect(CompactMetricFormatter.costMetricLabel(
+            "This month API est. · not billed",
+            provider: .codex) == "This month API est. · not billed")
     }
 
     @Test

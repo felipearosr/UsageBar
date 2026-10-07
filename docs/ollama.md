@@ -8,13 +8,15 @@ read_when:
 
 # Ollama Provider
 
-The Ollama provider can verify Ollama Cloud API-key access and scrape the **Plan & Billing** page to extract Cloud
-Usage limits for session and weekly windows.
+The Ollama provider can verify Ollama Cloud API-key access and scrape the **Plan & Billing** page to extract monthly
+included-credit utilization. Older pages with session/hourly and weekly quota windows remain supported.
 
 ## Features
 
-- **Plan badge**: Reads the plan tier (Free/Pro/Max) from the Cloud Usage header.
-- **Session + weekly usage**: Parses the percent-used values shown in the usage bars.
+- **Plan badge**: Reads the plan tier (Free/Pro/Max) from the Included usage or legacy Cloud Usage header.
+- **Monthly usage**: Converts the reported included dollar credits (for example, `$7.50 of $60 used`) to utilization
+  (`12.5%`). The primary quota bar is labeled **Monthly**; this is not a token-cost or spend estimate.
+- **Legacy usage**: Retains session/hourly and weekly percentage parsing for older settings pages.
 - **Reset timestamps**: Uses the `data-time` attribute on the “Resets in …” elements.
 - **API key auth**: Verifies direct `https://ollama.com/api` access with `OLLAMA_API_KEY` or a configured key.
 - **Browser cookie auth**: Required for Cloud Usage quota windows because Ollama does not expose those limits through
@@ -35,22 +37,40 @@ Ollama API keys currently do not expire, but they can be revoked from the key se
 2. Copy a `Cookie:` header from the Network tab.
 3. Paste it into **Ollama → Cookie source → Manual**.
 
+If Manual is selected with no header or saved cookie account, the settings row says **No cookie header pasted.**
+Use **Use automatic cookies** to return to Auto, or paste a header. The action is hidden in API-key mode and while
+Keychain access is disabled in Advanced settings. CodexBar does not switch cookie sources automatically.
+
 ## How it works
 
 - API-key mode first probes the authenticated `https://ollama.com/api/web_search` endpoint without performing a
   search, then fetches `https://ollama.com/api/tags` for the model catalog. The catalog endpoint is public and cannot
   verify a key by itself.
 - Cookie mode fetches `https://ollama.com/settings` using browser cookies.
+- Temporary network failures during API-key validation or catalog fetching retain the prior API identity snapshot
+  and its original timestamp. Localized errors use the same startup retry policy; rejected API keys still invalidate
+  prior data. API-key mode does not supply Cloud Usage quota windows.
 - Cookie discovery recognizes the current WorkOS AuthKit `wos-session` cookie alongside legacy Ollama and NextAuth
   session names.
 - Redirects from settings to `/signin` or the WorkOS AuthKit authorization page are treated as expired sessions, so
   CodexBar can try the next cookie candidate and show sign-in guidance instead of a parser error.
 - Parses:
-  - Plan badge under **Cloud Usage**.
-  - **Session usage** and **Weekly usage** percentages.
+  - Plan badge under **Included usage** or **Cloud Usage**.
+  - **Monthly usage** dollar credits, falling back to a valid meter width in the same usage block when necessary.
+  - Legacy **Session usage**, **Hourly usage**, and **Weekly usage** percentages.
   - `data-time` ISO timestamps for reset times.
+- Monthly pace uses an inferred calendar billing window anchored to the reported reset, not a fixed 30-day session.
+  A reset timestamp alone cannot establish the start of a partial migration interval.
+- With a monthly-only snapshot, plan history shows only the Monthly tab. Previously saved session and weekly history
+  is retained; legacy snapshots continue to use the existing history-tab selection rules.
 
 ## Troubleshooting
+
+### “Ollama cookie source is Manual, but no cookie header is configured”
+
+Paste a `Cookie:` header from `https://ollama.com/settings`, or select **Use automatic cookies** in Ollama settings.
+Signing in to the website alone does not fill the Manual field. Empty Manual configuration stops before browser
+import or a network request; a nonempty header without a recognized session cookie still reports the error below.
 
 ### “No Ollama session cookie found”
 

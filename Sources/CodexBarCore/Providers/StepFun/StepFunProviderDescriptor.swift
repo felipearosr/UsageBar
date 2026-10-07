@@ -2,10 +2,71 @@ import Foundation
 
 public enum StepFunProviderDescriptor {
     public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+    private static let credentials = ProviderCredentialAdapter(
+        tokenResolver: { kind, environment, _ in
+            guard kind == .primary, let token = StepFunSettingsReader.token(environment: environment) else {
+                return nil
+            }
+            return ProviderTokenResolution(token: token, source: .environment)
+        },
+        tokenAccountSupport: TokenAccountSupport(
+            title: "Session tokens",
+            subtitle: "Store multiple StepFun Oasis-Token values.",
+            placeholder: "Oasis-Token=…",
+            injection: .cookieHeader,
+            requiresManualCookieSource: true,
+            cookieName: nil),
+        authDetector: { environment, _ in
+            StepFunSettingsReader.token(environment: environment) == nil ? [] : ["api"]
+        },
+        manualTokenPersister: { try Self.persistManualToken($0) })
+
+    private static func persistManualToken(_ token: String) throws {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let store = CodexBarConfigStore()
+        var config = try store.load() ?? .makeDefault()
+        var providerConfig = config.providerConfig(for: UsageProvider.stepfun.instanceID)
+            ?? ProviderConfig(id: UsageProvider.stepfun.instanceID)
+        providerConfig.region = trimmed
+        config.setProviderConfig(providerConfig)
+        try store.save(config)
+    }
+
+    /// Credit plans populate only the primary lane, including balances without a reset timestamp.
+    public static func rateWindowLabels(
+        metadata: ProviderMetadata,
+        snapshot: UsageSnapshot) -> ProviderRateWindowLabels
+    {
+        let isCreditPlan = snapshot.primary != nil && snapshot.secondary == nil
+        return ProviderRateWindowLabels(
+            primary: isCreditPlan ? "Credit" : metadata.sessionLabel,
+            secondary: metadata.weeklyLabel,
+            tertiary: metadata.opusLabel ?? "Sonnet",
+            showsTertiary: metadata.supportsOpus)
+    }
 
     static func makeDescriptor() -> ProviderDescriptor {
         ProviderDescriptor(
             id: .stepfun,
+            settingsSection: .init(
+                StepFunProviderSettingsKey.self,
+                cookieSettings: { settings in
+                    CookieProviderSettings(
+                        cookieSource: settings.cookieSource,
+                        manualCookieHeader: settings.manualToken)
+                },
+                credentialSettings: { context in
+                    let header = context.config?.sanitizedRegion ?? context.config?.sanitizedCookieHeader
+                    let settings = context.cookieSettings(for: .stepfun, configuredHeader: header)
+                    return StepFunProviderSettings(
+                        cookieSource: settings.cookieSource,
+                        manualToken: settings.manualCookieHeader ?? "",
+                        username: context.config?.sanitizedAPIKey ?? "",
+                        password: "")
+                }),
+            credentials: self.credentials,
             metadata: ProviderMetadata(
                 id: .stepfun,
                 displayName: "StepFun",
@@ -18,19 +79,33 @@ public enum StepFunProviderDescriptor {
                 toggleTitle: "Show StepFun usage",
                 cliName: "stepfun",
                 defaultEnabled: false,
+                widgetSelectable: false,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
+                debugLogUnavailableMessage: "StepFun debug log not yet implemented",
                 browserCookieOrder: nil,
                 dashboardURL: "https://platform.stepfun.com/plan-usage",
                 statusPageURL: nil,
                 statusLinkURL: nil),
             branding: ProviderBranding(
-                iconStyle: .stepfun,
+                iconStyle: .init(provider: .stepfun),
                 iconResourceName: "ProviderIcon-stepfun",
-                color: ProviderColor(red: 0.13, green: 0.59, blue: 0.95)),
+                color: ProviderColor(red: 0.13, green: 0.59, blue: 0.95),
+                confettiPalette: [
+                    ProviderColor(hex: 0x000000),
+                    ProviderColor(hex: 0xFFFFFF),
+                    ProviderColor(hex: 0x858585),
+                ],
+                widgetColor: ProviderColor(red: 255 / 255, green: 140 / 255, blue: 0 / 255)),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "StepFun per-day cost history is not available via API." }),
+            pace: .calendarMonthResetWindow,
+            presentation: ProviderUsagePresentation(
+                rateWindowLabeler: { metadata, snapshot, _ in
+                    Self.rateWindowLabels(metadata: metadata, snapshot: snapshot)
+                },
+                primaryBindingQuotaLanes: [.secondary]),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .web],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [StepFunWebFetchStrategy()] })),

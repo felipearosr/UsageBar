@@ -5,38 +5,13 @@ import Foundation
 // MARK: - Options & parsing helpers
 
 struct UsageOptions: CommanderParsable {
-    private static let sourceHelp: String = {
-        #if os(macOS)
-        "Data source: auto | web | cli | oauth | api (auto behavior is provider-specific)"
-        #else
-        "Data source: auto | web | cli | oauth | api (web/auto are macOS only for web-capable providers)"
-        #endif
-    }()
+    @OptionGroup
+    var fetch: CLIUsageFetchOptions
 
-    @Flag(names: [.short("v"), .long("verbose")], help: "Enable verbose logging")
-    var verbose: Bool = false
+    @OptionGroup
+    var logging: CLILoggingOptions
 
-    @Flag(name: .long("json-output"), help: "Emit machine-readable logs")
-    var jsonOutput: Bool = false
-
-    @Option(name: .long("log-level"), help: "Set log level (trace|verbose|debug|info|warning|error|critical)")
-    var logLevel: String?
-
-    @Option(
-        name: .long("provider"),
-        help: ProviderHelp.optionHelp)
-    var provider: ProviderSelection?
-
-    @Option(name: .long("account"), help: "Token account label to use (from config.json)")
-    var account: String?
-
-    @Option(name: .long("account-index"), help: "Token account index (1-based)")
-    var accountIndex: Int?
-
-    @Flag(name: .long("all-accounts"), help: "Fetch all token accounts, or all visible Codex accounts")
-    var allAccounts: Bool = false
-
-    @Option(name: .long("format"), help: "Output format: text | json")
+    @Option(name: .long("format"), help: "Output format: text | json | toon (toon: structured, agent-friendly)")
     var format: OutputFormat?
 
     @Flag(name: .long("json"), help: "")
@@ -45,35 +20,41 @@ struct UsageOptions: CommanderParsable {
     @Flag(name: .long("json-only"), help: "Emit JSON only (suppress non-JSON output)")
     var jsonOnly: Bool = false
 
-    @Flag(name: .long("no-credits"), help: "Skip Codex credits line")
-    var noCredits: Bool = false
-
-    @Flag(name: .long("no-color"), help: "Disable ANSI colors in text output")
-    var noColor: Bool = false
-
     @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
     var pretty: Bool = false
 
-    @Flag(name: .long("status"), help: "Fetch and include provider status")
-    var status: Bool = false
+    @Flag(
+        name: .long("app-auto-verifier"),
+        help: "Exercise the app's Claude Auto route (verification only; requires --provider claude --source auto)")
+    var appAutoVerifier: Bool = false
+}
 
-    @Flag(name: .long("web"), help: "Alias for --source web")
-    var web: Bool = false
+struct GuardOptions: CommanderParsable {
+    @OptionGroup
+    var logging: CLILoggingOptions
 
-    @Option(name: .long("source"), help: Self.sourceHelp)
-    var source: String?
+    @Option(name: .long("provider"), help: ProviderHelp.optionHelp)
+    var provider: ProviderSelection?
 
-    @Option(name: .long("web-timeout"), help: "Web fetch timeout (seconds; source=auto or web)")
-    var webTimeout: Double?
+    @Option(name: .long("min-remaining"), help: "Minimum remaining quota required, as a percent (default 10)")
+    var minRemaining: Double?
 
-    @Flag(name: .long("web-debug-dump-html"), help: "Dump HTML snapshots to /tmp when Codex dashboard data is missing")
-    var webDebugDumpHtml: Bool = false
+    @Option(name: .long("window"), help: "Window to check: session (primary) | weekly (secondary)")
+    var window: String?
 
-    @Flag(name: .long("antigravity-plan-debug"), help: "Emit Antigravity planInfo fields (debug)")
-    var antigravityPlanDebug: Bool = false
+    @Option(
+        name: .long("timeout"),
+        help: "Overall fetch timeout in seconds, 0...86400 (default 60; 0 disables)")
+    var timeout: Double?
 
-    @Flag(name: .long("augment-debug"), help: "Emit Augment API responses (debug)")
-    var augmentDebug: Bool = false
+    @Flag(name: .long("json"), help: "Emit machine-readable decision JSON")
+    var json: Bool = false
+
+    @Flag(name: .long("pretty"), help: "Pretty-print decision JSON")
+    var pretty: Bool = false
+
+    @Flag(name: .long("fail-open"), help: "Exit 0 instead of 69 when quota is unavailable")
+    var failOpen: Bool = false
 }
 
 enum ProviderSelection: ExpressibleFromArgument {
@@ -142,4 +123,83 @@ enum ProviderHelp {
     static var optionHelp: String {
         "Provider to query: \(self.list)"
     }
+}
+
+struct CLILoggingOptions: CommanderParsable {
+    @Flag(names: [.short("v"), .long("verbose")], help: "Enable verbose logging")
+    var verbose: Bool = false
+
+    @Flag(name: .long("json-output"), help: "Emit machine-readable logs")
+    var jsonOutput: Bool = false
+
+    @Option(name: .long("log-level"), help: "Set log level (trace|verbose|debug|info|warning|error|critical)")
+    var logLevel: String?
+}
+
+struct CLICommonOptions: CommanderParsable {
+    @OptionGroup
+    var logging: CLILoggingOptions
+
+    @Option(name: .long("format"), help: "Output format: text | json")
+    var format: OutputFormat?
+
+    @Flag(name: .long("json"), help: "")
+    var jsonShortcut: Bool = false
+
+    @Flag(name: .long("json-only"), help: "Emit JSON only (suppress non-JSON output)")
+    var jsonOnly: Bool = false
+
+    @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
+    var pretty: Bool = false
+}
+
+struct CLIUsageFetchOptions: CommanderParsable {
+    private static let sourceHelp: String = {
+        #if os(macOS)
+        "Data source: auto | web | cli | oauth | api (auto behavior is provider-specific)"
+        #else
+        "Data source: auto | web | cli | oauth | api (web/auto are macOS only for web-capable providers)"
+        #endif
+    }()
+
+    @Option(
+        name: .long("provider"),
+        help: ProviderHelp.optionHelp)
+    var provider: ProviderSelection?
+
+    @Option(name: .long("account"), help: "Token account label to use (from config.json)")
+    var account: String?
+
+    @Option(name: .long("account-index"), help: "Token account index (1-based)")
+    var accountIndex: Int?
+
+    @Flag(name: .long("all-accounts"), help: "Fetch all token accounts, or all visible Codex accounts")
+    var allAccounts: Bool = false
+
+    @Flag(name: .long("no-credits"), help: "Skip Codex credits line")
+    var noCredits: Bool = false
+
+    @Flag(name: .long("no-color"), help: "Disable ANSI colors in text output")
+    var noColor: Bool = false
+
+    @Flag(name: .long("status"), help: "Fetch and include provider status")
+    var status: Bool = false
+
+    @Flag(name: .long("web"), help: "Alias for --source web")
+    var web: Bool = false
+
+    @Option(name: .long("source"), help: Self.sourceHelp)
+    var source: String?
+
+    @Option(name: .long("web-timeout"), help: "Web fetch timeout (seconds; source=auto or web)")
+    var webTimeout: Double?
+
+    @Flag(name: .long("web-debug-dump-html"), help: "Dump HTML snapshots to /tmp when Codex dashboard data is missing")
+    var webDebugDumpHtml: Bool = false
+
+    @Flag(name: .long("antigravity-plan-debug"), help: "Emit Antigravity planInfo fields (debug)")
+    var antigravityPlanDebug: Bool = false
+
+    @Flag(name: .long("augment-debug"), help: "Emit Augment API responses (debug)")
+    var augmentDebug: Bool = false
 }

@@ -13,11 +13,14 @@ import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
 import {MachineSyncPage} from './syncpage.js';
+import {PACKAGED_BIN} from './updates.js';
 
 function findBinary() {
     const explicit = GLib.getenv('CODEXBAR_BIN');
     if (explicit && GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE))
         return explicit;
+    if (GLib.file_test(PACKAGED_BIN, GLib.FileTest.IS_EXECUTABLE))
+        return PACKAGED_BIN;
     const inPath = GLib.find_program_in_path('codexbar');
     if (inPath)
         return inPath;
@@ -403,8 +406,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             'Poll public status pages for the incident history strips'));
         behavior.add(switchRow(settings, 'sort-alphabetical', 'Sort providers alphabetically',
             'Off keeps the codexbar config order'));
-        behavior.add(switchRow(settings, 'update-check-enabled', 'Check for codexbar updates',
-            'Download verified CLI releases from GitHub and offer to install them'));
+        behavior.add(switchRow(settings, 'update-check-enabled', 'Check for UsageBar updates',
+            'Download verified releases from GitHub and offer to install them'));
         general.add(behavior);
         window.add(general);
 

@@ -135,7 +135,8 @@ private final class WebLogBuffer {
     private var lines: [String] = []
     private let maxCount: Int
     private let verbose: Bool
-    private let logger = CodexBarLog.logger(LogCategories.openAIWeb)
+    /// Provider-specific by design: The Codex dashboard strategy logs its OpenAI web integration separately.
+    private let logger = CodexBarLog.logger(LogCategories.provider(.openai, scope: "web"))
 
     init(maxCount: Int = 300, verbose: Bool) {
         self.maxCount = maxCount
@@ -250,7 +251,10 @@ extension CodexWebDashboardStrategy {
                     accountEmail: attachedAccountEmail,
                     snapshot: dashboard))
             }
-            return OpenAIWebCodexResult(usage: usage, credits: credits, dashboard: dashboard)
+            return OpenAIWebCodexResult(
+                usage: CodexExtraUsageCost.attaching(to: usage, credits: credits),
+                credits: credits,
+                dashboard: dashboard)
         case .displayOnly:
             if decision.cleanup.contains(.dashboardCache) {
                 OpenAIDashboardCacheStore.clear()
@@ -316,9 +320,31 @@ extension CodexWebDashboardStrategy {
             logger: logger,
             debugDumpHTML: options.debugDumpHTML,
             timeout: OpenAIDashboardBrowserCookieImporter.remainingTimeout(until: options.deadline))
+        try Task.checkCancellation()
+        let remainingTimeout = OpenAIDashboardFetcher.remainingTimeout(until: options.deadline)
+        let subscriptionResult: OpenAISubscriptionFetchResult = if remainingTimeout > 0 {
+            await OpenAIDashboardFetcher().fetchSubscriptionMetadata(
+                accountEmail: effectiveEmail,
+                cacheScope: context.settings?.codex?.openAIWebCacheScope,
+                logger: logger,
+                timeout: min(8, remainingTimeout))
+        } else {
+            .unavailable
+        }
+        try Task.checkCancellation()
         return OpenAIWebDashboardFetchResult(
-            dashboard: dashboard,
+            dashboard: Self.dashboardByMergingSubscriptionMetadata(
+                dashboard,
+                result: subscriptionResult),
             routingTargetEmail: routingTargetEmail)
+    }
+
+    static func dashboardByMergingSubscriptionMetadata(
+        _ dashboard: OpenAIDashboardSnapshot,
+        result: OpenAISubscriptionFetchResult) -> OpenAIDashboardSnapshot
+    {
+        guard result.succeeded else { return dashboard }
+        return dashboard.withSubscriptionMetadata(result.metadata)
     }
 }
 #else

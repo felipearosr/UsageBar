@@ -188,7 +188,7 @@ public enum AntigravityOAuthConfig {
             fileManager: fileManager)
             where fileManager.fileExists(atPath: url.path)
         {
-            guard let data = try? Data(contentsOf: url),
+            guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
                   let client = Self.parseClient(fromInstalledArtifactData: data)
             else {
                 continue
@@ -217,6 +217,8 @@ public enum AntigravityOAuthConfig {
             "Contents/Resources/app/out/main.js",
             "Contents/Resources/bin/language_server",
             "Contents/Resources/bin/language_server_macos",
+            // Gemini.app is a single native binary with no Electron artifacts.
+            "Contents/MacOS/Gemini",
         ]
         return appBundleURLs.flatMap { bundleURL in
             relativePaths.map { bundleURL.appendingPathComponent($0) }
@@ -231,6 +233,13 @@ public enum AntigravityOAuthConfig {
 
         for root in applicationRoots {
             urls.append(root.appendingPathComponent("Antigravity.app", isDirectory: true))
+
+            // "Gemini.app" is a generic name, so unlike "Antigravity.app" it is
+            // only accepted when the bundle identifier confirms the renamed app.
+            let geminiURL = root.appendingPathComponent("Gemini.app", isDirectory: true)
+            if self.isAntigravityAppBundle(geminiURL) {
+                urls.append(geminiURL)
+            }
 
             let appURLs = (try? fileManager.contentsOfDirectory(
                 at: root,
@@ -253,7 +262,7 @@ public enum AntigravityOAuthConfig {
 
     private static func isAntigravityAppBundle(_ url: URL) -> Bool {
         switch Bundle(url: url)?.bundleIdentifier {
-        case "com.google.antigravity", "com.google.antigravity-ide":
+        case "com.google.antigravity", "com.google.antigravity-ide", "com.google.GeminiMacOS":
             true
         default:
             false
@@ -433,12 +442,7 @@ public struct AntigravityOAuthCredentialsStore: @unchecked Sendable {
     public func save(_ credentials: AntigravityOAuthCredentials) throws {
         try Self.fileLock.withLock {
             let data = try JSONEncoder.antigravityCredentials.encode(credentials)
-            let directory = self.fileURL.deletingLastPathComponent()
-            if !self.fileManager.fileExists(atPath: directory.path) {
-                try self.fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            }
-            try data.write(to: self.fileURL, options: [.atomic])
-            try self.applySecurePermissionsIfNeeded()
+            try CredentialFileWriter.writePrivate(data, to: self.fileURL)
         }
     }
 
@@ -485,14 +489,6 @@ public struct AntigravityOAuthCredentialsStore: @unchecked Sendable {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(AntigravityOAuthCredentials.self, from: data)
-    }
-
-    private func applySecurePermissionsIfNeeded() throws {
-        #if os(macOS) || os(Linux)
-        try self.fileManager.setAttributes([
-            .posixPermissions: NSNumber(value: Int16(0o600)),
-        ], ofItemAtPath: self.fileURL.path)
-        #endif
     }
 }
 

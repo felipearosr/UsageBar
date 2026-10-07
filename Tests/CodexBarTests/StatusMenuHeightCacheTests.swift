@@ -42,11 +42,7 @@ extension StatusMenuTests {
         settings.statusChecksEnabled = false
         settings.refreshFrequency = .manual
         settings.mergeIcons = false
-        let registry = ProviderRegistry.shared
-        for provider in UsageProvider.allCases {
-            guard let metadata = registry.metadata[provider] else { continue }
-            settings.setProviderEnabled(provider: provider, metadata: metadata, enabled: provider == .codex)
-        }
+        enableTestProviders([.codex], settings: settings)
 
         let store = self.makeCodexStore(settings: settings, dashboardAuthorized: false)
         let controller = StatusItemController(
@@ -87,6 +83,76 @@ extension StatusMenuTests {
 
         controller.populateMenu(menu, provider: .codex)
         #expect(controller.measuredStandardMenuWidthCache == firstCache)
+    }
+
+    @Test
+    func `agent session rows use the menu width instead of their natural title width`() {
+        let previousMenuCardRendering = StatusItemController.menuCardRenderingEnabled
+        StatusItemController.menuCardRenderingEnabled = true
+        defer {
+            StatusItemController.menuCardRenderingEnabled = previousMenuCardRendering
+        }
+
+        let controller = self.makeHeightCacheController()
+        defer { controller.releaseStatusItemsForTesting() }
+
+        let now = Date(timeIntervalSince1970: 1000)
+        let shortSession = AgentSession(
+            id: "session",
+            provider: .codex,
+            source: .cli,
+            state: .active,
+            pid: 42,
+            cwd: "/tmp/short",
+            projectName: "short",
+            startedAt: nil,
+            lastActivityAt: now,
+            transcriptPath: nil,
+            host: "local")
+        let longSession = AgentSession(
+            id: "session",
+            provider: .codex,
+            source: .cli,
+            state: .active,
+            pid: 42,
+            cwd: "/tmp/long",
+            projectName: String(repeating: "very-long-project-name-", count: 24),
+            startedAt: nil,
+            lastActivityAt: now,
+            transcriptPath: nil,
+            host: "local")
+        let shortSection = MenuDescriptor.agentSessionsSection(
+            localSessions: [shortSession],
+            remoteHosts: [],
+            now: now)
+        let longSection = MenuDescriptor.agentSessionsSection(
+            localSessions: [longSession],
+            remoteHosts: [],
+            now: now)
+        let baseWidth = StatusItemController.menuCardBaseWidth
+
+        let shortWidth = controller.measuredStandardMenuWidth(for: [shortSection], baseWidth: baseWidth)
+        let longWidth = controller.measuredStandardMenuWidth(for: [longSection], baseWidth: baseWidth)
+
+        #expect(longWidth == shortWidth)
+        #expect(controller.measuredStandardMenuWidthCache.count == 1)
+
+        let menu = NSMenu()
+        controller.addActionableSections([longSection], to: menu, width: longWidth, provider: nil)
+        guard menu.items.indices.contains(1),
+              case let .action(title, .focusAgentSession) = longSection.entries[1],
+              let view = menu.items[1].view
+        else {
+            Issue.record("Expected a hosted Agent Session action row")
+            return
+        }
+        let row = menu.items[1]
+
+        #expect(row.title.isEmpty)
+        #expect(row.toolTip == title)
+        #expect(row.representedObject as? String == "agentSession:local:session")
+        #expect(row.identifier != nil)
+        #expect(view.frame.width == longWidth)
     }
 
     @Test
@@ -222,14 +288,7 @@ extension StatusMenuTests {
         settings.statusChecksEnabled = false
         settings.refreshFrequency = .manual
         settings.mergeIcons = false
-        let registry = ProviderRegistry.shared
-        for provider in UsageProvider.allCases {
-            guard let metadata = registry.metadata[provider] else { continue }
-            settings.setProviderEnabled(
-                provider: provider,
-                metadata: metadata,
-                enabled: provider == .codex || provider == .claude)
-        }
+        enableTestProviders([.codex, .claude], settings: settings)
 
         let store = self.makeCodexStore(settings: settings, dashboardAuthorized: false)
         store._setSnapshotForTesting(

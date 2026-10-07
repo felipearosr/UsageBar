@@ -145,6 +145,7 @@ public struct ProviderDiagnosticUsageSummary: Codable, Sendable {
     public let extraWindowCount: Int
     public let providerCostPresent: Bool
     public let providerSpecificData: [String]
+    public let detailSections: [ProviderDetailSection]
 
     private enum CodingKeys: String, CodingKey {
         case updatedAt
@@ -153,6 +154,7 @@ public struct ProviderDiagnosticUsageSummary: Codable, Sendable {
         case extraWindowCount
         case providerCostPresent
         case providerSpecificData
+        case detailSections
     }
 
     public init(from snapshot: UsageSnapshot) {
@@ -174,19 +176,12 @@ public struct ProviderDiagnosticUsageSummary: Codable, Sendable {
         }
 
         var providerSpecificData: [String] = []
-        if snapshot.kiroUsage != nil { providerSpecificData.append("kiroUsage") }
-        if snapshot.ampUsage != nil { providerSpecificData.append("ampUsage") }
-        if snapshot.zaiUsage != nil { providerSpecificData.append("zaiUsage") }
-        if snapshot.minimaxUsage != nil { providerSpecificData.append("minimaxUsage") }
-        if snapshot.deepseekUsage != nil { providerSpecificData.append("deepseekUsage") }
-        if snapshot.openRouterUsage != nil { providerSpecificData.append("openRouterUsage") }
-        if snapshot.sakanaPayAsYouGo != nil { providerSpecificData.append("sakanaPayAsYouGo") }
-        if snapshot.openAIAPIUsage != nil { providerSpecificData.append("openAIAPIUsage") }
-        if snapshot.claudeAdminAPIUsage != nil { providerSpecificData.append("claudeAdminAPIUsage") }
-        if snapshot.mistralUsage != nil { providerSpecificData.append("mistralUsage") }
-        if snapshot.deepgramUsage != nil { providerSpecificData.append("deepgramUsage") }
-        if snapshot.cursorRequests != nil { providerSpecificData.append("cursorRequests") }
-        if snapshot.crossModelUsage != nil { providerSpecificData.append("crossModelUsage") }
+        if snapshot.openAIAPIUsage != nil {
+            providerSpecificData.append("openAIAPIUsage")
+        }
+        if snapshot.mistralUsage != nil {
+            providerSpecificData.append("mistralUsage")
+        }
 
         self.updatedAt = snapshot.updatedAt
         self.dataConfidence = snapshot.dataConfidence.rawValue
@@ -194,6 +189,7 @@ public struct ProviderDiagnosticUsageSummary: Codable, Sendable {
         self.extraWindowCount = snapshot.extraRateWindows?.count ?? 0
         self.providerCostPresent = snapshot.providerCost != nil
         self.providerSpecificData = providerSpecificData.sorted()
+        self.detailSections = snapshot.details
     }
 
     public init(from decoder: Decoder) throws {
@@ -205,6 +201,9 @@ public struct ProviderDiagnosticUsageSummary: Codable, Sendable {
         self.extraWindowCount = try container.decode(Int.self, forKey: .extraWindowCount)
         self.providerCostPresent = try container.decode(Bool.self, forKey: .providerCostPresent)
         self.providerSpecificData = try container.decode([String].self, forKey: .providerSpecificData)
+        self.detailSections = try container.decodeIfPresent(
+            [ProviderDetailSection].self,
+            forKey: .detailSections) ?? []
     }
 }
 
@@ -263,24 +262,64 @@ public struct ProviderDiagnosticRateWindow: Codable, Sendable {
 }
 
 public struct ProviderDiagnosticFetchAttempt: Codable, Sendable {
+    /// Identifies the exact strategy that ran, distinguishing sources that share
+    /// a transport kind (e.g. Antigravity's app-local vs ide-local probes).
+    public let strategyID: String?
     public let kind: String
+    /// One of "succeeded", "skipped", or "failed" (``ProviderFetchAttempt/Outcome``).
+    public let outcome: String
     public let wasAvailable: Bool
     public let errorCategory: String?
 
     public init(
+        strategyID: String? = nil,
         kind: String,
+        outcome: String? = nil,
         wasAvailable: Bool,
         errorCategory: String?)
     {
+        self.strategyID = strategyID
         self.kind = kind
+        self.outcome = outcome
+            ?? Self.derivedOutcome(wasAvailable: wasAvailable, errorCategory: errorCategory)
         self.wasAvailable = wasAvailable
         self.errorCategory = errorCategory
     }
 
     public init(from attempt: ProviderFetchAttempt) {
-        self.kind = Self.kindLabel(attempt.kind)
-        self.wasAvailable = attempt.wasAvailable
-        self.errorCategory = attempt.errorDescription.map(Self.errorCategoryLabel)
+        self.init(
+            strategyID: attempt.strategyID,
+            kind: Self.kindLabel(attempt.kind),
+            outcome: attempt.outcome.rawValue,
+            wasAvailable: attempt.wasAvailable,
+            errorCategory: attempt.errorDescription.map(Self.errorCategoryLabel))
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            strategyID: container.decodeIfPresent(String.self, forKey: .strategyID),
+            kind: container.decode(String.self, forKey: .kind),
+            outcome: container.decodeIfPresent(String.self, forKey: .outcome),
+            wasAvailable: container.decode(Bool.self, forKey: .wasAvailable),
+            errorCategory: container.decodeIfPresent(String.self, forKey: .errorCategory))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case strategyID
+        case kind
+        case outcome
+        case wasAvailable
+        case errorCategory
+    }
+
+    private static func derivedOutcome(wasAvailable: Bool, errorCategory: String?) -> String {
+        if !wasAvailable {
+            return ProviderFetchAttempt.Outcome.skipped.rawValue
+        }
+        return errorCategory == nil
+            ? ProviderFetchAttempt.Outcome.succeeded.rawValue
+            : ProviderFetchAttempt.Outcome.failed.rawValue
     }
 
     public static func kindLabel(_ kind: ProviderFetchKind) -> String {
@@ -341,6 +380,14 @@ public struct ProviderDiagnosticError: Codable, Sendable {
         if error is ProviderEndpointOverrideError {
             return "configuration"
         }
+        if let pluginError = error as? ProviderFetchClassifiedError {
+            return switch pluginError.kind {
+            case .authenticationExpired, .missingCredential, .permissionDenied: "auth"
+            case .rateLimited, .providerUnavailable, .apiFailure: "api"
+            case .parseFailure: "parse"
+            case .networkFailure: "network"
+            }
+        }
         if let minimaxError = error as? MiniMaxUsageError {
             switch minimaxError {
             case .networkError: return "network"
@@ -357,7 +404,9 @@ public struct ProviderDiagnosticError: Codable, Sendable {
             case .parseFailed: return "parse"
             }
         }
-        if error is MiniMaxSettingsError || error is MiniMaxAPISettingsError { return "auth" }
+        if error is MiniMaxSettingsError || error is MiniMaxAPISettingsError {
+            return "auth"
+        }
         return ProviderDiagnosticFetchAttempt.errorCategoryLabel(error.localizedDescription)
     }
 
@@ -544,21 +593,12 @@ public enum ProviderDiagnosticExportBuilder {
             fetchAttempts: input.outcome.attempts.map { ProviderDiagnosticFetchAttempt(from: $0) },
             error: error,
             settings: settingsSummary,
-            details: Self.details(provider: input.provider, outcome: input.outcome))
+            details: nil)
     }
 
     private static func safeAPIRegion(provider: UsageProvider, settings: ProviderSettingsSnapshot?) -> String? {
         guard provider == .minimax else { return nil }
         return settings?.minimax?.apiRegion.rawValue ?? "global"
-    }
-
-    private static func details(provider: UsageProvider, outcome: ProviderFetchOutcome) -> ProviderDiagnosticDetails? {
-        guard provider == .minimax,
-              let usage = outcome.usageSnapshot?.minimaxUsage
-        else {
-            return nil
-        }
-        return .minimax(MiniMaxDiagnosticDetails(from: usage))
     }
 }
 

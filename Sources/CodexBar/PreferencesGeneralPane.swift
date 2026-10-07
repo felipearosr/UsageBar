@@ -75,6 +75,14 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+enum PreferredCurrencyOption {
+    static let codes = ["auto"] + CurrencyExchange.supportedCurrencies
+
+    static func label(for code: String) -> String {
+        code == "auto" ? L("currency_auto") : CurrencyExchange.pickerLabel(for: code) ?? code
+    }
+}
+
 @MainActor
 struct GeneralPane: View {
     @Bindable var settings: SettingsStore
@@ -91,6 +99,23 @@ struct GeneralPane: View {
                     optionLabel: { rawValue in
                         Text(verbatim: AppLanguage(rawValue: rawValue)?.label ?? rawValue)
                     })
+
+                SettingsMenuPicker(
+                    selection: self.$settings.preferredCurrencyCode,
+                    options: PreferredCurrencyOption.codes,
+                    label: {
+                        SettingsRowLabel(L("currency_title"), subtitle: L("currency_subtitle"))
+                    },
+                    optionLabel: { rawValue in
+                        Text(verbatim: PreferredCurrencyOption.label(for: rawValue))
+                    })
+                    .onChange(of: self.settings.preferredCurrencyCode) { _, newValue in
+                        guard CurrencyExchange.requiresLiveRates(preferredCurrencyCode: newValue) else { return }
+                        Task {
+                            await CurrencyExchange.shared.fetchLatestRatesIfNeeded(
+                                preferredCurrencyCode: newValue)
+                        }
+                    }
 
                 SettingsMenuPicker(
                     selection: self.$settings.terminalApp,
@@ -121,6 +146,19 @@ struct GeneralPane: View {
 
                 Toggle(L("refresh_on_open_title"), isOn: self.$settings.refreshAllProvidersOnMenuOpen)
 
+                SettingsMenuPicker(
+                    selection: self.$settings.backgroundWorkLowPowerModePreference,
+                    options: GeneralSettingsMenuOptions.lowPowerModePreferences,
+                    label: {
+                        SettingsRowLabel(
+                            L("Low Power Mode"),
+                            subtitle: L(
+                                "When on, runs automatic provider, local usage, and storage refreshes no more " +
+                                    "often than every 30 minutes. Manual refresh remains available. Automatic " +
+                                    "follows the system Low Power Mode setting."))
+                    },
+                    optionLabel: { option in Text(option.label) })
+
                 Toggle(isOn: self.$settings.statusChecksEnabled) {
                     SettingsRowLabel(
                         L("check_provider_status_title"),
@@ -134,19 +172,24 @@ struct GeneralPane: View {
                 }
             }
 
+            PreferencesTransferSection(settings: self.settings)
+
             Section {
                 LabeledContent(L("open_menu_shortcut_title")) {
                     OpenMenuShortcutRecorder()
                 }
             } header: {
                 Text(L("section_keyboard_shortcut"))
-            }
-
-            Section {
-                HStack {
+            } footer: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(String(format: L("version_format"), AppVersion.displayString))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Spacer()
                     Button(L("quit_app")) { NSApp.terminate(nil) }
+                        .buttonStyle(.borderedProminent)
                 }
+                .padding(.top, 8)
             }
         }
         .formStyle(.grouped)

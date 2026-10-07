@@ -31,6 +31,32 @@ struct LocalizationLanguageCatalogTests {
     ]
 
     @Test
+    func `every catalog localizes the complete model weekly phrase with one argument`() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let resources = root.appendingPathComponent("Sources/CodexBar/Resources")
+        let catalogs = try FileManager.default.contentsOfDirectory(at: resources, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "lproj" }
+        #expect(catalogs.count == AppLanguage.allCases.count - 1)
+        for url in catalogs {
+            let catalog = try #require(NSDictionary(contentsOf: url.appendingPathComponent("Localizable.strings"))
+                as? [String: String])
+            let phrase = try #require(catalog["%@ weekly"], "Missing phrase in \(url.lastPathComponent)")
+            #expect(phrase.components(separatedBy: "%@").count == 2)
+            #expect(phrase.count(where: { $0 == "%" }) == 1)
+            #expect(phrase != "%@")
+        }
+    }
+
+    @Test
+    func `catalan plugin sidebar uses the same terminology as its pane`() {
+        CodexBarLocalizationOverride.$appLanguage.withValue("ca") {
+            #expect(SettingsPane.plugins.title == "Connectors")
+            #expect(L("Provider Plugins") == "Connectors de proveïdor")
+        }
+    }
+
+    @Test
     func `app language catalog includes Ukrainian`() {
         #expect(AppLanguage.allCases.contains(.ukrainian))
         #expect(AppLanguage.ukrainian.rawValue == "uk")
@@ -83,6 +109,45 @@ struct LocalizationLanguageCatalogTests {
     func `app language catalog includes Galician`() {
         #expect(AppLanguage.allCases.contains(.galician))
         #expect(AppLanguage.galician.rawValue == "gl")
+    }
+
+    @Test
+    func `adaptive activity consent is localized in every app language`() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let resourcesURL = root.appendingPathComponent("Sources/CodexBar/Resources")
+        let keys = [
+            "refresh_adaptive_agent_aware",
+            "adaptive_activity_consent_title",
+            "adaptive_activity_consent_message",
+            "adaptive_activity_consent_allow",
+            "adaptive_activity_consent_decline",
+        ]
+
+        for language in AppLanguage.allCases where language != .system {
+            let url = resourcesURL.appendingPathComponent("\(language.rawValue).lproj/Localizable.strings")
+            let catalog = try #require(NSDictionary(contentsOf: url) as? [String: String])
+            for key in keys {
+                #expect(catalog[key]?.isEmpty == false, "\(language.rawValue).\(key)")
+            }
+        }
+    }
+
+    @Test
+    func `Workspaces is localized in every app language`() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let resourcesURL = root.appendingPathComponent("Sources/CodexBar/Resources")
+
+        for language in AppLanguage.allCases where language != .system {
+            let url = resourcesURL.appendingPathComponent("\(language.rawValue).lproj/Localizable.strings")
+            let catalog = try #require(NSDictionary(contentsOf: url) as? [String: String])
+            #expect(catalog["Workspaces"]?.isEmpty == false)
+        }
     }
 
     @Test
@@ -206,6 +271,13 @@ struct LocalizationLanguageCatalogTests {
                 "terminal_app_subtitle": "Terminal usado pola acción Abrir terminal",
             ],
             "ca": [
+                "Projects": "Projectes",
+                "iCloud Sync": "Sincronització amb iCloud",
+                "Input": "Entrada",
+                "Cache write": "Escriptura a la memòria cau",
+                "Copy Image": "Copia la imatge",
+                "hooks_add_rule": "Afegeix una regla",
+                "menu_bar_layout_scope_help": "Editeu la disposició predeterminada o substituïu-la per a un proveïdor.",
                 "A managed Codex login is already running. Wait for it to finish before adding ":
                     "Ja hi ha un inici de sessió gestionat de Codex en curs. Espereu que acabi abans d'afegir ",
                 "%@: %@": "%@: %@",
@@ -261,6 +333,64 @@ struct LocalizationLanguageCatalogTests {
         let galician = try #require(NSDictionary(contentsOf: galicianURL) as? [String: String])
 
         #expect(Set(galician.keys) == Set(english.keys))
+    }
+
+    @Test
+    func `model breakdown unavailable exists in every app catalog`() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let resourcesURL = root.appendingPathComponent("Sources/CodexBar/Resources")
+        let catalogs = try FileManager.default.contentsOfDirectory(
+            at: resourcesURL,
+            includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "lproj" }
+
+        #expect(catalogs.count == 23)
+        for catalogURL in catalogs {
+            let stringsURL = catalogURL.appendingPathComponent("Localizable.strings")
+            let catalog = try #require(NSDictionary(contentsOf: stringsURL) as? [String: String])
+            let value = try #require(catalog["Model breakdown unavailable"])
+            #expect(!value.isEmpty, "\(catalogURL.lastPathComponent)")
+            #expect(!value.contains("%"), "\(catalogURL.lastPathComponent)")
+            if catalogURL.lastPathComponent == "en.lproj" {
+                #expect(value == "Model breakdown unavailable")
+            }
+        }
+    }
+
+    @Test
+    func `partial spend copy exists in every app catalog`() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let resourcesURL = root.appendingPathComponent("Sources/CodexBar/Resources")
+        let catalogs = try FileManager.default.contentsOfDirectory(
+            at: resourcesURL,
+            includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "lproj" }
+
+        #expect(catalogs.count == 23)
+        for catalogURL in catalogs {
+            let stringsURL = catalogURL.appendingPathComponent("Localizable.strings")
+            let catalog = try #require(NSDictionary(contentsOf: stringsURL) as? [String: String])
+            let estimate = try #require(catalog["Partial estimate"])
+            let breakdown = try #require(catalog["Partial model breakdown"])
+            let subscriptions = try #require(catalog["%d of %d subscriptions have spend"])
+            #expect(!estimate.isEmpty, "\(catalogURL.lastPathComponent)")
+            #expect(!breakdown.isEmpty, "\(catalogURL.lastPathComponent)")
+            #expect(!estimate.contains("%"), "\(catalogURL.lastPathComponent)")
+            #expect(!breakdown.contains("%"), "\(catalogURL.lastPathComponent)")
+            #expect(subscriptions.contains("%d"), "\(catalogURL.lastPathComponent)")
+            if catalogURL.lastPathComponent == "en.lproj" {
+                #expect(estimate == "Partial estimate")
+                #expect(breakdown == "Partial model breakdown")
+                #expect(subscriptions == "%d of %d subscriptions have spend")
+                #expect(String(format: subscriptions, 1, 3) == "1 of 3 subscriptions have spend")
+            }
+        }
     }
 
     @Test
@@ -321,9 +451,20 @@ struct LocalizationLanguageCatalogTests {
             let title = catalog["weekly_progress_work_days_title"]?.trimmingCharacters(in: .whitespacesAndNewlines)
             let subtitle = catalog["weekly_progress_work_days_subtitle"]?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let appearanceKeys = [
+                "workday_tick_appearance_title",
+                "workday_tick_appearance_subtitle",
+                "workday_tick_appearance_hidden",
+                "workday_tick_appearance_subtle",
+                "workday_tick_appearance_high_contrast",
+            ]
 
             #expect(title?.isEmpty == false, "Missing workday title in \(catalogURL.lastPathComponent)")
             #expect(subtitle?.isEmpty == false, "Missing workday subtitle in \(catalogURL.lastPathComponent)")
+            for key in appearanceKeys {
+                let value = catalog[key]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                #expect(value?.isEmpty == false, "Missing \(key) in \(catalogURL.lastPathComponent)")
+            }
         }
     }
 
@@ -461,19 +602,25 @@ struct LocalizationLanguageCatalogTests {
             "Deployment",
             "Email",
             "Endpoint",
+            "File",
             "Gemini Flash",
             "GitHub",
             "Google OAuth",
             "No",
             "Oasis-Token",
             "Password",
+            "Plugins",
             "Provider",
             "Token",
+            "%@ %@",
             "%@: %@",
             "byte_unit_byte",
             "byte_unit_gigabyte",
             "byte_unit_kilobyte",
             "byte_unit_megabyte",
+            "hooks_executable_placeholder",
+            "hooks_provider",
+            "hooks_threshold_placeholder",
             "language_arabic",
             "language_galician",
             "language_italian",
@@ -482,9 +629,13 @@ struct LocalizationLanguageCatalogTests {
             "language_thai",
             "link_email",
             "link_github",
+            "menu_bar_layout_sample_account",
+            "menu_bar_layout_token_account",
             "ory_session_…=…; csrftoken=…",
             "section_privacy",
+            "session_quota_estimate_value_format",
             "tab_menu",
+            "OpenCodex",
         ]
         let unchanged = Set(english.keys.filter { italian[$0] == english[$0] })
         #expect(unchanged == intentionallyUnchanged)

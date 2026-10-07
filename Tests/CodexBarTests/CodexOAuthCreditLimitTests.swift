@@ -25,9 +25,17 @@ struct CodexOAuthCreditLimitTests {
 
     private func makeContext(
         sourceMode: ProviderSourceMode = .auto,
-        includeCredits: Bool = true) -> ProviderFetchContext
+        includeCredits: Bool = true,
+        managedWorkspaceAccountID: String? = nil) -> ProviderFetchContext
     {
         let browserDetection = BrowserDetection(cacheTTL: 0)
+        let settings = managedWorkspaceAccountID.map { accountID in
+            ProviderSettingsSnapshot.make(codex: CodexProviderSettings(
+                usageDataSource: .auto,
+                cookieSource: .off,
+                manualCookieHeader: nil,
+                managedWorkspaceAccountID: accountID))
+        }
         return ProviderFetchContext(
             runtime: .app,
             sourceMode: sourceMode,
@@ -36,7 +44,7 @@ struct CodexOAuthCreditLimitTests {
             webDebugDumpHTML: false,
             verbose: false,
             env: [:],
-            settings: nil,
+            settings: settings,
             fetcher: UsageFetcher(),
             claudeFetcher: ClaudeUsageFetcher(browserDetection: browserDetection),
             browserDetection: browserDetection)
@@ -212,6 +220,33 @@ struct CodexOAuthCreditLimitTests {
     }
 
     @Test
+    func `workspace credits with a hidden balance stay distinct from zero`() throws {
+        let json = """
+        {
+          "plan_type": "business",
+          "rate_limit": {
+            "primary_window": null,
+            "secondary_window": null
+          },
+          "credits": {
+            "has_credits": true,
+            "unlimited": false,
+            "balance": null
+          }
+        }
+        """
+        let result = try CodexOAuthFetchStrategy._mapResultForTesting(
+            Data(json.utf8),
+            credentials: self.makeCredentials(),
+            sourceMode: .oauth)
+
+        #expect(result.credits?.remaining == 0)
+        #expect(result.credits?.balanceReadSucceeded == false)
+        #expect(result.credits?.creditsAvailable == true)
+        #expect(result.credits?.codexCreditLimit == nil)
+    }
+
+    @Test
     func `auto O auth zero credits preserves O auth usage while adding CLI monthly limit`() async throws {
         let mappedOAuth = try CodexOAuthFetchStrategy._mapResultForTesting(
             Data(self.oauthZeroCreditRateWindowJSON().utf8),
@@ -254,6 +289,27 @@ struct CodexOAuthCreditLimitTests {
 
         #expect(result.sourceLabel == "oauth")
         #expect(result.usage.primary == oauthResult.usage.primary)
+        #expect(result.credits?.codexCreditLimit == nil)
+    }
+
+    @Test
+    func `managed workspace O auth does not mix in unscoped CLI monthly limit`() async throws {
+        let mappedOAuth = try CodexOAuthFetchStrategy._mapResultForTesting(
+            Data(self.oauthZeroCreditRateWindowJSON().utf8),
+            credentials: self.makeCredentials(),
+            sourceMode: .auto)
+        let oauthResult = self.replacingIdentity(mappedOAuth, email: "owner@example.com")
+        let cliResult = self.makeCLIResult(
+            credits: self.makeMonthlyLimitCredits(),
+            email: "owner@example.com")
+
+        let result = try await CodexOAuthFetchStrategy._replaceWithCLIMonthlyLimitForTesting(
+            oauthResult: oauthResult,
+            context: self.makeContext(
+                sourceMode: .auto,
+                managedWorkspaceAccountID: "workspace-team"),
+            cliStrategy: StubFetchStrategy(available: true, result: cliResult))
+
         #expect(result.credits?.codexCreditLimit == nil)
     }
 
@@ -353,5 +409,136 @@ struct CodexOAuthCreditLimitTests {
 
         #expect(result.sourceLabel == "oauth")
         #expect(result.credits?.codexCreditLimit == nil)
+    }
+
+    /// Team workspaces nest the monthly pool under `spend_control.individual_limit` and spell the
+    /// reset timestamp `reset_at`; the root and `rate_limit` spellings are both absent.
+    private func teamSpendControlJSON() -> String {
+        """
+        {
+          "plan_type": "team",
+          "rate_limit": {
+            "allowed": false,
+            "limit_reached": true,
+            "primary_window": {
+              "used_percent": 100,
+              "limit_window_seconds": 604800,
+              "reset_after_seconds": 45962,
+              "reset_at": 1786161204
+            },
+            "secondary_window": null
+          },
+          "credits": {
+            "has_credits": true,
+            "unlimited": false,
+            "balance": null
+          },
+          "spend_control": {
+            "reached": false,
+            "individual_limit": {
+              "source": "workspace_spend_controls",
+              "limit": "1000",
+              "used": "36.79748725891113",
+              "remaining": "963.2025127410889",
+              "used_percent": 4,
+              "remaining_percent": 96,
+              "reset_after_seconds": 2105558,
+              "reset_at": 1788220800
+            }
+          }
+        }
+        """
+    }
+
+    @Test
+    func `decodes monthly credit limit from spend control payload`() throws {
+        let response = try CodexOAuthUsageFetcher._decodeUsageResponseForTesting(
+            Data(self.teamSpendControlJSON().utf8))
+
+        #expect(response.individualLimit == nil)
+        #expect(response.rateLimit?.individualLimit == nil)
+        #expect(response.spendControlIndividualLimit?.limit == 1000)
+        #expect(response.spendControlIndividualLimit?.used == 36.79748725891113)
+        #expect(response.spendControlIndividualLimit?.remainingPercent == 96)
+        #expect(response.spendControlIndividualLimit?.resetsAt == 1_788_220_800)
+    }
+
+    @Test
+    func `spend control payload surfaces monthly credit limit when balance is null`() throws {
+        let result = try CodexOAuthFetchStrategy._mapResultForTesting(
+            Data(self.teamSpendControlJSON().utf8),
+            credentials: self.makeCredentials())
+
+        #expect(result.credits?.codexCreditLimit?.limit == 1000)
+        #expect(result.credits?.codexCreditLimit?.used == 36.79748725891113)
+        #expect(result.credits?.codexCreditLimit?.remainingPercent == 96)
+        #expect(result.credits?.codexCreditLimit?.resetsAt == Date(timeIntervalSince1970: 1_788_220_800))
+        #expect(result.sourceLabel == "oauth")
+    }
+
+    private func spendControlBlockJSON() -> String {
+        """
+        "spend_control": {
+          "individual_limit": {
+            "limit": "1000",
+            "used": "36.79748725891113",
+            "remaining_percent": 96,
+            "reset_at": 1788220800
+          }
+        }
+        """
+    }
+
+    @Test
+    func `root individual limit still wins over spend control`() throws {
+        let json = """
+        {
+          "plan_type": "team",
+          "individual_limit": {
+            "limit": 500,
+            "used": 100,
+            "remaining_percent": 80,
+            "resets_at": 1782864000
+          },
+          \(self.spendControlBlockJSON())
+        }
+        """
+        let result = try CodexOAuthFetchStrategy._mapResultForTesting(
+            Data(json.utf8),
+            credentials: self.makeCredentials())
+
+        #expect(result.credits?.codexCreditLimit?.limit == 500)
+        #expect(result.credits?.codexCreditLimit?.resetsAt == Date(timeIntervalSince1970: 1_782_864_000))
+    }
+
+    @Test
+    func `rate limit individual limit still wins over spend control`() throws {
+        let json = """
+        {
+          "plan_type": "team",
+          "rate_limit": {
+            "primary_window": null,
+            "secondary_window": null,
+            "individual_limit": {
+              "limit": 100000,
+              "used": 7761,
+              "remaining_percent": 92.239,
+              "resets_at": 1782864000
+            }
+          },
+          \(self.spendControlBlockJSON())
+        }
+        """
+        let response = try CodexOAuthUsageFetcher._decodeUsageResponseForTesting(Data(json.utf8))
+        #expect(response.rateLimit?.individualLimit?.limit == 100_000)
+        #expect(response.spendControlIndividualLimit?.limit == 1000)
+
+        let result = try CodexOAuthFetchStrategy._mapResultForTesting(
+            Data(json.utf8),
+            credentials: self.makeCredentials())
+
+        #expect(result.credits?.codexCreditLimit?.limit == 100_000)
+        #expect(result.credits?.codexCreditLimit?.remaining == 92239)
+        #expect(result.credits?.codexCreditLimit?.resetsAt == Date(timeIntervalSince1970: 1_782_864_000))
     }
 }

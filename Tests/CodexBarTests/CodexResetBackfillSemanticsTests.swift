@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import CodexBar
 
+@Suite(CodexCredentialFixtures())
 struct CodexResetBackfillSemanticsTests {
     @Test
     func `merged reset cache preserves semantic lanes across swapped snapshots`() throws {
@@ -34,6 +35,135 @@ struct CodexResetBackfillSemanticsTests {
         #expect(merged.primary?.windowMinutes == 300)
         #expect(merged.primary?.resetsAt == sessionReset)
         #expect(merged.secondary?.usedPercent == 63)
+        #expect(merged.secondary?.windowMinutes == 10080)
+        #expect(merged.secondary?.resetsAt == weeklyReset)
+    }
+
+    @Test
+    func `reset backfill preserves a monthly primary window`() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let monthlyReset = now.addingTimeInterval(11 * 24 * 60 * 60)
+        let weeklyReset = now.addingTimeInterval(3 * 24 * 60 * 60)
+        let fresh = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 41,
+                windowMinutes: 43200,
+                resetsAt: monthlyReset,
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 12,
+                windowMinutes: 10080,
+                resetsAt: nil,
+                resetDescription: nil),
+            updatedAt: now)
+        let cached = UsageSnapshot(
+            primary: nil,
+            secondary: RateWindow(
+                usedPercent: 12,
+                windowMinutes: 10080,
+                resetsAt: weeklyReset,
+                resetDescription: nil),
+            updatedAt: now.addingTimeInterval(-60))
+
+        let backfilled = UsageStore.codexBackfillingResetWindows(fresh, from: cached)
+
+        #expect(backfilled.primary?.windowMinutes == 43200)
+        #expect(backfilled.primary?.usedPercent == 41)
+        #expect(backfilled.primary?.resetsAt == monthlyReset)
+        #expect(backfilled.secondary?.windowMinutes == 10080)
+        #expect(backfilled.secondary?.resetsAt == weeklyReset)
+    }
+
+    @Test
+    func `reset backfill does not overwrite a monthly primary with a stale cached session window`() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let monthlyReset = now.addingTimeInterval(11 * 24 * 60 * 60)
+        let fresh = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 41,
+                windowMinutes: 43200,
+                resetsAt: monthlyReset,
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now)
+        let cached = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 88,
+                windowMinutes: 300,
+                resetsAt: now.addingTimeInterval(2 * 60 * 60),
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now.addingTimeInterval(-60))
+
+        let backfilled = UsageStore.codexBackfillingResetWindows(fresh, from: cached)
+
+        #expect(backfilled.primary?.windowMinutes == 43200)
+        #expect(backfilled.primary?.usedPercent == 41)
+        #expect(backfilled.primary?.resetsAt == monthlyReset)
+    }
+
+    @Test
+    func `merged reset cache keeps a monthly reset for a fresh reset-less monthly primary`() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let monthlyReset = now.addingTimeInterval(11 * 24 * 60 * 60)
+        let cached = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 41,
+                windowMinutes: 43200,
+                resetsAt: monthlyReset,
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now.addingTimeInterval(-60))
+        let fresh = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 41,
+                windowMinutes: 43200,
+                resetsAt: nil,
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now)
+
+        let merged = try #require(UsageStore.codexMergedResetBackfillSnapshot([cached, fresh], now: now))
+        let backfilled = UsageStore.codexBackfillingResetWindows(fresh, from: merged)
+
+        #expect(merged.primary?.windowMinutes == 43200)
+        #expect(merged.primary?.resetsAt == monthlyReset)
+        #expect(backfilled.primary?.windowMinutes == 43200)
+        #expect(backfilled.primary?.resetsAt == monthlyReset)
+    }
+
+    @Test
+    func `merged reset cache prefers a newer monthly primary over a stale session candidate`() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let monthlyReset = now.addingTimeInterval(11 * 24 * 60 * 60)
+        let weeklyReset = now.addingTimeInterval(3 * 24 * 60 * 60)
+        let staleSession = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 17,
+                windowMinutes: 300,
+                resetsAt: now.addingTimeInterval(4 * 60 * 60),
+                resetDescription: nil),
+            secondary: nil,
+            updatedAt: now.addingTimeInterval(-100))
+        let monthlyShape = UsageSnapshot(
+            primary: RateWindow(
+                usedPercent: 41,
+                windowMinutes: 43200,
+                resetsAt: monthlyReset,
+                resetDescription: nil),
+            secondary: RateWindow(
+                usedPercent: 12,
+                windowMinutes: 10080,
+                resetsAt: weeklyReset,
+                resetDescription: nil),
+            updatedAt: now.addingTimeInterval(-50))
+
+        let merged = try #require(UsageStore.codexMergedResetBackfillSnapshot(
+            [staleSession, monthlyShape],
+            now: now))
+
+        #expect(merged.primary?.windowMinutes == 43200)
+        #expect(merged.primary?.resetsAt == monthlyReset)
         #expect(merged.secondary?.windowMinutes == 10080)
         #expect(merged.secondary?.resetsAt == weeklyReset)
     }
@@ -145,9 +275,9 @@ extension CodexAccountScopedRefreshTests {
 
         let targetID = try #require(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-424242424242"))
         let siblingID = try #require(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-434343434343"))
-        let targetHome = FileManager.default.temporaryDirectory
+        let targetHome = CodexCredentialFixtures.root
             .appendingPathComponent("codex-email-only-target-\(UUID().uuidString)", isDirectory: true)
-        let siblingHome = FileManager.default.temporaryDirectory
+        let siblingHome = CodexCredentialFixtures.root
             .appendingPathComponent("codex-email-only-sibling-\(UUID().uuidString)", isDirectory: true)
         try Self.writeCodexAuthFile(
             homeURL: targetHome,

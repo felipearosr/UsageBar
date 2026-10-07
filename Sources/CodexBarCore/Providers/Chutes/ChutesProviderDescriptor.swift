@@ -1,68 +1,45 @@
 import Foundation
 
 public enum ChutesProviderDescriptor {
-    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
-
-    static func makeDescriptor() -> ProviderDescriptor {
-        ProviderDescriptor(
-            id: .chutes,
-            metadata: ProviderMetadata(
-                id: .chutes,
-                displayName: "Chutes",
-                sessionLabel: "4-hour quota",
-                weeklyLabel: "Monthly quota",
-                opusLabel: nil,
-                supportsOpus: false,
-                supportsCredits: false,
-                creditsHint: "Subscription usage from the Chutes API.",
-                toggleTitle: "Show Chutes usage",
-                cliName: "chutes",
-                defaultEnabled: false,
-                isPrimaryProvider: false,
-                usesAccountFallback: false,
-                browserCookieOrder: nil,
-                dashboardURL: "https://chutes.ai",
-                statusPageURL: nil),
-            branding: ProviderBranding(
-                iconStyle: .chutes,
-                iconResourceName: "ProviderIcon-chutes",
-                color: ProviderColor(red: 49 / 255, green: 132 / 255, blue: 255 / 255)),
-            tokenCost: ProviderTokenCostConfig(
-                supportsTokenCost: false,
-                noDataMessage: { "Chutes cost history is not available from CodexBar." }),
-            fetchPlan: ProviderFetchPlan(
-                sourceModes: [.auto, .api],
-                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [ChutesAPIFetchStrategy()] })),
-            cli: ProviderCLIConfig(
-                name: "chutes",
-                aliases: ["chutes.ai"],
-                versionDetector: nil))
-    }
-}
-
-struct ChutesAPIFetchStrategy: ProviderFetchStrategy {
-    let id: String = "chutes.api"
-    let kind: ProviderFetchKind = .apiToken
-
-    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        ChutesSettingsReader.apiKey(environment: context.env) != nil
-    }
-
-    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        guard let apiKey = ChutesSettingsReader.apiKey(environment: context.env) else {
-            throw ChutesSettingsError.missingToken
-        }
-
-        let usage = try await ChutesUsageFetcher.fetchUsage(
-            apiKey: apiKey,
-            environment: context.env)
-
-        return self.makeResult(
-            usage: usage.toUsageSnapshot(),
-            sourceLabel: "api")
-    }
-
-    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        false
-    }
+    public static let descriptor: ProviderDescriptor = Self.spec.makeDescriptor()
+    public static let spec = PluginProviderSpec(
+        id: .chutes,
+        displayName: "Chutes",
+        sessionLabel: "4-hour quota",
+        weeklyLabel: "Monthly quota",
+        creditsHint: "Subscription usage from the Chutes API.",
+        debugLogUnavailableMessage: "Chutes debug log not yet implemented",
+        usesDetailBackedWindow: true,
+        dashboardURL: "https://chutes.ai",
+        color: ProviderColor(hex: 0x3184FF),
+        confetti: [0x121212, 0xFFFFFF, 0x63D297],
+        widgetColor: ProviderColor(hex: 0x18A058),
+        noDataMessage: "Chutes cost history is not available from CodexBar.",
+        environmentKey: ChutesSettingsReader.apiKeyEnvironmentKey,
+        presentation: ProviderUsagePresentation(
+            primaryBindingQuotaLanes: [.secondary],
+            menuCard: ProviderMenuCardPresentation(
+                showsPrimaryBalanceDescription: true,
+                showsSecondaryBalanceDescription: true,
+                hidesPrimaryResetWithoutDate: true),
+            menu: ProviderMenuDescriptorPresentation(
+                primaryDescriptionIsDetail: { _ in true },
+                secondaryDescriptionMode: .detailWhenResetDatePresent)),
+        aliases: ["chutes.ai"],
+        scriptSettings: { ["BASE_URL": ChutesSettingsReader.apiURL(environment: $0.env).absoluteString] },
+        validateContext: { context in
+            guard ChutesSettingsReader.apiKey(environment: context.env) != nil else {
+                throw ProviderFetchClassifiedError(
+                    kind: .missingCredential,
+                    message: ChutesSettingsError.missingToken.localizedDescription)
+            }
+            try ChutesSettingsReader.validateEndpointOverrides(environment: context.env)
+        },
+        apiKeyField: .init(
+            id: "chutes-api-key",
+            title: "API key",
+            subtitle: "Stored in ~/.codexbar/config.json. Paste a Chutes API key.",
+            placeholder: "chutes key..."),
+        showsAPIDetail: true,
+        availability: .configuredKey)
 }

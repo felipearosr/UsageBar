@@ -30,6 +30,13 @@ struct CodexAccountScopedRefreshGuard: Equatable {
 
 @MainActor
 extension UsageStore {
+    func accountScopedTokenSnapshot(for provider: UsageProvider) -> CostUsageTokenSnapshot? {
+        guard provider == .codex, !self.settings.codexLocalSessionCostLedgerEnabled else {
+            return self.tokenSnapshotPublications[provider.instanceID]?.snapshot
+        }
+        return self.tokenSnapshotForCurrentProviderConfig(for: provider)?.snapshot
+    }
+
     func refreshCodexAccountScopedState(
         allowDisabled: Bool = false,
         phaseDidChange: (@MainActor (CodexAccountScopedRefreshPhase) -> Void)? = nil)
@@ -65,6 +72,9 @@ extension UsageStore {
 
         self.persistWidgetSnapshot(reason: "codex-account-refresh")
         phaseDidChange?(.completed)
+        #if DEBUG
+        self._test_codexAccountScopedRefreshDidComplete?()
+        #endif
     }
 
     @discardableResult
@@ -81,7 +91,8 @@ extension UsageStore {
         let accountChanged = previousGuard.map {
             !Self.codexScopedRefreshGuardsMatchAccount($0, currentGuard)
         } ?? false
-        guard forceInvalidation || accountChanged else { return false }
+        let tokenCostScopeChanged = self.invalidateCodexTokenSnapshotIfScopeChanged()
+        guard forceInvalidation || accountChanged || tokenCostScopeChanged else { return false }
 
         let preserveSessionQuotaTransitionState = !forceInvalidation &&
             Self.codexSessionQuotaOwnersMatch(previousGuard, currentGuard)
@@ -92,6 +103,7 @@ extension UsageStore {
         self.lastCreditsError = nil
         self.lastCreditsSnapshot = nil
         self.lastCreditsSnapshotAccountKey = nil
+        self.lastCreditsSnapshotOwnerGuard = nil
         self.lastCreditsSource = .none
         self.creditsFailureStreak = 0
 
@@ -101,7 +113,26 @@ extension UsageStore {
         return true
     }
 
+    private func invalidateCodexTokenSnapshotIfScopeChanged() -> Bool {
+        guard !self.settings.codexLocalSessionCostLedgerEnabled,
+              let publication = self.tokenSnapshotPublications[.codex],
+              publication.scopeSignature != self.tokenSnapshotScopeSignature(for: .codex)
+        else {
+            return false
+        }
+
+        self.clearTokenSnapshot(for: .codex)
+        self.tokenErrors[.codex] = nil
+        self.tokenFailureGates[.codex]?.reset()
+        self.lastTokenFetchAt.removeValue(forKey: .codex)
+        self.lastTokenFetchScope.removeValue(forKey: .codex)
+        self.cancelCodexCostCatchUp()
+        self.synchronizeSharedSpendDashboardAfterTokenPublication(for: .codex)
+        return true
+    }
+
     func clearCodexPublishedUsageState(preserveSessionQuotaTransitionState: Bool = false) {
+        self.invalidateGenericWidgetUsage(for: .codex)
         self.snapshots.removeValue(forKey: .codex)
         self.errors[.codex] = nil
         self.lastSourceLabels.removeValue(forKey: .codex)
@@ -418,6 +449,8 @@ extension UsageStore {
                 expectedScopedEmail: self.currentCodexDashboardExpectedScopedEmail(),
                 trustedCurrentUsageEmail: self.trustedCurrentCodexUsageEmailForDashboardAuthority(),
                 dashboardSignedInEmail: dashboard.signedInEmail,
+                dashboardAccountID: dashboard.accountID,
+                requiresWorkspaceBalanceScope: dashboard.requiresWorkspaceBalanceScope,
                 knownOwners: self.codexDashboardKnownOwnerCandidates()),
             routing: CodexDashboardRoutingHints(
                 targetEmail: CodexIdentityResolver.normalizeEmail(routingTargetEmail),
@@ -635,7 +668,7 @@ extension UsageStore {
             guard let activeStoredAccount = self.settings.codexAccountReconciliationSnapshot.activeStoredAccount else {
                 return .unresolved
             }
-            return self.settings.codexAccountReconciliationSnapshot.runtimeIdentity(for: activeStoredAccount)
+            return self.settings.codexAccountReconciliationSnapshot.managedRemoteIdentity(for: activeStoredAccount)
         case let .profileHome(path):
             guard let profileAccount = self.settings.codexAccountReconciliationSnapshot.profileHomeAccount(path: path)
             else {
@@ -659,7 +692,7 @@ extension UsageStore {
             guard let activeStoredAccount = self.settings.codexAccountReconciliationSnapshot.activeStoredAccount else {
                 return .unresolved
             }
-            return self.settings.codexAccountReconciliationSnapshot.runtimeIdentity(for: activeStoredAccount)
+            return self.settings.codexAccountReconciliationSnapshot.managedRemoteIdentity(for: activeStoredAccount)
         case let .profileHome(path):
             guard let profileAccount = self.settings.codexAccountReconciliationSnapshot.profileHomeAccount(path: path)
             else {

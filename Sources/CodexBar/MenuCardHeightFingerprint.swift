@@ -1,3 +1,4 @@
+import CodexBarCore
 import Foundation
 
 extension UsageMenuCardView.Model {
@@ -12,16 +13,20 @@ extension UsageMenuCardView.Model {
             MenuCardHeightFingerprint.field("name", self.providerName),
             MenuCardHeightFingerprint.field("email", self.email),
             MenuCardHeightFingerprint.field("subtitle", self.subtitleText),
+            MenuCardHeightFingerprint.field("lastKnownUsage", self.lastKnownUsageText),
             "subtitleStyle=\(self.subtitleStyle.heightFingerprint)",
             MenuCardHeightFingerprint.field("plan", self.planText),
+            "planEmphasized=\(self.planEmphasis.isEmphasized)",
             MenuCardHeightFingerprint.field("placeholder", self.placeholder),
             MenuCardHeightFingerprint.field("credits", self.creditsText),
             "creditsRemaining=\(self.creditsRemaining.map(String.init(describing:)) ?? "nil")",
+            "creditsShowProgress=\(self.creditsShowProgress)",
             MenuCardHeightFingerprint.field("creditsHint", self.creditsHintText),
             MenuCardHeightFingerprint.field("creditsCopy", self.creditsHintCopyText),
-            "codexResetCredits=\(self.codexResetCredits?.heightFingerprint ?? "")",
+            "limitResetCredits=\(self.limitResetCredits?.heightFingerprint ?? "")",
             "metrics=\(MenuCardHeightFingerprint.join(self.metrics.map(\.heightFingerprint)))",
             "notes=\(notesFingerprint)",
+            "providerDetails=\(self.providerDetails.heightFingerprint)",
             "dashboard=\(self.inlineUsageDashboard?.heightFingerprint ?? "")",
             "providerCost=\(self.providerCost?.heightFingerprint ?? "")",
             "tokenUsage=\(self.tokenUsage?.heightFingerprint ?? "")",
@@ -31,6 +36,33 @@ extension UsageMenuCardView.Model {
 
     static func heightFingerprintField(_ name: String, _ value: String?) -> String {
         MenuCardHeightFingerprint.field(name, value)
+    }
+}
+
+extension [ProviderDetailSection] {
+    fileprivate var heightFingerprint: String {
+        MenuCardHeightFingerprint.join(self.map { section in
+            MenuCardHeightFingerprint.join([
+                MenuCardHeightFingerprint.field("title", section.title),
+                MenuCardHeightFingerprint.join(section.rows.map { row in
+                    MenuCardHeightFingerprint.join([
+                        MenuCardHeightFingerprint.field("id", row.id),
+                        MenuCardHeightFingerprint.field("label", row.label),
+                        MenuCardHeightFingerprint.field("value", row.value),
+                        MenuCardHeightFingerprint.field("secondary", row.secondaryValue),
+                        "progress=\(row.progress == nil ? "0" : "1")",
+                    ])
+                }),
+                section.chart.map { chart in
+                    MenuCardHeightFingerprint.join([
+                        chart.kind.rawValue,
+                        MenuCardHeightFingerprint.field("title", chart.title),
+                        MenuCardHeightFingerprint.field("unit", chart.unit),
+                        "points=\(chart.points.count)",
+                    ])
+                } ?? "chart=nil",
+            ])
+        })
     }
 }
 
@@ -76,16 +108,20 @@ extension UsageMenuCardView.Model.SubtitleStyle {
 
 extension UsageMenuCardView.Model.Metric {
     fileprivate var heightFingerprint: String {
-        MenuCardHeightFingerprint.join([
+        let presentation = self.linePresentation(title: self.title)
+        return MenuCardHeightFingerprint.join([
             self.id,
-            MenuCardHeightFingerprint.field("title", self.title),
-            "percent=\(Int(self.percent.rounded()))",
-            "percentStyle=\(self.percentStyle.rawValue)",
-            MenuCardHeightFingerprint.field("status", self.statusText),
-            MenuCardHeightFingerprint.field("reset", self.resetText),
-            MenuCardHeightFingerprint.field("detail", self.detailText),
-            MenuCardHeightFingerprint.field("detailLeft", self.detailLeftText),
-            MenuCardHeightFingerprint.field("detailRight", self.detailRightText),
+            self.statusText == nil ? "status=0" : "status=1",
+            // The title shares horizontal space with a wrapping reset label. Track it only
+            // when that label exists so ordinary percentage ticks keep the fixed-row cache.
+            presentation.resetText == nil
+                ? "title=fixed"
+                : MenuCardHeightFingerprint.field("title", presentation.titleText),
+            // Reset and meta rows may wrap to a second line, so their text
+            // content (not just presence) can change the measured card height.
+            MenuCardHeightFingerprint.field("reset", presentation.resetText),
+            MenuCardHeightFingerprint.field("meta", presentation.metaText),
+            self.detailText == nil ? "detail=0" : "detail=1",
             self.pacePercent == nil ? "pace=0" : "pace=1",
             self.paceOnTop ? "paceTop=1" : "paceTop=0",
             self.cardStyle ? "card=1" : "card=0",
@@ -112,6 +148,7 @@ extension UsageMenuCardView.Model.TokenUsageSection {
         MenuCardHeightFingerprint.join([
             MenuCardHeightFingerprint.field("session", self.sessionLine),
             MenuCardHeightFingerprint.field("month", self.monthLine),
+            MenuCardHeightFingerprint.field("metered", self.meteredLine),
             MenuCardHeightFingerprint.field("comparisons", self.comparisonLines.joined(separator: "|")),
             MenuCardHeightFingerprint.field("hint", self.hintLine),
             MenuCardHeightFingerprint.field("error", self.errorLine),
@@ -120,7 +157,7 @@ extension UsageMenuCardView.Model.TokenUsageSection {
     }
 }
 
-extension CodexResetCreditsPresentation {
+extension LimitResetCreditsPresentation {
     fileprivate var heightFingerprint: String {
         MenuCardHeightFingerprint.join([
             MenuCardHeightFingerprint.field("text", self.text),
@@ -136,7 +173,19 @@ extension InlineUsageDashboardModel {
             self.valueStyle.heightFingerprint,
             MenuCardHeightFingerprint.join(self.kpis.map(\.heightFingerprint)),
             MenuCardHeightFingerprint.join(self.points.map(\.heightFingerprint)),
+            MenuCardHeightFingerprint.join(self.quotaWindows.map(\.heightFingerprint)),
             MenuCardHeightFingerprint.join(self.detailLines.map { MenuCardHeightFingerprint.field("detail", $0) }),
+        ])
+    }
+}
+
+extension InlineUsageDashboardModel.QuotaWindow {
+    fileprivate var heightFingerprint: String {
+        MenuCardHeightFingerprint.join([
+            MenuCardHeightFingerprint.field("qwTitle", self.title),
+            MenuCardHeightFingerprint.field("qwRange", self.range),
+            MenuCardHeightFingerprint.field("qwValue", self.value),
+            MenuCardHeightFingerprint.field("qwNote", self.note),
         ])
     }
 }

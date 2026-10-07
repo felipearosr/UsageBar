@@ -102,7 +102,7 @@ struct AmpUsageFetcherTests {
     func `amp config token resolves through environment`() {
         let env = [AmpSettingsReader.apiTokenKey: " 'sgamp_test' "]
 
-        #expect(ProviderTokenResolver.ampToken(environment: env) == "sgamp_test")
+        #expect(ProviderTokenResolver.token(for: .amp, environment: env) == "sgamp_test")
     }
 
     @Test
@@ -227,17 +227,18 @@ struct AmpUsageFetcherTests {
     }
 
     private func makeFetcher(recorder: AmpSessionFinishRecorder) -> AmpUsageFetcher {
-        AmpUsageFetcher(
-            browserDetection: BrowserDetection(cacheTTL: 0),
-            makeURLSession: { delegate in
+        var fetcher = AmpUsageFetcher(browserDetection: BrowserDetection(cacheTTL: 0))
+        fetcher.sessionFactory = ProviderHTTPSessionFactory(
+            makeSession: { delegate in
                 let configuration = URLSessionConfiguration.ephemeral
                 configuration.protocolClasses = [AmpStubURLProtocol.self]
                 return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
             },
-            finishURLSession: { session in
+            finishSession: { session in
                 recorder.record(session)
                 session.finishTasksAndInvalidate()
             })
+        return fetcher
     }
 
     private static func makeResponse(
@@ -271,7 +272,11 @@ private final class AmpSessionFinishRecorder: @unchecked Sendable {
 }
 
 private final class AmpStubURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    private static let _handlerBox = LockIsolated<((URLRequest) throws -> (HTTPURLResponse, Data))?>(nil)
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { Self._handlerBox.value }
+        set { Self._handlerBox.setValue(newValue) }
+    }
 
     override static func canInit(with request: URLRequest) -> Bool {
         request.url?.host?.hasSuffix("ampcode.com") == true

@@ -1,6 +1,7 @@
 import Foundation
 
 public enum ClaudeAdminAPISettingsReader {
+    public static let workspaceSpendEnvironmentKey = "ANTHROPIC_ADMIN_WORKSPACE_SPEND"
     public static let adminAPIKeyEnvironmentKey = "ANTHROPIC_ADMIN_KEY"
     public static let alternateAdminAPIKeyEnvironmentKey = "ANTHROPIC_ADMIN_API_KEY"
     public static let apiKeyEnvironmentKeys = [
@@ -16,18 +17,7 @@ public enum ClaudeAdminAPISettingsReader {
     }
 
     public static func cleaned(_ raw: String?) -> String? {
-        guard var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
-        }
-
-        if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
-            (value.hasPrefix("'") && value.hasSuffix("'"))
-        {
-            value = String(value.dropFirst().dropLast())
-        }
-
-        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
+        SettingsValue.cleaned(raw)
     }
 }
 

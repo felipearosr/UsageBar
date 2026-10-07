@@ -78,7 +78,7 @@ struct StatusItemAnimationTests {
         if let openRouterMeta = registry.metadata[.openrouter] {
             settings.setProviderEnabled(provider: .openrouter, metadata: openRouterMeta, enabled: true)
         }
-        settings.openRouterAPIToken = "or-token"
+        settings[providerConfig: .openrouter, field: .apiKey] = "or-token"
         if let geminiMeta = registry.metadata[.gemini] {
             settings.setProviderEnabled(provider: .gemini, metadata: geminiMeta, enabled: false)
         }
@@ -126,7 +126,7 @@ struct StatusItemAnimationTests {
         if let openRouterMeta = registry.metadata[.openrouter] {
             settings.setProviderEnabled(provider: .openrouter, metadata: openRouterMeta, enabled: true)
         }
-        settings.openRouterAPIToken = "or-token"
+        settings[providerConfig: .openrouter, field: .apiKey] = "or-token"
 
         let fetcher = UsageFetcher()
         let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
@@ -297,7 +297,7 @@ struct StatusItemAnimationTests {
         if let openRouterMeta = registry.metadata[.openrouter] {
             settings.setProviderEnabled(provider: .openrouter, metadata: openRouterMeta, enabled: true)
         }
-        settings.openRouterAPIToken = "or-token"
+        settings[providerConfig: .openrouter, field: .apiKey] = "or-token"
 
         let fetcher = UsageFetcher()
         let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
@@ -318,7 +318,6 @@ struct StatusItemAnimationTests {
             keyDataFetched: true,
             keyLimit: nil,
             keyUsage: nil,
-            rateLimit: nil,
             updatedAt: Date()).toUsageSnapshot()
 
         store._setSnapshotForTesting(snapshot, provider: .openrouter)
@@ -333,7 +332,7 @@ struct StatusItemAnimationTests {
 
         #expect(image.size.width == 18)
         #expect(image.size.height == 18)
-        #expect(snapshot.openRouterUsage?.keyQuotaStatus == .noLimitConfigured)
+        #expect(snapshot.detailRow(label: "API key limit")?.value == "No limit configured")
         #expect(controller.statusItems[.openrouter]?.button?.title.isEmpty == true)
         #expect(MenuBarDisplayText.percentText(window: snapshot.primary, showUsed: false) == nil)
 
@@ -364,7 +363,7 @@ struct StatusItemAnimationTests {
         if let openRouterMeta = registry.metadata[.openrouter] {
             settings.setProviderEnabled(provider: .openrouter, metadata: openRouterMeta, enabled: true)
         }
-        settings.openRouterAPIToken = "or-token"
+        settings[providerConfig: .openrouter, field: .apiKey] = "or-token"
 
         let fetcher = UsageFetcher()
         let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
@@ -385,7 +384,6 @@ struct StatusItemAnimationTests {
             keyDataFetched: false,
             keyLimit: nil,
             keyUsage: nil,
-            rateLimit: nil,
             updatedAt: Date()).toUsageSnapshot()
 
         store._setSnapshotForTesting(snapshot, provider: .openrouter)
@@ -400,7 +398,7 @@ struct StatusItemAnimationTests {
 
         #expect(image.size.width == 18)
         #expect(image.size.height == 18)
-        #expect(snapshot.openRouterUsage?.keyQuotaStatus == .unavailable)
+        #expect(snapshot.detailRow(label: "API key limit")?.value == "Unavailable right now")
 
         // Even with no key data, OpenRouter still renders a meter rather than the brand logo.
         // A brand logo would be fully opaque here; the unfilled track is not.

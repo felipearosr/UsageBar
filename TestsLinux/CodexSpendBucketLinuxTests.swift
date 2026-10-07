@@ -1,6 +1,6 @@
-@testable import CodexBarCore
 import Foundation
 import Testing
+@testable import CodexBarCore
 
 @Suite
 struct CodexSpendBucketLinuxTests {
@@ -70,7 +70,7 @@ struct CodexSpendBucketLinuxTests {
             since: since,
             until: until,
             now: until,
-            options: Self.options(env),
+            options: self.options(env),
             checkCancellation: nil)
     }
 
@@ -92,9 +92,9 @@ struct CodexSpendBucketLinuxTests {
             since: SpendBucketTestEnvironment.utc(2025, 12, 20, 0),
             until: SpendBucketTestEnvironment.utc(2025, 12, 22, 0))
 
-        #expect(buckets.map(\.hourStart) == [
-            try SpendBucketTestEnvironment.utc(2025, 12, 20, 23),
-            try SpendBucketTestEnvironment.utc(2025, 12, 21, 0),
+        #expect(try buckets.map(\.hourStart) == [
+            SpendBucketTestEnvironment.utc(2025, 12, 20, 23),
+            SpendBucketTestEnvironment.utc(2025, 12, 21, 0),
         ])
         let late = try #require(buckets.first)
         #expect(late.provider == .codex)

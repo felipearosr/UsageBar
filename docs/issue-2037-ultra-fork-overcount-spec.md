@@ -1,3 +1,9 @@
+---
+summary: "Issue 2037 file-local overcount containment specification and historical PR notes."
+read_when:
+  - Reviewing interleaved-lineage containment and its accounting limits
+---
+
 # Spec: Contain Ultra-mode interleaved-lineage token overcounting (issue #2037)
 
 - **Issue:** [steipete/CodexBar#2037](https://github.com/steipete/CodexBar/issues/2037) — "Ultra-mode Terra and Sol sessions can overcount forked context"
@@ -150,6 +156,12 @@ This preserves counted-baseline recovery without allowing high/low lineage gaps 
 3. parent snapshot accumulation (`CodexSnapshotAccumulator`)
 
 Otherwise fork children can inherit baselines computed under a different policy.
+
+Parent snapshot accumulation retains the inherited counter origin from the opening `total - last` components.
+That origin is context for descendant subtraction, not newly billed usage in the parent. Direct forks carry their
+resolved inherited baseline and ancestor dependency forward when no snapshot exists before a descendant's cutoff.
+This includes parents whose first token event arrives after the descendant forks. Subsequent counter drops use the
+same conservative containment rule; this does not recover the reset undercounts described above.
 
 ### 5.6 Cache: persist correctness-critical state
 

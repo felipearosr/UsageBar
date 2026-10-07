@@ -16,14 +16,12 @@ struct CodexBarConfigUnknownProviderTests {
 
     @Test
     func `unknown provider ids decode instead of failing the whole config`() throws {
-        let config = try JSONDecoder().decode(
-            CodexBarConfig.self,
-            from: Data(Self.configWithFutureProvider.utf8))
+        let config = try CodexBarConfig.decode(from: Data(Self.configWithFutureProvider.utf8))
 
         #expect(config.providers.map(\.id) == [.codex, .claude])
         #expect(config.enabledProviders() == [.codex, .claude])
         #expect(config.providerConfig(for: .claude)?.source == .oauth)
-        #expect(config.unknownProviders.count == 1)
+        #expect(config.unavailableProviders.map(\.id) == ["futureprovider"])
     }
 
     @Test
@@ -49,7 +47,8 @@ struct CodexBarConfigUnknownProviderTests {
         #expect(providers.first { $0["id"] as? String == "codex" }?["enabled"] as? Bool == false)
 
         let reloaded = try #require(try store.load())
-        #expect(reloaded.unknownProviders == config.unknownProviders)
+        #expect(reloaded.unavailableProviders.map(\.id) == ["futureprovider"])
+        #expect(reloaded.unavailableProviders.map(\.enabled) == [false])
     }
 
     @Test
@@ -57,7 +56,7 @@ struct CodexBarConfigUnknownProviderTests {
         let json = #"{ "version": 1, "providers": [ { "id": "codex", "enabled": "yes" } ] }"#
 
         #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(CodexBarConfig.self, from: Data(json.utf8))
+            try CodexBarConfig.decode(from: Data(json.utf8))
         }
     }
 }

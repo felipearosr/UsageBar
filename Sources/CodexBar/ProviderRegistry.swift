@@ -41,9 +41,11 @@ struct ProviderRegistry {
                         provider: provider,
                         settings: settings,
                         override: nil)
-                    let sourceMode = ProviderCatalog.implementation(for: provider)?
-                        .sourceMode(context: ProviderSourceModeContext(provider: provider, settings: settings))
-                        ?? .auto
+                    let sourceMode = Self.resolvedSourceMode(
+                        provider: provider,
+                        settings: settings,
+                        account: account)
+
                     let snapshot = Self.makeSettingsSnapshot(settings: settings, tokenOverride: nil)
                     let env = Self.makeEnvironment(
                         base: environmentBase,
@@ -56,7 +58,12 @@ struct ProviderRegistry {
                         runtime: .app,
                         sourceMode: sourceMode,
                         includeCredits: false,
-                        includeOptionalUsage: settings.showOptionalCreditsAndExtraUsage,
+                        includeOptionalUsage:
+                        ProviderTokenAccountSelection.shouldIncludeOptionalUsage(
+                            provider: provider,
+                            settings: settings,
+                            override: nil),
+                        includeAccountIdentity: settings.accountWidgetsEnabled && account != nil,
                         webTimeout: 60,
                         webDebugDumpHTML: false,
                         verbose: verbose,
@@ -76,6 +83,7 @@ struct ProviderRegistry {
                         },
                         providerManualTokenUpdater: { provider, token in
                             await MainActor.run {
+                                // Provider-specific by design: StepFun rotates its legacy app-owned session token.
                                 if provider == .stepfun {
                                     settings.stepfunToken = token
                                 }
@@ -84,7 +92,8 @@ struct ProviderRegistry {
                         costUsageHistoryDays: settings.costUsageHistoryDays,
                         persistsCLISessions: true,
                         persistentCLISessionIdleWindow: Self.persistentCLISessionIdleWindow(
-                            refreshInterval: Self.nominalRefreshInterval(for: settings.refreshFrequency)))
+                            refreshInterval: Self.nominalRefreshInterval(
+                                for: settings.refreshFrequency)))
                 })
             specs[provider] = spec
         }
@@ -101,7 +110,23 @@ struct ProviderRegistry {
     /// when specs are built, so `.adaptive` maps to the policy's nominal interval instead of a
     /// live decision; `.manual` stays nil.
     static func nominalRefreshInterval(for frequency: RefreshFrequency) -> TimeInterval? {
-        frequency == .adaptive ? AdaptiveRefreshPolicy.nominalIntervalForHeuristics : frequency.seconds
+        frequency.usesAdaptivePolicy
+            ? AdaptiveRefreshPolicy.nominalIntervalForHeuristics : frequency.seconds
+    }
+
+    @MainActor
+    static func resolvedSourceMode(
+        provider: UsageProvider,
+        settings: SettingsStore,
+        account: ProviderTokenAccount?) -> ProviderSourceMode
+    {
+        let base =
+            ProviderCatalog.implementation(for: provider)?
+                .sourceMode(context: ProviderSourceModeContext(provider: provider, settings: settings))
+                ?? .auto
+        let config = settings.configSnapshot.providerConfig(for: provider.instanceID)
+        return ProviderDescriptorRegistry.descriptor(for: provider).credentials?
+            .selectedAccountSourceMode(base: base, account: account, config: config) ?? base
     }
 
     @MainActor
@@ -110,7 +135,6 @@ struct ProviderRegistry {
         tokenOverride: TokenAccountOverride?,
         codexActiveSourceOverride: CodexActiveSource? = nil) -> ProviderSettingsSnapshot
     {
-        settings.ensureTokenAccountsLoaded()
         var builder = ProviderSettingsSnapshotBuilder(
             debugMenuEnabled: settings.debugMenuEnabled,
             debugKeepCLISessionsAlive: settings.debugKeepCLISessionsAlive)
@@ -119,9 +143,17 @@ struct ProviderRegistry {
             tokenOverride: tokenOverride,
             codexActiveSourceOverride: codexActiveSourceOverride)
         for implementation in ProviderCatalog.all {
-            if let contribution = implementation.settingsSnapshot(context: context) {
-                builder.apply(contribution)
+            let registration = ProviderDescriptorRegistry.descriptor(for: implementation.id)
+                .settingsSection
+            guard let contribution = implementation.settingsSnapshot(context: context) else {
+                preconditionFailure(
+                    "Missing settings snapshot section for provider '\(implementation.id.rawValue)'")
             }
+            guard registration.accepts(contribution) else {
+                preconditionFailure(
+                    "Mismatched settings snapshot section for provider '\(implementation.id.rawValue)'")
+            }
+            builder.apply(contribution)
         }
         return builder.build()
     }
@@ -147,20 +179,30 @@ struct ProviderRegistry {
         // quotas, and dashboard data. Token-cost/session history is intentionally handled
         // separately because it is provider-level local telemetry from this Mac's Codex sessions,
         // not account-owned remote state.
+        // Provider-specific by design: managed Codex account selection scopes the fetcher's CODEX_HOME.
         if provider == .codex {
             let codexActiveSource = codexActiveSourceOverride ?? settings.codexResolvedActiveSource
-            if let managedHomePath = settings.managedCodexRemoteHomePath(forActiveSource: codexActiveSource) {
+            if let managedHomePath = settings.managedCodexRemoteHomePath(
+                forActiveSource: codexActiveSource)
+            {
                 env = CodexHomeScope.scopedEnvironment(base: env, codexHome: managedHomePath)
-            } else if let liveHomePath = settings.liveSystemCodexHomePath(forActiveSource: codexActiveSource) {
+            } else if let liveHomePath = settings.liveSystemCodexHomePath(
+                forActiveSource: codexActiveSource)
+            {
                 env = CodexHomeScope.scopedEnvironment(base: env, codexHome: liveHomePath)
-            } else if let profileHomePath = settings.profileCodexHomePath(forActiveSource: codexActiveSource) {
+            } else if let profileHomePath = settings.profileCodexHomePath(
+                forActiveSource: codexActiveSource)
+            {
                 env = CodexHomeScope.scopedEnvironment(base: env, codexHome: profileHomePath)
             }
         }
         return env
     }
 
-    static func makeFetcher(base: UsageFetcher, provider: UsageProvider, env: [String: String]) -> UsageFetcher {
+    static func makeFetcher(base: UsageFetcher, provider: UsageProvider, env: [String: String])
+        -> UsageFetcher
+    {
+        // Provider-specific by design: a Codex account scope needs a fetcher rebuilt with its selected CODEX_HOME.
         guard provider == .codex else { return base }
         return UsageFetcher(environment: env)
     }
