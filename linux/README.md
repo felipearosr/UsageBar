@@ -155,7 +155,7 @@ release don't depend on COPR.
 ### Releasing
 
 UsageBar has its own semver, independent of CodexBar's numbers.
-[`release/usagebar-release.env`](release/usagebar-release.env) records two
+[`release/usagebar-release.txt`](release/usagebar-release.txt) records two
 facts:
 
 - `USAGEBAR_VERSION`: the UsageBar release this commit becomes (`1.1.0`, or

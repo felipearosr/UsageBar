@@ -5,7 +5,7 @@
 #   linux/release/resolve-version.sh [--metadata FILE] [--format text|github] [TAG]
 #
 # TAG is a pushed release tag, usagebar-v<semver>; it must match
-# USAGEBAR_VERSION in the metadata file (default: usagebar-release.env next to
+# USAGEBAR_VERSION in the metadata file (default: usagebar-release.txt next to
 # this script). Without TAG (a dry run of some ref) the version comes from the
 # metadata alone.
 #
@@ -33,7 +33,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-metadata=$here/usagebar-release.env
+metadata=$here/usagebar-release.txt
 format=text
 tag=
 have_tag=false

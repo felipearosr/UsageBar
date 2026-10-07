@@ -37,7 +37,7 @@ git merge --no-ff $TAG -m "Merge upstream CodexBar $TAG"
 - `version.env` comes from upstream (`MARKETING_VERSION`, `BUILD_NUMBER`). Take upstream's values; the fork
   never edits that file.
 - **Bump the upstream base** in the same PR: set `UPSTREAM_BASE` in
-  [`linux/release/usagebar-release.env`](../release/usagebar-release.env) to the tag without its `v`
+  [`linux/release/usagebar-release.txt`](../release/usagebar-release.txt) to the tag without its `v`
   (`0.72.0` for `v0.72.0`). Releases read it from there: `codexbar --version` prints
   `CodexBar <base>+usagebar.<version>` and the release notes name the base.
 
@@ -190,7 +190,7 @@ Every upstream merge is followed by a UsageBar release, so users get the new bas
 
 ```sh
 git switch main && git pull
-# USAGEBAR_VERSION in linux/release/usagebar-release.env must already say <version> (a release-prep PR
+# USAGEBAR_VERSION in linux/release/usagebar-release.txt must already say <version> (a release-prep PR
 # bumps it; the merge PR already set UPSTREAM_BASE). The workflow refuses a tag that doesn't match.
 linux/release/resolve-version.sh usagebar-v<version>   # same check, locally
 git tag usagebar-v<version> && git push origin usagebar-v<version>

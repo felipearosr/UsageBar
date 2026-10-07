@@ -89,7 +89,7 @@ expect_key "pre-release asset names carry the full semver" \
     cli_asset_x86_64 usagebar-cli-1.2.0-rc.1-linux-x86_64.tar.gz --metadata "$rc" usagebar-v1.2.0-rc.1
 expect_key "alphanumeric pre-release" prerelease true --metadata "$(metadata 2.0.0-beta 0.72.0)" usagebar-v2.0.0-beta
 
-expect_key "the checked-in metadata resolves" tag "usagebar-v$(sed -n 's/^USAGEBAR_VERSION=//p' "$here/../usagebar-release.env")"
+expect_key "the checked-in metadata resolves" tag "usagebar-v$(sed -n 's/^USAGEBAR_VERSION=//p' "$here/../usagebar-release.txt")"
 
 crlf=$work/crlf.env
 printf 'USAGEBAR_VERSION=1.1.0\r\nUPSTREAM_BASE=0.69.0\r\n' > "$crlf"
