@@ -12,13 +12,15 @@ import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/ex
 import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
+import {INSTALL_URL} from './onboarding.js';
 import {MachineSyncPage} from './syncpage.js';
 import {PACKAGED_BIN} from './updates.js';
 
 function findBinary() {
+    // A set override wins outright, as in extension.js.
     const explicit = GLib.getenv('CODEXBAR_BIN');
-    if (explicit && GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE))
-        return explicit;
+    if (explicit)
+        return GLib.file_test(explicit, GLib.FileTest.IS_EXECUTABLE) ? explicit : null;
     if (GLib.file_test(PACKAGED_BIN, GLib.FileTest.IS_EXECUTABLE))
         return PACKAGED_BIN;
     const inPath = GLib.find_program_in_path('codexbar');
@@ -453,6 +455,15 @@ export default class UsageBarPreferences extends ExtensionPreferences {
                   'Settings to configure a newly enabled provider.'
                 : 'codexbar CLI not found — install it to manage providers.',
         });
+        if (!binary) {
+            const install = new Gtk.Button({
+                label: 'Install instructions',
+                valign: Gtk.Align.CENTER,
+            });
+            install.connect('clicked', () =>
+                new Gtk.UriLauncher({uri: INSTALL_URL}).launch(window, null, null));
+            catalog.set_header_suffix(install);
+        }
         const byName = (a, b) => a.name.localeCompare(b.name);
         const enabledInConfigOrder = providers.filter(p => p.enabled);
         const enabled = [...enabledInConfigOrder].sort(byName);
