@@ -2545,7 +2545,7 @@ export default class UsageBarExtension extends Extension {
             if (force)
                 this._indicator.setRefreshing(false);
             if (error) {
-                this._indicator.setStatus(`usage fetch failed: ${error.message}`);
+                this._indicator.setStatus(`usage fetch failed: ${error.detail ?? error.message}`);
                 this._scheduleFetch(FETCH_RETRY_SECS);
             } else {
                 this._rows = enrichAntigravityModels(mergeStale(this._rows, rows));
