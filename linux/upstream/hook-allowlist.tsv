@@ -4,7 +4,7 @@
 # Adding a line grows the fork delta: do it on purpose and say so in the PR. Remove lines as isolation tickets land.
 
 # Machine Sync: `codexbar sync` registration and help (isolation: #57)
-Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	sync dispatch case and command descriptor; #57
+Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	sync dispatch via the default case (runForkCommand) and command descriptor; #57
 Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	syncHelp text; also the /cost?days help example (#54); #57
 Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	`help sync` case; #57
 Tests/CodexBarTests/CLIEntryTests.swift	Machine Sync: sync command	sync descriptor tests; also the OpenCode Auto-mode web-support exemption (#53); #57
@@ -23,6 +23,7 @@ Sources/CodexBarCLI/CLIErrorReporting.swift	CLI error reason	ProviderErrorPayloa
 # Spend Buckets: per-row hooks in the cost scanners (isolation: #59, upstream candidate: #60)
 Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner.swift	Spend Buckets	ClaudeUsageFields and ClaudeUsageRow.omittedFields; #59
 Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+Claude.swift	Spend Buckets	Claude Spend Bucket loaders, per-row cost, omitted-field capture; #59
+Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+ClaudeRowDecoding.swift	Spend Buckets	decode ClaudeUsageRow.omittedFields ("omit") in upstream's hand-written row decoder (0.73.0); #59
 Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+CacheHelpers.swift	Spend Buckets	CodexSpendBucketCollector parameter on buildCodexReportFromCache; #59
 Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+TemporalBuckets.swift	Spend Buckets	codexRowCost factored out of the report loop; #59
 Sources/CodexBarCore/Vendored/CostUsage/CostUsageStore+ReadView.swift	Spend Buckets	spendBuckets passthrough on dailyReport; #59
@@ -34,6 +35,7 @@ Tests/CodexBarTests/CostUsageClaudeFragmentTests.swift	Spend Buckets	Claude cach
 Tests/CodexBarTests/CostUsageClaudeMetadataParsingTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
 Tests/CodexBarTests/CostUsageClaudePersistenceBenchmarkTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
 Tests/CodexBarTests/CostUsageClaudePriceRangeTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
+Tests/CodexBarTests/CostUsageClaudeRowStorageTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
 Tests/CodexBarTests/CostUsageClaudeWriteAmplificationTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
 Tests/CodexBarTests/CostUsageScannerClaudeCacheUpgradeTests.swift	Spend Buckets	Claude cache schema version and omittedFields in fixtures; #59
 Tests/CodexBarTests/PiSessionCostScannerTests.swift	Spend Buckets	Pi cache artifact version in fixtures; #59

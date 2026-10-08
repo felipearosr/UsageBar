@@ -52,6 +52,8 @@ enum CodexBarCLI {
             switch invocation.path {
             case ["cards"], ["usage"]:
                 await self.runUsageDisplay(path: invocation.path, values: invocation.parsedValues)
+            case let path where path.first == "codex-accounts":
+                await self.runCodexAccounts(path: path, values: invocation.parsedValues)
             case ["cost"]:
                 await self.runCost(invocation.parsedValues)
             case ["sessions", "list"]:
@@ -70,8 +72,6 @@ enum CodexBarCLI {
                 self.runCacheClear(invocation.parsedValues)
             case ["cookie", "refresh"]:
                 await self.runCookieRefreshWithTermination(invocation.parsedValues)
-            case let path where path.first == "sync":
-                await self.runSync(path: path, values: invocation.parsedValues)
             case ["diagnose"]:
                 let signalMonitor = CLITerminationSignalMonitor { signalNumber in
                     CLITerminationSignalMonitor.terminateActiveHelpersAndReraise(signalNumber)
@@ -83,11 +83,11 @@ enum CodexBarCLI {
             case let path where path.first == "plugins":
                 await self.runPlugins(path: path, values: invocation.parsedValues)
             default:
-                Self.exit(
-                    code: .failure,
-                    message: "Unknown command",
-                    output: outputPreferences,
-                    kind: .args)
+                // UsageBar: fork commands (`sync`) dispatch here; unknown commands still exit.
+                await self.runForkCommand(
+                    path: invocation.path,
+                    values: invocation.parsedValues,
+                    output: outputPreferences)
             }
         } catch let error as CommanderProgramError {
             let exitCode: ExitCode = argv.first == "guard" ? .usage : .failure
@@ -172,12 +172,14 @@ enum CodexBarCLI {
         let configSignature = CommandSignature.describe(ConfigOptions()).flattened()
         let configDumpSignature = CommandSignature.describe(ConfigDumpOptions()).flattened()
         let configProviderToggleSignature = CommandSignature.describe(ConfigProviderToggleOptions()).flattened()
+        let configSetSourceSignature = CommandSignature.describe(ConfigSetSourceOptions()).flattened()
         let configSetAPIKeySignature = CommandSignature.describe(ConfigSetAPIKeyOptions()).flattened()
         let cacheSignature = CommandSignature.describe(CacheOptions()).flattened()
         let diagnoseSignature = CommandSignature.describe(DiagnoseOptions()).flattened()
         let guardSignature = CommandSignature.describe(GuardOptions()).flattened()
 
         var descriptors = [
+            Self.codexAccountsCommandDescriptor(),
             CommandDescriptor(
                 name: "cards",
                 abstract: "Print usage as a terminal card grid",
@@ -258,6 +260,11 @@ enum CodexBarCLI {
                         abstract: "Store a provider API key",
                         discussion: nil,
                         signature: configSetAPIKeySignature),
+                    CommandDescriptor(
+                        name: "set-source",
+                        abstract: "Store a provider data source",
+                        discussion: nil,
+                        signature: configSetSourceSignature),
                     Self.preferencesCommandDescriptor(),
                 ],
                 defaultSubcommandName: "validate"),

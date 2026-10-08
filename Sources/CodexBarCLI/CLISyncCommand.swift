@@ -10,6 +10,15 @@ import Musl
 import Foundation
 
 extension CodexBarCLI {
+    /// Commands UsageBar adds to upstream's CLI. `main()` reaches this from its `default:` case, so upstream's
+    /// dispatch switch stays at its own size; anything not handled here is upstream's "Unknown command".
+    static func runForkCommand(path: [String], values: ParsedValues, output: CLIOutputPreferences) async {
+        guard path.first == "sync" else {
+            self.exit(code: .failure, message: "Unknown command", output: output, kind: .args)
+        }
+        await self.runSync(path: path, values: values)
+    }
+
     static func runSync(path: [String], values: ParsedValues) async {
         switch path {
         case ["sync", "create"]:

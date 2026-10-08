@@ -158,9 +158,21 @@ struct CostUsageStoreReadView: Sendable {
             spendBuckets: spendBuckets)
     }
 
-    func projects(range: CostUsageScanner.CostUsageDayRange, cacheRoot: URL?) -> [CostUsageProjectBreakdown] {
-        CostUsageScanner.buildCodexProjectBreakdownsFromCache(
-            cache: self.cache, range: range, modelsDevCacheRoot: cacheRoot)
+    func reports(
+        range: CostUsageScanner.CostUsageDayRange,
+        cacheRoot: URL?,
+        roots: [URL],
+        includeBreakdowns: Bool = true,
+        includeProjects: Bool = true)
+        -> (daily: CostUsageDailyReport, projects: [CostUsageProjectBreakdown], sessions: [CostUsageSessionBreakdown])
+    {
+        CostUsageScanner.buildCodexReportProjectionsFromCache(
+            cache: self.cache,
+            range: range,
+            modelsDevCacheRoot: cacheRoot,
+            sessionRoots: roots,
+            includeBreakdowns: includeBreakdowns,
+            includeProjects: includeProjects)
     }
 
     func projectSessionIDs(range: CostUsageScanner.CostUsageDayRange) -> [String: Set<String>] {
@@ -179,18 +191,10 @@ struct CostUsageStoreReadView: Sendable {
         return sessionIDsByPath
     }
 
-    func sessions(
-        range: CostUsageScanner.CostUsageDayRange,
-        cacheRoot: URL?,
-        roots: [URL]) -> [CostUsageSessionBreakdown]
-    {
-        CostUsageScanner.buildCodexSessionBreakdownsFromCache(
-            cache: self.cache, range: range, modelsDevCacheRoot: cacheRoot, sessionRoots: roots)
-    }
-
     func catchUpStatus(
         roots: [URL],
-        rootsFingerprint: [String: Int64]) -> CostUsageFetcher.CodexScanCatchUpStatus
+        rootsFingerprint: [String: Int64],
+        requiredRange: CostUsageScanner.CostUsageDayRange? = nil) -> CostUsageFetcher.CodexScanCatchUpStatus
     {
         guard self.roots == rootsFingerprint else {
             return .init(pending: false, progressKey: "scope-mismatch")
@@ -204,7 +208,10 @@ struct CostUsageStoreReadView: Sendable {
             totalBytes: self.cache.codexScanTotalBytes ?? 0,
             completedFiles: self.cache.codexScanCompletedFiles ?? 0,
             totalFiles: self.cache.codexScanTotalFiles ?? 0,
-            staleSnapshotUpdatedAt: pending ? self.cache.codexPreviousReport?.updatedAt : nil)
+            staleSnapshotUpdatedAt: pending ? self.cache.codexPreviousReport?.updatedAt : nil,
+            completionIsConfirmed: !pending && requiredRange.map {
+                self.historyCoverageIsEstablished(range: $0, rootsFingerprint: rootsFingerprint)
+            } == true)
     }
 }
 

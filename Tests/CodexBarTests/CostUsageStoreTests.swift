@@ -955,6 +955,8 @@ extension CostUsageStoreTests {
 
 extension CostUsageStoreTests {
     @Test(arguments: [
+        "ed735dc27ffa70d9", // Current release before session-tier evidence.
+        "99d920977063318a", // Scheduling diagnostics retain history and checkpoints.
         "029fe80aa98f27e8", // Before the shared JSON fallback.
         "c61aebb9cf043a72", // Previous request-ledger revision.
         "4a4c4ef34ce6f037", // Before request-ledger accounting.
@@ -1001,6 +1003,8 @@ extension CostUsageStoreTests {
         let fixture = try StoreFixture()
         defer { fixture.remove() }
         #expect(CostUsageStore.compatiblePredecessorParserHashes == [
+            "99d920977063318a",
+            "ed735dc27ffa70d9",
             "029fe80aa98f27e8",
             "c61aebb9cf043a72",
             "4a4c4ef34ce6f037",
@@ -1108,7 +1112,12 @@ extension CostUsageStoreTests {
         #expect(!FileManager.default.fileExists(atPath: input.path))
         let current = CostUsageStore(cacheRoot: fixture.root)
         let after = await current.readSnapshot()
-        #expect(after == before)
+        var expected = before
+        if ["ed735dc27ffa70d9", "99d920977063318a"].contains(predecessorHash) {
+            // These reports predate corrected pricing and coverage; native history still survives intact.
+            expected.metadata.previousReportPayload = nil
+        }
+        #expect(after == expected)
         #expect(await current.rebuildCount == 0)
         #expect(await current.configuration()?.userVersion == Int(CostUsageStore.schemaVersion))
         let connection = try SQLiteTestConnection(url: fixture.databaseURL, readOnly: true)
@@ -1133,7 +1142,7 @@ extension CostUsageStoreTests {
         #expect(resumed.resumeState == nil)
     }
 
-    @Test(arguments: ["8050a4faf4fddb96", "dd19ffa2dcfa8d47"])
+    @Test(arguments: ["8050a4faf4fddb96", "dd19ffa2dcfa8d47", "ed735dc27ffa70d9", "99d920977063318a"])
     func `retained report migration preserves compatible rows and clears stale payload`(
         predecessorHash: String) async throws
     {
