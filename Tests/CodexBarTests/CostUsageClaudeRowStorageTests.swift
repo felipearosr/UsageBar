@@ -65,7 +65,7 @@ struct CostUsageClaudeRowStorageTests {
         let env = try CostUsageTestEnvironment()
         defer { env.cleanup() }
         var artifact = CostUsageClaudeCache()
-        artifact.usage.version = 4
+        artifact.usage.version = 6
         artifact.usage.files["/synthetic/first.jsonl"] = CostUsageFileUsage(
             mtimeUnixMs: 1, size: 1, days: [:], claudeRows: (0..<5000).map(self.row))
         artifact.usage.files["/synthetic/second.jsonl"] = CostUsageFileUsage(
@@ -136,6 +136,7 @@ struct CostUsageClaudeRowStorageTests {
         let c: Int
         let priced: Bool?
         let partial: Bool?
+        let omit: CostUsageScanner.ClaudeUsageFields?
     }
 
     private func decodingResult(_ type: (some Decodable).Type, bytes: Data) -> String {
@@ -159,10 +160,16 @@ struct CostUsageClaudeRowStorageTests {
     func `row decoding matches synthesized schema and errors`() throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
+        var omitting = self.row(0)
+        omitting.omittedFields = [.cacheRead, .cacheCreation]
+        let omittingBytes = try encoder.encode(omitting)
+        #expect(try JSONDecoder().decode(Row.self, from: omittingBytes) == omitting)
+        #expect(try encoder.encode(JSONDecoder().decode(SynthesizedRow.self, from: omittingBytes)) == omittingBytes)
         let bytes = try encoder.encode(self.row(0))
         #expect(try encoder.encode(JSONDecoder().decode(SynthesizedRow.self, from: bytes)) == bytes)
         let object = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
         let keys = ["d", "m", "s", "i", "r", "t", "b", "p", "in", "cr", "cc", "ch", "out", "c", "priced", "partial"]
+            + ["omit"] // UsageBar: Claude rows persist omittedFields (Spend Buckets).
         for key in keys {
             for replacement: Any? in [nil, NSNull(), [], "invalid"] {
                 var changed = object

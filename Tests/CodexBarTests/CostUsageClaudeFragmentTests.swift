@@ -355,7 +355,7 @@ struct CostUsageClaudeFragmentTests {
     @Test
     func `decoded cache and persistence identity release their mapped input`() throws {
         var cache = CostUsageClaudeCache()
-        cache.usage.version = 4
+        cache.usage.version = 6
         cache.usage.timeZoneIdentifier = Calendar.current.timeZone.identifier
         cache.usage.files["file"] = self.file(1)
         let root = self.directory.url
