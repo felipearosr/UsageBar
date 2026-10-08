@@ -73,9 +73,9 @@ From #26 (23 conflicted files) and the rehearsal on 2026-10-06 (`upstream/main` 
 
 | Area | Files | Fork feature | How #26 re-applied it |
 | --- | --- | --- | --- |
-| Cost scanners | `Sources/CodexBarCore/Vendored/CostUsage/`: `CostUsageScanner.swift`, `+Claude.swift`, `+CacheHelpers.swift`, `+TemporalBuckets.swift`, `CostUsageStore+ReadView.swift`; `Sources/CodexBarCore/PiSessionCostScanner.swift` | Machine Sync: Spend Buckets | Codex: optional `CodexSpendBucketCollector` on `buildCodexReportFromCache`, per-row cost factored into `codexRowCost`. Claude: `ClaudeUsageRow.omittedFields` captured at parse time, per-row cost in `claudeRowCost`. Pi: per-file `hourContributions` and `hourKey` on keyed entries. **The one real conflict in #95 (0.72.0) was here**: upstream reworked the Claude row builder (scan-range check before pricing, `cacheCreate1h`) and removed the private `ClaudeTokens` struct. #95 kept upstream's builder and re-applied only `claudeOmittedUsageFields(usage)` → `omittedFields`; `ClaudeSpendBucketLinuxTests` "fields the log omits stay absent" fails until it is. |
+| Cost scanners | `Sources/CodexBarCore/Vendored/CostUsage/`: `CostUsageScanner.swift`, `+Claude.swift`, `+CacheHelpers.swift`, `+TemporalBuckets.swift`, `CostUsageStore+ReadView.swift`; `Sources/CodexBarCore/PiSessionCostScanner.swift` | Machine Sync: Spend Buckets | Codex: optional `CodexSpendBucketCollector` on `buildCodexReportFromCache`, per-row cost factored into `codexRowCost`. Claude: `ClaudeUsageRow.omittedFields` captured at parse time, per-row cost in `claudeRowCost`. Pi: per-file `hourContributions` and `hourKey` on keyed entries. **The one real conflict in #95 (0.72.0) was here**: upstream reworked the Claude row builder (scan-range check before pricing, `cacheCreate1h`) and removed the private `ClaudeTokens` struct. #95 kept upstream's builder and re-applied only `claudeOmittedUsageFields(usage)` → `omittedFields`; `ClaudeSpendBucketLinuxTests` "fields the log omits stay absent" fails until it is. **0.73.0** auto-merged here but added a hand-written `ClaudeUsageRow` decoder (`CostUsageScanner+ClaudeRowDecoding.swift`) that skipped the fork's `"omit"` key; the fork decodes `omittedFields` there. `ClaudeSpendBucketLinuxTests` "omitted fields survive the persisted row encoding" catches it. If upstream adds fields to that decoder, check `omit` is still read. |
 | Cache schema versions | `Vendored/CostUsage/CostUsageClaudeCache.swift` (`schemaVersion`), `PiSessionCostCache.swift` (`artifactVersion`, `pi-sessions-vN.json`) | Spend Buckets | See [Cache schema versions](#cache-schema-versions) below. |
-| CLI entry and help | `Sources/CodexBarCLI/CLIEntry.swift`, `CLIHelp.swift`, `Tests/CodexBarTests/CLIEntryTests.swift` | Machine Sync: `codexbar sync` | Register `sync` next to upstream's commands; help text in `CLIHelp`. |
+| CLI entry and help | `Sources/CodexBarCLI/CLIEntry.swift`, `CLIHelp.swift`, `Tests/CodexBarTests/CLIEntryTests.swift` | Machine Sync: `codexbar sync` | Register `sync` next to upstream's commands; help text in `CLIHelp`. Since 0.73.0, `main()` routes `sync` through its `default:` case to the fork-owned `runForkCommand` (`CLISyncCommand.swift`): upstream's new `plugins` case put the dispatch switch at swiftlint's cyclomatic complexity limit (20), so the fork's own `case` made it 21. |
 | CLI errors | `Sources/CodexBarCLI/CLIErrorReporting.swift`, `CLIIO.swift` | Machine Sync: error `reason` | Carry `reason` and `exit(reason:)` into upstream's error reporting. |
 | `serve` | `Sources/CodexBarCLI/CLIServeCommand.swift`, `CLILocalHTTPServer.swift` (409, 502 status cases), `Tests/CodexBarTests/CLIServeRouterTests.swift` | Machine Sync: `/sync/status`, `/sync/push`; `/cost?days=N` | `/sync/*` through upstream's data-route auth, `Cache-Control: no-store`; `ServeRuntime` takes `sync` with a default; `/cost?days=N` maps to `CostReportingPeriod.rolling(days:)`. |
 | OpenCode | `Sources/CodexBarCore/Providers/OpenCode/OpenCodeProviderDescriptor.swift` | OpenCode on Linux | Browser-support exemption lives in the descriptor, like OpenCode Go. |
@@ -86,7 +86,7 @@ From #26 (23 conflicted files) and the rehearsal on 2026-10-06 (`upstream/main` 
 
 The fork's Spend Buckets store extra data in two upstream caches, so the fork runs its own schema numbers:
 
-| Cache | Constant | Fork | Upstream at v0.72.0 |
+| Cache | Constant | Fork | Upstream at v0.73.0 |
 | --- | --- | --- | --- |
 | Claude | `CostUsageClaudeCache.schemaVersion` | 6 (#88: persists `omittedFields`) | 4 |
 | Pi | `PiSessionCostCache.artifactVersion` | 10 (hour data) | 9 |
@@ -150,7 +150,7 @@ node --test linux/usagebar-gnome/tests/*.test.mjs
 
 The fork suites: Machine Sync create, pair, push, status, management, timer and protocol vectors;
 `CLIServeSync`; `CLISync*`; Spend Buckets for Codex, Claude and Pi (and their merging); OpenCode on Linux.
-All must pass. #26 had 1,008 tests in 136 suites passing; #95 had 1,095 in 146 (152 tests in 23 fork suites).
+All must pass. #26 had 1,008 tests in 136 suites passing; #95 had 1,095 in 146 (152 tests in 23 fork suites); the 0.73.0 merge had 1,110 in 149.
 
 ### macOS-only tests: check them before you push
 
@@ -166,6 +166,11 @@ writes those tests against upstream's caches and code, so new ones break on fork
   fork's `omittedFields` (incomplete streaming entries carry `[.cacheRead, .cacheCreation]` in the fork).
 - Upstream's new `ProcessEnvironmentStorageTests` walks `Sources/` and flagged fork code:
   `MachineSyncTimerInstaller.environment` stored a `[String: String]` without the `@ProcessEnvironment` wrapper.
+
+0.73.0 added two more: `CostUsageClaudeFragmentTests` "decoded cache and persistence identity…" and
+`CostUsageClaudeRowStorageTests` set `version = 4`, and the latter's "row decoding matches synthesized schema"
+compares the decoder against a synthesized row struct that must list the fork's `omit` key. The drift grep misses
+rows built through a `typealias Row = …ClaudeUsageRow`, so also read any new `Row(` in Claude cache tests.
 
 Before pushing, run the drift check from the merge branch (it reads refs, so the tree can be in any state):
 
