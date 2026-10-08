@@ -191,17 +191,27 @@ Push a `usagebar-v<version>` tag matching `USAGEBAR_VERSION` (for example
    packed tarball ([`release/smoke-cli.sh`](release/smoke-cli.sh):
    `--version`, `sync --help`, the resource bundle through the binary and the
    symlink, `config validate`; scratch `HOME`, no accounts);
-3. for a final release, builds the `.deb`/`.rpm` packages with the extension
+3. builds the GNOME extension zip,
+   `usagebar@felipearosr.github.io-<version>.shell-extension.zip`
+   ([`release/package-extension.sh`](release/package-extension.sh)): the
+   extensions.gnome.org build from
+   [`usagebar-gnome/tools/ego-zip.py`](usagebar-gnome/tools/ego-zip.py), after
+   the extension's Node tests and the EGO lint tests, with `version-name` set
+   in the packed `metadata.json` only (a pre-release's hyphen becomes a space,
+   `1.2.0 rc.1`, because extensions.gnome.org allows only letters, digits,
+   spaces and periods there). The build fails on any EGO lint error;
+4. for a final release, builds the `.deb`/`.rpm` packages with the extension
    ([`packaging/build-packages.sh`](packaging/build-packages.sh)), the CLI-only
    packages and the SRPM, and smoke-tests them and `install-cli.sh` in clean
    containers ([`packaging/tests/`](packaging/tests/)). A pre-release
    (`1.2.0-rc.1`) skips the distro packages, whose version fields can't carry
    it, and ships the tarballs only;
-4. runs the release asset verifier
+5. runs the release asset verifier
    ([`release/verify-assets.sh`](release/verify-assets.sh)) over everything
    it's about to attach: every expected asset present, every `.sha256` valid,
-   the CLI tarballs' layout, `VERSION` and architecture;
-5. only then publishes the GitHub release, marked as a pre-release for a
+   the CLI tarballs' layout, `VERSION` and architecture, and the extension
+   zip's files, UUID, `version-name` and EGO lint;
+6. only then publishes the GitHub release, marked as a pre-release for a
    semver pre-release.
 
 A dry run builds and verifies any ref without publishing; the assets land on

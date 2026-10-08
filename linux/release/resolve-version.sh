@@ -28,6 +28,11 @@
 #   cli_arches          architectures the CLI is released for
 #   cli_asset_<arch>    CLI tarball name for each of cli_arches
 #   extension_asset     GNOME extension zip name
+#   extension_version_name
+#                       the zip's metadata.json "version-name": the version
+#                       with "-" as a space (1.2.0 rc.1), since
+#                       extensions.gnome.org allows only letters, digits,
+#                       spaces and periods, 16 at most
 #   tray_asset_<arch>   tray app tarball name for each of cli_arches
 # Every asset also ships as <asset>.sha256.
 set -euo pipefail
@@ -116,6 +121,10 @@ prerelease=false
 distro_packages=true
 $prerelease && distro_packages=false
 arches=(x86_64 aarch64)
+# https://gjs.guide/extensions/overview/anatomy.html#version-name
+extension_version_name=${version//-/ }
+((${#extension_version_name} <= 16)) \
+    || fail "version $version is too long for the extension's version-name (16 characters at most)"
 
 out=$(
     printf 'tag=usagebar-v%s\n' "$version"
@@ -130,6 +139,7 @@ out=$(
         printf 'cli_asset_%s=usagebar-cli-%s-linux-%s.tar.gz\n' "$arch" "$version" "$arch"
     done
     printf 'extension_asset=usagebar@felipearosr.github.io-%s.shell-extension.zip\n' "$version"
+    printf 'extension_version_name=%s\n' "$extension_version_name"
     for arch in "${arches[@]}"; do
         printf 'tray_asset_%s=UsageBarTray-%s-linux-%s.tar.gz\n' "$arch" "$version" "$arch"
     done

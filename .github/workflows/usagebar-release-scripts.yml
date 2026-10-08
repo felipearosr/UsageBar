@@ -4,13 +4,14 @@ name: UsageBar release scripts
 # release version resolver and the metadata it reads, the release asset
 # verifier, and the CLI smoke test (against the stand-in CLI from
 # linux/packaging/tests/make-fake-tarball.sh). Runs whenever those, or the
-# release workflow, change.
+# release workflow, change. The verifier tests build the real extension zip.
 
 on:
   pull_request:
     paths:
       - 'linux/release/**'
       - 'linux/packaging/tests/make-fake-tarball.sh'
+      - 'linux/usagebar-gnome/tools/ego-zip.py'
       - '.github/workflows/release-usagebar.yml'
       - '.github/workflows/usagebar-release-scripts.yml'
   push:
@@ -18,6 +19,7 @@ on:
     paths:
       - 'linux/release/**'
       - 'linux/packaging/tests/make-fake-tarball.sh'
+      - 'linux/usagebar-gnome/tools/ego-zip.py'
       - '.github/workflows/release-usagebar.yml'
       - '.github/workflows/usagebar-release-scripts.yml'
 

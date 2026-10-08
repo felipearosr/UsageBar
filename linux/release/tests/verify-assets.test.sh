@@ -58,12 +58,41 @@ make_cli_tarball() {
     rm -rf "$stage"
 }
 
-# A passing release directory: both CLI tarballs, plus a package the
-# verifier doesn't know by name (it must still have a valid checksum).
+# The real extension zip, built once with the release's version-name.
+ext=usagebar@felipearosr.github.io-1.1.0.shell-extension.zip
+"$here/../package-extension.sh" 1.1.0 "$work/ext" "$ext" > /dev/null 2> "$work/ext.log" \
+    || { cat "$work/ext.log" >&2; echo "could not build the extension zip" >&2; exit 1; }
+
+# rezip_extension DIR CHANGE: rewrites DIR's extension zip with one change:
+# drop=PATH removes an entry, meta=JSON merges keys into metadata.json.
+rezip_extension() {
+    python3 - "$1/$ext" "$2" <<'PY'
+import json, sys, zipfile
+path, change = sys.argv[1:]
+kind, _, arg = change.partition('=')
+with zipfile.ZipFile(path) as zf:
+    files = {n: zf.read(n) for n in zf.namelist()}
+if kind == 'drop':
+    files = {n: d for n, d in files.items() if not (n == arg or n.startswith(arg + '/'))}
+elif kind == 'meta':
+    meta = json.loads(files['metadata.json'])
+    meta.update(json.loads(arg))
+    files['metadata.json'] = json.dumps(meta).encode()
+with zipfile.ZipFile(path, 'w') as zf:
+    for name, data in files.items():
+        zf.writestr(name, data)
+PY
+    (cd "$1" && sha256sum "$ext" > "$ext.sha256")
+}
+
+# A passing release directory: both CLI tarballs, the extension zip, plus a
+# package the verifier doesn't know by name (it must still have a valid
+# checksum).
 make_release() { # make_release DIR
     mkdir -p "$1"
     make_cli_tarball "$1" x86_64
     make_cli_tarball "$1" aarch64
+    cp "$work/ext/$ext" "$work/ext/$ext.sha256" "$1/"
     echo 'deb' > "$1/usagebar_1.1.0_amd64.deb"
     (cd "$1" && sha256sum usagebar_1.1.0_amd64.deb > usagebar_1.1.0_amd64.deb.sha256)
 }
@@ -145,6 +174,33 @@ d=$(fixture); cp "$d/$x86" "$d/usagebar-cli-1.0.0-linux-x86_64.tar.gz"
 (cd "$d" && sha256sum usagebar-cli-1.0.0-linux-x86_64.tar.gz > usagebar-cli-1.0.0-linux-x86_64.tar.gz.sha256)
 expect_fail "stale-version asset name" "$d" "unexpected asset name: usagebar-cli-1.0.0-linux-x86_64.tar.gz"
 
+d=$(fixture); rm "$d/$ext" "$d/$ext.sha256"
+expect_fail "missing extension zip" "$d" "missing asset: $ext"
+d=$(fixture); rezip_extension "$d" drop=schemas
+expect_fail "extension zip without the settings schema" "$d" \
+    "$ext: no settings schema XML (schemas/org.gnome.shell.extensions.usagebar.gschema.xml)"
+d=$(fixture); rezip_extension "$d" 'meta={"version-name": "1.0.0"}'
+expect_fail "extension zip with a wrong version-name" "$d" \
+    "$ext: metadata.json version-name is '1.0.0', expected '1.1.0'"
+d=$(fixture); rezip_extension "$d" 'meta={"version-name": null}'
+expect_fail "extension zip without a version-name" "$d" "metadata.json version-name is 'None', expected '1.1.0'"
+d=$(fixture); rezip_extension "$d" 'meta={"uuid": "codexbar@example.com"}'
+expect_fail "extension zip with another UUID" "$d" \
+    "metadata.json uuid is 'codexbar@example.com', expected 'usagebar@felipearosr.github.io'"
+d=$(fixture); rezip_extension "$d" drop=extension.js
+expect_fail "extension zip without extension.js" "$d" "$ext: no extension.js"
+d=$(fixture); rezip_extension "$d" drop=prefs.js
+expect_fail "extension zip without prefs.js" "$d" "$ext: no prefs.js"
+d=$(fixture); rezip_extension "$d" drop=icons
+expect_fail "extension zip without icons" "$d" "$ext: no icons"
+d=$(fixture); rezip_extension "$d" 'meta={"version": 7}'
+expect_fail "extension zip failing the EGO lint" "$d" "$ext: fails the extensions.gnome.org lint"
+d=$(fixture); echo junk > "$d/$ext"; (cd "$d" && sha256sum "$ext" > "$ext.sha256")
+expect_fail "extension zip isn't a zip" "$d" "$ext: not a readable zip"
+d=$(fixture); old=usagebar@felipearosr.github.io-1.0.0.shell-extension.zip
+cp "$d/$ext" "$d/$old"; (cd "$d" && sha256sum "$old" > "$old.sha256")
+expect_fail "stale-version extension zip name" "$d" "unexpected asset name: $old"
+
 d=$(fixture); rm "$d/$x86" "$d/$x86.sha256"; printf '%064d  %s\n' 0 "$arm" > "$d/$arm.sha256"
 "$verifier" "$work/resolved" "$d" > "$work/out" 2>&1 || true
 if grep -Fq "missing asset: $x86" "$work/out" && grep -Fq "checksum mismatch: $arm" "$work/out" \
@@ -172,7 +228,7 @@ if [[ $status -eq 2 ]]; then pass "missing argument is a usage error"; else flun
 printf 'tag=usagebar-v1.1.0\n' > "$work/partial"
 status=0
 "$verifier" "$work/partial" "$(fixture)" > "$work/out" 2>&1 || status=$?
-if [[ $status -eq 2 ]] && grep -Fq "has no cli_version" "$work/out"; then
+if [[ $status -eq 2 ]] && grep -Fq "has no version" "$work/out"; then
     pass "incomplete resolved values are rejected"
 else
     flunk "partial resolved values: status $status: $(cat "$work/out")"
