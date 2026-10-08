@@ -22,6 +22,8 @@
 #     metadata.json has the asset's UUID and "version-name" says
 #     extension_version_name; and it passes the extensions.gnome.org lint
 #     (linux/usagebar-gnome/tools/ego-zip.py) with no errors;
+#   - the provider logo pack is JSON the extension accepts for this version
+#     (logopack.js parseLogoPack, run with node);
 #   - each tray tarball holds one directory named after the asset with
 #     codexbar-tray (an executable ELF for its arch whose --version line says
 #     "codexbar-tray <version>"), LICENSE and README.md, nothing else.
@@ -58,7 +60,7 @@ require() {
     done
 }
 value() { printf '%s' "${resolved[$1]}"; }
-require tag version cli_version cli_arches extension_asset extension_version_name
+require tag version cli_version cli_arches extension_asset extension_version_name logos_asset
 read -r -a cli_arches <<< "$(value cli_arches)"
 for arch in "${cli_arches[@]}"; do require "cli_asset_$arch" "tray_asset_$arch"; done
 
@@ -177,6 +179,27 @@ PY
     fi
 }
 
+# The extension downloads this pack on the user's click and runs the same check.
+check_logo_pack() { # check_logo_pack ASSET
+    local asset=$1 why
+    if ! why=$(node --input-type=module - "$here/../usagebar-gnome/usagebar@felipearosr.github.io/logopack.js" \
+        "$dir/$asset" "$(value version)" 2>&1 <<'JS'
+import fs from 'node:fs';
+import {pathToFileURL} from 'node:url';
+const [module, pack, version] = process.argv.slice(2);
+const {parseLogoPack} = await import(pathToFileURL(module).href);
+try {
+    parseLogoPack(fs.readFileSync(pack, 'utf8'), version);
+} catch (e) {
+    console.error(e.message);
+    process.exit(1);
+}
+JS
+    ); then
+        problem "$asset: the extension would reject it: $why"
+    fi
+}
+
 # check_elf ASSET FILE ARCH NAME: FILE is an ELF binary for ARCH.
 check_elf() {
     local magic machine
@@ -240,10 +263,12 @@ for arch in "${cli_arches[@]}"; do
     expected[$(value "tray_asset_$arch")]="check_tray_tarball $arch"
 done
 expected[$(value extension_asset)]=check_extension_zip
+expected[$(value logos_asset)]=check_logo_pack
 
 # Name patterns of every asset kind the resolver names. A file matching one
 # that isn't expected is misnamed or from another version.
-known_patterns=('usagebar-cli-*-linux-*.tar.gz' '*.shell-extension.zip' 'UsageBarTray-*-linux-*.tar.gz')
+known_patterns=('usagebar-cli-*-linux-*.tar.gz' '*.shell-extension.zip' 'UsageBarTray-*-linux-*.tar.gz'
+    'usagebar-provider-icons-*.json')
 
 # Presence and per-asset checks.
 for asset in "${!expected[@]}"; do

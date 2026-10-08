@@ -136,12 +136,54 @@ Set `USAGEBAR_HIDE_PROVIDER_ICONS=1` to see that build's look with the logos
 in place, e.g. `USAGEBAR_HIDE_PROVIDER_ICONS=1 ./linux/run-dev.sh`. The UI
 smoke test runs once with logos and once with them hidden.
 
+### Downloading the logos
+
+A build without logos offers to download them: a card above the All tab
+("Show provider logos?", with Download and Not now) and Settings → General →
+Provider logos (Download, Update, Remove). Nothing is fetched until the user
+clicks Download, and an extension update never fetches on its own; Settings
+shows when the installed logos are from an older release.
+
+- The download is the release's `usagebar-provider-icons-<version>.json` and
+  its `.sha256`, from the release the extension came from (metadata.json
+  `version-name`). `linux/release/package-logos.sh` builds the pack from
+  `icons/ProviderIcon-*.svg`.
+- `logopack.js` checks it: the checksum, the format and version, provider
+  ids, and plain SVGs only (no scripts, event handlers, foreign content,
+  entities or links outside the file). The release build and
+  `verify-assets.sh` run the same check.
+- `logoinstall.js` writes the logos to `~/.local/share/usagebar/icons/`,
+  outside the extension directory that an update replaces, and swaps the new
+  directory in only once every file is written. The `logo-pack-version`
+  setting tells the extension and an open Settings window to redraw.
+- Logos shipped in `icons/` win over downloaded ones.
+- "Not now" sets `logo-prompt-dismissed`; Settings still offers the download.
+
+To try the download from a checkout, build a pack, serve it, and name its
+version:
+
+```bash
+linux/release/package-logos.sh 0.0.0-dev /tmp/logo-pack usagebar-provider-icons-0.0.0-dev.json
+python3 -m http.server --bind 127.0.0.1 --directory /tmp/logo-pack 8123 &
+USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_LOGO_PACK_BASE_URL=http://127.0.0.1:8123 \
+    USAGEBAR_LOGO_PACK_VERSION=0.0.0-dev ./linux/run-dev.sh
+```
+
+`USAGEBAR_LOGO_PACK_VERSION` only applies to a checkout (no `version-name`)
+with `USAGEBAR_LOGO_PACK_BASE_URL` set. `linux/test-devkit-ui.sh` runs this
+download as its last pass, clicking Not now and then Download.
+
+
 ## Files
 
 - `usagebar@felipearosr.github.io/extension.js` — everything: serve
   supervisor (Gio.Subprocess), Soup 3 HTTP client, stale-merge (port of the
   Rust `merge_stale`), panel indicator + popover UI (St widgets), quota
   notifications.
+- `usagebar@felipearosr.github.io/logopack.js` — the provider logo pack:
+  where it is downloaded from, its checks, and what the popover card and
+  Settings row offer (pure; tested in `tests/logopack.test.mjs`).
+  `logoinstall.js` downloads, installs and removes it.
 - `usagebar@felipearosr.github.io/brandtext.js` — brand-colored provider
   names for builds without logos: contrast-safe tints of each provider's
   color (pure; tested in `tests/brandtext.test.mjs`).

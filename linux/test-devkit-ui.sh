@@ -5,6 +5,9 @@
 # CODEXBAR_BIN=linux/usagebar-gnome/tests/stub-codexbar runs against an offline
 # stub CLI; add STUB_CODEXBAR_SYNC=0 for one without Machine Sync (upstream's).
 # USAGEBAR_UI_SMOKE_EXPECT_SYNC=0|1 asserts which of the two the run sees.
+# USAGEBAR_UI_SMOKE_LOGOS=1, with USAGEBAR_LOGO_PACK_BASE_URL and
+# USAGEBAR_LOGO_PACK_VERSION, clicks through the offer to download provider
+# logos; the script's own last run serves a pack built from this checkout.
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,9 +23,12 @@ assert_script="$repo_dir/linux/usagebar-gnome/tests/assert-ui-smoke.mjs"
 mkdir -p "$artifact_dir"
 rm -f "$result_path" "$screenshot_path" # a reused dir must not pass on a stale result
 glib-compile-schemas "$extension_dir/schemas"
-mkdir -p "$HOME/.local/share/gnome-shell/extensions"
-ln -sfn "$extension_dir" \
-    "$HOME/.local/share/gnome-shell/extensions/usagebar@felipearosr.github.io"
+# A data directory of its own: it holds the extension link, and no logo pack
+# downloaded on this machine (~/.local/share/usagebar/icons) leaks in.
+export XDG_DATA_HOME=$artifact_dir/data
+rm -rf "$XDG_DATA_HOME"
+mkdir -p "$XDG_DATA_HOME/gnome-shell/extensions"
+ln -sfn "$extension_dir" "$XDG_DATA_HOME/gnome-shell/extensions/usagebar@felipearosr.github.io"
 printf 'user-db:codexbar_ui_smoke\n' > "$dconf_profile"
 
 if ! GSETTINGS_SCHEMA_DIR="$extension_dir/schemas" dbus-run-session -- bash -c '
@@ -103,4 +109,22 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
         STUB_CODEXBAR_SYNC=0 USAGEBAR_UI_SMOKE_EXPECT_SYNC=0 \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/no-machine-sync"
+fi
+
+# The extensions.gnome.org build offers to download the logos it leaves out:
+# serve a pack built from this checkout and click through the offer.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    printf '\nRe-running the UI smoke to download the provider logos\n'
+    pack_dir=$artifact_dir/logo-pack-assets
+    pack_version=0.0.0-smoke
+    "$repo_dir/linux/release/package-logos.sh" "$pack_version" "$pack_dir" \
+        "usagebar-provider-icons-$pack_version.json" > /dev/null
+    port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+    python3 -m http.server --bind 127.0.0.1 --directory "$pack_dir" "$port" \
+        > "$artifact_dir/logo-pack-server.log" 2>&1 &
+    server_pid=$!
+    trap 'kill "$server_pid" 2> /dev/null || true' EXIT
+    USAGEBAR_LOGO_PACK_BASE_URL=http://127.0.0.1:$port USAGEBAR_LOGO_PACK_VERSION=$pack_version \
+        USAGEBAR_UI_SMOKE_LOGOS=1 USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
+        "$0" "$artifact_dir/logo-download"
 fi

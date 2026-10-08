@@ -74,7 +74,8 @@ then tag the final release from the same commit or a later one.
 - [ ] The run publishes a GitHub **pre-release**. Pre-releases skip the
   distro packages: no `.deb`, `.rpm`, SRPM or AUR bump, because those version
   fields can't hold `-rc.N`. A pre-release ships the CLI and tray tarballs,
-  the extension zip, their `.sha256` files and the notes.
+  the extension zip, the provider logo pack, their `.sha256` files and the
+  notes.
 
 ## 4. Check the candidate on a clean machine
 
@@ -91,6 +92,9 @@ Use a Fedora GNOME machine with no checkout and no Swift toolchain (#49):
   (`gnome-extensions install --force usagebar@felipearosr.github.io-<version>-rc.N.shell-extension.zip`),
   log out and back in, then enable it. It shows usage, and Settings → Machine
   Sync loads without an "Unknown command" error.
+- [ ] The popover offers "Show provider logos?". Download puts logos on the
+  panel chips and the All tab, and Settings → General → Provider logos says
+  "Downloaded (version <version>-rc.N)".
 - [ ] Run the tray tarball on a session without GNOME Shell, or note that
   check as skipped.
 - [ ] File each problem as a new ticket under #36. Fix it, then repeat from

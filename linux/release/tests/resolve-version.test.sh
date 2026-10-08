@@ -76,7 +76,8 @@ cli_asset_aarch64=usagebar-cli-1.1.0-linux-aarch64.tar.gz
 extension_asset=usagebar@felipearosr.github.io-1.1.0.shell-extension.zip
 extension_version_name=1.1.0
 tray_asset_x86_64=UsageBarTray-1.1.0-linux-x86_64.tar.gz
-tray_asset_aarch64=UsageBarTray-1.1.0-linux-aarch64.tar.gz" \
+tray_asset_aarch64=UsageBarTray-1.1.0-linux-aarch64.tar.gz
+logos_asset=usagebar-provider-icons-1.1.0.json" \
     --metadata "$release" usagebar-v1.1.0
 
 expect_output "no tag (dry run) resolves from the metadata alone" \
@@ -92,6 +93,8 @@ expect_key "pre-release extension version-name has no hyphen" \
     extension_version_name '1.2.0 rc.1' --metadata "$rc" usagebar-v1.2.0-rc.1
 expect_key "every hyphen becomes a space in the version-name" \
     extension_version_name '2.0.0 beta 2' --metadata "$(metadata 2.0.0-beta-2 0.72.0)"
+expect_key "the logo pack carries the full semver" \
+    logos_asset usagebar-provider-icons-1.2.0-rc.1.json --metadata "$rc" usagebar-v1.2.0-rc.1
 expect_key "alphanumeric pre-release" prerelease true --metadata "$(metadata 2.0.0-beta 0.72.0)" usagebar-v2.0.0-beta
 
 expect_key "the checked-in metadata resolves" tag "usagebar-v$(sed -n 's/^USAGEBAR_VERSION=//p' "$here/../usagebar-release.txt")"

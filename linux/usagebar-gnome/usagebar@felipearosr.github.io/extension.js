@@ -46,7 +46,15 @@ import {
     summarizeCostRange,
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
-import {machineDetailView, machinesView, nextPushDelaySecs, planSyncTick} from './machinesync.js';
+import {
+    machineDetailView,
+    machinesView,
+    nextPushDelaySecs,
+    planSyncTick,
+    scopedProviderKpis,
+    scopedSpend,
+    spendScopeOptions,
+} from './machinesync.js';
 import {
     decodeCatalog,
     encodeCatalog,
@@ -56,6 +64,14 @@ import {
     withoutHiddenModels,
 } from './modelprefs.js';
 import {INSTALL_URL, MISSING_CLI} from './onboarding.js';
+import {LOGO_PROMPT, wantsLogoPrompt} from './logopack.js';
+import {
+    downloadLogoPack,
+    hasBundledLogos,
+    installedLogoPack,
+    logoPackDir,
+    logoPackVersion,
+} from './logoinstall.js';
 import {findCodexbar, withClaudeOAuth} from './cli.js';
 import {featureState, readReport, syncProbeFromHttpStatus} from './clicompat.js';
 
@@ -1254,16 +1270,22 @@ function cliVersion(binary) {
 
 // Development checkouts carry provider logos in icons/. The build shipped to
 // extensions.gnome.org leaves them out (third-party trademarks), and
-// USAGEBAR_HIDE_PROVIDER_ICONS=1 simulates that for testing.
+// USAGEBAR_HIDE_PROVIDER_ICONS=1 simulates that for testing. Either way a
+// logo pack the user downloaded (logoinstall.js) fills in.
 function providerLogo(dir, provider) {
-    if (!dir || !provider || GLib.getenv('USAGEBAR_HIDE_PROVIDER_ICONS') === '1')
+    if (!dir || !provider)
         return null;
-    const file = dir.get_child('icons').get_child(`ProviderIcon-${provider}.svg`);
-    try {
-        return file.query_exists(null) ? new Gio.FileIcon({file}) : null;
-    } catch {
-        return null;
+    const bundled = GLib.getenv('USAGEBAR_HIDE_PROVIDER_ICONS') === '1' ? null : dir.get_child('icons');
+    for (const icons of [bundled, Gio.File.new_for_path(logoPackDir())]) {
+        const file = icons?.get_child(`ProviderIcon-${provider}.svg`);
+        try {
+            if (file?.query_exists(null))
+                return new Gio.FileIcon({file});
+        } catch {
+            // try the next place
+        }
     }
+    return null;
 }
 
 // The color text on `actor` sits on (see surfaceColor); `fallback` when the
@@ -1460,7 +1482,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(item);
             return item;
         };
-        this._settingsItem = footerItem('Settings…', 'emblem-system-symbolic', 'Ctrl+,');
+        this._settingsItem = footerItem('Settings…', 'org.gnome.Settings-symbolic', 'Ctrl+,');
         this._aboutItem = footerItem('About UsageBar', 'help-about-symbolic');
         this._quitItem = footerItem('Quit', 'application-exit-symbolic', 'Ctrl+Q');
 
@@ -1527,6 +1549,15 @@ class UsageBarIndicator extends PanelMenu.Button {
 
     _panelIcon(provider) {
         return this._panelIconCache.get(provider);
+    }
+
+    // Logos appeared or went away: forget the lookups and drop the chips so
+    // the next _setPanelText builds them with (or without) a logo.
+    resetLogos() {
+        this._panelIconCache.clear();
+        for (const entry of this._panelEntries.values())
+            entry.box.destroy();
+        this._panelEntries.clear();
     }
 
     _newPanelEntry(chip) {
@@ -1730,6 +1761,9 @@ export default class UsageBarExtension extends Extension {
         this._namesVersion = 0;
         this._selectedProvider = null;
         this._selectedMachine = null;
+        // The Machine whose spend the Providers tab shows (see
+        // _scopedSpend): null for this Machine. Kept across menu opens.
+        this._spendScope = null;
         this._notified = new Map();
         this._costs = null;
         this._costVersion = 0;
@@ -1769,6 +1803,15 @@ export default class UsageBarExtension extends Extension {
         this._windowCatalogSignature = null;
         this._uiSmokeTimeoutIds = [];
         this._providerIconCache = new LifetimeLookupCache(provider => providerLogo(this.dir, provider));
+        // Provider logos: shipped with this install, downloaded on the user's
+        // click (logopack.js), or neither.
+        this._logos = {
+            bundled: hasBundledLogos(this.dir),
+            installed: installedLogoPack(),
+            version: logoPackVersion(this.metadata),
+            busy: false,
+            error: null,
+        };
         this._session = new Soup.Session({timeout: REQUEST_TIMEOUT_SECS + 10});
         this._cancellable = new Gio.Cancellable();
         this._renderScheduler = new RenderScheduler(
@@ -1817,7 +1860,7 @@ export default class UsageBarExtension extends Extension {
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
             'machine-colors',
-            'status-scopes', 'status-checks-enabled',
+            'status-scopes', 'status-checks-enabled', 'logo-prompt-dismissed',
         ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
             if (generation !== this._generation)
@@ -1856,6 +1899,10 @@ export default class UsageBarExtension extends Extension {
             }
             if (key === 'app-theme')
                 this._indicator?.setAppTheme(DISPLAY.appTheme);
+            // Settings, or this extension's own download, installed or
+            // removed the logo pack.
+            if (key === 'logo-pack-version')
+                this._logosChanged();
             if (DISPLAY_KEYS.has(key))
                 this._requestRender();
         });
@@ -1887,6 +1934,8 @@ export default class UsageBarExtension extends Extension {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
                 this._selectedMachine = null;
+                if (this._overviewView)
+                    this._overviewView.scopeOpen = false;
                 this._view = 'providers';
                 this._checkForCli();
                 this._syncTick();
@@ -2074,12 +2123,14 @@ export default class UsageBarExtension extends Extension {
         this._costOverviewCache = null;
         this._status = null;
         this._sync = null;
+        this._spendScope = null;
         this._machinesRenderKey = null;
         this._overviewView = null;
         this._popupView = null;
         this._detailRenderKey = null;
         this._providerIconCache?.clear();
         this._providerIconCache = null;
+        this._logos = null;
     }
 
     _destroyOverviewView() {
@@ -2096,6 +2147,7 @@ export default class UsageBarExtension extends Extension {
         }
         view.rows.clear();
         view.emptyLabel.destroy();
+        view.promptHost.destroy_all_children();
         view.summaryHost.destroy_all_children();
         view.container.destroy();
         this._overviewView = null;
@@ -2293,6 +2345,30 @@ export default class UsageBarExtension extends Extension {
             else
                 this._syncTick();
         });
+    }
+
+    _syncPayload() {
+        return this._syncSupport() === 'needs-upgrade' ? null : this._sync?.payload;
+    }
+
+    // Spend of the Machine the Providers tab follows (scopedSpend), or null
+    // while it shows this Machine's own cost reports. A Machine that left
+    // the Sync Group, or a Sync Group that's gone, falls back to this one.
+    _scopedSpend() {
+        if (!this._spendScope)
+            return null;
+        const payload = this._syncPayload();
+        const spend = scopedSpend(payload, this._spendScope, {colors: DISPLAY.machineColors});
+        if (!spend && (!payload?.paired || payload.status))
+            this._spendScope = null;
+        return spend;
+    }
+
+    // `id` is a Machine id, 'all', or null for this Machine.
+    _setSpendScope(id) {
+        const thisMachine = (this._syncPayload()?.status?.machines ?? [])
+            .find(machine => machine.isThisMachine)?.machineId;
+        this._spendScope = id && id !== thisMachine ? id : null;
     }
 
     _machinesTabVisible() {
@@ -2853,6 +2929,80 @@ export default class UsageBarExtension extends Extension {
                         });
                     });
                 };
+                // Opening a Machine points the Providers tab's spend at it;
+                // its picker switches Machines and back to this one.
+                const labelsOf = actor => actor ? [
+                    ...(actor instanceof St.Label ? [actor.text] : []),
+                    ...actor.get_children().flatMap(labelsOf),
+                ] : [];
+                const openPicker = () => this._overviewView?.scopeHost._usagebarScopeToggle?.emit('clicked', 1);
+                const pickStep = next => {
+                    later(0, () => {
+                        let buttons;
+                        try {
+                            buttons = this._overviewView?.scopeHost._usagebarScopeButtons ?? [];
+                            assertions.push(assertion('Providers tab has a Machine picker',
+                                buttons.length === 3, {actual: buttons.length}));
+                            assertions.push(painted('Machine dropdown list is painted', buttons[0]));
+                            assertions.push(assertion('opening All Machines selects All in the picker',
+                                !!buttons[2]?.has_style_class_name('selected')));
+                            const summary = labelsOf(this._overviewView?.summaryButton);
+                            assertions.push(assertion('spend summary follows All Machines',
+                                summary.some(text => text.includes('All Machines')) &&
+                                summary.includes('$10'), {summary}));
+                        } catch (error) {
+                            done(error);
+                            return;
+                        }
+                        buttons[1].emit('clicked', 1);
+                        later(300, () => {
+                            try {
+                                const summary = labelsOf(this._overviewView?.summaryButton);
+                                assertions.push(assertion('picking qa-desk shows only its spend',
+                                    summary.some(text => text.includes('qa-desk')) &&
+                                    summary.includes('$4.00') && !summary.some(text => text.includes('Claude')),
+                                    {summary}));
+                            } catch (error) {
+                                done(error);
+                                return;
+                            }
+                            assertions.push(assertion('picking a Machine closes the dropdown',
+                                !this._overviewView?.scopeHost._usagebarScopeButtons.length));
+                            capture('providers-scoped.png', () => {
+                                openPicker();
+                                this._overviewView.scopeHost._usagebarScopeButtons[0].emit('clicked', 1);
+                                later(300, () => {
+                                    try {
+                                        const summary = labelsOf(this._overviewView?.summaryButton);
+                                        // This Machine's own reports, which may have no priced cost.
+                                        assertions.push(assertion('picking this Machine restores its cost reports',
+                                            this._spendScope === null &&
+                                            !summary.some(text => text.includes('qa-')), {summary}));
+                                    } catch (error) {
+                                        done(error);
+                                        return;
+                                    }
+                                    this._indicator._tabButtons.get('machines').emit('clicked', 1);
+                                    later(200, next);
+                                });
+                            });
+                        });
+                    });
+                };
+                const scopeStep = next => {
+                    this._indicator._tabButtons.get('providers').emit('clicked', 1);
+                    later(300, () => {
+                        try {
+                            assertions.push(painted('Machine dropdown is painted',
+                                this._overviewView?.scopeHost._usagebarScopeToggle));
+                        } catch (error) {
+                            done(error);
+                            return;
+                        }
+                        openPicker();
+                        later(300, () => pickStep(next));
+                    });
+                };
                 const staleStep = () => {
                     this._sync.payload = {...this._sync.payload, error: "Couldn't reach the Sync Server"};
                     this._render();
@@ -2894,7 +3044,7 @@ export default class UsageBarExtension extends Extension {
                             'All Machines', 'machines-all.png', () => later(200, () => {
                                 assertions.push(assertion('back returns to the Machines list',
                                     machinesBox()?._usagebarMachineCards.size === 2));
-                                staleStep();
+                                scopeStep(staleStep);
                             })));
                 });
             });
@@ -3133,6 +3283,97 @@ export default class UsageBarExtension extends Extension {
             });
         };
 
+        // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
+        // locally (test-devkit-ui.sh): the All tab offers the download, "Not
+        // now" hides the offer, and Download installs the logos, which the
+        // panel and the All tab then draw.
+        const logoSmoke = assertions => {
+            const promptRefs = () => descendants(this._indicator._detailBox)
+                .find(actor => actor._usagebarLogoPrompt)?._usagebarLogoPrompt ?? null;
+            const done = (error = null) => {
+                this._panelFixture = null;
+                finish(assertions, error);
+            };
+            const step = (delay, callback) => later(delay, () => {
+                try {
+                    callback();
+                } catch (error) {
+                    done(error);
+                }
+            });
+            const packDir = Gio.File.new_for_path(logoPackDir());
+            const fromPack = actor => isLogo(actor) &&
+                actor.gicon.get_file().get_parent()?.equal(packDir);
+            assertions.push(assertion('this build ships no logos', !this._logos.bundled));
+            assertions.push(assertion('no logo pack is installed yet', this._logos.installed === null,
+                {actual: this._logos.installed}));
+            assertions.push(assertion('a release version to download from', !!this._logos.version,
+                {actual: this._logos.version}));
+            const waitForDownload = triesLeft => step(200, () => {
+                if (this._logos.busy && triesLeft > 0) {
+                    waitForDownload(triesLeft - 1);
+                    return;
+                }
+                assertions.push(assertion('the download succeeds', !this._logos.busy && !this._logos.error,
+                    {error: this._logos.error}));
+                assertions.push(assertion('the pack is installed', this._logos.installed === this._logos.version,
+                    {actual: this._logos.installed}));
+                assertions.push(assertion('the setting names the pack',
+                    this._settings.get_string('logo-pack-version') === this._logos.version));
+                step(300, () => {
+                    const box = this._indicator._detailBox;
+                    assertions.push(assertion('the offer is gone', promptRefs() === null));
+                    for (const provider of ['claude', 'codex']) {
+                        const mark = this._indicator._panelEntries.get(provider)?.box.get_first_child();
+                        assertions.push(assertion(`${provider} panel chip shows the downloaded logo`,
+                            fromPack(mark)));
+                    }
+                    assertions.push(assertion('All tab rows show the downloaded logos',
+                        descendants(box).filter(fromPack).length >= 2));
+                    capture('logos-downloaded.png', () => done());
+                });
+            });
+            this._indicator.menu.open();
+            step(500, () => {
+                // Opening refetches from the CLI; install the fixtures after that.
+                this._rows = [
+                    {provider: 'claude', usage: {primary: {usedPercent: 42}}},
+                    {provider: 'codex', usage: {primary: {usedPercent: 73}}},
+                ];
+                // Pinned chips, so a refetch can't take them away mid-run.
+                this._panelFixture = this._rows.map(row => ({
+                    provider: row.provider, percent: 40, hasUsage: true, text: '40%', sev: 'ok',
+                    mode: 'ring-percent',
+                }));
+                this._render();
+                step(300, () => {
+                    const refs = promptRefs();
+                    assertions.push(painted('logo offer title is painted', refs?.title));
+                    assertions.push(assertion('logo offer title text', refs?.title.text === LOGO_PROMPT.title,
+                        {actual: refs?.title.text ?? null}));
+                    assertions.push(painted('Download button is painted', refs?.download));
+                    assertions.push(painted('Not now button is painted', refs?.dismiss));
+                    capture('logo-offer.png', () => step(0, () => {
+                        refs.dismiss.emit('clicked', 1);
+                        step(300, () => {
+                            assertions.push(assertion('Not now hides the offer', promptRefs() === null));
+                            assertions.push(assertion('Not now is remembered',
+                                this._settings.get_boolean('logo-prompt-dismissed')));
+                            this._settings.set_boolean('logo-prompt-dismissed', false);
+                            step(300, () => {
+                                const again = promptRefs();
+                                assertions.push(assertion('the offer is back once reset', again !== null));
+                                again.download.emit('clicked', 1);
+                                assertions.push(assertion('Download shows progress',
+                                    this._logos.busy, {actual: this._logos.busy}));
+                                waitForDownload(50);
+                            });
+                        });
+                    }));
+                });
+            });
+        };
+
         later(800, () => {
             const menuLabels = this._indicator.menu._getMenuItems()
                 .map(item => item.label?.text ?? '');
@@ -3142,6 +3383,10 @@ export default class UsageBarExtension extends Extension {
             ];
             if (this._cliMissing) {
                 missingCliSmoke(assertions);
+                return;
+            }
+            if (GLib.getenv('USAGEBAR_UI_SMOKE_LOGOS') === '1') {
+                logoSmoke(assertions);
                 return;
             }
             steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
@@ -3366,8 +3611,7 @@ export default class UsageBarExtension extends Extension {
             : this._lastFetchAt ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
                 : 'fetching…');
 
-        const machines = machinesView(
-            this._syncSupport() === 'needs-upgrade' ? null : this._sync?.payload, {
+        const machines = machinesView(this._syncPayload(), {
             now: Date.now(),
             fetchError: this._sync?.fetchError,
             colors: DISPLAY.machineColors,
@@ -3445,6 +3689,114 @@ export default class UsageBarExtension extends Extension {
         this._indicator?.menu.close();
     }
 
+    // ----- provider logos -----
+
+    // The offer to download provider logos (logopack.js), above the All tab
+    // while this install has none. "Not now" hides it for good; Settings
+    // still offers the download.
+    _renderLogoPrompt(view) {
+        const logos = this._logos;
+        const wanted = !!logos && wantsLogoPrompt({
+            ...logos,
+            dismissed: this._settings.get_boolean('logo-prompt-dismissed'),
+        });
+        const key = wanted ? `${logos.busy}|${logos.error ?? ''}` : null;
+        if (view.promptKey === key)
+            return;
+        view.promptKey = key;
+        view.promptHost.destroy_all_children();
+        if (!wanted)
+            return;
+
+        const box = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: 'usagebar-onboarding usagebar-logo-prompt',
+        });
+        const title = new St.Label({text: LOGO_PROMPT.title, style_class: 'usagebar-card-title'});
+        const body = new St.Label({text: LOGO_PROMPT.body, style_class: 'usagebar-dim'});
+        body.clutter_text.line_wrap = true;
+        box.add_child(title);
+        box.add_child(body);
+        let error = null;
+        if (logos.error) {
+            error = new St.Label({text: LOGO_PROMPT.failed(logos.error), style_class: 'usagebar-banner'});
+            error.clutter_text.line_wrap = true;
+            box.add_child(error);
+        }
+        const actions = new St.BoxLayout({style_class: 'usagebar-banner-actions usagebar-logo-prompt-actions'});
+        const download = new St.Button({
+            label: logos.busy ? LOGO_PROMPT.downloading : LOGO_PROMPT.download,
+            can_focus: true,
+            reactive: !logos.busy,
+            style_class: 'usagebar-btn usagebar-onboarding-btn',
+        });
+        download.connect('clicked', () => this._downloadLogos());
+        const dismiss = new St.Button({
+            label: LOGO_PROMPT.dismiss,
+            can_focus: true,
+            reactive: !logos.busy,
+            style_class: 'usagebar-btn usagebar-onboarding-btn',
+        });
+        dismiss.connect('clicked', () => this._settings.set_boolean('logo-prompt-dismissed', true));
+        actions.add_child(download);
+        actions.add_child(dismiss);
+        box.add_child(actions);
+        box._usagebarLogoPrompt = {title, body, error, download, dismiss};
+        view.promptHost.add_child(box);
+        view.promptHost.add_child(new St.Widget({
+            style_class: 'usagebar-separator usagebar-logo-prompt-sep',
+            height: 1,
+            x_expand: true,
+        }));
+    }
+
+    async _downloadLogos() {
+        const logos = this._logos;
+        if (!logos || logos.busy || !logos.version)
+            return;
+        const generation = this._generation;
+        logos.busy = true;
+        logos.error = null;
+        this._requestRender();
+        try {
+            await downloadLogoPack(this._session, logos.version, this._cancellable);
+        } catch (e) {
+            if (generation !== this._generation)
+                return;
+            logos.busy = false;
+            logos.error = e.message;
+            this._requestRender();
+            return;
+        }
+        if (generation !== this._generation)
+            return;
+        logos.busy = false;
+        // Writing the key runs _logosChanged here and in an open Settings
+        // window; an unchanged key (the pack was deleted by hand and
+        // downloaded again) doesn't emit, so refresh directly.
+        if (this._settings.get_string('logo-pack-version') === logos.version)
+            this._logosChanged();
+        else
+            this._settings.set_string('logo-pack-version', logos.version);
+    }
+
+    // Logos appeared or went away: look them up again and rebuild every
+    // view that draws them.
+    _logosChanged() {
+        if (!this._logos)
+            return;
+        this._logos.installed = installedLogoPack();
+        this._providerIconCache?.clear();
+        this._indicator?.resetLogos();
+        this._destroyOverviewView();
+        this._popupView = null;
+        this._detailRenderKey = null;
+        this._machinesRenderKey = null;
+        this._popupDirty = true;
+        this._requestRender();
+    }
+
     // Machines tab, laid out like Providers: an All Machines summary and one
     // row per Machine in the Sync Group. Clicking either opens its detail —
     // Spend, a daily chart and the provider/model breakdown — for that
@@ -3461,8 +3813,9 @@ export default class UsageBarExtension extends Extension {
             if (!detailView)
                 this._selectedMachine = null; // it left the Sync Group
         }
+        const scope = this._scopedSpend();
         const key = JSON.stringify({view, detailView, colors: detailView ? DISPLAY.modelColors : null,
-            ranked: detailView ? DISPLAY.knownModels : null});
+            ranked: detailView ? DISPLAY.knownModels : null, scope: scope?.id ?? null});
         const popupView = detailView ? `machine:${detailView.id}` : 'machines';
         if (this._popupView === popupView && this._machinesRenderKey === key)
             return;
@@ -3513,7 +3866,10 @@ export default class UsageBarExtension extends Extension {
                 }));
             }
             if (view.total && view.machines.length) {
-                content.add_child(this._buildMachinesSummary(view));
+                const summary = this._buildMachinesSummary(view);
+                if (scope?.all)
+                    summary.add_style_class_name('usagebar-machine-row-scoped');
+                content.add_child(summary);
                 content.add_child(new St.Widget({
                     style_class: 'usagebar-separator usagebar-row-sep',
                     height: 1,
@@ -3529,6 +3885,8 @@ export default class UsageBarExtension extends Extension {
                     }));
                 }
                 const row = this._buildMachineRow(machine);
+                if (scope && !scope.all ? scope.id === machine.id : !scope && machine.thisMachine)
+                    row.add_style_class_name('usagebar-machine-row-scoped');
                 refs.set(machine.id, row);
                 content.add_child(row);
             });
@@ -3539,7 +3897,8 @@ export default class UsageBarExtension extends Extension {
                 }));
             }
             content.add_child(new St.Label({
-                text: 'Cost on the Providers tab covers this Machine only.',
+                text: scope ? `The Providers tab shows ${scope.name}'s spend.`
+                    : 'Cost on the Providers tab covers this Machine only.',
                 style_class: 'usagebar-dim usagebar-machines-note',
             }));
         }
@@ -3552,8 +3911,12 @@ export default class UsageBarExtension extends Extension {
         this._machinesRenderKey = key;
     }
 
+    // Opening a Machine (or All Machines) also points the Providers tab's
+    // spend at it; going back keeps that choice.
     _selectMachine(id) {
         this._selectedMachine = id;
+        if (id)
+            this._setSpendScope(id);
         this._render();
     }
 
@@ -3924,6 +4287,8 @@ export default class UsageBarExtension extends Extension {
             scope,
             status?.fetchedAt ?? 0,
             costVersion,
+            JSON.stringify(this._scopedSpend()?.providers.find(p => p.provider === provider) ?? null),
+            this._spendScope ?? '',
             this._modelPrefsKey(provider),
             localDateKey(),
             timeBucket,
@@ -3973,6 +4338,10 @@ export default class UsageBarExtension extends Extension {
             const container = new St.BoxLayout({vertical: true, x_expand: true});
             view = {
                 container,
+                promptHost: new St.BoxLayout({vertical: true, x_expand: true}),
+                promptKey: null,
+                scopeHost: new St.BoxLayout({vertical: true, x_expand: true}),
+                scopeKey: null,
                 summaryHost: new St.BoxLayout({vertical: true, x_expand: true}),
                 rowsBox: new St.BoxLayout({vertical: true, x_expand: true}),
                 emptyLabel: new St.Label({
@@ -3983,10 +4352,13 @@ export default class UsageBarExtension extends Extension {
                 summaryButton: null,
                 summaryKey: null,
             };
+            container.add_child(view.promptHost);
+            container.add_child(view.scopeHost);
             container.add_child(view.summaryHost);
             container.add_child(view.rowsBox);
             this._overviewView = view;
         }
+        this._renderLogoPrompt(view);
 
         // Remove a detail card while keeping the overview container and all
         // its provider rows alive for an immediate back/reopen.
@@ -3998,13 +4370,16 @@ export default class UsageBarExtension extends Extension {
         if (view.container.get_parent() !== detail)
             detail.add_child(view.container);
 
-        const overview = this._costOverview();
-        const summaryKey = this._overviewSummaryKey(overview);
+        const scoped = this._scopedSpend();
+        this._renderScopePicker(view, scoped);
+        const overview = scoped ? this._scopedOverview(scoped) : this._costOverview();
+        const summaryKey = scoped
+            ? `scope:${JSON.stringify(scoped)}:${this._namesVersion}` : this._overviewSummaryKey(overview);
         if (view.summaryKey !== summaryKey) {
             view.summaryHost.destroy_all_children();
             view.summaryButton = null;
             if (overview) {
-                view.summaryButton = this._buildCostSummary(overview);
+                view.summaryButton = this._buildCostSummary(overview, scoped);
                 view.summaryHost.add_child(view.summaryButton);
                 view.summaryHost.add_child(new St.Widget({
                     style_class: 'usagebar-separator usagebar-row-sep',
@@ -4016,7 +4391,9 @@ export default class UsageBarExtension extends Extension {
         }
 
         const holder = this._indicator._costPanel;
-        if (holder?.visible) {
+        if (holder?.visible && scoped) {
+            this._indicator._closeCostPanel();
+        } else if (holder?.visible) {
             holder._usagebarAnchor = view.summaryButton;
             const rangeDays = holder._usagebarRangeDays ?? 30;
             const panelOverview = this._costOverview(rangeDays);
@@ -4286,11 +4663,14 @@ export default class UsageBarExtension extends Extension {
     // Compact spend row for the All view: window total, a provider-colored
     // split bar and per-provider totals. Clicking it toggles the full cost
     // dashboard beside the menu.
-    _buildCostSummary(ov) {
+    // `scoped` (scopedSpend) when the tab follows another Machine: its
+    // summary has no daily series, so a click opens that Machine's detail on
+    // the Machines tab instead of the cost dashboard.
+    _buildCostSummary(ov, scoped = null) {
         const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-summary'});
         const head = new St.BoxLayout({x_expand: true});
         head.add_child(new St.Label({
-            text: `Spend · last ${ov.dates.length} days`,
+            text: scoped ? `Spend · last 30 days · ${scoped.name}` : `Spend · last ${ov.dates.length} days`,
             style_class: 'usagebar-compact-title',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
@@ -4334,10 +4714,109 @@ export default class UsageBarExtension extends Extension {
             can_focus: true,
             style_class: 'usagebar-compact-row',
         });
+        if (scoped) {
+            button.connect('clicked', () => {
+                this._view = 'machines';
+                this._selectMachine(scoped.id);
+            });
+            return button;
+        }
         // Opens only: while the panel is open its grab turns a click here
         // into an outside press that closes it.
         button.connect('clicked', () => this._showCostPanel(button, ov));
         return button;
+    }
+
+    // What _buildCostSummary reads of a cost overview, from scoped spend.
+    _scopedOverview(scoped) {
+        const providers = scoped.providers.map(p => ({
+            provider: p.provider,
+            color: PROVIDER_META[p.provider]?.color ?? '#9a9996',
+            cost: p.spend.costUSD,
+        }));
+        return {providers, cost: providers.reduce((sum, p) => sum + p.cost, 0)};
+    }
+
+    // Machine dropdown above the spend summary while two or more Machines
+    // sync: this Machine, the others, then All. Picks whose spend the tab
+    // shows; the usage limits stay as they are, since they belong to the
+    // account. The list opens inline, as the popover can't hold a menu.
+    _renderScopePicker(view, scoped) {
+        const options = spendScopeOptions(this._syncPayload(), {colors: DISPLAY.machineColors});
+        const selected = scoped?.id ?? null;
+        const open = !!view.scopeOpen && options.length > 0;
+        const key = JSON.stringify({options, selected, open});
+        if (view.scopeKey === key)
+            return;
+        view.scopeKey = key;
+        view.scopeHost.destroy_all_children();
+        view.scopeHost._usagebarScopeToggle = null;
+        view.scopeHost._usagebarScopeButtons = [];
+        if (!options.length)
+            return;
+        const current = options.find(option => option.id === selected) ?? options[0];
+        const optionContent = (option, extra = []) => {
+            const content = new St.BoxLayout({style_class: 'usagebar-scope-option'});
+            content.add_child(new St.Widget({
+                style_class: 'usagebar-scope-dot',
+                style: option.color ? `background-color: ${option.color}; border-width: 0;` : '',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            content.add_child(new St.Label({
+                text: option.id === 'all' ? 'All Machines' : option.name,
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            for (const child of extra)
+                content.add_child(child);
+            return content;
+        };
+
+        const toggle = new St.Button({
+            child: optionContent(current, [new St.Icon({
+                icon_name: open ? 'pan-up-symbolic' : 'pan-down-symbolic',
+                icon_size: 12,
+                style_class: 'usagebar-btn-icon',
+                y_align: Clutter.ActorAlign.CENTER,
+            })]),
+            can_focus: true,
+            x_align: Clutter.ActorAlign.START,
+            style_class: 'usagebar-ov-switch-button usagebar-scope-toggle',
+        });
+        toggle.connect('clicked', () => {
+            view.scopeOpen = !view.scopeOpen;
+            this._render();
+        });
+        view.scopeHost.add_child(toggle);
+        view.scopeHost._usagebarScopeToggle = toggle;
+        if (!open)
+            return;
+
+        const list = new St.BoxLayout({vertical: true, style_class: 'usagebar-scope-list'});
+        for (const option of options) {
+            const check = new St.Icon({
+                icon_name: 'object-select-symbolic',
+                icon_size: 12,
+                opacity: option.id === selected ? 255 : 0,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const button = new St.Button({
+                child: optionContent(option, [check]),
+                can_focus: true,
+                x_expand: true,
+                style_class: 'usagebar-scope-item',
+            });
+            if (option.id === selected)
+                button.add_style_class_name('selected');
+            button.connect('clicked', () => {
+                view.scopeOpen = false;
+                this._setSpendScope(option.id);
+                this._render();
+            });
+            list.add_child(button);
+        }
+        view.scopeHost.add_child(list);
+        view.scopeHost._usagebarScopeButtons = list.get_children();
     }
 
     _showCostPanel(anchor, ov, rangeDays = 30) {
@@ -5162,14 +5641,18 @@ export default class UsageBarExtension extends Extension {
             }
         }
 
-        const report = showCost
+        // Following another Machine: its synced spend for this provider (no
+        // daily chart), never this Machine's report.
+        const scoped = showCost ? this._scopedSpend() : null;
+        const scopedProvider = scoped?.providers.find(p => p.provider === row.provider);
+        const report = showCost && !scoped
             ? (this._costs ?? []).find(c => c.provider === row.provider)
             : null;
 
         // Limit Reset Credits header (codex): count right-aligned, nearest
         // expiry below — matches the macOS card. Full card only, like cost.
         const credits = showCost && DISPLAY.showExtras ? creditsInfo(row) : null;
-        const kpis = costKpis(report);
+        const kpis = scoped ? scopedProviderKpis(scopedProvider) : costKpis(report);
         const brand = PROVIDER_META[row.provider]?.color;
         const trend = withoutHiddenModels(chartPoints(report), row.provider, DISPLAY.hiddenModels);
         const colors = trend ? this._modelColors(row.provider, trend) : new Map();
@@ -5221,6 +5704,14 @@ export default class UsageBarExtension extends Extension {
                 });
                 card.add_child(kpiRow);
             }
+        }
+        if (scoped) {
+            const note = new St.Label({
+                text: `${scoped.name} · synced spend, so no daily chart`,
+                style_class: 'usagebar-dim usagebar-hint',
+            });
+            note.clutter_text.line_wrap = true;
+            card.add_child(note);
         }
         if (trend)
             card.add_child(this._buildTrendChart(trend, brand, colors));

@@ -313,3 +313,79 @@ export function machineDetailView(payload, selection, {now = Date.now(), hiddenM
         info,
     };
 }
+
+// The Machines the Providers tab's spend can follow, for its Machine picker:
+// this Machine first (id null, which keeps the local cost reports), then the
+// rest of the Sync Group, then 'all'. Empty unless at least two Machines
+// synced, since there is nothing to pick otherwise.
+export function spendScopeOptions(payload, {colors = {}} = {}) {
+    const machines = payload?.paired ? payload.status?.machines ?? [] : [];
+    if (machines.length < 2)
+        return [];
+    return [
+        ...machines.map((machine, index) => ({
+            id: machine.isThisMachine ? null : machine.machineId,
+            name: machine.displayName || machine.machineId,
+            color: machineColor(index, machine.machineId, colors),
+        })),
+        {id: 'all', name: 'All', color: null},
+    ];
+}
+
+// Spend on the Providers tab when it follows another Machine or 'all',
+// from that Machine's synced Spend. Null for this Machine (scope null) and
+// when the Machine left the Sync Group. Machine Sync carries, per Machine,
+// the last 30 days split by provider and model but no daily split by
+// provider, so there is no per-provider Today or daily chart here.
+//   providers  one per provider, most expensive first, each with its models
+export function scopedSpend(payload, scope, {colors = {}} = {}) {
+    const status = payload?.paired ? payload.status : null;
+    if (!scope || !status)
+        return null;
+    const all = scope === 'all';
+    const machines = status.machines ?? [];
+    const index = machines.findIndex(machine => machine.machineId === scope);
+    const picked = all ? machines : index >= 0 ? [machines[index]] : [];
+    if (!picked.length || (all && machines.length < 2))
+        return null;
+    const byProvider = new Map();
+    for (const machine of picked) {
+        for (const model of machine.models ?? []) {
+            const entry = byProvider.get(model.provider) ??
+                {provider: model.provider, spend: sumSpend([]), models: new Map()};
+            addSpend(entry.spend, model.spend);
+            entry.models.set(model.model, addSpend(entry.models.get(model.model) ?? sumSpend([]), model.spend));
+            byProvider.set(model.provider, entry);
+        }
+    }
+    const bySpend = (a, b) => b.spend.costUSD - a.spend.costUSD || b.spend.totalTokens - a.spend.totalTokens;
+    const providers = [...byProvider.values()].map(entry => ({
+        provider: entry.provider,
+        spend: entry.spend,
+        models: [...entry.models].map(([model, spend]) => ({model, spend}))
+            .sort((a, b) => bySpend(a, b) || a.model.localeCompare(b.model)),
+    })).sort((a, b) => bySpend(a, b) || a.provider.localeCompare(b.provider));
+    const machine = all ? null : picked[0];
+    return {
+        id: all ? 'all' : machine.machineId,
+        all,
+        name: all ? 'All Machines' : machine.displayName || machine.machineId,
+        color: all ? null : machineColor(index, machine.machineId, colors),
+        today: sumSpend(picked.map(m => m.today)),
+        last30: sumSpend(picked.map(m => m.last30Days)),
+        providers,
+    };
+}
+
+// The four cost figures of a provider's detail card when the Providers tab
+// follows another Machine: `provider` is one entry of scopedSpend's
+// providers, or undefined when that Machine has no Spend for it.
+export function scopedProviderKpis(provider) {
+    const spend = provider?.spend ?? sumSpend([]);
+    return [
+        {title: 'Last 30 days Cost', value: spendText(spend)},
+        {title: 'Last 30 days tokens', value: countText(spend.totalTokens)},
+        {title: 'Requests · 30 days', value: countText(spend.requests)},
+        {title: 'Models · 30 days', value: countText(provider?.models.length ?? 0)},
+    ];
+}
