@@ -45,10 +45,11 @@ stage_artifacts() {
     chmod -R a+rX /tmp/art
 }
 
-# The single CLI tarball for this machine's architecture in $1.
+# The single CLI tarball for this machine's architecture in $1. Only
+# usagebar-cli-*: a release directory also holds UsageBarTray-*-linux-<arch>.
 find_tarball() {
-    set -- "$1"/*-linux-"$(uname -m)".tar.gz
-    if [ $# -ne 1 ] || [ ! -f "$1" ]; then fail "expected exactly one *-linux-$(uname -m).tar.gz"; fi
+    set -- "$1"/usagebar-cli-*-linux-"$(uname -m)".tar.gz
+    if [ $# -ne 1 ] || [ ! -f "$1" ]; then fail "expected exactly one usagebar-cli-*-linux-$(uname -m).tar.gz"; fi
     printf '%s\n' "$1"
 }
 

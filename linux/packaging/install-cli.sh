@@ -11,6 +11,8 @@ set -eu
 umask 022
 
 REPO="${USAGEBAR_REPO:-felipearosr/UsageBar}"
+# The GitHub API root; the smoke tests point it at a file:// fixture.
+API_URL="${USAGEBAR_API_URL:-https://api.github.com}"
 MARKER=.usagebar-cli-install
 
 say() { printf '%s\n' "$*"; }
@@ -129,13 +131,16 @@ if [ -n "$tarball" ]; then
     cp "$tarball.sha256" "$archive.sha256"
 else
     case "$tag" in
-        '') api="https://api.github.com/repos/$REPO/releases/latest" ;;
-        [0-9]*) api="https://api.github.com/repos/$REPO/releases/tags/usagebar-v$tag" ;;
-        *) api="https://api.github.com/repos/$REPO/releases/tags/$tag" ;;
+        '') api="$API_URL/repos/$REPO/releases/latest" ;;
+        [0-9]*) api="$API_URL/repos/$REPO/releases/tags/usagebar-v$tag" ;;
+        *) api="$API_URL/repos/$REPO/releases/tags/$tag" ;;
     esac
     fetch "$api" "$work/release.json" || die "couldn't read release ${tag:-latest} of $REPO"
-    url=$(grep -o '"browser_download_url": *"[^"]*-linux-'"$arch"'\.tar\.gz"' "$work/release.json" \
-        | sed 's/.*"\(https[^"]*\)"$/\1/' | head -n 1)
+    # The CLI tarball only: usagebar-cli-<version>-linux-<arch>.tar.gz, or
+    # CodexBarCLI-… on the older cli-fork-* releases. A release also carries
+    # UsageBarTray-<version>-linux-<arch>.tar.gz, which isn't the CLI.
+    url=$(grep -oE '"browser_download_url": *"[^"]*/(usagebar-cli|CodexBarCLI)-[^"/]*-linux-'"$arch"'\.tar\.gz"' \
+        "$work/release.json" | sed 's/.*"\([^"]*\)"$/\1/' | head -n 1)
     [ -n "$url" ] || die "release ${tag:-latest} of $REPO has no CLI tarball for $arch"
     archive="$work/$(basename "$url")"
     say "Downloading $url"

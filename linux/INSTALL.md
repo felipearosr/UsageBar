@@ -170,6 +170,15 @@ makepkg -si
 It installs into `/usr/lib/usagebar-cli` with `/usr/bin/codexbar` linking to
 it, and conflicts with the other `codexbar` packages.
 
+## The tray app (desktops without GNOME Shell)
+
+On KDE, Cinnamon, XFCE and other desktops with a system tray, the tray app
+shows the same usage instead of the extension. Each release attaches
+`UsageBarTray-<version>-linux-x86_64.tar.gz` and `…-aarch64.tar.gz`. It's an
+unpack-and-run binary, not a package, and it needs the
+[command-line helper](#the-command-line-helper) too. Its runtime libraries
+and the steps are in [`codexbar-tray/README.md`](codexbar-tray/README.md#release-tarball).
+
 ## Check the install
 
 ```sh

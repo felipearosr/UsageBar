@@ -11,6 +11,8 @@ name: Release UsageBar
 #   extension
 #            the GNOME extension zip (the extensions.gnome.org build), after
 #            the extension's Node and lint tests.
+#   tray     per arch: the Tauri tray app (linux/codexbar-tray), after its
+#            Rust tests, reporting the release version (usagebar-tray.yml).
 #   verify   linux/release/verify-assets.sh over the whole asset set.
 #   publish  tags only, after verify: the GitHub release (pre-release for a
 #            semver pre-release).
@@ -21,8 +23,7 @@ name: Release UsageBar
 # release-triggered workflows (release-cli.yml and its Homebrew tap dispatch,
 # release-linux-desktop.yml) don't fire for it; see linux/README.md.
 #
-# Adding an asset (tray #47, say): build it in its own job (or a
-# step of package), upload it in an artifact named usagebar-*, add its job to
+# Adding an asset: build it in its own job (or a step of package), upload it in an artifact named usagebar-*, add its job to
 # verify's needs, and teach verify-assets.sh to expect and check it. Its name
 # comes from the resolve job's outputs.
 
@@ -315,12 +316,21 @@ jobs:
           path: ${{ runner.temp }}/extension/*
           if-no-files-found: error
 
+  # The tray app, per arch, after its Rust tests (usagebar-tray.yml).
+  tray:
+    needs: resolve
+    uses: ./.github/workflows/usagebar-tray.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      asset_x86_64: ${{ needs.resolve.outputs.tray_asset_x86_64 }}
+      asset_aarch64: ${{ needs.resolve.outputs.tray_asset_aarch64 }}
+
   # The release asset verifier over everything publish would attach. srpm is
   # skipped for pre-releases; any failed or cancelled job skips verify, and
   # with it publish.
   verify:
-    needs: [resolve, package, srpm, extension]
-    if: ${{ !cancelled() && needs.package.result == 'success' && (needs.srpm.result == 'success' || needs.srpm.result == 'skipped') && needs.extension.result == 'success' }}
+    needs: [resolve, package, srpm, extension, tray]
+    if: ${{ !cancelled() && needs.package.result == 'success' && (needs.srpm.result == 'success' || needs.srpm.result == 'skipped') && needs.extension.result == 'success' && needs.tray.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -373,7 +383,7 @@ jobs:
             echo "Based on [CodexBar $UPSTREAM_BASE](https://github.com/steipete/CodexBar/releases/tag/$UPSTREAM_TAG)."
             echo
             if [[ "$PRERELEASE" == true ]]; then
-              echo "**Pre-release** for testing: the CLI tarballs and the extension zip, no .deb/.rpm packages."
+              echo "**Pre-release** for testing: the CLI and tray tarballs and the extension zip, no .deb/.rpm packages."
               echo
             fi
             if [[ "$DISTRO_PACKAGES" == true ]]; then

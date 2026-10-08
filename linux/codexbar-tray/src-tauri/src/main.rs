@@ -38,7 +38,16 @@ enum Wake {
     Update,
 }
 
+/// What `codexbar-tray --version` prints. TRAY_VERSION is the UsageBar
+/// release version for a release build (see build.rs).
+const VERSION_LINE: &str = concat!("codexbar-tray ", env!("TRAY_VERSION"), "\n");
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        print!("{VERSION_LINE}");
+        return;
+    }
+
     // Wayland doesn't let toplevels position themselves, which would strand the
     // popup in the middle of the screen. Run on XWayland instead so it can
     // anchor to the tray corner. Must happen before GTK initializes.
