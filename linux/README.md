@@ -200,18 +200,25 @@ Push a `usagebar-v<version>` tag matching `USAGEBAR_VERSION` (for example
    in the packed `metadata.json` only (a pre-release's hyphen becomes a space,
    `1.2.0 rc.1`, because extensions.gnome.org allows only letters, digits,
    spaces and periods there). The build fails on any EGO lint error;
-4. for a final release, builds the `.deb`/`.rpm` packages with the extension
+4. builds the tray app for x86_64 and aarch64 on native runners
+   ([`usagebar-tray.yml`](../.github/workflows/usagebar-tray.yml), which also
+   runs on pull requests that touch the tray): its Rust tests, then a release
+   build with `USAGEBAR_VERSION` set, so `codexbar-tray --version` prints the
+   UsageBar version, packed as `UsageBarTray-<version>-linux-<arch>.tar.gz`
+   ([`release/package-tray.sh`](release/package-tray.sh));
+5. for a final release, builds the `.deb`/`.rpm` packages with the extension
    ([`packaging/build-packages.sh`](packaging/build-packages.sh)), the CLI-only
    packages and the SRPM, and smoke-tests them and `install-cli.sh` in clean
    containers ([`packaging/tests/`](packaging/tests/)). A pre-release
    (`1.2.0-rc.1`) skips the distro packages, whose version fields can't carry
    it, and ships the tarballs only;
-5. runs the release asset verifier
+6. runs the release asset verifier
    ([`release/verify-assets.sh`](release/verify-assets.sh)) over everything
    it's about to attach: every expected asset present, every `.sha256` valid,
-   the CLI tarballs' layout, `VERSION` and architecture, and the extension
-   zip's files, UUID, `version-name` and EGO lint;
-6. only then publishes the GitHub release, marked as a pre-release for a
+   the CLI tarballs' layout, `VERSION` and architecture, the extension
+   zip's files, UUID, `version-name` and EGO lint, and the tray tarballs'
+   layout, architecture and version;
+7. only then publishes the GitHub release, marked as a pre-release for a
    semver pre-release.
 
 A dry run builds and verifies any ref without publishing; the assets land on

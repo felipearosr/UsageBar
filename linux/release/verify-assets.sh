@@ -10,7 +10,7 @@
 #
 # Checks:
 #   - every asset the resolver names for a released component is present
-#     (the CLI tarball for each of cli_arches, the extension zip);
+#     (the CLI and tray tarballs for each of cli_arches, the extension zip);
 #   - no asset of a known kind carries another name (a stale version, say);
 #   - every file has a <file>.sha256 in sha256sum format naming that bare
 #     file, every .sha256 has its file, and every checksum matches;
@@ -21,9 +21,12 @@
 #     stylesheet.css, the settings schema XML, LICENSE and icons; its
 #     metadata.json has the asset's UUID and "version-name" says
 #     extension_version_name; and it passes the extensions.gnome.org lint
-#     (linux/usagebar-gnome/tools/ego-zip.py) with no errors.
+#     (linux/usagebar-gnome/tools/ego-zip.py) with no errors;
+#   - each tray tarball holds one directory named after the asset with
+#     codexbar-tray (an executable ELF for its arch whose --version line says
+#     "codexbar-tray <version>"), LICENSE and README.md, nothing else.
 #
-# Adding a component (the tray tarballs, say): register its assets in
+# Adding a component: register its assets in
 # the "Expected assets" section with a check_* function, and its name pattern
 # in known_patterns.
 set -euo pipefail
@@ -57,7 +60,7 @@ require() {
 value() { printf '%s' "${resolved[$1]}"; }
 require tag version cli_version cli_arches extension_asset extension_version_name
 read -r -a cli_arches <<< "$(value cli_arches)"
-for arch in "${cli_arches[@]}"; do require "cli_asset_$arch"; done
+for arch in "${cli_arches[@]}"; do require "cli_asset_$arch" "tray_asset_$arch"; done
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -80,7 +83,7 @@ elf_machine_for() {
 }
 
 check_cli_tarball() { # check_cli_tarball ASSET ARCH
-    local asset=$1 arch=$2 path=$dir/$1 listing entry name kind expected_version actual_version magic machine
+    local asset=$1 arch=$2 path=$dir/$1 listing entry name kind expected_version actual_version
     if ! listing=$(LC_ALL=C tar -tvzf "$path" 2> /dev/null); then
         problem "$asset: not a readable .tar.gz"
         return
@@ -125,13 +128,7 @@ check_cli_tarball() { # check_cli_tarball ASSET ARCH
         mkdir -p "$work/$asset"
         tar -xzf "$path" -C "$work/$asset" CodexBarCLI 2> /dev/null \
             || tar -xzf "$path" -C "$work/$asset" ./CodexBarCLI
-        magic=$(od -An -tx1 -N4 "$work/$asset/CodexBarCLI" | tr -d ' \n')
-        machine=$(od -An -tx1 -j18 -N2 "$work/$asset/CodexBarCLI" 2> /dev/null | tr -d ' \n' || true)
-        if [[ "$magic" != 7f454c46 ]]; then
-            problem "$asset: CodexBarCLI isn't an ELF binary"
-        elif [[ "$machine" != "$(elf_machine_for "$arch")" ]]; then
-            problem "$asset: CodexBarCLI isn't built for $arch (ELF machine $machine)"
-        fi
+        check_elf "$asset" "$work/$asset/CodexBarCLI" "$arch" CodexBarCLI
     fi
 }
 
@@ -180,16 +177,73 @@ PY
     fi
 }
 
+# check_elf ASSET FILE ARCH NAME: FILE is an ELF binary for ARCH.
+check_elf() {
+    local magic machine
+    magic=$(od -An -tx1 -N4 "$2" | tr -d ' \n')
+    machine=$(od -An -tx1 -j18 -N2 "$2" 2> /dev/null | tr -d ' \n' || true)
+    if [[ "$magic" != 7f454c46 ]]; then
+        problem "$1: $4 isn't an ELF binary"
+    elif [[ "$machine" != "$(elf_machine_for "$3")" ]]; then
+        problem "$1: $4 isn't built for $3 (ELF machine $machine)"
+    fi
+}
+
+check_tray_tarball() { # check_tray_tarball ASSET ARCH
+    local asset=$1 arch=$2 path=$dir/$1 top=${1%.tar.gz} listing entry name kind
+    if ! listing=$(LC_ALL=C tar -tvzf "$path" 2> /dev/null); then
+        problem "$asset: not a readable .tar.gz"
+        return
+    fi
+    local has_bin=false has_license=false has_readme=false
+    while IFS= read -r entry; do
+        name=$(awk '{ for (i = 6; i <= NF; i++) printf "%s%s", $i, (i < NF ? " " : "") }' <<< "$entry")
+        name=${name#./}
+        case "$entry" in
+            -*) kind='file' ;;
+            d*) kind='dir' ;;
+            *) kind='other' ;;
+        esac
+        case "$kind:$name" in
+            dir:"$top" | dir:"$top/") ;;
+            file:"$top/codexbar-tray")
+                has_bin=true
+                [[ "${entry:3:1}" == x ]] || problem "$asset: codexbar-tray isn't executable"
+                ;;
+            file:"$top/LICENSE") has_license=true ;;
+            file:"$top/README.md") has_readme=true ;;
+            *) problem "$asset: unexpected entry '$name' ($kind); expected $top/ with codexbar-tray, LICENSE, README.md" ;;
+        esac
+    done <<< "$listing"
+    $has_license || problem "$asset: no $top/LICENSE"
+    $has_readme || problem "$asset: no $top/README.md"
+    if ! $has_bin; then
+        problem "$asset: no $top/codexbar-tray"
+        return
+    fi
+    mkdir -p "$work/$asset"
+    tar -xzf "$path" -C "$work/$asset" "$top/codexbar-tray"
+    check_elf "$asset" "$work/$asset/$top/codexbar-tray" "$arch" codexbar-tray
+    # The line --version prints is one string literal in the binary (main.rs).
+    python3 - "$work/$asset/$top/codexbar-tray" "$(value version)" <<'PY' \
+        || problem "$asset: codexbar-tray doesn't report version $(value version)"
+import sys
+with open(sys.argv[1], 'rb') as f:
+    sys.exit(0 if b'codexbar-tray %s\n' % sys.argv[2].encode() in f.read() else 1)
+PY
+}
+
 # Expected assets: name -> "checker args".
 declare -A expected=()
 for arch in "${cli_arches[@]}"; do
     expected[$(value "cli_asset_$arch")]="check_cli_tarball $arch"
+    expected[$(value "tray_asset_$arch")]="check_tray_tarball $arch"
 done
 expected[$(value extension_asset)]=check_extension_zip
 
 # Name patterns of every asset kind the resolver names. A file matching one
 # that isn't expected is misnamed or from another version.
-known_patterns=('usagebar-cli-*-linux-*.tar.gz' '*.shell-extension.zip')
+known_patterns=('usagebar-cli-*-linux-*.tar.gz' '*.shell-extension.zip' 'UsageBarTray-*-linux-*.tar.gz')
 
 # Presence and per-asset checks.
 for asset in "${!expected[@]}"; do

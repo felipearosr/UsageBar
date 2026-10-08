@@ -1,0 +1,123 @@
+name: UsageBar tray
+
+# The tray app (linux/codexbar-tray, the Tauri fallback for desktops without
+# GNOME Shell), built natively for x86_64 and aarch64: its Rust tests, then a
+# release build that reports the UsageBar version, packed as
+# UsageBarTray-<version>-linux-<arch>.tar.gz (linux/release/package-tray.sh).
+#
+# release-usagebar.yml calls this with the resolved version and asset names.
+# On a pull request that touches the tray it runs the same build with the
+# checked-in release metadata, so the aarch64 build is exercised before a
+# release needs it.
+#
+# The binary links the distro's WebKitGTK 4.1 and libayatana-appindicator, so
+# it runs where Ubuntu 24.04's libraries, or newer ones, are installed.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: UsageBar version (resolve-version.sh's version)
+        required: true
+        type: string
+      asset_x86_64:
+        description: resolve-version.sh's tray_asset_x86_64
+        required: true
+        type: string
+      asset_aarch64:
+        description: resolve-version.sh's tray_asset_aarch64
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - 'linux/codexbar-tray/**'
+      - 'linux/release/package-tray.sh'
+      - '.github/workflows/usagebar-tray.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tray:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runs-on: ubuntu-24.04
+          - arch: aarch64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Release values
+        id: values
+        env:
+          VERSION: ${{ inputs.version }}
+          ASSET: ${{ matrix.arch == 'x86_64' && inputs.asset_x86_64 || inputs.asset_aarch64 }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VERSION" ]]; then
+            # A pull request: what the checked-in metadata would release.
+            resolved=$(linux/release/resolve-version.sh)
+            VERSION=$(sed -n 's/^version=//p' <<< "$resolved")
+            ASSET=$(sed -n "s/^tray_asset_${ARCH}=//p" <<< "$resolved")
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: Install tray build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config file libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
+          if ! command -v cargo > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+
+      # Downloaded crates only (Cargo.lock pins their checksums); the binary
+      # itself is always built from scratch.
+      - name: Restore crate cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: tray-crates-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('linux/codexbar-tray/src-tauri/Cargo.lock') }}
+
+      - name: Tray tests
+        working-directory: linux/codexbar-tray/src-tauri
+        run: |
+          cargo --version
+          cargo test --locked --release
+
+      # USAGEBAR_VERSION becomes what `codexbar-tray --version` prints (build.rs).
+      - name: Build tray (release)
+        working-directory: linux/codexbar-tray/src-tauri
+        env:
+          USAGEBAR_VERSION: ${{ steps.values.outputs.version }}
+        run: cargo build --locked --release
+
+      - name: Package tray tarball
+        env:
+          VERSION: ${{ steps.values.outputs.version }}
+          ASSET: ${{ steps.values.outputs.asset }}
+        run: |
+          set -euo pipefail
+          linux/release/package-tray.sh linux/codexbar-tray/src-tauri/target/release/codexbar-tray \
+            "$VERSION" "$RUNNER_TEMP/tray" "$ASSET"
+          tar -tzvf "$RUNNER_TEMP/tray/$ASSET"
+          ldd linux/codexbar-tray/src-tauri/target/release/codexbar-tray | awk '{ print $1 }'
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: usagebar-tray-${{ matrix.arch }}
+          path: ${{ runner.temp }}/tray/*
+          if-no-files-found: error

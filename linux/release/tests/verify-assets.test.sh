@@ -58,6 +58,36 @@ make_cli_tarball() {
     rm -rf "$stage"
 }
 
+# make_tray_tarball OUT_DIR ARCH [VERSION] [MUTATION]: a tray tarball in the
+# release layout plus its .sha256. Its codexbar-tray is a stand-in ELF that
+# carries the --version line, as the real binary does.
+make_tray_tarball() {
+    local out=$1 arch=$2 version=${3:-1.1.0} mutation=${4:-} stage name top
+    name="UsageBarTray-1.1.0-linux-$arch.tar.gz"
+    top=${name%.tar.gz}
+    stage=$(mktemp -d "$work/stage.XXXXXX")
+    mkdir "$stage/$top"
+    fake_elf "$stage/$top/codexbar-tray" "$arch"
+    printf 'codexbar-tray %s\n' "$version" >> "$stage/$top/codexbar-tray"
+    echo MIT > "$stage/$top/LICENSE"
+    echo '# tray' > "$stage/$top/README.md"
+    case "$mutation" in
+        no-license) rm "$stage/$top/LICENSE" ;;
+        no-binary) rm "$stage/$top/codexbar-tray" ;;
+        not-executable) chmod 0644 "$stage/$top/codexbar-tray" ;;
+        wrong-arch) fake_elf "$stage/$top/codexbar-tray" "$([[ $arch == x86_64 ]] && echo aarch64 || echo x86_64)"
+            printf 'codexbar-tray %s\n' "$version" >> "$stage/$top/codexbar-tray" ;;
+        extra-entry) echo hi > "$stage/$top/notes.txt" ;;
+    esac
+    if [[ "$mutation" == flat ]]; then
+        (cd "$stage/$top" && tar -czf "$out/$name" -- *)
+    else
+        (cd "$stage" && tar -czf "$out/$name" "$top")
+    fi
+    (cd "$out" && sha256sum "$name" > "$name.sha256")
+    rm -rf "$stage"
+}
+
 # The real extension zip, built once with the release's version-name.
 ext=usagebar@felipearosr.github.io-1.1.0.shell-extension.zip
 "$here/../package-extension.sh" 1.1.0 "$work/ext" "$ext" > /dev/null 2> "$work/ext.log" \
@@ -85,13 +115,15 @@ PY
     (cd "$1" && sha256sum "$ext" > "$ext.sha256")
 }
 
-# A passing release directory: both CLI tarballs, the extension zip, plus a
-# package the verifier doesn't know by name (it must still have a valid
-# checksum).
+# A passing release directory: both CLI tarballs, both tray tarballs, the
+# extension zip, plus a package the verifier doesn't know by name (it must
+# still have a valid checksum).
 make_release() { # make_release DIR
     mkdir -p "$1"
     make_cli_tarball "$1" x86_64
     make_cli_tarball "$1" aarch64
+    make_tray_tarball "$1" x86_64
+    make_tray_tarball "$1" aarch64
     cp "$work/ext/$ext" "$work/ext/$ext.sha256" "$1/"
     echo 'deb' > "$1/usagebar_1.1.0_amd64.deb"
     (cd "$1" && sha256sum usagebar_1.1.0_amd64.deb > usagebar_1.1.0_amd64.deb.sha256)
@@ -200,6 +232,34 @@ expect_fail "extension zip isn't a zip" "$d" "$ext: not a readable zip"
 d=$(fixture); old=usagebar@felipearosr.github.io-1.0.0.shell-extension.zip
 cp "$d/$ext" "$d/$old"; (cd "$d" && sha256sum "$old" > "$old.sha256")
 expect_fail "stale-version extension zip name" "$d" "unexpected asset name: $old"
+
+tray_x86=UsageBarTray-1.1.0-linux-x86_64.tar.gz
+tray_arm=UsageBarTray-1.1.0-linux-aarch64.tar.gz
+d=$(fixture); rm "$d/$tray_x86" "$d/$tray_x86.sha256"
+expect_fail "missing x86_64 tray tarball" "$d" "missing asset: $tray_x86"
+d=$(fixture); rm "$d/$tray_arm" "$d/$tray_arm.sha256"
+expect_fail "missing aarch64 tray tarball" "$d" "missing asset: $tray_arm"
+d=$(fixture); make_tray_tarball "$d" x86_64 1.0.0
+expect_fail "tray reporting another version" "$d" "$tray_x86: codexbar-tray doesn't report version 1.1.0"
+d=$(fixture); make_tray_tarball "$d" x86_64 1.1.0-rc.1
+expect_fail "tray version must match exactly" "$d" "$tray_x86: codexbar-tray doesn't report version 1.1.0"
+d=$(fixture); make_tray_tarball "$d" aarch64 "" wrong-arch
+expect_fail "tray binary for the wrong arch" "$d" "$tray_arm: codexbar-tray isn't built for aarch64"
+d=$(fixture); make_tray_tarball "$d" x86_64 "" not-executable
+expect_fail "tray binary not executable" "$d" "$tray_x86: codexbar-tray isn't executable"
+d=$(fixture); make_tray_tarball "$d" x86_64 "" no-binary
+expect_fail "tray tarball without the binary" "$d" "$tray_x86: no UsageBarTray-1.1.0-linux-x86_64/codexbar-tray"
+d=$(fixture); make_tray_tarball "$d" x86_64 "" no-license
+expect_fail "tray tarball without LICENSE" "$d" "$tray_x86: no UsageBarTray-1.1.0-linux-x86_64/LICENSE"
+d=$(fixture); make_tray_tarball "$d" x86_64 "" extra-entry
+expect_fail "unexpected tray tarball entry" "$d" "unexpected entry 'UsageBarTray-1.1.0-linux-x86_64/notes.txt'"
+d=$(fixture); make_tray_tarball "$d" x86_64 "" flat
+expect_fail "tray tarball without its directory" "$d" "$tray_x86: unexpected entry 'codexbar-tray'"
+d=$(fixture); echo junk > "$d/$tray_arm"; (cd "$d" && sha256sum "$tray_arm" > "$tray_arm.sha256")
+expect_fail "tray tarball isn't a tarball" "$d" "$tray_arm: not a readable .tar.gz"
+d=$(fixture); old=UsageBarTray-1.0.0-linux-x86_64.tar.gz
+cp "$d/$tray_x86" "$d/$old"; (cd "$d" && sha256sum "$old" > "$old.sha256")
+expect_fail "stale-version tray tarball name" "$d" "unexpected asset name: $old"
 
 d=$(fixture); rm "$d/$x86" "$d/$x86.sha256"; printf '%064d  %s\n' 0 "$arm" > "$d/$arm.sha256"
 "$verifier" "$work/resolved" "$d" > "$work/out" 2>&1 || true

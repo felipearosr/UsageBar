@@ -18,6 +18,15 @@ install_runtime_deps
 if command -v dnf >/dev/null 2>&1; then dnf install -y -q shadow-utils >/dev/null; fi
 id tester >/dev/null 2>&1 || useradd -m tester
 stage_artifacts "${1:-/artifacts}"
+# A release directory also holds the tray tarballs, under the same
+# -linux-<arch>.tar.gz suffix. Neither find_tarball nor install-cli.sh may
+# take one for the CLI.
+mkdir -p /tmp/tray
+echo 'not the CLI' > /tmp/tray/codexbar-tray
+tray="UsageBarTray-9.9.9-linux-$(uname -m).tar.gz"
+tar -czf "/tmp/art/$tray" -C /tmp/tray codexbar-tray
+(cd /tmp/art && sha256sum "$tray" > "$tray.sha256")
+chmod a+r "/tmp/art/$tray" "/tmp/art/$tray.sha256"
 tarball=$(find_tarball /tmp/art)
 version=$(tarball_version "$tarball")
 home=$(getent passwd tester | cut -d : -f 6)
@@ -93,6 +102,54 @@ sh "$script" --prefix /opt/usagebar --tarball "$tarball"
 sh "$checks" /opt/usagebar/bin/codexbar "$version"
 sh "$script" --prefix /opt/usagebar --uninstall
 [ ! -e /opt/usagebar ] || fail "custom prefix not removed"
+
+# release_fixture TAG ASSET...: a release.json for TAG under /tmp/api listing
+# ASSETs (in /tmp/art, in that order) as file:// downloads.
+release_fixture() {
+    dir=/tmp/api/repos/felipearosr/UsageBar/releases/tags
+    mkdir -p "$dir"
+    name=$1
+    json="{\"tag_name\": \"$name\", \"assets\": ["
+    shift
+    sep=
+    for asset in "$@"; do
+        json="$json$sep{\"name\": \"$asset\", \"browser_download_url\": \"file:///tmp/art/$asset\"}"
+        sep=', '
+    done
+    printf '%s]}\n' "$json" > "$dir/$name"
+    chmod -R a+rX /tmp/api
+}
+
+say "a release download picks the CLI tarball, not the tray tarball listed before it"
+tag=usagebar-v9.9.9
+release_fixture "$tag" "$tray" "$tray.sha256" "$(basename "$tarball")" "$(basename "$tarball").sha256"
+as_tester "USAGEBAR_API_URL=file:///tmp/api sh $script 9.9.9" > /tmp/fixture.out 2>&1 \
+    || fail "install from the release fixture failed: $(cat /tmp/fixture.out)"
+grep -q "Downloading file:///tmp/art/$(basename "$tarball")" /tmp/fixture.out \
+    || fail "didn't download the CLI tarball: $(cat /tmp/fixture.out)"
+as_tester "sh $checks codexbar $version"
+as_tester "sh $script --uninstall"
+
+say "a cli-fork-* release's CodexBarCLI-* tarball still installs"
+legacy="CodexBarCLI-v0.68.0-fork.test-linux-$(uname -m).tar.gz"
+cp "$tarball" "/tmp/art/$legacy"
+(cd /tmp/art && sha256sum "$legacy" > "$legacy.sha256")
+chmod a+r "/tmp/art/$legacy" "/tmp/art/$legacy.sha256"
+tag=cli-fork-test
+release_fixture "$tag" "$tray" "$legacy" "$legacy.sha256"
+as_tester "USAGEBAR_API_URL=file:///tmp/api sh $script $tag" > /tmp/fixture.out 2>&1 \
+    || fail "install of a CodexBarCLI-* release failed: $(cat /tmp/fixture.out)"
+grep -q "Downloading file:///tmp/art/$legacy" /tmp/fixture.out \
+    || fail "didn't download the CodexBarCLI tarball: $(cat /tmp/fixture.out)"
+as_tester "sh $script --uninstall"
+
+say "a release with only a tray tarball has no CLI to install"
+tag=usagebar-v9.9.8
+release_fixture "$tag" "$tray" "$tray.sha256"
+if as_tester "USAGEBAR_API_URL=file:///tmp/api sh $script 9.9.8" > /tmp/fixture.out 2>&1; then
+    fail "installed a tray tarball as the CLI"
+fi
+grep -q "has no CLI tarball for" /tmp/fixture.out || fail "no 'has no CLI tarball' message: $(cat /tmp/fixture.out)"
 
 if [ -n "${INSTALL_CLI_TAG:-}" ]; then
     say "download and install release $INSTALL_CLI_TAG"

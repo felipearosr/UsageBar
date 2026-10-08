@@ -17,6 +17,28 @@ this app supervises as a `codexbar serve` child process.
 - Build deps (Fedora): `webkit2gtk4.1-devel libayatana-appindicator-gtk3-devel librsvg2-devel openssl-devel`
   (Ubuntu/Debian: `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev`).
 
+## Release tarball
+
+Each UsageBar release attaches `UsageBarTray-<version>-linux-x86_64.tar.gz`
+and `…-aarch64.tar.gz`, each with a `.sha256`. Unpack one and run the binary:
+
+```bash
+sha256sum -c UsageBarTray-*-linux-x86_64.tar.gz.sha256
+tar -xzf UsageBarTray-*-linux-x86_64.tar.gz
+UsageBarTray-*-linux-x86_64/codexbar-tray --version   # codexbar-tray <version>
+UsageBarTray-*-linux-x86_64/codexbar-tray &
+```
+
+The binary needs the runtime libraries of the build deps above:
+WebKitGTK 4.1, libayatana-appindicator3 and librsvg2 (Fedora: `webkit2gtk4.1
+libayatana-appindicator-gtk3 librsvg2`; Ubuntu/Debian: `libwebkit2gtk-4.1-0
+libayatana-appindicator3-1 librsvg2-2`). It's built on Ubuntu 24.04, so it
+needs glibc 2.39 or newer (Ubuntu 24.04+, Fedora 40+). It also needs the
+`codexbar` CLI (see Requirements).
+
+A release build reports the UsageBar version: `build.rs` reads
+`USAGEBAR_VERSION` at build time and falls back to the Cargo version.
+
 ## Build & run
 
 ```bash
