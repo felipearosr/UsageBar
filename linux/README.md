@@ -154,6 +154,9 @@ release don't depend on COPR.
 
 ### Releasing
 
+The step-by-step release checklist (metadata bump, dry run, `-rc` tag,
+clean-machine check, final tag, COPR/AUR) is [RELEASING.md](RELEASING.md).
+
 UsageBar has its own semver, independent of CodexBar's numbers.
 [`release/usagebar-release.txt`](release/usagebar-release.txt) records two
 facts:
@@ -218,8 +221,16 @@ Push a `usagebar-v<version>` tag matching `USAGEBAR_VERSION` (for example
    the CLI tarballs' layout, `VERSION` and architecture, the extension
    zip's files, UUID, `version-name` and EGO lint, and the tray tarballs'
    layout, architecture and version;
-7. only then publishes the GitHub release, marked as a pre-release for a
-   semver pre-release.
+7. writes the release notes
+   ([`release/release-notes.sh`](release/release-notes.sh)): the version,
+   the CodexBar base with a link to its upstream release, the changes since
+   the previous `usagebar-v*` tag (the previous final release for a final
+   release), every asset with a pointer to its install steps in
+   [INSTALL.md](INSTALL.md), and how to verify the download. A pre-release
+   says so first. They're in the run summary and the `release-notes`
+   artifact, dry runs included;
+8. only then publishes the GitHub release with those notes, marked as a
+   pre-release for a semver pre-release.
 
 A dry run builds and verifies any ref without publishing; the assets land on
 the run as artifacts:

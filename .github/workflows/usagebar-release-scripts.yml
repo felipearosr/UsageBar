@@ -2,7 +2,8 @@ name: UsageBar release scripts
 
 # Tests for the scripts release-usagebar.yml runs (linux/release/): the
 # release version resolver and the metadata it reads, the release asset
-# verifier, and the CLI smoke test (against the stand-in CLI from
+# verifier, the release notes (whose install links point into
+# linux/INSTALL.md), and the CLI smoke test (against the stand-in CLI from
 # linux/packaging/tests/make-fake-tarball.sh). Runs whenever those, or the
 # release workflow, change. The verifier tests build the real extension zip.
 
@@ -12,6 +13,7 @@ on:
       - 'linux/release/**'
       - 'linux/packaging/tests/make-fake-tarball.sh'
       - 'linux/usagebar-gnome/tools/ego-zip.py'
+      - 'linux/INSTALL.md'
       - '.github/workflows/release-usagebar.yml'
       - '.github/workflows/usagebar-release-scripts.yml'
   push:
@@ -20,6 +22,7 @@ on:
       - 'linux/release/**'
       - 'linux/packaging/tests/make-fake-tarball.sh'
       - 'linux/usagebar-gnome/tools/ego-zip.py'
+      - 'linux/INSTALL.md'
       - '.github/workflows/release-usagebar.yml'
       - '.github/workflows/usagebar-release-scripts.yml'
 
@@ -53,3 +56,6 @@ jobs:
 
       - name: CLI smoke script tests
         run: linux/release/tests/smoke-cli.test.sh
+
+      - name: Release notes tests
+        run: linux/release/tests/release-notes.test.sh
