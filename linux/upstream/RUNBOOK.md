@@ -220,12 +220,14 @@ Don't run live provider fetches or anything that reads the Keychain (AGENTS.md).
 ## 6. Fork delta report
 
 ```sh
-linux/upstream/fork-delta.sh                     # lands with #52
+linux/upstream/fork-delta.sh --upstream $TAG
 ```
 
-It must exit 0. If a conflict resolution made the fork edit an upstream file that isn't on the allowlist, either
-move the change into a fork-owned file or add an allowlist entry with the feature it serves, and call that out in
-the PR: growing the allowlist is a deliberate decision, not a merge side effect.
+It must exit 0 ([FORK-DELTA.md](FORK-DELTA.md) explains the groups). If a conflict resolution made the fork edit an
+upstream file that isn't on the allowlist, either move the change into a fork-owned file or add an allowlist entry
+with the feature it serves, and call that out in the PR: growing the allowlist is a deliberate decision, not a merge
+side effect. If upstream now does what a fork edit did and you dropped it (step 2.3), the report flags its allowlist
+line as stale: delete the line. The PR's `UsageBar fork delta` check runs the same report against `upstream/main`.
 
 ## 7. Open the PR
 
@@ -306,5 +308,6 @@ cp linux/upstream/merge-rehearsal.sh /tmp/mr.sh            # the merge can't cha
 git switch - && git branch -D scratch/rehearsal
 ```
 
-`linux/upstream/test-merge-rehearsal.sh` tests the script against a throwaway repository; the workflow runs it
-first.
+`linux/upstream/test-merge-rehearsal.sh` and `test-fork-delta.sh` test the scripts against throwaway repositories;
+the workflow runs them first. The rehearsal's fork delta check passes `--allow-stale`: with conflicts resolved to
+upstream's side, some fork hooks are gone on purpose, so only an unlisted upstream edit fails it.

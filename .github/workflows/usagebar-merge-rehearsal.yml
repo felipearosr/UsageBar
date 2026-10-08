@@ -49,8 +49,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Self-test the rehearsal script
-        run: linux/upstream/test-merge-rehearsal.sh
+      - name: Self-test the rehearsal and fork delta scripts
+        run: |
+          linux/upstream/test-merge-rehearsal.sh
+          linux/upstream/test-fork-delta.sh
 
       - name: Resolve upstream ref
         id: ref
@@ -195,14 +197,13 @@ jobs:
             printf "%s\n" "$out"
             ! grep -q "Unknown command" <<< "$out"'
 
+      # Unlisted upstream edits fail; stale allowlist entries don't, because taking
+      # upstream's side of a conflict drops fork hooks on purpose.
       - name: Fork delta report
         if: steps.merge.outputs.status != 'up-to-date'
-        run: |
-          if [[ -x linux/upstream/fork-delta.sh ]]; then
-            "$MR" check "$OUT" "Fork delta report" -- linux/upstream/fork-delta.sh
-          else
-            "$MR" skip "$OUT" "Fork delta report" "linux/upstream/fork-delta.sh not on main yet (#52)"
-          fi
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: '"$MR" check "$OUT" "Fork delta report" -- linux/upstream/fork-delta.sh --upstream "$REF" --allow-stale'
 
       - name: Update the tracking issue
         if: ${{ always() && steps.merge.outcome == 'success' }}
