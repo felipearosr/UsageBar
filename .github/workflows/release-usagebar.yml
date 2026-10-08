@@ -10,7 +10,8 @@ name: Release UsageBar
 #   srpm     final releases only: a source RPM with both arches' tarballs.
 #   extension
 #            the GNOME extension zip (the extensions.gnome.org build), after
-#            the extension's Node and lint tests.
+#            the extension's Node and lint tests, and the provider logo pack
+#            that build downloads when the user asks for logos.
 #   tray     per arch: the Tauri tray app (linux/codexbar-tray), after its
 #            Rust tests, reporting the release version (usagebar-tray.yml).
 #   verify   linux/release/verify-assets.sh over the whole asset set, then
@@ -64,6 +65,7 @@ jobs:
       extension_version_name: ${{ steps.resolve.outputs.extension_version_name }}
       tray_asset_x86_64: ${{ steps.resolve.outputs.tray_asset_x86_64 }}
       tray_asset_aarch64: ${{ steps.resolve.outputs.tray_asset_aarch64 }}
+      logos_asset: ${{ steps.resolve.outputs.logos_asset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -311,6 +313,14 @@ jobs:
           VERSION_NAME: ${{ needs.resolve.outputs.extension_version_name }}
           ASSET: ${{ needs.resolve.outputs.extension_asset }}
         run: linux/release/package-extension.sh "$VERSION_NAME" "$RUNNER_TEMP/extension" "$ASSET"
+
+      # The logos the zip leaves out, as one JSON pack the extension fetches
+      # from this release on the user's click (logopack.js).
+      - name: Build provider logo pack
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ASSET: ${{ needs.resolve.outputs.logos_asset }}
+        run: linux/release/package-logos.sh "$VERSION" "$RUNNER_TEMP/extension" "$ASSET"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
