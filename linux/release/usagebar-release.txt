@@ -7,5 +7,5 @@
 # UPSTREAM_BASE     The steipete/CodexBar release last merged into the fork
 #                   (x.y.z, no "v"). Upstream merge PRs bump it
 #                   (linux/upstream/RUNBOOK.md, step 1).
-USAGEBAR_VERSION=1.0.0
+USAGEBAR_VERSION=1.1.0-rc.1
 UPSTREAM_BASE=0.72.0
