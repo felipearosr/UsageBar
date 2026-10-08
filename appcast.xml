@@ -3,6 +3,80 @@
     <channel>
         <title>CodexBar</title>
         <item>
+            <title>0.73.0</title>
+            <pubDate>Wed, 07 Oct 2026 04:04:23 -0700</pubDate>
+            <link>https://raw.githubusercontent.com/steipete/CodexBar/main/appcast.xml</link>
+            <sparkle:version>165</sparkle:version>
+            <sparkle:shortVersionString>0.73.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<h2>CodexBar 0.73.0</h2>
+<h3>Highlights</h3>
+<ul>
+<li>Usage &amp; Spend grows up: long ranges aggregate by week or month with drill-down to days and a single-day hourly view, source filtering and an amount inspector; the annual token activity grid is readable in Dark mode and pages horizontally in narrow windows; charts follow the reporting calendar and time zone across DST, and you can pick the statistics time zone in Settings.</li>
+<li>Codex cost accounting: GPT-6.1 Sol long-context pricing starts at the documented 272K input tokens, Priority turns are priced from durable session settings, drifted ledger mirrors are counted once, priced subtotals and request counts survive unpriced requests, imported model rows stay visible when attribution is incomplete, and empty catch-up scans recover instead of stalling.</li>
+<li>Accounts: Langdock joins as provider #91, ClinePass supports labeled API-key accounts, managed Codex accounts can be listed and promoted from the CLI and appear in the dashboard, promotion fails closed on divergent destinations, and sibling account snapshots survive selected-account refreshes.</li>
+<li>Provider fixes: Ollama free-plan pages parse their Free usage meter, Kimi reconciles contradictory window readings and shows the monthly Total pool, Nous Portal credits reach the menu bar, JetBrains AI counts top-up credits and reads fresher quota from idea.log, Antigravity signs in with the consumer OAuth client and prices gpt-oss-120b, Vertex AI pagination can no longer loop, and Claude usage probes skip user hooks.</li>
+<li>Lighter and faster: Codex cost reports are built once per refresh and SQLite usage rows stream instead of materializing, Claude and Vertex histories use substantially less memory, and hosted CI runs on two test shards.</li>
+<li>Linux snapshots expose plan, balances, reset credits and spending; the CLI persists provider sources with <code>config set-source</code> and accepts <code>all</code>/<code>both</code> in hooks watch; pending config survives quitting the app.</li>
+</ul>
+<h3>Added</h3>
+<ul>
+<li>Linux: expose plan, balances, reset credits, pace, and opt-in cached spending in private desktop snapshots, using the shared reset-credit inventory and redacted display labels (#4285). Thanks @KihongK!</li>
+<li>CLI: persist provider data sources with <code>config set-source</code>, validate supported sources, and use <code>auto</code> to clear the override without changing provider enablement or credentials (#4142, #4197). Thanks @Yuxin-Qiao!</li>
+<li>Usage &amp; Spend: choose the statistics time zone or pin the Mac&#x27;s current time zone without editing hidden preferences; existing selections stay pinned until changed (#4185). Thanks @DGPisces!</li>
+<li>Langdock: add personal session and weekly usage through a bundled plugin bound to one selected Edge profile, with live session checks and no persistent quota history or widgets (#4171). Thanks @dYn36!</li>
+<li>ClinePass: store labeled API keys to track and switch between multiple subscriptions in the app and CLI (#4305). Thanks @shiquda!</li>
+<li>Codex: list managed accounts and explicitly promote one from the macOS CLI, preserving displaced credentials with shared app/CLI locking, private atomic writes, and rejection of changed auth or managed-home destinations (#3191, #4234). Thanks @Yuxin-Qiao!</li>
+<li>Dashboard: expose managed Codex accounts with saved usage, stable IDs, independent errors, and shared identity redaction in one-shot JSON and HTTP schema-v1 snapshots (#4184). Thanks @niteshmanav!</li>
+<li>Usage &amp; Spend: explore recorded spend with week/month grouping, day/hour drill-down, source filtering, and a persistent amount inspector; keep zero, unavailable, and incomplete amounts distinct across reporting time zones (#4298). Thanks @Yuxin-Qiao!</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li>Usage &amp; Spend: improve Dark-mode token activity contrast and keep annual activity readable in narrow windows with horizontal paging and keyboard date reveal, including right-to-left layouts (#4297). Thanks @Yuxin-Qiao!</li>
+<li>Codex: build each file cost report once across daily, session, and project refresh views, including cached dashboard loads, while keeping pricing scopes separate (#4275, #4277). Thanks @luochen211!</li>
+<li>Storage: reduce repeated path processing while scanning provider directories, preserving component totals and symbolic-link exclusions (#4286). Thanks @Yuxin-Qiao!</li>
+<li>Usage &amp; Spend: preserve provider brand artwork, keep source and model icons monochrome, and clarify compact breakdown rows without changing totals or menu/widget accents (#4294). Thanks @Yuxin-Qiao!</li>
+<li>Costs: reduce retained memory when loading and updating large Claude and Vertex transcript histories.</li>
+<li>Antigravity: avoid a duplicate <code>agy --version</code> process during each CLI usage refresh, including account-scoped fallbacks (#4254). Thanks @djbclark!</li>
+<li>Costs: use substantially less memory with large Claude and Vertex histories; cached cost history no longer keeps a second encoded copy in memory, cache files load from mapped reads and save as streams, and repeated session IDs and model names share storage.</li>
+<li>Costs: reduce temporary memory while rebuilding Claude cost reports, reloading the report cache, and merging Pi usage that adds no exact-time entries.</li>
+<li>Costs: reduce temporary memory when loading Codex reports, scans, and workspace history by decoding SQLite usage rows as they arrive (#4291). Thanks @kristofferR!</li>
+<li>Menu bar: make Cursor Grok Bot and other declared extra allowances selectable in provider metric settings, with labeled percentages and a dash for unknown readings (#4207). Thanks @marklights54-byte!</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>Kimi: use the more-exhausted reading when matching legacy counters and ratio pools disagree, and include monthly Total usage in CLI and text menu output (#4306). Thanks @shiva3593 for the report!</li>
+<li>Ollama: recognize the Free usage meter on free-plan settings pages and show its included-credit usage and reset in the Monthly bar (#4308). Thanks @Thomas-Basadonne!</li>
+<li>Codex: reject account promotion when legacy saved credentials conflict or a preservation destination changes before the live swap (#4301). Thanks @vincent-peng!</li>
+<li>Vertex AI: stop Cloud Monitoring pagination when a page token repeats, preserve the collected quota samples, and cap unbounded pagination (#4318). Thanks @cheek-walnut!</li>
+<li>Claude: disable user hooks in usage probes so background polling cannot run SessionStart commands (#4292). Thanks @IvanWest33!</li>
+<li>Claude: let explicit Refresh request Keychain access with direct-read consent and an allowing prompt policy, while ordinary OAuth polling stays noninteractive (#4257). Thanks @stromseng!</li>
+<li>Antigravity: use agy&#x27;s consumer OAuth client for new Google sign-ins and ask affected accounts to sign in again instead of showing placeholder 100% quotas (#4293). Thanks @oldcai!</li>
+<li>Usage &amp; Spend: retain known daily request counts when another source cannot count requests, showing the subtotal with ≥ while wholly unavailable counts remain a dash; partial costs do not erase request totals (#4295). Thanks @Yuxin-Qiao!</li>
+<li>Codex costs: a request with unknown historical pricing no longer hides the estimate for the other requests of its model and day. The day shows the priced subtotal as a partial estimate with its unpriced request count, and a day with an unpriced model is no longer reported as fully priced (#4273, #4278, #4279). Thanks @gabrielrojasc and @luochen211!</li>
+<li>Claude: label a CLI <code>/usage</code> subscription notice without quota data as a configuration issue instead of an authentication failure in logs and diagnostics (#4225, related to #4083). Thanks @sudoHG!</li>
+<li>Claude: retain rejected-cache-write recovery through OAuth token refresh without losing refreshed credentials or replacing a newer credential&#x27;s recovery (#4271). Thanks @vincent-peng!</li>
+<li>CLI: accept and deduplicate <code>both</code> and <code>all</code> in <code>hooks watch</code>, and correct provider help for commands that require one provider (#4252). Thanks @vincent-peng!</li>
+<li>Codex: preserve terminal local-cost catch-up pauses across scheduled refreshes while allowing explicit retries (#4251). Thanks @vincent-peng!</li>
+<li>Codex: preserve sibling account readings and credits across selected-account refreshes and restarts when account widgets are disabled (#4307). Thanks @Yuxin-Qiao!</li>
+<li>Settings: finish pending configuration writes before normal quit so edits made immediately before quitting survive a restart (#4224). Thanks @Shenrui-Ma!</li>
+<li>Codex costs: preserve saved request pricing during bounded cache upgrades when ledger and token-count timestamps differ (#4270). Thanks @gabrielrojasc!</li>
+<li>Codex: price Priority turns from durable session-log tier evidence across resumed scans and subsequent turns without repeated settings events, preserving saved trace pricing and existing cost history (#4274, #4276). Thanks @luochen211!</li>
+<li>Antigravity: estimate recorded GPT-OSS-120B medium usage at Google&#x27;s Vertex list price, including the first pricing refresh, while keeping unavailable prices unknown (#4258). Thanks @urda!</li>
+<li>Codex costs: avoid double-counting drifted request-ledger mirrors, including delayed observations after context compaction; keep saved prices through the repair (#4289, #4290). Thanks @gabrielrojasc and @kcharlan!</li>
+<li>Codex costs: retry one empty time-limited catch-up pass after cooldown and clear dashboard stalls when another scan completes the same history (#4296). Thanks @Yuxin-Qiao!</li>
+<li>Codex costs: apply the documented 272K long-context boundary to GPT-6.1 Sol and other OpenAI models, including older pricing catalogs, and reprice cached estimates (#4302). Thanks @wallmage!</li>
+<li>Nous Portal: show available credits in menu bar Balance layouts and automatic text for accounts without a monthly grant (#4314). Thanks @yuping917!</li>
+<li>CLI: include the operating-system error when a PTY command cannot allocate a terminal.</li>
+<li>Usage &amp; Spend: retain valid imported model subtotals when other OpenCodex requests have no token evidence, preserving incomplete markers in exports and excluding partial model rankings from sharing (#4299). Thanks @Yuxin-Qiao!</li>
+<li>JetBrains AI: show monthly credit usage accurately when top-up credits exist, keep partial quota data on a consistent balance, and replace misleading version detection with the local source label (#4287). Thanks @taihua!</li>
+<li>JetBrains AI: refresh stale quota from the selected IDE&#x27;s bounded <code>idea.log</code> tail, preserving XML fallback when log records are incomplete or unsupported (#4288). Thanks @taihua!</li>
+</ul>
+<p><a href="https://github.com/steipete/CodexBar/blob/main/CHANGELOG.md">View full changelog</a></p>
+]]></description>
+            <enclosure url="https://github.com/steipete/CodexBar/releases/download/v0.73.0/CodexBar-macos-universal-0.73.0.zip" length="77745899" type="application/octet-stream" sparkle:edSignature="xrmf2cDEvCM1XtSMjgl78UhQNc1EoHGo7FuB7tY29kG+dg82ozkZyXqS++veOhVjj3I/+xm+Z359qjqEwdIJAw=="/>
+        </item>
+        <item>
             <title>0.72.0</title>
             <pubDate>Sun, 04 Oct 2026 12:19:43 -0700</pubDate>
             <link>https://raw.githubusercontent.com/steipete/CodexBar/main/appcast.xml</link>
@@ -82,71 +156,6 @@
 <p><a href="https://github.com/steipete/CodexBar/blob/main/CHANGELOG.md">View full changelog</a></p>
 ]]></description>
             <enclosure url="https://github.com/steipete/CodexBar/releases/download/v0.71.1/CodexBar-macos-universal-0.71.1.zip" length="75613940" type="application/octet-stream" sparkle:edSignature="LDO9aeUslzxcXQDCm6/Xdq0U0UeXDNhx/CRM2QWI9CX2s2aHTRSDmlxxtk/MRCU/WNwcmT3QsB502n9QSa87BA=="/>
-        </item>
-        <item>
-            <title>0.71.0</title>
-            <pubDate>Fri, 02 Oct 2026 10:16:27 -0700</pubDate>
-            <link>https://raw.githubusercontent.com/steipete/CodexBar/main/appcast.xml</link>
-            <sparkle:version>162</sparkle:version>
-            <sparkle:shortVersionString>0.71.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<h2>CodexBar 0.71.0</h2>
-<h3>Highlights</h3>
-<ul>
-<li>Two new providers: Muse (muse.ai) and LithosAI read your own subscription usage and balance with your browser session, bringing CodexBar to 89 providers (#4042, #4196). Thanks @lg, @mvicari, @RowboTony, and @apoorvdarshan!</li>
-<li>Safer by default: CodexBar never runs binaries from the current directory or relative PATH entries, and Codex discovery refuses unsafe Node environments and PATH entries before launching anything (#4136, #4143). Thanks @maugt and @Yuxin-Qiao!</li>
-<li>Much lighter cost tracking: a long series of CPU and allocation cuts for Claude, Vertex, Codex, and local agent logs, plus cached Gatekeeper verdicts for unchanged CLIs. Thanks @dustball!</li>
-<li>Antigravity for every account: saved Google accounts each get their own quota through private, temporary sessions, OAuth quota requests identify as the Antigravity Hub client, and token totals are mapped correctly (#4103, #4102, #4124, #4133). Thanks @Sogl, @oldcai, and @urda!</li>
-<li>Steadier sync and agent awareness: iCloud Sync recovers after a Mac is removed and applies results atomically, Agent-aware Adaptive notices Codex activity from rollout freshness, and agent sessions survive in-place CLI updates (#4144, #4161, #4119, #4120). Thanks @hhh2210 and @slavakurilyak!</li>
-<li>Opt-in reset notifications tell you when a session or weekly window resets, per provider and account (#4138). Thanks @zleo-ai!</li>
-</ul>
-<h3>Security</h3>
-<ul>
-<li>Resolve bundled helpers and plugin resources from the running executable, and ignore working-directory-dependent CLI search paths (#4136). Thanks @maugt!</li>
-</ul>
-<h3>Added</h3>
-<ul>
-<li>Muse (muse.ai): track Free, Power, and Maximum weekly usage, tokens left, top-ups, resets, and renewal with Chrome or manual cookies, separately from Muse Code (#3797, #4042). Thanks @lg, @mvicari, and @RowboTony!</li>
-<li>LithosAI: show console prepaid balance and optional daily/monthly spend using Chrome or manual session cookies, with host-owned same-origin CSRF handling (#3868, #4196). Thanks @apoorvdarshan!</li>
-<li>Antigravity: fetch quotas for saved Google accounts through private, temporary <code>agy</code> sessions, verify each account&#x27;s identity, and retain refreshed credentials without changing the ambient CLI login (#4103). Thanks @Sogl!</li>
-<li>Notifications: opt-in reset alerts name the provider and session or weekly window, keep restored notices on the correct account, respect Hide personal info, and remember announced reset boundaries across refreshes and restarts (#4138). Thanks @zleo-ai!</li>
-</ul>
-<h3>Changed</h3>
-<ul>
-<li>Agent-aware Adaptive: use recent Codex rollout modification times to keep refreshes at five minutes even without a recognized live process, preserving consent and scan limits without reading rollout contents for activity (#4119, #4118). Thanks @hhh2210!</li>
-<li>Antigravity: restore OAuth quota requests for saved Google accounts with the shared Hub client identity (#4102). Thanks @oldcai!</li>
-<li>Docs: link the community codexbar-kde Plasma widget for Linux usage meters and agent-session views (#4117). Thanks @materemias!</li>
-<li>Costs: Claude and Vertex history does far less CPU work: unchanged history is not re-saved or re-priced, reports are not rebuilt when model pricing is unchanged, older transcripts and Claude/Vertex separation are scanned cheaply, and pricing refreshes keep historical fallback rates.</li>
-<li>Codex: cost scans reuse listing metadata, cache decoders, thread database discovery, and day keys, conversation titles load cheaply for large histories, and cached logs reconcile without extra filesystem probes.</li>
-<li>Less background work elsewhere: identifying local agent processes, importing browser sessions for Devin, MiniMax, and Windsurf, and Keychain preflight all use less CPU.</li>
-<li>Codex: reduce repeated Gatekeeper CPU use for unchanged standalone hardened-runtime CLIs on fully enforcing hosts, checking every architecture’s complete signature before reusing a verdict (#4078, #4080). Thanks @dustball!</li>
-</ul>
-<h3>Fixed</h3>
-<ul>
-<li>Codex: discover the current ChatGPT bundled CLI launcher and skip npm launchers with missing native payloads or unsafe Node discovery environments so managed login can use a working fallback (#4143). Thanks @Yuxin-Qiao!</li>
-<li>iCloud Sync: prevent cancelled or superseded sync applies and removed-record recovery from overwriting provider settings, preferences, fleet records, or newer sync metadata (#4161).</li>
-<li>Claude: retain an established CLI source after transient timeouts and loading stalls so Auto refreshes can retry without an unrelated missing-OAuth-credentials warning (#4129).</li>
-<li>Claude: exclude usage-insights tool names and percentages from quota and account parsing (#4083).</li>
-<li>Claude: keep configured MCP servers out of the direct <code>/usage</code> fallback (#4112). Thanks @sudoHG!</li>
-<li>Menu bar: show the remaining quota when only the third usage window is available, including Gemini Flash Lite-only accounts, through the shared metric fallback (#4128). Thanks @devYRPauli!</li>
-<li>Codex: finish cost scans with missing-parent forks while retaining their unmetered usage and restoring reporting for unaffected dates (#4140).</li>
-<li>Cursor: keep Linux serve refreshes authenticated when earlier HTTP responses leave stale cookies in the process session (#4137).</li>
-<li>Menu bar: apply explicit provider reordering to separate icons, including changes made in merged mode, while retaining stable identities and saved menu bar slots (#4125).</li>
-<li>Pi: include Amazon Bedrock history with regional catalog prices, price one-hour cache writes correctly, and refresh older cached estimates (#4121).</li>
-<li>iCloud Sync: recover a live Mac&#x27;s saves after its records are removed from another Mac, without resetting shared sync state (#4144).</li>
-<li>iCloud Sync: register for silent change notifications when the signed build supports push; release provisioning must enable that capability for automatic delivery (#4132).</li>
-<li>Claude: answer current and legacy CLI trust dialogs only in the isolated probe directory, reject redirected paths, and wait for real quota values when usage insights are visible (#4115, #4083). Thanks @sudoHG!</li>
-<li>Agent Sessions: keep sessions that are still running after an in-place CLI update deleted their binary, such as Claude Code sessions started before an auto-update, instead of dropping them from the menu and <code>codexbar sessions</code> (#4120). Thanks @slavakurilyak!</li>
-<li>OpenCode: restore migrated Console workspace quota and prepaid balance, preserve legacy sessions, and label 30-day spend without inventing a monthly spending limit (#4131, #4139). Thanks @luochen211!</li>
-<li>Claude: treat unmeasured session placeholders as unavailable while retaining real weekly quotas in menus and the CLI (#4107). Thanks @emanuelst!</li>
-<li>Claude: show the claude-swap executable field and its help beneath the enabled account toggle (#4122). Thanks @laitifranz!</li>
-<li>Claude: use a known model-scoped weekly quota for automatic and combined menu bar percentages when the regular quota windows are absent (#4126).</li>
-<li>Antigravity: exclude model IDs from local token totals, correct visible and reasoning output counts, and estimate safety-routed Gemini Flash usage (#4124). Thanks @urda!</li>
-<li>Antigravity: apply schema text limits per database so normal histories do not become partial after a few hundred sessions, and retain valid rows around oversized schemas (#4133). Thanks @urda!</li>
-</ul>
-<p><a href="https://github.com/steipete/CodexBar/blob/main/CHANGELOG.md">View full changelog</a></p>
-]]></description>
-            <enclosure url="https://github.com/steipete/CodexBar/releases/download/v0.71.0/CodexBar-macos-universal-0.71.0.zip" length="75550203" type="application/octet-stream" sparkle:edSignature="vSRWShc4bZkgc5SolfZ1IiRYTelNTOp9unX+Dg/E400w/S9og3bgBZGyITcZO3Ujtz2kx3rL+R9oadRweeJbDg=="/>
         </item>
         <item>
             <title>0.14.0</title>

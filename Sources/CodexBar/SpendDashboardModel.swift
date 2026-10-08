@@ -202,6 +202,13 @@ struct SpendDashboardModel: Equatable, Sendable {
             self.incompleteRequestCount > 0 || self.providers.contains(where: \.countsAreLowerBound)
         }
 
+        /// True when some sources reported a request count and at least one could not.
+        /// Missing request counts stay on this flag so token totals are not marked as floors.
+        var requestsAreLowerBound: Bool {
+            let counts = self.providers.map(\.requestCount)
+            return counts.contains { $0 != nil } && counts.contains { $0 == nil }
+        }
+
         var id: Date {
             self.day
         }
@@ -1044,11 +1051,13 @@ struct SpendDashboardModel: Equatable, Sendable {
                 }
                 return lhs.offset < rhs.offset
             }.map(\.element)
+            // Request totals keep every known count. A source that cannot count requests marks the
+            // day as a lower bound instead of erasing the counts from the other sources.
             result.append(DailySummary(
                 day: day,
                 providers: sortedRows,
                 totalTokens: Self.completeIntSum(providerRows.map(\.totalTokens)),
-                requestCount: Self.completeIntSum(providerRows.map(\.requestCount)),
+                requestCount: Self.knownIntSum(providerRows.map(\.requestCount)),
                 totalCost: totalCost))
             guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day) else { return [] }
             day = calendar.startOfDay(for: nextDay)
@@ -1339,7 +1348,7 @@ struct SpendDashboardModel: Equatable, Sendable {
         self.dayCount(in: self.commonCoverageInterval(summaries: summaries), calendar: calendar)
     }
 
-    private static func dayCount(in interval: ClosedRange<Date>?, calendar: Calendar) -> Int {
+    static func dayCount(in interval: ClosedRange<Date>?, calendar: Calendar) -> Int {
         guard let interval,
               let first = calendar.ordinality(of: .day, in: .era, for: interval.lowerBound),
               let last = calendar.ordinality(of: .day, in: .era, for: interval.upperBound)
@@ -1398,7 +1407,7 @@ struct SpendDashboardModel: Equatable, Sendable {
         return value
     }
 
-    private static func safeCostSum(_ values: [Double]) -> Double? {
+    static func safeCostSum(_ values: [Double]) -> Double? {
         guard !values.isEmpty else { return nil }
         var result = 0.0
         for value in values {
