@@ -72,8 +72,6 @@ enum CodexBarCLI {
                 self.runCacheClear(invocation.parsedValues)
             case ["cookie", "refresh"]:
                 await self.runCookieRefreshWithTermination(invocation.parsedValues)
-            case let path where path.first == "sync":
-                await self.runSync(path: path, values: invocation.parsedValues)
             case ["diagnose"]:
                 let signalMonitor = CLITerminationSignalMonitor { signalNumber in
                     CLITerminationSignalMonitor.terminateActiveHelpersAndReraise(signalNumber)
@@ -85,11 +83,11 @@ enum CodexBarCLI {
             case let path where path.first == "plugins":
                 await self.runPlugins(path: path, values: invocation.parsedValues)
             default:
-                Self.exit(
-                    code: .failure,
-                    message: "Unknown command",
-                    output: outputPreferences,
-                    kind: .args)
+                // UsageBar: fork commands (`sync`) dispatch here; unknown commands still exit.
+                await self.runForkCommand(
+                    path: invocation.path,
+                    values: invocation.parsedValues,
+                    output: outputPreferences)
             }
         } catch let error as CommanderProgramError {
             let exitCode: ExitCode = argv.first == "guard" ? .usage : .failure
