@@ -2,6 +2,9 @@
 # Headless GNOME Shell UI smoke for the UsageBar extension.
 # USAGEBAR_UI_SMOKE_NO_CLI=1 forces the missing-CLI onboarding state even when
 # a codexbar CLI is installed (honoured only during a smoke run).
+# CODEXBAR_BIN=linux/usagebar-gnome/tests/stub-codexbar runs against an offline
+# stub CLI; add STUB_CODEXBAR_SYNC=0 for one without Machine Sync (upstream's).
+# USAGEBAR_UI_SMOKE_EXPECT_SYNC=0|1 asserts which of the two the run sees.
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -89,5 +92,15 @@ printf 'Session log: %s\n' "$session_log_path"
 # again with them hidden so monogram marks are covered too.
 if [[ -z ${USAGEBAR_HIDE_PROVIDER_ICONS:-} ]]; then
     printf '\nRe-running the UI smoke with provider logos hidden\n'
-    USAGEBAR_HIDE_PROVIDER_ICONS=1 "$0" "$artifact_dir/no-logos"
+    USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 "$0" "$artifact_dir/no-logos"
+fi
+
+# Upstream's CLI has no Machine Sync: run once more against the offline stub
+# without it, so the popover must show no Machines tab and send no /sync/*.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    printf '\nRe-running the UI smoke against a CLI without Machine Sync\n'
+    CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
+        STUB_CODEXBAR_SYNC=0 USAGEBAR_UI_SMOKE_EXPECT_SYNC=0 \
+        USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
+        "$0" "$artifact_dir/no-machine-sync"
 fi
