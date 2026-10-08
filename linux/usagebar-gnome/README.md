@@ -120,14 +120,21 @@ result, GNOME log, and full-stage PNG screenshot under `/tmp`.
 ## Provider logos
 
 Provider logos live in `usagebar@felipearosr.github.io/icons/` for development
-checkouts only. The build submitted to extensions.gnome.org leaves them out
-(third-party trademarks); a provider without a logo file is drawn as a
-two-letter monogram on a badge in its brand color (`monogram.js`). Providers
-whose computed monograms would collide (Codex, Copilot and Codebuff all give
-"Co") get hand-picked ones from `MONOGRAM_OVERRIDES`, so every badge is unique. Set
-`USAGEBAR_HIDE_PROVIDER_ICONS=1` to see that build's look with the logos in
-place, e.g. `USAGEBAR_HIDE_PROVIDER_ICONS=1 ./linux/run-dev.sh`. The UI smoke
-test runs once with logos and once with them hidden.
+checkouts and the .deb/.rpm packages. The build submitted to
+extensions.gnome.org leaves them out (third-party trademarks). Without a logo:
+
+- where the logo stands alone (panel chips, the providers a Machine used), the
+  provider's full name is printed in its place, in its brand color lightened
+  or darkened to stay readable on the panel or popover (`brandtext.js`); names
+  over 18 characters are cut with an ellipsis;
+- where the name is already printed beside it (All tab rows, the detail
+  header, model rows, the cost dashboard), the logo is left out and the row
+  closes up. In the spend and chart legends, where the tinted logo was the
+  color key, the name takes the brand color instead.
+
+Set `USAGEBAR_HIDE_PROVIDER_ICONS=1` to see that build's look with the logos
+in place, e.g. `USAGEBAR_HIDE_PROVIDER_ICONS=1 ./linux/run-dev.sh`. The UI
+smoke test runs once with logos and once with them hidden.
 
 ## Files
 
@@ -135,6 +142,9 @@ test runs once with logos and once with them hidden.
   supervisor (Gio.Subprocess), Soup 3 HTTP client, stale-merge (port of the
   Rust `merge_stale`), panel indicator + popover UI (St widgets), quota
   notifications.
+- `usagebar@felipearosr.github.io/brandtext.js` — brand-colored provider
+  names for builds without logos: contrast-safe tints of each provider's
+  color (pure; tested in `tests/brandtext.test.mjs`).
 - `usagebar@felipearosr.github.io/authlogin.js` — which provider errors are
   auth failures, each provider's login command, and the terminal launcher
   order for the error banner's "Log in" button (pure; tested in

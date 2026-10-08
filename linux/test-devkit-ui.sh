@@ -89,7 +89,7 @@ printf 'Log: %s\n' "$log_path"
 printf 'Session log: %s\n' "$session_log_path"
 
 # The extensions.gnome.org build ships without provider logos; run the smoke
-# again with them hidden so monogram marks are covered too.
+# again with them hidden so the provider names shown instead are covered too.
 if [[ -z ${USAGEBAR_HIDE_PROVIDER_ICONS:-} ]]; then
     printf '\nRe-running the UI smoke with provider logos hidden\n'
     USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 "$0" "$artifact_dir/no-logos"

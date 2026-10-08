@@ -24,6 +24,16 @@
   margin-left: 1px;
 }
 
+/* Builds without provider logos print the provider's name in their place,
+   in its brand color (set inline). */
+.usagebar-provider-name {
+  font-weight: bold;
+}
+
+.usagebar-chip-name {
+  font-size: 10.5pt;
+}
+
 .usagebar-dot {
   border-radius: 4px;
 }
@@ -682,6 +692,10 @@
 
 .usagebar-machine-spend {
   font-size: 10pt;
+}
+
+.usagebar-machine-provider {
+  font-size: 9pt;
 }
 
 .usagebar-machine-model {
