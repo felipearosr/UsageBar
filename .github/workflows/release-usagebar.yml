@@ -8,6 +8,9 @@ name: Release UsageBar
 #            upstream's tarball layout, smoke-tested, then (final releases
 #            only) the .deb/.rpm packages and their container smoke tests.
 #   srpm     final releases only: a source RPM with both arches' tarballs.
+#   extension
+#            the GNOME extension zip (the extensions.gnome.org build), after
+#            the extension's Node and lint tests.
 #   verify   linux/release/verify-assets.sh over the whole asset set.
 #   publish  tags only, after verify: the GitHub release (pre-release for a
 #            semver pre-release).
@@ -18,7 +21,7 @@ name: Release UsageBar
 # release-triggered workflows (release-cli.yml and its Homebrew tap dispatch,
 # release-linux-desktop.yml) don't fire for it; see linux/README.md.
 #
-# Adding an asset (extension zip #46, tray #47): build it in its own job (or a
+# Adding an asset (tray #47, say): build it in its own job (or a
 # step of package), upload it in an artifact named usagebar-*, add its job to
 # verify's needs, and teach verify-assets.sh to expect and check it. Its name
 # comes from the resolve job's outputs.
@@ -55,6 +58,7 @@ jobs:
       cli_asset_x86_64: ${{ steps.resolve.outputs.cli_asset_x86_64 }}
       cli_asset_aarch64: ${{ steps.resolve.outputs.cli_asset_aarch64 }}
       extension_asset: ${{ steps.resolve.outputs.extension_asset }}
+      extension_version_name: ${{ steps.resolve.outputs.extension_version_name }}
       tray_asset_x86_64: ${{ steps.resolve.outputs.tray_asset_x86_64 }}
       tray_asset_aarch64: ${{ steps.resolve.outputs.tray_asset_aarch64 }}
     steps:
@@ -281,12 +285,42 @@ jobs:
           path: ${{ runner.temp }}/srpm/*
           if-no-files-found: error
 
+  # The GNOME extension zip: the extensions.gnome.org build (allowlisted
+  # files, no brand logos, lint must pass) with metadata.json "version-name"
+  # set to the release version. The checked-in metadata.json is unchanged.
+  extension:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Extension unit tests
+        run: node --test linux/usagebar-gnome/tests/*.test.mjs
+
+      - name: EGO ZIP lint tests
+        run: python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'
+
+      - name: Build extension zip
+        env:
+          VERSION_NAME: ${{ needs.resolve.outputs.extension_version_name }}
+          ASSET: ${{ needs.resolve.outputs.extension_asset }}
+        run: linux/release/package-extension.sh "$VERSION_NAME" "$RUNNER_TEMP/extension" "$ASSET"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: usagebar-extension
+          path: ${{ runner.temp }}/extension/*
+          if-no-files-found: error
+
   # The release asset verifier over everything publish would attach. srpm is
   # skipped for pre-releases; any failed or cancelled job skips verify, and
   # with it publish.
   verify:
-    needs: [resolve, package, srpm]
-    if: ${{ !cancelled() && needs.package.result == 'success' && (needs.srpm.result == 'success' || needs.srpm.result == 'skipped') }}
+    needs: [resolve, package, srpm, extension]
+    if: ${{ !cancelled() && needs.package.result == 'success' && (needs.srpm.result == 'success' || needs.srpm.result == 'skipped') && needs.extension.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -339,7 +373,7 @@ jobs:
             echo "Based on [CodexBar $UPSTREAM_BASE](https://github.com/steipete/CodexBar/releases/tag/$UPSTREAM_TAG)."
             echo
             if [[ "$PRERELEASE" == true ]]; then
-              echo "**Pre-release** for testing: only the CLI tarballs, no .deb/.rpm packages."
+              echo "**Pre-release** for testing: the CLI tarballs and the extension zip, no .deb/.rpm packages."
               echo
             fi
             if [[ "$DISTRO_PACKAGES" == true ]]; then

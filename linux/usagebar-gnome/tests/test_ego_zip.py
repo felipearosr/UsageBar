@@ -93,6 +93,18 @@ class EgoZipTests(unittest.TestCase):
     def test_version_key_fails(self):
         self.assert_error(self.fixture('version', self.metadata_with(version=3)), '"version"')
 
+    def test_version_name_with_hyphen_fails(self):
+        self.assert_error(self.fixture('vname-hyphen', self.metadata_with(**{'version-name': '1.2.0-rc.1'})),
+                          'version-name "1.2.0-rc.1"')
+
+    def test_version_name_too_long_fails(self):
+        self.assert_error(self.fixture('vname-long', self.metadata_with(**{'version-name': '1.2.0 rc.1 ' + 'x' * 8})),
+                          'must be 1-16 letters')
+
+    def test_prerelease_version_name_passes(self):
+        report = self.fixture('vname-rc', self.metadata_with(**{'version-name': '1.2.0 rc.1'}))
+        self.assertEqual(report.errors, [])
+
     def test_unknown_metadata_key_fails(self):
         self.assert_error(self.fixture('key', self.metadata_with(homepage='x')), 'unknown key "homepage"')
 

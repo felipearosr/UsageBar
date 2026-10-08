@@ -64,6 +64,8 @@ DONATION_KEYS = {
     'patreon', 'paypal',
 }
 SESSION_MODES = {'user', 'unlock-dialog'}
+# https://gjs.guide/extensions/overview/anatomy.html#version-name
+VERSION_NAME_RE = re.compile(r'^(?!^[. ]+$)[a-zA-Z0-9 .]{1,16}$')
 UUID_RE = re.compile(r'^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$')
 SCHEMA_ID_BASE = 'org.gnome.shell.extensions.'
 SCHEMA_PATH_BASE = '/org/gnome/shell/extensions/'
@@ -345,6 +347,11 @@ def lint_metadata(files, report):
         report.error('metadata.json', '"version" is set by extensions.gnome.org; drop it (use "version-name")')
     for key in sorted(meta.keys() - METADATA_REQUIRED - METADATA_OPTIONAL - {'version'}):
         report.error('metadata.json', f'unknown key "{key}"')
+    version_name = meta.get('version-name')
+    if version_name is not None and (not isinstance(version_name, str)
+                                     or not VERSION_NAME_RE.match(version_name)):
+        report.error('metadata.json', f'version-name "{version_name}" must be 1-16 letters, digits, '
+                     'spaces or periods, with at least one letter or digit')
     uuid = meta.get('uuid', '')
     if not isinstance(uuid, str) or not UUID_RE.match(uuid):
         report.error('metadata.json', f'uuid "{uuid}" must look like extension-id@namespace')

@@ -57,8 +57,19 @@ by searching for UsageBar in Extension Manager, and then install the
 [command-line helper](#the-command-line-helper) separately, because the
 extensions.gnome.org version doesn't include it.
 
-Until then, use the [UsageBar package](#the-usagebar-package), or for a
-development setup from a checkout, see [BOOTSTRAP.md](BOOTSTRAP.md).
+Until then, use the [UsageBar package](#the-usagebar-package), or install the
+same zip extensions.gnome.org will get from a release:
+
+1. Download `usagebar@felipearosr.github.io-<version>.shell-extension.zip`
+   and its `.sha256` from
+   [Releases](https://github.com/felipearosr/UsageBar/releases), then check
+   it: `sha256sum -c usagebar@felipearosr.github.io-*.shell-extension.zip.sha256`.
+2. `gnome-extensions install --force usagebar@felipearosr.github.io-*.shell-extension.zip`
+3. Log out and back in once, then
+   `gnome-extensions enable usagebar@felipearosr.github.io`.
+4. Install the [command-line helper](#the-command-line-helper).
+
+For a development setup from a checkout, see [BOOTSTRAP.md](BOOTSTRAP.md).
 
 ## The command-line helper
 
@@ -208,7 +219,7 @@ the same config.
 | Installed with | Remove with |
 |---|---|
 | UsageBar package | `sudo apt remove usagebar` or `sudo dnf remove usagebar` |
-| extensions.gnome.org | Extension Manager, or `gnome-extensions uninstall usagebar@felipearosr.github.io` |
+| extensions.gnome.org or the release zip | Extension Manager, or `gnome-extensions uninstall usagebar@felipearosr.github.io` |
 | Install script | `curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh \| sh -s -- --uninstall` (add the same `--system` or `--prefix` you installed with) |
 | `usagebar-cli` .deb | `sudo apt remove usagebar-cli` |
 | `usagebar-cli` .rpm | `sudo dnf remove usagebar-cli` |

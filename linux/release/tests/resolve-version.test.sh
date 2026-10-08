@@ -74,6 +74,7 @@ cli_arches=x86_64 aarch64
 cli_asset_x86_64=usagebar-cli-1.1.0-linux-x86_64.tar.gz
 cli_asset_aarch64=usagebar-cli-1.1.0-linux-aarch64.tar.gz
 extension_asset=usagebar@felipearosr.github.io-1.1.0.shell-extension.zip
+extension_version_name=1.1.0
 tray_asset_x86_64=UsageBarTray-1.1.0-linux-x86_64.tar.gz
 tray_asset_aarch64=UsageBarTray-1.1.0-linux-aarch64.tar.gz" \
     --metadata "$release" usagebar-v1.1.0
@@ -87,6 +88,10 @@ expect_key "pre-release skips distro packages" distro_packages false --metadata 
 expect_key "pre-release CLI version string" cli_version 0.72.0+usagebar.1.2.0-rc.1 --metadata "$rc" usagebar-v1.2.0-rc.1
 expect_key "pre-release asset names carry the full semver" \
     cli_asset_x86_64 usagebar-cli-1.2.0-rc.1-linux-x86_64.tar.gz --metadata "$rc" usagebar-v1.2.0-rc.1
+expect_key "pre-release extension version-name has no hyphen" \
+    extension_version_name '1.2.0 rc.1' --metadata "$rc" usagebar-v1.2.0-rc.1
+expect_key "every hyphen becomes a space in the version-name" \
+    extension_version_name '2.0.0 beta 2' --metadata "$(metadata 2.0.0-beta-2 0.72.0)"
 expect_key "alphanumeric pre-release" prerelease true --metadata "$(metadata 2.0.0-beta 0.72.0)" usagebar-v2.0.0-beta
 
 expect_key "the checked-in metadata resolves" tag "usagebar-v$(sed -n 's/^USAGEBAR_VERSION=//p' "$here/../usagebar-release.txt")"
@@ -105,6 +110,8 @@ for bad in 1.1 1.1.0.0 01.1.0 1.01.0 v1.1.0 1.1.0- 1.1.0-rc..1 1.1.0-rc.01 1.1.0
     '1.1.0-rc 1' ''; do
     expect_failure "bad semver '$bad'" "is not a semver" --metadata "$release" "usagebar-v$bad"
 done
+expect_failure "version too long for the extension's version-name" "too long for the extension's version-name" \
+    --metadata "$(metadata 10.20.30-alpha.10 0.72.0)"
 expect_failure "bad semver in metadata" "USAGEBAR_VERSION=1.1 " --metadata "$(metadata 1.1 0.69.0)"
 expect_failure "bad upstream base" "UPSTREAM_BASE=v0.69.0" --metadata "$(metadata 1.1.0 v0.69.0)"
 missing=$work/missing.env

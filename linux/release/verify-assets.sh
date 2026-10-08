@@ -10,15 +10,20 @@
 #
 # Checks:
 #   - every asset the resolver names for a released component is present
-#     (today: the CLI tarball for each of cli_arches);
+#     (the CLI tarball for each of cli_arches, the extension zip);
 #   - no asset of a known kind carries another name (a stale version, say);
 #   - every file has a <file>.sha256 in sha256sum format naming that bare
 #     file, every .sha256 has its file, and every checksum matches;
 #   - each CLI tarball has upstream's layout (CodexBarCLI, a codexbar symlink
 #     to it, VERSION, CodexBar_CodexBarCore.bundle with files, nothing else),
-#     VERSION says cli_version, and CodexBarCLI is an ELF for its arch.
+#     VERSION says cli_version, and CodexBarCLI is an ELF for its arch;
+#   - the GNOME extension zip holds metadata.json, extension.js, prefs.js,
+#     stylesheet.css, the settings schema XML, LICENSE and icons; its
+#     metadata.json has the asset's UUID and "version-name" says
+#     extension_version_name; and it passes the extensions.gnome.org lint
+#     (linux/usagebar-gnome/tools/ego-zip.py) with no errors.
 #
-# Adding a component (extension zip, tray tarballs): register its assets in
+# Adding a component (the tray tarballs, say): register its assets in
 # the "Expected assets" section with a check_* function, and its name pattern
 # in known_patterns.
 set -euo pipefail
@@ -50,7 +55,7 @@ require() {
     done
 }
 value() { printf '%s' "${resolved[$1]}"; }
-require tag cli_version cli_arches
+require tag version cli_version cli_arches extension_asset extension_version_name
 read -r -a cli_arches <<< "$(value cli_arches)"
 for arch in "${cli_arches[@]}"; do require "cli_asset_$arch"; done
 
@@ -130,15 +135,61 @@ check_cli_tarball() { # check_cli_tarball ASSET ARCH
     fi
 }
 
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ego_zip=$here/../usagebar-gnome/tools/ego-zip.py
+
+check_extension_zip() { # check_extension_zip ASSET
+    local asset=$1 path=$dir/$1 uuid line lint
+    uuid=${asset%"-$(value version).shell-extension.zip"}
+    # Prints one problem per line; GNOME 44+ compiles the schema XML on install.
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && problem "$asset: $line"
+    done < <(python3 - "$path" "$uuid" "$(value extension_version_name)" <<'PY'
+import json, sys, zipfile
+path, uuid, version_name = sys.argv[1:]
+try:
+    with zipfile.ZipFile(path) as zf:
+        names = set(zf.namelist())
+        raw = zf.read('metadata.json') if 'metadata.json' in names else None
+except (OSError, zipfile.BadZipFile):
+    print('not a readable zip')
+    sys.exit()
+for required in ('metadata.json', 'extension.js', 'prefs.js', 'stylesheet.css', 'LICENSE'):
+    if required not in names:
+        print(f'no {required}')
+if not any(n.startswith('icons/') and not n.endswith('/') for n in names):
+    print('no icons')
+if raw is None:
+    sys.exit()
+try:
+    meta = json.loads(raw)
+except ValueError:
+    print('metadata.json is not valid JSON')
+    sys.exit()
+if meta.get('uuid') != uuid:
+    print(f"metadata.json uuid is '{meta.get('uuid')}', expected '{uuid}'")
+if meta.get('version-name') != version_name:
+    print(f"metadata.json version-name is '{meta.get('version-name')}', expected '{version_name}'")
+schema = meta.get('settings-schema')
+if not schema or f'schemas/{schema}.gschema.xml' not in names:
+    print(f'no settings schema XML (schemas/{schema}.gschema.xml)')
+PY
+    )
+    if ! lint=$(python3 "$ego_zip" lint "$path" 2>&1); then
+        problem "$asset: fails the extensions.gnome.org lint:"$'\n'"$(grep -E '^(error|FAIL):' <<< "$lint")"
+    fi
+}
+
 # Expected assets: name -> "checker args".
 declare -A expected=()
 for arch in "${cli_arches[@]}"; do
     expected[$(value "cli_asset_$arch")]="check_cli_tarball $arch"
 done
+expected[$(value extension_asset)]=check_extension_zip
 
 # Name patterns of every asset kind the resolver names. A file matching one
 # that isn't expected is misnamed or from another version.
-known_patterns=('usagebar-cli-*-linux-*.tar.gz')
+known_patterns=('usagebar-cli-*-linux-*.tar.gz' '*.shell-extension.zip')
 
 # Presence and per-asset checks.
 for asset in "${!expected[@]}"; do
