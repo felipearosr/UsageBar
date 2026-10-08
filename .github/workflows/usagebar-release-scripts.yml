@@ -1,0 +1,43 @@
+name: UsageBar release scripts
+
+# Tests for the scripts release-usagebar.yml runs (linux/release/): the
+# release version resolver and the release metadata it reads. Runs whenever
+# those scripts, the metadata or the release workflow change.
+
+on:
+  pull_request:
+    paths:
+      - 'linux/release/**'
+      - '.github/workflows/release-usagebar.yml'
+      - '.github/workflows/usagebar-release-scripts.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'linux/release/**'
+      - '.github/workflows/release-usagebar.yml'
+      - '.github/workflows/usagebar-release-scripts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usagebar-release-scripts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck -x linux/release/*.sh linux/release/tests/*.sh
+
+      - name: Release version resolver tests
+        run: linux/release/tests/resolve-version.test.sh
+
+      - name: Checked-in release metadata resolves
+        run: linux/release/resolve-version.sh

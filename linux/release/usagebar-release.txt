@@ -1,0 +1,11 @@
+# UsageBar release metadata, read by linux/release/resolve-version.sh.
+# Plain KEY=value lines: the resolver parses them and never sources this file.
+#
+# USAGEBAR_VERSION  The UsageBar release this commit becomes (semver: 1.1.0,
+#                   1.2.0-rc.1). Release prep bumps it, and a usagebar-v<version>
+#                   tag must match it or the release workflow stops.
+# UPSTREAM_BASE     The steipete/CodexBar release last merged into the fork
+#                   (x.y.z, no "v"). Upstream merge PRs bump it
+#                   (linux/upstream/RUNBOOK.md, step 1).
+USAGEBAR_VERSION=1.0.0
+UPSTREAM_BASE=0.72.0
