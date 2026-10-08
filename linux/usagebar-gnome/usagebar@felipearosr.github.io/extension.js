@@ -18,6 +18,7 @@ import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Soup from 'gi://Soup';
 import Clutter from 'gi://Clutter';
+import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -28,7 +29,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {PROVIDER_META} from './providermeta.js';
-import {monogramBadge} from './monogram.js';
+import {capName, readableBrandColor, surfaceColor} from './brandtext.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
     buildCostDateRange,
@@ -1265,24 +1266,39 @@ function providerLogo(dir, provider) {
     }
 }
 
-// Brand-colored monogram badge standing in for a missing logo.
-function providerMonogramActor(provider, size) {
-    const badge = monogramBadge(PROVIDER_META[provider], provider, size);
-    const actor = new St.Bin({
-        style_class: 'usagebar-monogram',
-        style: `background-color: ${badge.background}; border-radius: ${badge.radiusPx}px; ` +
-            `min-width: ${size}px;`,
-        height: size,
+// The color text on `actor` sits on (see surfaceColor); `fallback` when the
+// theme node is not available yet.
+function surfaceColorOf(actor, fallback = '#000000') {
+    try {
+        const node = actor.get_theme_node();
+        return surfaceColor(node.get_background_color(), node.get_foreground_color());
+    } catch {
+        return fallback;
+    }
+}
+
+// The provider's full name in its brand color, standing in for a missing
+// logo where nothing else names the provider. Names past NAME_MAX_CHARS end
+// in an ellipsis; shorter ones never shrink, so a crowded panel cannot
+// squeeze them down to "…".
+function providerNameLabel(provider, name, surface, styleClass) {
+    const label = new St.Label({
+        text: capName(name),
+        style_class: `usagebar-provider-name ${styleClass}`,
+        style: providerNameStyle(provider, surface),
+        accessible_name: name,
         y_align: Clutter.ActorAlign.CENTER,
-        child: new St.Label({
-            text: badge.text,
-            style: `color: ${badge.foreground}; font-size: ${badge.fontPx}px; font-weight: bold;`,
-            x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.CENTER,
-        }),
     });
-    actor._usagebarMonogram = badge.text;
-    return actor;
+    label.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+    return label;
+}
+
+function providerNameStyle(provider, surface) {
+    return `color: ${readableBrandColor(PROVIDER_META[provider]?.color, surface)};`;
+}
+
+function chipName(chip) {
+    return chip.name ?? PROVIDER_META[chip.provider]?.name ?? chip.provider;
 }
 
 // ---------- indicator ----------
@@ -1520,6 +1536,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             hasText: !!chip.text,
             box: new St.BoxLayout({style_class: 'usagebar-chip'}),
             dot: null,
+            name: null,
             ring: null,
             label: null,
             state: {percent: chip.percent, sev: chip.sev},
@@ -1534,14 +1551,20 @@ class UsageBarIndicator extends PanelMenu.Button {
             entry.box.add_child(entry.dot);
         } else {
             const gicon = this._panelIcon(chip.provider);
-            entry.box.add_child(gicon
-                ? new St.Icon({
+            if (gicon) {
+                entry.box.add_child(new St.Icon({
                     gicon,
                     icon_size: 14,
                     style_class: 'usagebar-chip-icon',
                     y_align: Clutter.ActorAlign.CENTER,
-                })
-                : providerMonogramActor(chip.provider, 14));
+                }));
+            } else if (chip.mode !== 'name-percent') {
+                // No logo in this build: the name stands in for it (the
+                // name-percent label already carries it).
+                entry.name = providerNameLabel(chip.provider, chipName(chip),
+                    surfaceColorOf(Main.panel), 'usagebar-chip-name');
+                entry.box.add_child(entry.name);
+            }
 
             if (chip.mode !== 'percent') {
                 entry.ring = new St.DrawingArea({
@@ -1652,6 +1675,11 @@ class UsageBarIndicator extends PanelMenu.Button {
                     entry.dot.style_class = `usagebar-dot usagebar-bg-${chip.sev}`;
                 if (entry.label)
                     entry.label.text = chip.text;
+                if (entry.name) {
+                    entry.name.text = capName(chipName(chip));
+                    entry.name.accessible_name = chipName(chip);
+                    entry.name.set_style(providerNameStyle(chip.provider, surfaceColorOf(Main.panel)));
+                }
                 entry.ring?.queue_repaint();
             }
             ordered.push(entry.box);
@@ -2719,6 +2747,38 @@ export default class UsageBarExtension extends Extension {
                 state.height > 0 && state.paintOpacity > 0 && onStage, {...state, onStage});
         };
 
+        // Provider marks: logos when icons/ is present. Without them
+        // (USAGEBAR_HIDE_PROVIDER_ICONS=1, the extensions.gnome.org build) a
+        // mark standing alone becomes the provider's name, and one printed
+        // next to the name is left out.
+        const logosHidden = GLib.getenv('USAGEBAR_HIDE_PROVIDER_ICONS') === '1';
+        const descendants = actor => actor
+            ? [actor, ...actor.get_children().flatMap(descendants)] : [];
+        const noGenericIcons = (name, root) => assertion(name, !descendants(root).some(actor =>
+            actor instanceof St.Icon && actor.icon_name === 'application-x-executable-symbolic'));
+        // A logo is any icons/ file other than our own usagebar-* glyphs.
+        const isLogo = actor => actor instanceof St.Icon &&
+            actor.gicon instanceof Gio.FileIcon &&
+            actor.gicon.get_file().get_parent()?.get_basename() === 'icons' &&
+            !(actor.gicon.get_file().get_basename() ?? '').startsWith('usagebar-');
+        const nameMarks = root => descendants(root)
+            .filter(actor => actor.has_style_class_name?.('usagebar-provider-name'))
+            .map(actor => actor.text);
+        // `names`: the provider names `root` should print in place of logos.
+        const markAssertions = (where, root, names) => {
+            const shown = nameMarks(root);
+            const out = [noGenericIcons(`${where} has no generic icons`, root)];
+            if (logosHidden) {
+                out.push(assertion(`${where} draws no logos`, !descendants(root).some(isLogo)));
+                out.push(assertion(`${where} names providers in place of logos`,
+                    shown.length === names.length && names.every(name => shown.includes(name)),
+                    {expected: names, actual: shown}));
+            } else {
+                out.push(assertion(`${where} prints no provider names in place of logos`,
+                    shown.length === 0, {actual: shown}));
+            }
+            return out;
+        };
         // Machines tab against a fixed GET /sync/status payload: two Machines
         // active at once, then a failed refresh, then unpaired.
         const machinesSmoke = (assertions, done) => {
@@ -2768,11 +2828,8 @@ export default class UsageBarExtension extends Extension {
                         cards.every(card => card._usagebarDot.has_style_class_name('usagebar-machine-dot-active'))));
                     assertions.push(assertion('fresh data is not greyed',
                         box?._usagebarContent.opacity === 255));
-                    assertions.push(noGenericIcons('Machines tab has no generic icons', box));
-                    if (logosHidden) {
-                        assertions.push(assertion('Machines tab shows monograms',
-                            descendants(box).some(actor => actor._usagebarMonogram)));
-                    }
+                    assertions.push(...markAssertions('Machines tab', box, logosHidden
+                        ? ['Claude', 'Codex'] : []));
                 } catch (error) {
                     done(error);
                     return;
@@ -2896,32 +2953,32 @@ export default class UsageBarExtension extends Extension {
             });
         };
 
-        // Provider marks: logos when icons/ is present, brand-colored
-        // monograms when it is not (USAGEBAR_HIDE_PROVIDER_ICONS=1).
-        const logosHidden = GLib.getenv('USAGEBAR_HIDE_PROVIDER_ICONS') === '1';
-        const descendants = actor => actor
-            ? [actor, ...actor.get_children().flatMap(descendants)] : [];
-        const noGenericIcons = (name, root) => assertion(name, !descendants(root).some(actor =>
-            actor instanceof St.Icon && actor.icon_name === 'application-x-executable-symbolic'));
-        const markSmoke = (assertions, done) => {
-            const providers = ['claude', 'codex', 'opencodego', 'alibabatokenplan'];
+        // Chips in batches small enough for the 1024px headless panel, so
+        // nothing is squeezed in the screenshots.
+        const markBatches = [['claude', 'codex'], ['alibabatokenplan'], ['opencodego', 'gemini']];
+        const markSmoke = (assertions, done, batch = 0) => {
+            const providers = markBatches[batch];
             let marks;
             try {
-                this._indicator._setPanelText(providers.map(provider => ({
-                    provider, percent: 40, hasUsage: true, text: '40%', sev: 'ok', mode: 'ring-percent',
-                })));
-                // Checked before any live render can replace the fixture chips.
+                this._panelFixture = providers.map(provider => provider === 'gemini'
+                    ? {provider, percent: 40, hasUsage: true, text: 'Gemini 40%', sev: 'ok', mode: 'name-percent'}
+                    : {provider, percent: 40, hasUsage: true, text: '40%', sev: 'ok', mode: 'ring-percent'});
+                this._indicator._setPanelText(this._panelFixture);
                 marks = new Map(providers.map(provider => [provider,
                     this._indicator._panelEntries.get(provider)?.box.get_first_child()]));
                 for (const [provider, mark] of marks) {
-                    if (logosHidden || provider === 'alibabatokenplan') {
-                        assertions.push(assertion(`${provider} panel chip shows a monogram`,
-                            typeof mark?._usagebarMonogram === 'string' &&
-                            mark._usagebarMonogram.length > 0,
-                            {actual: mark?._usagebarMonogram ?? null}));
+                    const name = PROVIDER_META[provider].name;
+                    if (provider === 'gemini' && logosHidden) {
+                        assertions.push(assertion('name-percent chip prints its name once',
+                            !mark?.has_style_class_name?.('usagebar-provider-name') &&
+                            this._indicator._panelEntries.get(provider)?.label?.text === 'Gemini 40%'));
+                    } else if (logosHidden || provider === 'alibabatokenplan') {
+                        assertions.push(assertion(`${provider} panel chip shows its name`,
+                            mark instanceof St.Label && mark.has_style_class_name('usagebar-provider-name') &&
+                            mark.text === capName(name) && /color: #[0-9a-f]{6}/.test(mark.get_style() ?? ''),
+                            {actual: mark?.text ?? null, style: mark?.get_style?.() ?? null}));
                     } else {
-                        assertions.push(assertion(`${provider} panel chip shows its logo`,
-                            mark instanceof St.Icon && !!mark.gicon));
+                        assertions.push(assertion(`${provider} panel chip shows its logo`, isLogo(mark)));
                     }
                 }
                 assertions.push(noGenericIcons('panel chips have no generic icons',
@@ -2938,11 +2995,100 @@ export default class UsageBarExtension extends Extension {
                     done(error);
                     return;
                 }
-                capture(logosHidden ? 'panel-monograms.png' : 'panel-logos.png', () => {
+                capture(`${logosHidden ? 'panel-names' : 'panel-logos'}-${batch + 1}.png`, () => {
                     this._indicator._setPanelText([]);
+                    if (batch + 1 < markBatches.length) {
+                        markSmoke(assertions, done, batch + 1);
+                        return;
+                    }
+                    this._panelFixture = null;
                     this._render();
                     done();
                 });
+            });
+        };
+
+        // The popover's All tab, then one provider's detail view, over fixture
+        // rows (the offline stub CLI reports none); runs after the cost
+        // smoke so the All tab's spend summary has data too.
+        const popoverSmoke = (assertions, done) => {
+            const liveRows = this._rows;
+            const done_ = error => {
+                this._rows = liveRows;
+                this._selectedProvider = null;
+                this._render();
+                done(error);
+            };
+            const fixtureCosts = this._costs;
+            this._indicator._closeCostPanel();
+            this._indicator.menu.open();
+            const allTab = () => {
+                let rows;
+                try {
+                    const box = this._indicator._detailBox;
+                    rows = descendants(box).filter(actor => actor._usagebarRowState);
+                    assertions.push(assertion('All tab lists providers', rows.length > 0,
+                        {actual: rows.length}));
+                    assertions.push(...markAssertions('All tab', box, []));
+                    if (logosHidden) {
+                        assertions.push(assertion('All tab rows leave out the icon slot',
+                            !descendants(box).some(actor =>
+                                actor.has_style_class_name?.('usagebar-compact-icon-wrap'))));
+                    }
+                } catch (error) {
+                    done_(error);
+                    return;
+                }
+                capture('popover-all.png', () => {
+                    if (!rows.length) {
+                        this._indicator.menu.close();
+                        done_();
+                        return;
+                    }
+                    this._selectedProvider = rows[0]._usagebarRowState.provider;
+                    this._render();
+                    later(300, () => {
+                        try {
+                            const box = this._indicator._detailBox;
+                            assertions.push(...markAssertions('provider detail', box, []));
+                            const head = descendants(box)
+                                .find(actor => actor.has_style_class_name?.('usagebar-detail-head'));
+                            assertions.push(painted('provider detail header is painted', head));
+                            if (logosHidden) {
+                                assertions.push(assertion('provider detail header leaves out the icon slot',
+                                    !descendants(head).some(actor =>
+                                        actor.has_style_class_name?.('usagebar-compact-icon-wrap'))));
+                            }
+                        } catch (error) {
+                            done_(error);
+                            return;
+                        }
+                        capture('popover-detail.png', () => {
+                            this._selectedProvider = null;
+                            this._indicator.menu.close();
+                            done_();
+                        });
+                    });
+                });
+            };
+            // Opening refetches from the CLI; install the fixtures after that.
+            later(500, () => {
+                this._rows = [
+                    {provider: 'claude', usage: {primary: {usedPercent: 42}, secondary: {usedPercent: 18}}},
+                    {provider: 'codex', usage: {primary: {usedPercent: 73}}},
+                    {provider: 'opencodego', usage: {primary: {usedPercent: 12}}},
+                    {provider: 'alibabatokenplan', usage: {primary: {usedPercent: 95}}},
+                ];
+                if (this._costs !== fixtureCosts) {
+                    this._costs = fixtureCosts;
+                    this._costVersion++;
+                    this._costOverviewReports = {};
+                    this._costOverviewCache.clear();
+                }
+                this._view = 'providers';
+                this._selectedProvider = null;
+                this._render();
+                later(300, () => allTab());
             });
         };
 
@@ -3023,11 +3169,10 @@ export default class UsageBarExtension extends Extension {
                 assertions.push(assertion('overview row tracks hover',
                     compact._usagebarRowState.rowBox.reactive === true &&
                     compact._usagebarRowState.rowBox.track_hover === true));
-                assertions.push(noGenericIcons('overview row has no generic icon', compact));
-                if (logosHidden) {
-                    assertions.push(assertion('overview row shows a monogram',
-                        descendants(compact).some(actor => actor._usagebarMonogram)));
-                }
+                assertions.push(...markAssertions('overview row', compact, []));
+                assertions.push(assertion(logosHidden
+                    ? 'overview row leaves out the icon slot' : 'overview row draws its logo',
+                    descendants(compact).some(isLogo) === !logosHidden));
                 compact.destroy();
                 const trendReport = {
                     historyDays: COST_HISTORY_DAYS,
@@ -3082,13 +3227,8 @@ export default class UsageBarExtension extends Extension {
                         assertions.push(painted('Tokens tab is painted', refs?.metricButtons.get('tokens')));
                         assertions.push(painted('Model tab is painted', refs?.modelButton));
                         assertions.push(painted('Day tab is painted', refs?.dayButton));
-                        assertions.push(noGenericIcons('cost dashboard has no generic icons',
-                            this._indicator._costPanel));
-                        if (logosHidden) {
-                            assertions.push(assertion('cost dashboard legends show monograms',
-                                descendants(this._indicator._costPanel)
-                                    .some(actor => actor._usagebarMonogram)));
-                        }
+                        assertions.push(...markAssertions('cost dashboard',
+                            this._indicator._costPanel, []));
                         assertions.push(assertion('chart is capped at four providers',
                             refs?.chartProviderCount === 4,
                             {actual: refs?.chartProviderCount ?? null}));
@@ -3110,7 +3250,15 @@ export default class UsageBarExtension extends Extension {
                                             this._indicator._costPanel._usagebarRangeDays === 7));
                                         assertions.push(painted('selected 7-day filter remains painted',
                                             next?.rangeButtons.get(7)));
-                                        finish(assertions);
+                                        popoverSmoke(assertions, error => {
+                                            if (error) {
+                                                finish(assertions, error);
+                                                return;
+                                            }
+                                            // The final screenshot is of the dashboard.
+                                            this._showCostPanel(this._indicator, this._costOverview(30), 30);
+                                            later(400, () => finish(assertions));
+                                        });
                                     } catch (error) {
                                         finish(assertions, error);
                                     }
@@ -3189,6 +3337,7 @@ export default class UsageBarExtension extends Extension {
         }
         return {
             provider: row.provider,
+            name: this._displayName(row.provider),
             percent: worst ?? 0,
             hasUsage: worst !== null,
             text,
@@ -3210,7 +3359,8 @@ export default class UsageBarExtension extends Extension {
             chipRows = [chipRows.reduce((best, row) =>
                 (worstPercent(row) ?? -1) > (worstPercent(best) ?? -1) ? row : best)];
         }
-        this._indicator._setPanelText(chipRows.map(row => this._chipFor(row)));
+        // The UI smoke pins fixture chips while it inspects the panel.
+        this._indicator._setPanelText(this._panelFixture ?? chipRows.map(row => this._chipFor(row)));
 
         this._indicator.setUpdated(this._cliMissing ? ''
             : this._lastFetchAt ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
@@ -3528,8 +3678,11 @@ export default class UsageBarExtension extends Extension {
             y_align: Clutter.ActorAlign.CENTER,
         }));
         const providers = [...new Set(machine.models.map(model => model.provider))];
-        for (const provider of providers)
-            line.add_child(this._providerIcon(provider, 12));
+        for (const provider of providers) {
+            line.add_child(this._providerIcon(provider, 12) ??
+                providerNameLabel(provider, this._displayName(provider),
+                    this._popoverSurface(), 'usagebar-machine-provider'));
+        }
         body.add_child(line);
 
         body.add_child(new St.Label({
@@ -3664,7 +3817,9 @@ export default class UsageBarExtension extends Extension {
                         d.models.filter(x => x.provider === model.provider).map(x => x.model)));
                 }
                 const row = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-model'});
-                row.add_child(this._providerIcon(model.provider, 12));
+                const icon = this._providerIcon(model.provider, 12);
+                if (icon)
+                    row.add_child(icon);
                 row.add_child(this._modelDot(colorsByProvider.get(model.provider).get(model.model)));
                 row.add_child(new St.Label({
                     text: model.model,
@@ -4090,11 +4245,14 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
+    // The provider's logo, or null in a build without logos (the
+    // extensions.gnome.org one). Callers print the provider's name beside
+    // it, so they leave the slot out entirely when there is no logo.
     _providerIcon(provider, size) {
         this._providerIconCache ??= new LifetimeLookupCache(provider => providerLogo(this.dir, provider));
         const gicon = this._providerIconCache.get(provider);
         if (!gicon)
-            return providerMonogramActor(provider, size);
+            return null;
         const icon = new St.Icon({
             icon_size: size,
             y_align: Clutter.ActorAlign.CENTER,
@@ -4104,6 +4262,25 @@ export default class UsageBarExtension extends Extension {
         if (color)
             icon.set_style(`color: ${color};`);
         return icon;
+    }
+
+    // The surface popover and dashboard text sits on.
+    _popoverSurface() {
+        return surfaceColorOf(this._indicator.menu.box, '#161b22');
+    }
+
+    // A color-key entry: the brand-tinted logo and the label. Without a
+    // logo, the label itself carries the brand color, so the key survives.
+    _legendEntry(provider, text, styleClass) {
+        const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
+        const icon = this._providerIcon(provider, 12);
+        const label = new St.Label({text, style_class: styleClass, y_align: Clutter.ActorAlign.CENTER});
+        if (icon)
+            entry.add_child(icon);
+        else
+            label.set_style(providerNameStyle(provider, this._popoverSurface()));
+        entry.add_child(label);
+        return entry;
     }
 
     // Compact spend row for the All view: window total, a provider-colored
@@ -4146,14 +4323,8 @@ export default class UsageBarExtension extends Extension {
 
         const legend = new St.BoxLayout({style_class: 'usagebar-ov-summary-legend'});
         for (const p of ov.providers) {
-            const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
-            entry.add_child(this._providerIcon(p.provider, 12));
-            entry.add_child(new St.Label({
-                text: `${this._displayName(p.provider)} ${formatSummaryUSD(p.cost)}`,
-                style_class: 'usagebar-dim',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            legend.add_child(entry);
+            legend.add_child(this._legendEntry(p.provider,
+                `${this._displayName(p.provider)} ${formatSummaryUSD(p.cost)}`, 'usagebar-dim'));
         }
         row.add_child(legend);
 
@@ -4237,7 +4408,9 @@ export default class UsageBarExtension extends Extension {
             const share = ov.cost > 0 ? p.cost / ov.cost : 0;
             const block = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-provider'});
             const head = new St.BoxLayout({style_class: 'usagebar-ov-provider-head'});
-            head.add_child(this._providerIcon(p.provider, 16));
+            const icon = this._providerIcon(p.provider, 16);
+            if (icon)
+                head.add_child(icon);
             head.add_child(new St.Label({
                 text: this._displayName(p.provider),
                 style_class: 'usagebar-ov-text',
@@ -4289,16 +4462,8 @@ export default class UsageBarExtension extends Extension {
             metricSwitch.add_child(button);
         });
         chartHead.add_child(metricSwitch);
-        for (const p of chartProviders) {
-            const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
-            entry.add_child(this._providerIcon(p.provider, 12));
-            entry.add_child(new St.Label({
-                text: this._displayName(p.provider),
-                style_class: 'usagebar-ov-small',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            chartHead.add_child(entry);
-        }
+        for (const p of chartProviders)
+            chartHead.add_child(this._legendEntry(p.provider, this._displayName(p.provider), 'usagebar-ov-small'));
         right.add_child(chartHead);
         const chartHost = new St.BoxLayout({vertical: true, x_expand: true});
         right.add_child(chartHost);
@@ -4401,7 +4566,9 @@ export default class UsageBarExtension extends Extension {
                     shownModels.filter(x => x.provider === m.provider).map(x => x.name)));
             }
             const name = new St.BoxLayout({x_expand: true, style_class: 'usagebar-model-entry'});
-            name.add_child(this._providerIcon(m.provider, 14));
+            const icon = this._providerIcon(m.provider, 14);
+            if (icon)
+                name.add_child(icon);
             name.add_child(this._modelDot(colorsByProvider.get(m.provider).get(m.name)));
             name.add_child(new St.Label({
                 text: m.name,
@@ -4927,12 +5094,14 @@ export default class UsageBarExtension extends Extension {
             head.add_child(backBtn);
         }
 
-        const iconWrap = new St.Bin({
-            style_class: 'usagebar-compact-icon-wrap',
-            y_align: Clutter.ActorAlign.CENTER,
-            child: this._providerIcon(row.provider, 20),
-        });
-        head.add_child(iconWrap);
+        const icon = this._providerIcon(row.provider, 20);
+        if (icon) {
+            head.add_child(new St.Bin({
+                style_class: 'usagebar-compact-icon-wrap',
+                y_align: Clutter.ActorAlign.CENTER,
+                child: icon,
+            }));
+        }
 
         head.add_child(new St.Label({
             text: this._displayName(row.provider),
@@ -5230,12 +5399,14 @@ export default class UsageBarExtension extends Extension {
         });
 
         // Brand icon
-        const iconWrap = new St.Bin({
-            style_class: 'usagebar-compact-icon-wrap',
-            y_align: Clutter.ActorAlign.CENTER,
-            child: this._providerIcon(row.provider, 20),
-        });
-        contentBox.add_child(iconWrap);
+        const icon = this._providerIcon(row.provider, 20);
+        if (icon) {
+            contentBox.add_child(new St.Bin({
+                style_class: 'usagebar-compact-icon-wrap',
+                y_align: Clutter.ActorAlign.CENTER,
+                child: icon,
+            }));
+        }
 
         // Body: Top line (Title + Subtitle), Bottom line (Metrics)
         const body = new St.BoxLayout({
