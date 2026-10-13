@@ -8,12 +8,16 @@ on:
   pull_request:
     paths:
       - 'linux/usagebar-gnome/**'
+      - 'Sources/CodexBarCore/Providers/**'
+      - 'Sources/CodexBarCore/Plugins/PluginProviderSpec.swift'
       - 'LICENSE'
       - '.github/workflows/gnome-extension.yml'
   push:
     branches: [main]
     paths:
       - 'linux/usagebar-gnome/**'
+      - 'Sources/CodexBarCore/Providers/**'
+      - 'Sources/CodexBarCore/Plugins/PluginProviderSpec.swift'
       - 'LICENSE'
       - '.github/workflows/gnome-extension.yml'
 
@@ -42,6 +46,9 @@ jobs:
           for f in linux/usagebar-gnome/usagebar@felipearosr.github.io/*.js; do
             node --input-type=module --check < "$f"
           done
+
+      - name: Provider metadata is current
+        run: python3 linux/usagebar-gnome/tools/gen-provider-meta.py --check
 
       - name: EGO ZIP lint tests
         run: python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py' -v

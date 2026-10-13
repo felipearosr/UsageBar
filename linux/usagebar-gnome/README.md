@@ -52,6 +52,21 @@ node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.git
 node --input-type=module --check < linux/usagebar-gnome/usagebar@felipearosr.github.io/renderstate.js
 ```
 
+Check generated provider metadata with:
+
+```bash
+python3 linux/usagebar-gnome/tools/gen-provider-meta.py --check
+```
+
+CI and the upstream merge rehearsal run this check. After syncing upstream,
+regenerate with `python3 linux/usagebar-gnome/tools/gen-provider-meta.py`; never
+hand-edit `providermeta.js`. Inputs are the Swift descriptors, the guarded Kimi
+China console URL chain in `KimiRegion.swift`, and the generator's explicit
+`LEGACY_META` entries for Crof, CrossModel and Kimi K2 (unofficial). Those entries
+support older CLIs; a current descriptor always overrides a legacy entry.
+Unsupported changes to Kimi's expression fail the check until its bounded
+resolver is updated.
+
 ## extensions.gnome.org ZIP
 
 Build the ZIP uploaded to extensions.gnome.org and lint it against the

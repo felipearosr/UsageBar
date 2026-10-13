@@ -106,6 +106,7 @@ jobs:
         run: |
           "$MR" check "$OUT" "Generated: Codex parser hash" -- Scripts/regenerate-codex-parser-hash.sh --check
           "$MR" check "$OUT" "Generated: provider manifests" -- Scripts/regenerate-provider-manifests.sh --check
+          "$MR" check "$OUT" "Generated: GNOME provider meta" -- python3 linux/usagebar-gnome/tools/gen-provider-meta.py --check
 
       - name: Lint (lint-linux)
         if: steps.merge.outputs.status != 'up-to-date'
