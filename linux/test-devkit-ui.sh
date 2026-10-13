@@ -19,6 +19,8 @@ session_log_path="$artifact_dir/session.log"
 screenshot_path="$artifact_dir/cost-dashboard.png"
 dconf_profile="$artifact_dir/dconf-profile"
 assert_script="$repo_dir/linux/usagebar-gnome/tests/assert-ui-smoke.mjs"
+# shellcheck source=linux/reap-serve.sh
+source "$repo_dir/linux/reap-serve.sh"
 
 mkdir -p "$artifact_dir"
 rm -f "$result_path" "$screenshot_path" # a reused dir must not pass on a stale result
@@ -31,7 +33,8 @@ mkdir -p "$XDG_DATA_HOME/gnome-shell/extensions"
 ln -sfn "$extension_dir" "$XDG_DATA_HOME/gnome-shell/extensions/usagebar@felipearosr.github.io"
 printf 'user-db:codexbar_ui_smoke\n' > "$dconf_profile"
 
-if ! GSETTINGS_SCHEMA_DIR="$extension_dir/schemas" dbus-run-session -- bash -c '
+status=0
+GSETTINGS_SCHEMA_DIR="$extension_dir/schemas" dbus-run-session -- bash -c '
     set -euo pipefail
     result_path=$1
     log_path=$2
@@ -79,7 +82,10 @@ if ! GSETTINGS_SCHEMA_DIR="$extension_dir/schemas" dbus-run-session -- bash -c '
         exit 1
     fi
 ' bash "$result_path" "$log_path" "$screenshot_path" "$dconf_profile" \
-    >"$session_log_path" 2>&1; then
+    >"$session_log_path" 2>&1 || status=$?
+# This run's own data directory marks the serve it started.
+reap_serve "XDG_DATA_HOME=$XDG_DATA_HOME"
+if (( status != 0 )); then
     if [[ -s $result_path ]]; then
         node "$assert_script" "$result_path" >&2 || true
     fi
