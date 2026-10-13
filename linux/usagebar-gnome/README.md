@@ -138,6 +138,14 @@ smoke test runs once with logos and once with them hidden.
 
 ## Files
 
+- `usagebar@felipearosr.github.io/payload.js`: pure `/usage` row and window
+  helpers, including tertiary pace. Tested in `tests/payload.test.mjs`.
+- `usagebar@felipearosr.github.io/notify.js`: pure Quota notification planner.
+  Its memo survives disable/enable and stale rows, and prunes expired cycles.
+  Tested in `tests/notify.test.mjs`.
+- `usagebar@felipearosr.github.io/servesupervisor.js`: serve child supervisor
+  with restart backoff, a port per spawn, and SIGTERM followed by SIGKILL.
+  Pure logic tested in `tests/servesupervisor.test.mjs`.
 - `usagebar@felipearosr.github.io/extension.js` — everything: serve
   supervisor (Gio.Subprocess), Soup 3 HTTP client, stale-merge (port of the
   Rust `merge_stale`), panel indicator + popover UI (St widgets), quota

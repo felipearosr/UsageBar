@@ -290,12 +290,18 @@ first, clean-machine check, COPR/AUR afterwards) is [`linux/RELEASING.md`](../RE
 
 ## The merge rehearsal
 
-`.github/workflows/usagebar-merge-rehearsal.yml` runs daily and on demand. It checks out fork `main`, merges
-`upstream/main` (or a tag) into a scratch branch inside the runner, and runs steps 3 to 6, with the macOS-only
-test drift check as a warning. Conflicts are resolved to upstream's side first, so failing checks point at fork
-code that needs re-applying. It rewrites the body of one pinned issue (label `merge-rehearsal`) with the result.
-It pushes nothing, opens no PRs, and doesn't touch `main`'s CI: a conflict or failing test shows up in the
-issue, not as a red run.
+`.github/workflows/usagebar-merge-rehearsal.yml` runs daily and on demand. It checks
+out fork `main`, merges `upstream/main` (or a tag) into a scratch branch inside
+the runner, and runs steps 3 to 6, with the macOS-only test drift check as a
+warning. Conflicts are resolved to upstream's side first, so failing checks
+point at fork code that needs re-applying. It rewrites the body of one pinned
+issue (label `merge-rehearsal`) with the result.
+
+The issue is updated by the separate `report` job from the fork's `main`
+revision that started the run. That job holds the workflow's only write token;
+the rehearsal job has read-only contents access and only restores the shared
+Swift toolchain cache. It pushes nothing, opens no PRs, and does not touch
+`main`'s CI: a conflict or failing test shows up in the issue, not as a red run.
 
 ```sh
 gh workflow run usagebar-merge-rehearsal.yml -R felipearosr/UsageBar                       # upstream/main
