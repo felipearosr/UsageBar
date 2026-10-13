@@ -13,6 +13,9 @@ umask 022
 REPO="${USAGEBAR_REPO:-felipearosr/UsageBar}"
 # The GitHub API root; the smoke tests point it at a file:// fixture.
 API_URL="${USAGEBAR_API_URL:-https://api.github.com}"
+# The release list, newest first. Separate from API_URL because a file://
+# test fixture can't carry the query string (curl drops it).
+RELEASES_URL="${USAGEBAR_RELEASES_URL:-$API_URL/repos/$REPO/releases?per_page=30}"
 MARKER=.usagebar-cli-install
 
 say() { printf '%s\n' "$*"; }
@@ -23,8 +26,9 @@ usage() {
 Usage: install-cli.sh [options] [VERSION|TAG]
 
 Installs the UsageBar fork's codexbar CLI from a felipearosr/UsageBar release.
-VERSION 1.0.1 means tag usagebar-v1.0.1; anything else is used as the tag.
-Without one, the latest release is used.
+VERSION 1.1.0 means tag usagebar-v1.1.0; anything else is used as the tag.
+Without one, the latest release is used, or the newest release (pre-releases
+included) that has a CLI tarball when the latest has none.
 
   --prefix DIR     install under DIR (default: ~/.local)
   --system         same as --prefix /usr/local (run it with sudo yourself)
@@ -114,13 +118,29 @@ trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT TERM
 
 fetch() {
+    # Refuse a downgrade to plain http on redirects. Only for https URLs: the
+    # tests point the script at file:// fixtures.
+    case "$1" in
+        https://*) proto="--proto =https --tlsv1.2" ;;
+        *) proto= ;;
+    esac
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        # shellcheck disable=SC2086 # $proto is intentionally word-split
+        curl -fsSL --retry 3 $proto -o "$2" "$1"
     elif command -v wget >/dev/null 2>&1; then
         wget -q -O "$2" "$1"
     else
         die "need curl or wget to download"
     fi
+}
+
+# The CLI tarball only: usagebar-cli-<version>-linux-<arch>.tar.gz, or
+# CodexBarCLI-… on the older cli-fork-* releases. A release also carries
+# UsageBarTray-<version>-linux-<arch>.tar.gz, which isn't the CLI. Prints the
+# first matching download URL in the JSON file $1, or nothing.
+cli_url() {
+    grep -oE '"browser_download_url": *"[^"]*/(usagebar-cli|CodexBarCLI)-[^"/]*-linux-'"$arch"'\.tar\.gz"' \
+        "$1" | sed 's/.*"\([^"]*\)"$/\1/' | head -n 1
 }
 
 if [ -n "$tarball" ]; then
@@ -135,13 +155,30 @@ else
         [0-9]*) api="$API_URL/repos/$REPO/releases/tags/usagebar-v$tag" ;;
         *) api="$API_URL/repos/$REPO/releases/tags/$tag" ;;
     esac
-    fetch "$api" "$work/release.json" || die "couldn't read release ${tag:-latest} of $REPO"
-    # The CLI tarball only: usagebar-cli-<version>-linux-<arch>.tar.gz, or
-    # CodexBarCLI-… on the older cli-fork-* releases. A release also carries
-    # UsageBarTray-<version>-linux-<arch>.tar.gz, which isn't the CLI.
-    url=$(grep -oE '"browser_download_url": *"[^"]*/(usagebar-cli|CodexBarCLI)-[^"/]*-linux-'"$arch"'\.tar\.gz"' \
-        "$work/release.json" | sed 's/.*"\([^"]*\)"$/\1/' | head -n 1)
-    [ -n "$url" ] || die "release ${tag:-latest} of $REPO has no CLI tarball for $arch"
+    if [ -n "$tag" ]; then
+        fetch "$api" "$work/release.json" || die "couldn't read release $tag of $REPO"
+        url=$(cli_url "$work/release.json")
+        [ -n "$url" ] || die "release $tag of $REPO has no CLI tarball for $arch"
+    else
+        # The latest final release may predate the CLI tarballs (1.0.0 had
+        # packages only), or there may be no final release at all (a 404).
+        # Then take the newest release that has one; GitHub lists releases
+        # newest-first, pre-releases included.
+        url=
+        why="couldn't read the latest release"
+        if fetch "$api" "$work/release.json"; then
+            url=$(cli_url "$work/release.json")
+            why="the latest release has no CLI tarball"
+        fi
+        if [ -z "$url" ]; then
+            fetch "$RELEASES_URL" "$work/releases.json" \
+                || die "$why, and couldn't read the releases of $REPO"
+            url=$(cli_url "$work/releases.json")
+            [ -n "$url" ] || die "no recent release of $REPO has a CLI tarball for $arch"
+            tag_used=$(printf '%s\n' "$url" | sed 's|.*/releases/download/\([^/]*\)/.*|\1|')
+            say "Note: $why; installing from $tag_used instead."
+        fi
+    fi
     archive="$work/$(basename "$url")"
     say "Downloading $url"
     fetch "$url" "$archive" || die "download failed: $url"
