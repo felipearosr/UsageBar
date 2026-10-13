@@ -2300,6 +2300,10 @@ export default class UsageBarExtension extends Extension {
             if (this._sync !== sync)
                 return;
             sync.readInFlight = false;
+            // The UI smoke's fixture stands in for serve; a read that was
+            // already in flight when it went in must not replace it.
+            if (this._syncFixture)
+                return;
             const probe = syncProbeFromHttpStatus(error ? error.status : 200);
             if (probe !== null)
                 sync.probe = probe;
