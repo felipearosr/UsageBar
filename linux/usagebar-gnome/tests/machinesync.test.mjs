@@ -9,6 +9,9 @@ import {
     machinesView,
     nextPushDelaySecs,
     planSyncTick,
+    scopedProviderKpis,
+    scopedSpend,
+    spendScopeOptions,
     spendText,
     SYNC_PUSH_SECS,
     SYNC_STALE_SECS,
@@ -282,4 +285,56 @@ test('a Machine color set in prefs replaces its palette color everywhere', () =>
 
 test('the first Machines get far-apart default colors', () => {
     assert.deepEqual(MACHINE_PALETTE.slice(0, 3), ['#3584e4', '#e66100', '#9141ac']);
+});
+
+function scopedPayload() {
+    const p = payload();
+    p.status.machines[1].models = [
+        {provider: 'codex', model: 'gpt-5', spend: spend(0.75, {totalTokens: 900, requests: 3})},
+        {provider: 'pi', model: 'pi-1', spend: spend(0.25, {costIncomplete: true, totalTokens: 100, requests: 1})},
+    ];
+    return p;
+}
+
+test('the Machine picker lists this Machine first as null, the others, then All', () => {
+    const options = spendScopeOptions(scopedPayload());
+    assert.deepEqual(options.map(o => [o.id, o.name]),
+        [[null, 'laptop'], ['deskAAAAAAAAAAAAAAAAAA', 'desk'], ['all', 'All']]);
+    assert.equal(options[1].color, MACHINE_PALETTE[1]);
+    assert.deepEqual(spendScopeOptions({paired: false}), []);
+    const alone = scopedPayload();
+    alone.status.machines.pop();
+    assert.deepEqual(spendScopeOptions(alone), []); // nothing to pick
+});
+
+test('scoped spend follows one Machine, split by provider and model', () => {
+    const s = scopedSpend(scopedPayload(), 'deskAAAAAAAAAAAAAAAAAA');
+    assert.equal(s.name, 'desk');
+    assert.equal(s.color, MACHINE_PALETTE[1]);
+    assert.deepEqual(s.providers.map(p => [p.provider, p.spend.costUSD, p.spend.costIncomplete]),
+        [['codex', 0.75, false], ['pi', 0.25, true]]);
+    assert.deepEqual(s.providers[0].models.map(m => m.model), ['gpt-5']);
+    assert.equal(s.last30.costUSD, 1);
+});
+
+test('scoped spend for All sums every Machine per provider', () => {
+    const s = scopedSpend(scopedPayload(), 'all');
+    assert.equal(s.all, true);
+    assert.deepEqual(s.providers.map(p => [p.provider, p.spend.costUSD]),
+        [['claude', 2], ['codex', 1.75], ['pi', 0.25]]);
+    assert.equal(s.providers[1].models.length, 1); // same model on two Machines
+    assert.equal(s.today.costUSD, 2.5);
+});
+
+test('scoped spend is null for this Machine, a Machine that left, or no Sync', () => {
+    assert.equal(scopedSpend(scopedPayload(), null), null);
+    assert.equal(scopedSpend(scopedPayload(), 'goneAAAAAAAAAAAAAAAAAA'), null);
+    assert.equal(scopedSpend({paired: false}, 'all'), null);
+});
+
+test('a provider the scoped Machine never used shows zero, not the local cost', () => {
+    const s = scopedSpend(scopedPayload(), 'deskAAAAAAAAAAAAAAAAAA');
+    assert.deepEqual(scopedProviderKpis(s.providers.find(p => p.provider === 'claude')).map(k => k.value),
+        ['$0.00', '0', '0', '0']);
+    assert.deepEqual(scopedProviderKpis(s.providers[1]).map(k => k.value), ['$0.25+', '100', '1', '1']);
 });

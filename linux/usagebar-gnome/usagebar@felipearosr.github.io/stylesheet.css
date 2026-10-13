@@ -598,6 +598,49 @@
   border-left-width: 0;
 }
 
+/* Machine dropdown on the Providers tab (Machine Sync with 2+ Machines). */
+.usagebar-scope-toggle {
+  margin: 2px 12px 6px 12px;
+  padding: 4px 8px 4px 10px;
+  border-radius: 6px;
+  font-size: 9pt;
+}
+
+.usagebar-scope-option {
+  spacing: 6px;
+}
+
+.usagebar-scope-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(160, 160, 166, 0.6);
+}
+
+.usagebar-scope-list {
+  margin: 0 12px 8px 12px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(160, 160, 166, 0.35);
+  background-color: rgba(60, 70, 82, 0.25);
+}
+
+.usagebar-scope-item {
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 9pt;
+}
+
+.usagebar-scope-item:hover,
+.usagebar-scope-item:focus {
+  background-color: rgba(88, 104, 122, 0.32);
+}
+
+/* The Machine (or All Machines) the Providers tab follows. */
+.usagebar-machine-row-scoped {
+  background-color: rgba(88, 104, 122, 0.22);
+}
+
 .usagebar-ov-table-head {
   padding-bottom: 6px;
   border-bottom: 1px solid rgba(160, 160, 166, 0.35);
@@ -801,4 +844,24 @@
   padding: 6px 14px;
   border: 1px solid rgba(160, 160, 166, 0.35);
   background-color: rgba(88, 104, 122, 0.32);
+}
+
+/* Offer to download provider logos (logopack.js) */
+.usagebar-logo-prompt {
+  padding-bottom: 12px;
+}
+
+.usagebar-logo-prompt-actions {
+  spacing: 10px;
+  margin-top: 8px;
+}
+
+.usagebar-logo-prompt-sep {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+.usagebar-logo-prompt-actions .usagebar-onboarding-btn {
+  margin-top: 0;
+  min-width: 96px;
 }

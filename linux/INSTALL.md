@@ -69,6 +69,12 @@ same zip extensions.gnome.org will get from a release:
    `gnome-extensions enable usagebar@felipearosr.github.io`.
 4. Install the [command-line helper](#the-command-line-helper).
 
+This build leaves out the provider logos, which are other companies'
+trademarks, and shows provider names instead. To get the logos, click
+Download on the "Show provider logos?" card in the popover, or use Settings →
+General → Provider logos. UsageBar then downloads them from the same release
+and checks them first. It never downloads them on its own.
+
 For a development setup from a checkout, see [BOOTSTRAP.md](BOOTSTRAP.md).
 
 ## The command-line helper

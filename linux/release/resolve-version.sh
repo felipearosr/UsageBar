@@ -34,6 +34,9 @@
 #                       extensions.gnome.org allows only letters, digits,
 #                       spaces and periods, 16 at most
 #   tray_asset_<arch>   tray app tarball name for each of cli_arches
+#   logos_asset         provider logo pack the extension downloads on the
+#                       user's click (logopack.js), since the extension zip
+#                       leaves the logos out
 # Every asset also ships as <asset>.sha256.
 set -euo pipefail
 
@@ -143,6 +146,7 @@ out=$(
     for arch in "${arches[@]}"; do
         printf 'tray_asset_%s=UsageBarTray-%s-linux-%s.tar.gz\n' "$arch" "$version" "$arch"
     done
+    printf 'logos_asset=usagebar-provider-icons-%s.json\n' "$version"
 )
 
 printf '%s\n' "$out"

@@ -7,6 +7,7 @@ import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
+import Soup from 'gi://Soup';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
@@ -26,6 +27,14 @@ import {MachineSyncPage, runSync} from './syncpage.js';
 import {CLI_WITHOUT_SYNC, settingsArgs} from './syncprefs.js';
 import {featureState, supportSummary} from './clicompat.js';
 import {findCodexbar, parseCliVersion} from './cli.js';
+import {logoPackState} from './logopack.js';
+import {
+    downloadLogoPack,
+    hasBundledLogos,
+    installedLogoPack,
+    logoPackVersion,
+    removeLogoPack,
+} from './logoinstall.js';
 
 // Same lookup as the extension, so Settings names the CLI it runs.
 function findBinary() {
@@ -469,6 +478,90 @@ function checkSource(binary, id, cb) {
     }
 }
 
+const LOGO_ACTION_LABELS = {download: 'Download', update: 'Update', remove: 'Remove'};
+
+// Provider logos: whether this install has them, with buttons to download,
+// update or remove the logo pack (logopack.js). Writing logo-pack-version
+// tells the extension to redraw.
+function logoRow(settings, extensionDir, metadata) {
+    const row = new Adw.ActionRow({title: 'Logos'});
+    const buttons = new Gtk.Box({spacing: 6, valign: Gtk.Align.CENTER});
+    row.add_suffix(buttons);
+    const bundled = hasBundledLogos(extensionDir);
+    const version = logoPackVersion(metadata);
+    let session = null;
+    let busy = false;
+    let error = null;
+    let closed = false;
+
+    // An unchanged key doesn't emit, so clear it first when re-installing
+    // the version it already names.
+    const announce = installed => {
+        if (installed && settings.get_string('logo-pack-version') === installed)
+            settings.set_string('logo-pack-version', '');
+        settings.set_string('logo-pack-version', installed);
+    };
+    const run = async action => {
+        error = null;
+        if (action === 'remove') {
+            try {
+                removeLogoPack();
+                announce('');
+            } catch (e) {
+                error = e.message;
+            }
+            refresh();
+            return;
+        }
+        busy = true;
+        refresh();
+        try {
+            session ??= new Soup.Session({timeout: 60});
+            await downloadLogoPack(session, version);
+            announce(version);
+        } catch (e) {
+            error = e.message;
+        }
+        busy = false;
+        refresh();
+    };
+
+    function refresh() {
+        if (closed)
+            return;
+        const state = logoPackState({bundled, installed: installedLogoPack(), version});
+        if (busy)
+            row.subtitle = 'Downloading…';
+        else if (error)
+            row.subtitle = `Couldn’t download the logos: ${error}`;
+        else
+            row.subtitle = state.status;
+        let child;
+        while ((child = buttons.get_first_child()))
+            buttons.remove(child);
+        for (const action of state.actions) {
+            const button = new Gtk.Button({label: LOGO_ACTION_LABELS[action], sensitive: !busy});
+            if (action !== 'remove')
+                button.add_css_class('suggested-action');
+            button.connect('clicked', () => run(action));
+            buttons.append(button);
+        }
+    }
+
+    // The popover's own download lands here too.
+    const changedId = settings.connect('changed::logo-pack-version', () => {
+        if (!busy)
+            refresh();
+    });
+    row.connect('destroy', () => {
+        closed = true;
+        settings.disconnect(changedId);
+        session?.abort();
+    });
+    refresh();
+    return row;
+}
+
 export default class UsageBarPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
@@ -569,6 +662,16 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         });
         cli.add(cliRow(findBinary()));
         general.add(cli);
+
+        const logos = new Adw.PreferencesGroup({
+            title: 'Provider logos',
+            description: 'Provider logos are their owners’ trademarks, so the ' +
+                'extensions.gnome.org version of UsageBar leaves them out. ' +
+                'UsageBar downloads them from its GitHub release only when you ' +
+                'click Download.',
+        });
+        logos.add(logoRow(settings, this.dir, this.metadata));
+        general.add(logos);
         window.add(general);
 
         // --- Notifications ---

@@ -186,5 +186,17 @@
       <summary>First-run provider setup done</summary>
       <description>Set once UsageBar has enabled the providers this user is signed in to and set the claude OAuth source.</description>
     </key>
+
+    <!-- provider logos (logopack.js) -->
+    <key name="logo-pack-version" type="s">
+      <default>''</default>
+      <summary>Downloaded provider logo pack</summary>
+      <description>Version of the logo pack in ~/.local/share/usagebar/icons, or empty when none is installed. Whichever of the extension and the preferences window installs or removes the pack writes it, so the other one picks the change up.</description>
+    </key>
+    <key name="logo-prompt-dismissed" type="b">
+      <default>false</default>
+      <summary>Logo download offer declined</summary>
+      <description>Set when the user answers "Not now" to the popover's offer to download provider logos. Settings still offers the download.</description>
+    </key>
   </schema>
 </schemalist>

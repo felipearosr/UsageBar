@@ -93,6 +93,25 @@ ext=usagebar@felipearosr.github.io-1.1.0.shell-extension.zip
 "$here/../package-extension.sh" 1.1.0 "$work/ext" "$ext" > /dev/null 2> "$work/ext.log" \
     || { cat "$work/ext.log" >&2; echo "could not build the extension zip" >&2; exit 1; }
 
+# The real logo pack.
+logos=usagebar-provider-icons-1.1.0.json
+"$here/../package-logos.sh" 1.1.0 "$work/logos" "$logos" > /dev/null 2> "$work/logos.log" \
+    || { cat "$work/logos.log" >&2; echo "could not build the logo pack" >&2; exit 1; }
+
+# repack_logos DIR PYTHON: rewrites DIR's logo pack; PYTHON edits `pack`.
+repack_logos() {
+    python3 - "$1/$logos" "$2" <<'PY'
+import json, sys
+path, change = sys.argv[1:]
+with open(path) as f:
+    pack = json.load(f)
+exec(change)
+with open(path, 'w') as f:
+    json.dump(pack, f)
+PY
+    (cd "$1" && sha256sum "$logos" > "$logos.sha256")
+}
+
 # rezip_extension DIR CHANGE: rewrites DIR's extension zip with one change:
 # drop=PATH removes an entry, meta=JSON merges keys into metadata.json.
 rezip_extension() {
@@ -125,6 +144,7 @@ make_release() { # make_release DIR
     make_tray_tarball "$1" x86_64
     make_tray_tarball "$1" aarch64
     cp "$work/ext/$ext" "$work/ext/$ext.sha256" "$1/"
+    cp "$work/logos/$logos" "$work/logos/$logos.sha256" "$1/"
     echo 'deb' > "$1/usagebar_1.1.0_amd64.deb"
     (cd "$1" && sha256sum usagebar_1.1.0_amd64.deb > usagebar_1.1.0_amd64.deb.sha256)
 }
@@ -232,6 +252,18 @@ expect_fail "extension zip isn't a zip" "$d" "$ext: not a readable zip"
 d=$(fixture); old=usagebar@felipearosr.github.io-1.0.0.shell-extension.zip
 cp "$d/$ext" "$d/$old"; (cd "$d" && sha256sum "$old" > "$old.sha256")
 expect_fail "stale-version extension zip name" "$d" "unexpected asset name: $old"
+
+d=$(fixture); rm "$d/$logos" "$d/$logos.sha256"
+expect_fail "missing logo pack" "$d" "missing asset: $logos"
+d=$(fixture); repack_logos "$d" "pack['version'] = '1.0.0'"
+expect_fail "logo pack for another version" "$d" "$logos: the extension would reject it: the logo pack is for version 1.0.0"
+d=$(fixture); repack_logos "$d" "pack['icons']['claude'] = '<svg><script/></svg>'"
+expect_fail "logo pack with an unsafe SVG" "$d" "$logos: the extension would reject it: the claude logo"
+d=$(fixture); repack_logos "$d" "pack['icons'] = {}"
+expect_fail "empty logo pack" "$d" "$logos: the extension would reject it: the logo pack has 0 logos"
+d=$(fixture); old=usagebar-provider-icons-1.0.0.json
+cp "$d/$logos" "$d/$old"; (cd "$d" && sha256sum "$old" > "$old.sha256")
+expect_fail "stale-version logo pack name" "$d" "unexpected asset name: $old"
 
 tray_x86=UsageBarTray-1.1.0-linux-x86_64.tar.gz
 tray_arm=UsageBarTray-1.1.0-linux-aarch64.tar.gz
