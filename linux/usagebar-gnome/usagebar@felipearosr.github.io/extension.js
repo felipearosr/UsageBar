@@ -28,6 +28,7 @@ import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import {ServeSupervisor} from './servesupervisor.js';
 import {PROVIDER_META} from './providermeta.js';
 import {capName, readableBrandColor, surfaceColor} from './brandtext.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
@@ -1104,102 +1105,6 @@ function findLoginBinary(name) {
     return null;
 }
 
-function freePort() {
-    const listener = Gio.SocketListener.new();
-    const port = listener.add_any_inet_port(null);
-    listener.close();
-    return port;
-}
-
-class ServeSupervisor {
-    constructor(binary, interval, onState) {
-        this._binary = binary;
-        this._interval = interval;
-        this._onState = onState; // (portOrNull, statusMessage)
-        this._enabled = false;
-        this._proc = null;
-        this._restartId = 0;
-        this._backoff = 2;
-        this.port = 0;
-    }
-
-    // Serve only reads --refresh-interval at startup — bounce the child to
-    // apply a new one (the exit handler is inert while _enabled is false).
-    restart(interval) {
-        this._interval = interval;
-        this.stop();
-        this.start();
-    }
-
-    start() {
-        this._enabled = true;
-        try {
-            this.port = freePort();
-        } catch (e) {
-            this._onState(null, `no free loopback port: ${e.message}`);
-            return;
-        }
-        this._spawn();
-    }
-
-    _spawn() {
-        try {
-            this._proc = Gio.Subprocess.new(
-                [
-                    this._binary, 'serve',
-                    '--port', String(this.port),
-                    '--refresh-interval', String(this._interval),
-                    '--request-timeout', String(REQUEST_TIMEOUT_SECS),
-                ],
-                Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
-        } catch (e) {
-            this._proc = null;
-            this._onState(null, `failed to start codexbar serve: ${e.message}`);
-            this._scheduleRestart();
-            return;
-        }
-        this._proc.wait_async(null, (proc, res) => {
-            try {
-                proc.wait_finish(res);
-            } catch {
-                // cancelled or reaped — nothing to do
-            }
-            this._proc = null;
-            if (this._enabled) {
-                this._onState(null, 'codexbar serve exited — restarting…');
-                this._scheduleRestart();
-            }
-        });
-        // Readiness is handled by the fetch retry loop, not a /health gate.
-        this._backoff = 2;
-        this._onState(this.port, '');
-    }
-
-    _scheduleRestart() {
-        if (!this._enabled || this._restartId)
-            return;
-        this._restartId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this._backoff, () => {
-            this._restartId = 0;
-            this._backoff = Math.min(this._backoff * 2, 30);
-            if (this._enabled)
-                this._spawn();
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    stop() {
-        this._enabled = false;
-        if (this._restartId) {
-            GLib.source_remove(this._restartId);
-            this._restartId = 0;
-        }
-        if (this._proc) {
-            this._proc.force_exit();
-            this._proc = null;
-        }
-    }
-}
-
 // ---------- subprocess & CLI helpers ----------
 
 const UPSTREAM_URL = 'https://github.com/steipete/CodexBar';
@@ -2010,7 +1915,38 @@ export default class UsageBarExtension extends Extension {
                     this._resetSyncSupport();
                     this._scheduleFetch(2);
                 }
-            });
+            }, {
+                pickPort: () => {
+                    const listener = Gio.SocketListener.new();
+                    try {
+                        return listener.add_any_inet_port(null);
+                    } finally {
+                        listener.close();
+                    }
+                },
+                spawn: argv => {
+                    const proc = Gio.Subprocess.new(argv,
+                        Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+                    return {
+                        wait: cb => proc.wait_async(null, (p, res) => {
+                            try {
+                                p.wait_finish(res);
+                            } catch {
+                                // Reaped; the lifecycle callback still needs to run.
+                            }
+                            cb();
+                        }),
+                        terminate: () => proc.send_signal(15),
+                        kill: () => proc.force_exit(),
+                    };
+                },
+                addTimeout: (secs, cb) => GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, secs, () => {
+                    cb();
+                    return GLib.SOURCE_REMOVE;
+                }),
+                removeTimeout: id => GLib.source_remove(id),
+                now: () => GLib.get_monotonic_time() / 1000,
+            }, REQUEST_TIMEOUT_SECS);
         this._supervisor.start();
     }
 
