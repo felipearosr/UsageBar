@@ -116,9 +116,11 @@ jobs:
         if: steps.merge.outputs.status != 'up-to-date'
         run: '"$MR" check "$OUT" "GNOME extension JS tests" -- sh -c "node --test linux/usagebar-gnome/tests/*.test.mjs"'
 
+      # Unreviewed upstream code must never write the toolchain cache read by
+      # release-usagebar.yml. Trusted ci.yml runs on main populate it.
       - name: Restore Swift toolchain cache
         if: steps.merge.outputs.status != 'up-to-date'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/swiftly
           key: swift-${{ runner.os }}-${{ runner.arch }}-${{ env.SWIFT_VERSION }}-swiftly-${{ env.SWIFTLY_VERSION }}
