@@ -26,7 +26,7 @@ there belong to steipete/CodexBar (#62).
 | 003  | Make the `codexbar serve` supervisor restart, back off and shut down correctly | P1 | M | — | DONE (PR #113) |
 | 004  | Stop repeated quota notifications; `notify.js` + `payload.js` under test | P1 | M | — | DONE (PR #114) |
 | 005  | Fix the provider-metadata generator, regenerate, add a drift check | P1 | M | — | BLOCKED (PR #112): regeneration drops existing metadata |
-| 006  | Idempotent `publish`, separate AUR job, isolate the merge rehearsal | P1 | S | — | TODO |
+| 006  | Idempotent `publish`, separate AUR job, isolate the merge rehearsal | P1 | S | — | DONE (PR #115) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
