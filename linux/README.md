@@ -101,12 +101,14 @@ curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/pac
 ```
 
 [`packaging/install-cli.sh`](packaging/install-cli.sh) downloads the CLI
-tarball from the newest release that has one, final releases first (or the
-one you name: `| sh -s -- 1.1.0-rc.2`), checks its `.sha256`, and installs it into `~/.local/lib/usagebar-cli` with
-`~/.local/bin/codexbar` pointing at it. `--system` installs under `/usr/local`
-instead (run it with `sudo`; the script never asks for privileges itself),
-`--prefix DIR` anywhere else, and `--uninstall` removes exactly what it
-installed. It refuses to replace a `codexbar` it didn't install.
+tarball from the latest release, or from the newest release (pre-releases
+included) that has one when the latest doesn't, or from the one you name
+(`| sh -s -- 1.1.0-rc.2`). It checks the `.sha256` and installs the CLI into
+`~/.local/lib/usagebar-cli` with `~/.local/bin/codexbar` pointing at it.
+`--system` installs under `/usr/local` instead (run it with `sudo`; the script
+never asks for privileges itself), `--prefix DIR` anywhere else, and
+`--uninstall` removes exactly what it installed. It refuses to replace a
+`codexbar` it didn't install.
 
 On Ubuntu / Debian, each release also has a CLI-only package,
 `usagebar-cli_<version>_amd64.deb` (`_arm64.deb` on ARM):
@@ -123,8 +125,8 @@ checksums, uses the same layout (`/usr/lib/usagebar-cli`, `/usr/bin/codexbar`),
 and conflicts with other `codexbar` packages. It isn't on the AUR yet, and the
 checked-in PKGBUILD targets the last final release, so it only builds once a
 final release of 1.1.0 or later carries the CLI tarball. Then run
-`./bump.sh <version>` and `makepkg -si` in that directory; until then, use the
-install script.
+`./bump.sh <version>` (it needs `makepkg`, or podman or docker) and
+`makepkg -si` in that directory; until then, use the install script.
 
 To bump it for a new release, run one command:
 `linux/packaging/aur/bump.sh <version>`. It sets `pkgver`, resets `pkgrel`,

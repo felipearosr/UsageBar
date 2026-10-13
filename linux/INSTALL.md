@@ -85,8 +85,8 @@ and `/usr/local/bin`.
 UsageBar 1.0.0 shipped the full packages only. The CLI tarball and the
 CLI-only `.deb` and `.rpm` are on the `usagebar-v1.1.0-rc.*` pre-releases, for
 x86_64 and aarch64. The [install script](#install-script-any-distro) picks the
-newest release that has a CLI tarball and says so when that's a pre-release;
-`sh -s -- 1.1.0-rc.2` pins one.
+newest release that has a CLI tarball and says so when it isn't the latest
+release; `sh -s -- 1.1.0-rc.2` pins one.
 
 The CLI needs x86_64 or aarch64, glibc 2.38 or newer, libcurl, libsqlite3 and
 libstdc++. The packages pull these in for you.
@@ -98,8 +98,8 @@ curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/pac
 ```
 
 It downloads the CLI tarball from the latest UsageBar release, or from the
-newest pre-release that has one when the latest release doesn't, checks its
-`.sha256`, and installs it into `~/.local/lib/usagebar-cli`, with
+newest release (pre-releases included) that has one when the latest doesn't,
+checks its `.sha256`, and installs it into `~/.local/lib/usagebar-cli`, with
 `~/.local/bin/codexbar` linking to it. If `~/.local/bin` isn't on your `PATH`,
 the extension still finds it there.
 

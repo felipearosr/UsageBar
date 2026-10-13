@@ -158,25 +158,27 @@ else
     if [ -n "$tag" ]; then
         fetch "$api" "$work/release.json" || die "couldn't read release $tag of $REPO"
         url=$(cli_url "$work/release.json")
+        [ -n "$url" ] || die "release $tag of $REPO has no CLI tarball for $arch"
     else
         # The latest final release may predate the CLI tarballs (1.0.0 had
-        # packages only). Then take the newest release that has one;
-        # GitHub lists releases newest-first, pre-releases included.
+        # packages only), or there may be no final release at all (a 404).
+        # Then take the newest release that has one; GitHub lists releases
+        # newest-first, pre-releases included.
         url=
+        why="couldn't read the latest release"
         if fetch "$api" "$work/release.json"; then
             url=$(cli_url "$work/release.json")
+            why="the latest release has no CLI tarball"
         fi
         if [ -z "$url" ]; then
             fetch "$RELEASES_URL" "$work/releases.json" \
-                || die "couldn't read the releases of $REPO"
+                || die "$why, and couldn't read the releases of $REPO"
             url=$(cli_url "$work/releases.json")
-            if [ -n "$url" ]; then
-                tag_used=$(printf '%s\n' "$url" | sed 's|.*/releases/download/\([^/]*\)/.*|\1|')
-                say "Note: the latest release has no CLI tarball; installing from $tag_used instead."
-            fi
+            [ -n "$url" ] || die "no recent release of $REPO has a CLI tarball for $arch"
+            tag_used=$(printf '%s\n' "$url" | sed 's|.*/releases/download/\([^/]*\)/.*|\1|')
+            say "Note: $why; installing from $tag_used instead."
         fi
     fi
-    [ -n "$url" ] || die "release ${tag:-latest} of $REPO has no CLI tarball for $arch"
     archive="$work/$(basename "$url")"
     say "Downloading $url"
     fetch "$url" "$archive" || die "download failed: $url"
