@@ -101,8 +101,8 @@ curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/pac
 ```
 
 [`packaging/install-cli.sh`](packaging/install-cli.sh) downloads the CLI
-tarball from the latest release (or the one you name: `| sh -s -- 1.0.1`),
-checks its `.sha256`, and installs it into `~/.local/lib/usagebar-cli` with
+tarball from the newest release that has one, final releases first (or the
+one you name: `| sh -s -- 1.1.0-rc.2`), checks its `.sha256`, and installs it into `~/.local/lib/usagebar-cli` with
 `~/.local/bin/codexbar` pointing at it. `--system` installs under `/usr/local`
 instead (run it with `sudo`; the script never asks for privileges itself),
 `--prefix DIR` anywhere else, and `--uninstall` removes exactly what it
@@ -120,8 +120,11 @@ the full `usagebar` package, which carries its own copy.
 On Arch, [`packaging/aur/`](packaging/aur/) holds the `usagebar-cli-bin`
 PKGBUILD and `.SRCINFO`. It downloads the release tarball with pinned
 checksums, uses the same layout (`/usr/lib/usagebar-cli`, `/usr/bin/codexbar`),
-and conflicts with other `codexbar` packages. Until it is on the AUR, build it
-from a checkout with `makepkg -si` in that directory.
+and conflicts with other `codexbar` packages. It isn't on the AUR yet, and the
+checked-in PKGBUILD targets the last final release, so it only builds once a
+final release of 1.1.0 or later carries the CLI tarball. Then run
+`./bump.sh <version>` and `makepkg -si` in that directory; until then, use the
+install script.
 
 To bump it for a new release, run one command:
 `linux/packaging/aur/bump.sh <version>`. It sets `pkgver`, resets `pkgrel`,
