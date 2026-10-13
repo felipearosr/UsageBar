@@ -166,3 +166,9 @@ smoke test runs once with logos and once with them hidden.
   captures) and `Sources/CodexBarCLI/CLIPayloads.swift` / `CLICostCommand.swift`.
   Gotchas: dollar amounts arrive under `totalCost` (daily/totals) but `cost`
   (model breakdowns); per-model bars only exist with claude source `oauth`.
+
+## Files
+
+- `servesupervisor.js`: serve child supervisor with restart backoff, a port per
+  spawn, and SIGTERM followed by SIGKILL. Pure logic tested in
+  `tests/servesupervisor.test.mjs`.
