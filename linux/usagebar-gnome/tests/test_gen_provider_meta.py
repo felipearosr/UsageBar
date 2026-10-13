@@ -65,7 +65,6 @@ class ProviderMetaTests(unittest.TestCase):
             out.unlink()
             self.assertEqual(gen.main(['--check'], **options), 1)
 
-
     def test_explicit_and_shorthand_brand_colors_ignore_widgets(self):
         for constructor in ('ProviderColor', '.init'):
             for arguments in ('hex: 0xFF0000', 'red: 1, green: 0, blue: 0'):
@@ -136,13 +135,19 @@ class ProviderMetaTests(unittest.TestCase):
                 self.assertEqual(result[1]['dashboard'], f'https://www.{domain}/code/console')
 
         self.kimi_source(console='self.webBaseURL.appendingPathComponent("code/new-console")')
-        result = self.parse('ProviderMetadata(id: .kimi, dashboardURL: KimiRegion.china.consoleURL.absoluteString,)')
+        result = self.parse(
+            'ProviderMetadata(id: .kimi, '
+            'dashboardURL: KimiRegion.china.consoleURL.absoluteString,)'
+        )
         self.assertEqual(result[1]['dashboard'], 'https://www.kimi.com/code/new-console')
 
     def test_kimi_guards_unsupported_source_and_descriptor_expressions(self):
         self.kimi_source(console='URL(string: "https://unhandled.example")!')
         with self.assertRaisesRegex(ValueError, 'unsupported KimiRegion'):
-            self.parse('ProviderMetadata(id: .kimi, dashboardURL: KimiRegion.china.consoleURL.absoluteString,)')
+            self.parse(
+                'ProviderMetadata(id: .kimi, '
+                'dashboardURL: KimiRegion.china.consoleURL.absoluteString,)'
+            )
         for old, new in [('self == .china', 'self.isChina'),
                          ('https://www.', 'https://'),
                          ('public var webBaseURL', 'private var webBaseURL')]:
@@ -151,10 +156,16 @@ class ProviderMetaTests(unittest.TestCase):
                 path = self.path.parent / 'KimiRegion.swift'
                 path.write_text(path.read_text().replace(old, new))
                 with self.assertRaisesRegex(ValueError, 'unsupported KimiRegion'):
-                    self.parse('ProviderMetadata(id: .kimi, dashboardURL: KimiRegion.china.consoleURL.absoluteString,)')
+                    self.parse(
+                        'ProviderMetadata(id: .kimi, '
+                        'dashboardURL: KimiRegion.china.consoleURL.absoluteString,)'
+                    )
         self.kimi_source()
         with self.assertRaisesRegex(ValueError, 'unsupported Kimi dashboard'):
-            self.parse('ProviderMetadata(id: .kimi, dashboardURL: KimiRegion.international.consoleURL.absoluteString,)')
+            self.parse(
+                'ProviderMetadata(id: .kimi, '
+                'dashboardURL: KimiRegion.international.consoleURL.absoluteString,)'
+            )
         result = self.parse('ProviderMetadata(id: .kimi, dashboardURL: "https://literal.example")')
         self.assertEqual(result[1]['dashboard'], 'https://literal.example')
 

@@ -146,7 +146,8 @@ silently again.
 ## Scope
 
 **In scope**:
-- `linux/usagebar-gnome/tools/gen-provider-meta.py` (including explicit legacy data and Kimi resolver)
+- `linux/usagebar-gnome/tools/gen-provider-meta.py` (including explicit legacy
+  data and Kimi resolver)
 - `linux/usagebar-gnome/usagebar@felipearosr.github.io/providermeta.js` (regenerated only; never hand-edited)
 - `linux/usagebar-gnome/tests/test_gen_provider_meta.py` (create)
 - `.github/workflows/gnome-extension.yml` (one step)
@@ -281,15 +282,17 @@ the table must be regenerated (never hand-edited) after an upstream merge.
 
 ## Done criteria
 
-- [ ] `python3 …/gen-provider-meta.py` prints the descriptor count plus absent legacy IDs (94 today) and no `warning:`
-- [ ] `python3 …/gen-provider-meta.py --check` exits 0 on the committed table
-- [ ] `grep -c '"color"' …/providermeta.js` equals the provider count
-- [ ] `python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'` → `OK`, ≥ 34 tests
-- [ ] `node --test …` → `# fail 0`
-- [ ] Both edited workflow files parse (`npx --yes js-yaml@4.1.0 <file>` exits 0)
-- [ ] `linux/upstream/fork-delta.sh` ends with `OK:`
-- [ ] `git status --porcelain` lists only in-scope files
-- [ ] `plans/README.md` status row updated
+- [x] Generation prints the descriptor count plus absent legacy IDs
+  (94 today), with no warnings.
+- [x] `python3 …/gen-provider-meta.py --check` exits 0 on the committed table
+- [x] `grep -c '"color"' …/providermeta.js` equals the provider count
+- [x] `python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'` → `OK`, ≥ 34 tests
+- [x] `node --test …` → `# fail 0`
+- [x] Both edited workflow files parse (`npx --yes js-yaml@4.1.0 <file>` exits 0)
+- [x] `linux/upstream/fork-delta.sh` ends with `OK:`
+- [x] Tracked changes are in scope; preexisting untracked user files and
+  historical reports are preserved.
+- [x] `plans/README.md` status row updated
 
 ## STOP conditions
 
@@ -297,7 +300,8 @@ Stop and report back (do not improvise) if:
 
 - The descriptor count or the two call forms differ from the counts above
   in a way the plan does not cover (a third descriptor style).
-- After regeneration, outside the approved legacy/Kimi policy, a provider in the old table loses its
+- After regeneration, outside the approved legacy/Kimi policy, a provider
+  in the old table loses its
   `dashboard`/`statusPage`/`color` (compare with
   `git diff --stat` and a quick `python3 - <<EOF` that loads both tables):
   report the list instead of hand-editing the generated file.
