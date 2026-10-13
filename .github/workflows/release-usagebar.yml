@@ -410,12 +410,19 @@ jobs:
           set -euo pipefail
           flags=()
           if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
-          gh release create "$TAG" packages/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "UsageBar $VERSION" \
-            --notes-file notes/release-notes.md \
-            "${flags[@]}"
+          # A retry replaces partially uploaded assets in place without changing
+          # an existing release's title, notes or pre-release flag.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::notice::release $TAG exists; re-uploading assets"
+            gh release upload "$TAG" packages/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" packages/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "UsageBar $VERSION" \
+              --notes-file notes/release-notes.md \
+              "${flags[@]}"
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.resolve.outputs.distro_packages == 'true'
