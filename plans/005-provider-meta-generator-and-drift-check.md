@@ -13,6 +13,34 @@
 > "Current state" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition.
 
+## Authorized revision, 2026-10-13
+
+The original metadata-loss STOP was valid. The user has now explicitly approved
+keeping legacy entries for Crof, CrossModel and Kimi K2 (unofficial), preserving
+their committed names, dashboard URLs and colors for older CLIs. Store this
+small curated input in `LEGACY_META` in the fork-owned generator. Never read the
+generated table as input. Current Swift descriptors take precedence if an ID
+returns; test collisions and deterministic, independent generation.
+
+The current target is 91 descriptor providers plus three legacy entries: 94
+entries, all with brand colors. Thirteen descriptors use shorthand
+`color: .init(hex: ...)`, including Manus and Poe; they do supply literal
+colors. Parse explicit and shorthand constructors for hex and RGB, including
+red-capable fixtures, and never substitute `widgetColor` for brand color.
+
+Kimi's existing dashboard is source-backed by
+`KimiRegion.china.consoleURL.absoluteString`. Resolve only the known
+`domain` -> `webBaseURL` -> `consoleURL` chain from `KimiRegion.swift`, reflecting
+literal domain/path changes and rejecting unsupported expression changes.
+Add fixtures and real-descriptor invariants. Do not implement a general Swift
+interpreter or edit Swift inputs. `Providers/**` must trigger the GNOME check
+so changes to this backing source cannot silently leave stale metadata.
+
+This revision expands the original steps and tests accordingly. The already
+merged 003/004/006 changes are expected drift: preserve their extracted modules,
+README updates, restore-only rehearsal cache and isolated trusted report job.
+The loss STOP still applies outside the approved compatibility/resolver policy.
+
 ## Status
 
 - **Priority**: P1
@@ -105,7 +133,7 @@ silently again.
 
 | Purpose | Command | Expected on success |
 |---|---|---|
-| Regenerate | `python3 linux/usagebar-gnome/tools/gen-provider-meta.py` | `91 providers -> linux/usagebar-gnome/usagebar@felipearosr.github.io/providermeta.js`, no `warning:` lines |
+| Regenerate | `python3 linux/usagebar-gnome/tools/gen-provider-meta.py` | `94 providers -> linux/usagebar-gnome/usagebar@felipearosr.github.io/providermeta.js`, no `warning:` lines |
 | Drift check | `python3 linux/usagebar-gnome/tools/gen-provider-meta.py --check` | exit 0, prints `providermeta.js is current` |
 | Python tests | `python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'` | `OK` |
 | Node tests | `node --test linux/usagebar-gnome/tests/*.test.mjs` | `# fail 0` |
@@ -118,7 +146,7 @@ silently again.
 ## Scope
 
 **In scope**:
-- `linux/usagebar-gnome/tools/gen-provider-meta.py`
+- `linux/usagebar-gnome/tools/gen-provider-meta.py` (including explicit legacy data and Kimi resolver)
 - `linux/usagebar-gnome/usagebar@felipearosr.github.io/providermeta.js` (regenerated only; never hand-edited)
 - `linux/usagebar-gnome/tests/test_gen_provider_meta.py` (create)
 - `.github/workflows/gnome-extension.yml` (one step)
@@ -144,7 +172,7 @@ silently again.
 
 ## Steps
 
-### Step 1: Parse both descriptor forms and both color forms
+### Step 1: Parse both descriptor forms, explicit/shorthand colors and approved inputs
 
 In `gen-provider-meta.py`:
 
@@ -165,9 +193,9 @@ In `gen-provider-meta.py`:
    `main()` to say "no ProviderMetadata/PluginProviderSpec".
 
 **Verify**: `python3 linux/usagebar-gnome/tools/gen-provider-meta.py` →
-`91 providers -> …` and zero `warning:` lines. Then
+`94 providers -> …` and zero `warning:` lines. Then
 `grep -c '^    "[a-z0-9]*": {' linux/usagebar-gnome/usagebar@felipearosr.github.io/providermeta.js`
-→ `91`, and `grep -c '"color"' …/providermeta.js` → `91` (every provider has
+→ `94`, and `grep -c '"color"' …/providermeta.js` → `94` (every provider has
 a color; if fewer, list the ones without and STOP if any descriptor really
 has a `ProviderColor(` the parser missed).
 
@@ -203,7 +231,8 @@ pure and `main(argv, descriptor_glob=…, out=…)` takes parameters). Cases:
 5. `--check` returns 0 when the output file matches and 1 when it differs.
 
 **Verify**: `python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'`
-→ `OK` with the new tests counted (22 today + 5).
+→ `OK` with the original cases plus legacy, shorthand, Kimi and real-descriptor tests
+(22 existing + 12 generator tests).
 
 ### Step 4: Wire the check into CI
 
@@ -252,10 +281,10 @@ the table must be regenerated (never hand-edited) after an upstream merge.
 
 ## Done criteria
 
-- [ ] `python3 …/gen-provider-meta.py` prints `91 providers` (or the current descriptor count) and no `warning:`
+- [ ] `python3 …/gen-provider-meta.py` prints the descriptor count plus absent legacy IDs (94 today) and no `warning:`
 - [ ] `python3 …/gen-provider-meta.py --check` exits 0 on the committed table
 - [ ] `grep -c '"color"' …/providermeta.js` equals the provider count
-- [ ] `python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'` → `OK`, ≥ 27 tests
+- [ ] `python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py'` → `OK`, ≥ 34 tests
 - [ ] `node --test …` → `# fail 0`
 - [ ] Both edited workflow files parse (`npx --yes js-yaml@4.1.0 <file>` exits 0)
 - [ ] `linux/upstream/fork-delta.sh` ends with `OK:`
@@ -268,7 +297,7 @@ Stop and report back (do not improvise) if:
 
 - The descriptor count or the two call forms differ from the counts above
   in a way the plan does not cover (a third descriptor style).
-- After regeneration, a provider that is in the OLD table loses its
+- After regeneration, outside the approved legacy/Kimi policy, a provider in the old table loses its
   `dashboard`/`statusPage`/`color` (compare with
   `git diff --stat` and a quick `python3 - <<EOF` that loads both tables):
   report the list instead of hand-editing the generated file.
@@ -284,8 +313,8 @@ Stop and report back (do not improvise) if:
   `python3 linux/usagebar-gnome/tools/gen-provider-meta.py` is re-run;
   add that line to `linux/upstream/RUNBOOK.md`'s merge checklist in the
   merge PR that first hits it.
-- Reviewer focus: the regenerated table diff. Expect 32 added providers and
-  color/link updates on existing ones; anything *removed* is a parser gap.
+- Reviewer focus: the regenerated table diff. Expect complete descriptor coverage plus the three approved legacy entries.
+  Any other lost dashboard, status or color field still needs investigation.
 - Long term, the upstream CLI could publish these fields from
   `config providers --format json` (three TODOs in the tree ask for it:
   `extension.js:80-83`, this generator's docstring,

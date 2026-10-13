@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
-"""Regenerate providermeta.js from the Swift ProviderDescriptors.
+"""Regenerate providermeta.js from Swift provider descriptors and legacy entries.
 
-The upstream CLI's `config providers --format json` only carries
-{provider, displayName, enabled, defaultEnabled}; the dashboard/status
-URLs and branding live in Sources/CodexBarCore/Providers/*/
-*ProviderDescriptor.swift as ProviderMetadata or PluginProviderSpec literals. Until upstream
-exposes them over the CLI (planned PR), this script extracts them
-statically and emits the ESM module the extension and prefs import.
+ProviderMetadata and PluginProviderSpec supply literal strings and brand colors.
+The three curated legacy entries retain links for older CLIs; current descriptors
+always take precedence. Kimi's known China console expression is resolved from
+KimiRegion.swift with bounded syntax guards. Other expressions remain absent.
+No generated output is ever used as input.
 
 Usage (from the repo root):
     python3 linux/usagebar-gnome/tools/gen-provider-meta.py [--check]
-
-Only string/bool/number literals are understood; a field whose value is
-an expression is treated as absent. Fields are matched inside the
-ProviderMetadata(...) or PluginProviderSpec(...) call only, so descriptor-level `id:` duplicates
-don't confuse it.
 """
 
 import argparse
@@ -51,6 +45,16 @@ STATUS_SCOPES = {
     'claude': ['Claude Code', 'Claude API', 'claude.ai', 'Claude Console', 'Everything'],
 }
 
+# Explicit compatibility data approved for older CLIs on 2026-10-13. These
+# providers no longer have descriptors. Do not infer this from providermeta.js.
+LEGACY_META = {
+    'crof': {'name': 'Crof', 'dashboard': 'https://crof.ai/dashboard', 'color': '#2eab94'},
+    'crossmodel': {
+        'name': 'CrossModel', 'dashboard': 'https://crossmodel.ai/console/usage', 'color': '#7c3aed'},
+    'kimik2': {
+        'name': 'Kimi K2 (unofficial)', 'dashboard': 'https://kimrel.com/my-credits', 'color': '#4c00ff'},
+}
+
 STR_FIELDS = {
     'displayName': 'name',
     'dashboardURL': 'dashboard',
@@ -83,11 +87,11 @@ def str_field(block, field):
 
 
 def color_field(src):
-    hex_color = re.search(r'ProviderColor\(\s*hex:\s*0x([0-9A-Fa-f]{6})\s*\)', src)
+    hex_color = re.search(r'(?:ProviderColor|\.init)\(\s*hex:\s*0x([0-9A-Fa-f]{6})\s*\)', src)
     if hex_color:
         return '#' + hex_color.group(1).lower()
     m = re.search(
-        r'ProviderColor\(\s*red:\s*([\d.]+(?:\s*/\s*255)?),'
+        r'(?:ProviderColor|\.init)\(\s*red:\s*([\d.]+(?:\s*/\s*255)?),'
         r'\s*green:\s*([\d.]+(?:\s*/\s*255)?),'
         r'\s*blue:\s*([\d.]+(?:\s*/\s*255)?)\s*\)', src)
     if not m:
@@ -98,6 +102,51 @@ def color_field(src):
         num = float(raw.split('/')[0])
         vals.append(int(round(num if '/' in raw else num * 255)))
     return '#{:02x}{:02x}{:02x}'.format(*(min(255, max(0, v)) for v in vals))
+
+
+def descriptor_color(src, block):
+    """Prefer the brand argument; never substitute widget colors for it."""
+    argument = r'(?<![\w])color:\s*((?:ProviderColor|\.init)\([^)]*\))'
+    for text in (block, src):
+        own = re.search(argument, text)
+        if own:
+            return color_field(own.group(1))
+        if re.search(r'(?<![\w])color\s*:', text):
+            return None  # Unsupported brand expression must not fall through.
+    # Older classic descriptors can keep an unlabelled constructor elsewhere.
+    without_widgets = re.sub(
+        r'\b\w*Color\s*:\s*(?:ProviderColor|\.init)\([^)]*\)', '', src)
+    return color_field(without_widgets)
+
+
+def kimi_dashboard(block, region_path):
+    """Resolve only the known China domain -> web base -> console URL chain.
+
+    Fail closed if its descriptor expression or any relevant property changes
+    shape. Literal domain/path changes are reflected in the generated URL.
+    """
+    if not re.search(r'\bdashboardURL:\s*KimiRegion\.china\.consoleURL\.absoluteString\s*,', block):
+        raise ValueError('unsupported Kimi dashboard expression; update the bounded resolver')
+    with open(region_path, encoding='utf-8') as f:
+        src = f.read()
+
+    def property_body(name, type_name):
+        match = re.search(rf'public var {name}: {type_name}\s*\{{([^{{}}]*)\}}', src)
+        if not match:
+            raise ValueError(f'unsupported KimiRegion.{name}; update the bounded resolver')
+        return match.group(1).strip()
+
+    domain = re.fullmatch(
+        r'self\s*==\s*\.china\s*\?\s*"([a-z0-9.-]+)"\s*:\s*"[a-z0-9.-]+"',
+        property_body('domain', 'String'))
+    web_base = re.fullmatch(
+        r'URL\(string:\s*"https://www\.\\\(self\.domain\)"\)!', property_body('webBaseURL', 'URL'))
+    console = re.fullmatch(
+        r'self\.webBaseURL\.appendingPathComponent\("([a-zA-Z0-9-]+(?:/[a-zA-Z0-9-]+)*)"\)',
+        property_body('consoleURL', 'URL'))
+    if not (domain and web_base and console):
+        raise ValueError('unsupported KimiRegion URL chain; update the bounded resolver')
+    return f'https://www.{domain.group(1)}/{console.group(1)}'
 
 
 def parse(path):
@@ -114,11 +163,12 @@ def parse(path):
         val = str_field(block, swift)
         if val:
             entry[js] = val
-    own_color = re.search(r'(?<![A-Za-z])color:\s*(ProviderColor\([^)]*\))', block)
-    color = color_field(own_color.group(1)) if own_color else color_field(src)
+    color = descriptor_color(src, block)
     if color:
         entry['color'] = color
     provider = pid.group(1)
+    if provider == 'kimi' and 'dashboard' not in entry:
+        entry['dashboard'] = kimi_dashboard(block, os.path.join(os.path.dirname(path), 'KimiRegion.swift'))
     page = (entry.get('statusPage') or '').rstrip('/')
     feed = STATUS_FEED_OVERRIDES.get(page)
     if not feed and page:
@@ -133,13 +183,13 @@ def parse(path):
 
 def render(meta):
     lines = [
-        '// GENERATED by linux/usagebar-gnome/tools/gen-provider-meta.py — do not edit.',
-        '// Source of truth: Sources/CodexBarCore/Providers/*/*ProviderDescriptor.swift.',
+        '// GENERATED by linux/usagebar-gnome/tools/gen-provider-meta.py; do not edit.',
+        '// Inputs: Swift provider descriptors, KimiRegion.swift and curated LEGACY_META in the generator.',
         '// Regenerate after syncing with upstream:',
         '//   python3 linux/usagebar-gnome/tools/gen-provider-meta.py',
         '',
         '/* eslint-disable */',
-        f'export const PROVIDER_META = {json.dumps(meta, indent=4, ensure_ascii=False)};',
+        f'export const PROVIDER_META = {json.dumps(dict(sorted(meta.items())), indent=4, ensure_ascii=False)};',
     ]
     return '\n'.join(lines) + '\n'
 
@@ -151,15 +201,17 @@ def main(argv=None, *, descriptor_glob=DESCRIPTOR_GLOB, out=OUT):
     paths = sorted(glob.glob(descriptor_glob))
     if not paths:
         sys.exit(f'no descriptors found under {descriptor_glob}')
-    meta = {}
+    meta = {provider: dict(entry) for provider, entry in LEGACY_META.items()}
+    seen = set()
     for path in paths:
         parsed = parse(path)
         if not parsed:
             print(f'warning: no ProviderMetadata/PluginProviderSpec in {path}', file=sys.stderr)
             continue
         provider, entry = parsed
-        if provider in meta:
+        if provider in seen:
             print(f'warning: duplicate provider {provider} from {path}', file=sys.stderr)
+        seen.add(provider)
         meta[provider] = entry
 
     content = render(meta)
