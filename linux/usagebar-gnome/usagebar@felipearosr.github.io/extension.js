@@ -28,6 +28,8 @@ import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import {planNotifications} from './notify.js';
+import {extraWindowsOf, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {PROVIDER_META} from './providermeta.js';
 import {capName, readableBrandColor, surfaceColor} from './brandtext.js';
@@ -101,37 +103,6 @@ function providerLinks(row) {
 // loginMethod either on usage or under usage.identity, source-dependent.
 function planOf(row) {
     return row.usage?.loginMethod ?? row.usage?.identity?.loginMethod;
-}
-
-// Pace projection for a standard window slot (extras carry no pace).
-function paceOf(row, slot) {
-    return row.pace ? [row.pace.primary, row.pace.secondary][slot] : null;
-}
-
-// Seconds until the window resets, or null without a parseable resetsAt.
-function resetSecs(w) {
-    if (!w?.resetsAt)
-        return null;
-    const at = Date.parse(w.resetsAt);
-    return Number.isNaN(at) ? null : (at - Date.now()) / 1000;
-}
-
-function windowsOf(row) {
-    const u = row.usage;
-    if (!u)
-        return [];
-    return [u.primary, u.secondary, u.tertiary]
-        .map((w, slot) => ({w, slot}))
-        .filter(({w}) => w && !w.isSyntheticPlaceholder && w.usedPercent !== null &&
-                w.usedPercent !== undefined);
-}
-
-// Named per-model/per-feature limits beyond the three standard slots
-// (e.g. Claude's Fable weekly bar, "Daily Routines"). Only present from
-// the oauth/web sources — the claude CLI source strips them, so the config
-// must pin claude to source "oauth" on Linux.
-function extraWindowsOf(row) {
-    return (row.usage?.extraRateWindows ?? []).filter(x => x?.window);
 }
 
 // Stable per-bar identity shared by the card renderer and the prefs catalog,
@@ -388,32 +359,6 @@ function severity(percent, grey) {
     if (percent > THRESHOLDS.warn)
         return 'warn';
     return 'ok';
-}
-
-// Notification bucket shared with windowLabel's ladder: a window spanning a
-// day or more (windowLabel's "N-day"/"Weekly"/"Monthly" range) uses the
-// weekly thresholds; without a duration in the payload, fall back to the
-// reset horizon.
-function isLongWindow(w) {
-    if (w.windowMinutes !== null && w.windowMinutes !== undefined)
-        return w.windowMinutes >= 1440;
-    return (resetSecs(w) ?? 0) > 86400;
-}
-
-function windowLabel(minutes, slot) {
-    if (minutes === null || minutes === undefined)
-        return ['Session', 'Weekly', 'Monthly'][slot] ?? 'Window';
-    if (minutes >= 40000)
-        return 'Monthly';
-    if (minutes >= 9000)
-        return 'Weekly';
-    if (minutes >= 1440)
-        return `${Math.ceil(minutes / 1440)}-day`;
-    if (slot === 0)
-        return `Session (${Math.ceil(minutes / 60)}h)`;
-    if (minutes >= 60)
-        return `${Math.ceil(minutes / 60)}h`;
-    return `${minutes}m`;
 }
 
 // Locale table for the handful of strings this extension formats itself in the
@@ -1635,7 +1580,7 @@ export default class UsageBarExtension extends Extension {
         this._namesVersion = 0;
         this._selectedProvider = null;
         this._selectedMachine = null;
-        this._notified = new Map();
+        this._notified ??= new Map();
         this._costs = null;
         this._costVersion = 0;
         this._costProviderVersions = new Map();
@@ -2001,7 +1946,8 @@ export default class UsageBarExtension extends Extension {
         this._indicator?.destroy();
         this._indicator = null;
         this._rows = [];
-        this._notified = null;
+        // Keep this plain quota memo (strings and numbers/booleans, no actors,
+        // signals or sources) across screen locks. The planner prunes old cycles.
         this._costs = null;
         this._costOverviewReports = null;
         this._costProviderVersions?.clear();
@@ -2397,63 +2343,30 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    // Quota warnings: one notification per crossed threshold per window per
-    // reset cycle — session (short) and weekly (long) windows have their own
-    // threshold lists, like the macOS app. Cycle identity is
-    // provider+window+resetsAt, so a reset (new resetsAt) re-arms; keys
-    // absent from the payload are pruned. The per-cycle memo stores the
-    // highest threshold already announced (Infinity once fully escalated is
-    // unnecessary — a higher crossing just compares numerically).
-    //
-    // Pace warnings ride the same cycle: when the backend projection says
-    // the window won't last to reset (pace.willLastToReset === false),
-    // notify once per cycle, tracked under a ":pace" memo key.
+    // Quota decisions are pure; only notification presentation lives here.
     _maybeNotify() {
         if (!this._settings.get_boolean('notify-enabled'))
             return;
-        const muted = new Set(this._settings.get_strv('notify-muted-providers'));
-        const sessionAt = this._settings.get_value('notify-session-thresholds').deepUnpack();
-        const weeklyAt = this._settings.get_value('notify-weekly-thresholds').deepUnpack();
-        const paceEnabled = this._settings.get_boolean('notify-pace-enabled');
-        const seen = new Map();
-        for (const row of this._rows) {
-            if (row.stale || muted.has(row.provider))
-                continue;
-            const name = this._displayName(row.provider);
-            const wins = [
-                ...windowsOf(row).map(({w, slot}) =>
-                    ({w, label: windowLabel(w.windowMinutes, slot),
-                        pace: paceOf(row, slot)})),
-                ...extraWindowsOf(row)
-                    .filter(x => x.window.usedPercent !== null &&
-                        x.window.usedPercent !== undefined)
-                    .map(x => ({w: x.window, label: x.title ?? x.id, pace: null})),
-            ];
-            for (const {w, label, pace} of wins) {
-                const cycle = `${row.provider}:${label}:${w.resetsAt ?? ''}`;
-                const crossed = (isLongWindow(w) ? weeklyAt : sessionAt)
-                    .filter(t => w.usedPercent >= t);
-                const prev = this._notified.get(cycle);
-                seen.set(cycle, prev);
-                if (crossed.length) {
-                    const highest = Math.max(...crossed);
-                    if (prev === undefined || highest > prev) {
-                        this._notify(`${name} ${label} at ${Math.round(w.usedPercent)}%`,
-                            resetText(w) || 'usage limit approaching');
-                        seen.set(cycle, highest);
-                    }
-                }
-                const paceKey = `${cycle}:pace`;
-                const pacePrev = this._notified.get(paceKey);
-                seen.set(paceKey, pacePrev);
-                if (paceEnabled && pace?.willLastToReset === false && !pacePrev) {
-                    this._notify(`${name} ${label} won't last to reset`,
-                        pace.summary ?? 'current pace exceeds the window');
-                    seen.set(paceKey, true);
-                }
+        const result = planNotifications({
+            rows: this._rows,
+            memo: this._notified,
+            muted: new Set(this._settings.get_strv('notify-muted-providers')),
+            sessionThresholds: this._settings.get_value('notify-session-thresholds').deepUnpack(),
+            weeklyThresholds: this._settings.get_value('notify-weekly-thresholds').deepUnpack(),
+            paceEnabled: this._settings.get_boolean('notify-pace-enabled'),
+            now: Date.now(),
+            displayName: p => this._displayName(p),
+        });
+        for (const {kind, name, label, w, percent, pace} of result.notifications) {
+            if (kind === 'threshold') {
+                this._notify(`${name} ${label} at ${percent}%`,
+                    resetText(w) || 'usage limit approaching');
+            } else {
+                this._notify(`${name} ${label} won't last to reset`,
+                    pace.summary ?? 'current pace exceeds the window');
             }
         }
-        this._notified = seen;
+        this._notified = result.memo;
     }
 
     // One /cost?provider= request per provider, in parallel. Scoped requests
