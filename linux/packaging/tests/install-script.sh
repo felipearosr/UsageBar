@@ -151,6 +151,92 @@ if as_tester "USAGEBAR_API_URL=file:///tmp/api sh $script 9.9.8" > /tmp/fixture.
 fi
 grep -q "has no CLI tarball for" /tmp/fixture.out || fail "no 'has no CLI tarball' message: $(cat /tmp/fixture.out)"
 
+# list_fixture ASSET...: a release list under /tmp/list whose first release,
+# usagebar-v9.9.10-rc.1, lists ASSETs (in /tmp/art) as file:// downloads under
+# GitHub's .../releases/download/<tag>/ layout. A file:// URL can't carry
+# GitHub's ?per_page query, so the script reads it via USAGEBAR_RELEASES_URL.
+list_tag=usagebar-v9.9.10-rc.1
+list_dl=file:///tmp/list/releases/download/$list_tag
+list_fixture() {
+    mkdir -p /tmp/list/releases/download
+    ln -s /tmp/art "/tmp/list/releases/download/$list_tag"
+    json="[{\"tag_name\": \"$list_tag\", \"prerelease\": true, \"assets\": ["
+    sep=
+    for asset in "$@"; do
+        json="$json$sep{\"name\": \"$asset\", \"browser_download_url\": \"$list_dl/$asset\"}"
+        sep=', '
+    done
+    printf '%s]}, {\"tag_name\": \"usagebar-v9.9.7\", \"assets\": []}]\n' "$json" > /tmp/list/releases.json
+    chmod -R a+rX /tmp/list
+}
+
+# latest_fixture ASSET...: releases/latest under /tmp/api listing ASSETs.
+latest_fixture() {
+    release_fixture usagebar-v9.9.7 "$@"
+    mv /tmp/api/repos/felipearosr/UsageBar/releases/tags/usagebar-v9.9.7 \
+        /tmp/api/repos/felipearosr/UsageBar/releases/latest
+}
+
+no_tag_install() {
+    as_tester "USAGEBAR_API_URL=file:///tmp/api USAGEBAR_RELEASES_URL=file:///tmp/list/releases.json sh $script"
+}
+
+say "no tag: a latest release without a CLI tarball falls back to the newest release with one"
+rm -rf /tmp/api /tmp/list
+latest_fixture "usagebar_9.9.7_amd64.deb" "$tray"
+list_fixture "$tray" "$(basename "$tarball")" "$(basename "$tarball").sha256"
+no_tag_install > /tmp/fixture.out 2>&1 || fail "fallback install failed: $(cat /tmp/fixture.out)"
+grep -q "^Note: .*installing from $list_tag instead" /tmp/fixture.out \
+    || fail "no fallback note: $(cat /tmp/fixture.out)"
+grep -q "Downloading $list_dl/$(basename "$tarball")" /tmp/fixture.out \
+    || fail "fallback didn't download the CLI tarball: $(cat /tmp/fixture.out)"
+as_tester "sh $checks codexbar $version"
+as_tester "sh $script --uninstall"
+
+say "no tag: a latest release with a CLI tarball is used without a note"
+rm -rf /tmp/api /tmp/list
+latest_fixture "$tray" "$(basename "$tarball")" "$(basename "$tarball").sha256"
+list_fixture "$tray" "$(basename "$tarball")" "$(basename "$tarball").sha256"
+no_tag_install > /tmp/fixture.out 2>&1 || fail "latest install failed: $(cat /tmp/fixture.out)"
+if grep -q "^Note:" /tmp/fixture.out; then fail "unexpected fallback note: $(cat /tmp/fixture.out)"; fi
+grep -q "Downloading file:///tmp/art/$(basename "$tarball")" /tmp/fixture.out \
+    || fail "didn't download from the latest release: $(cat /tmp/fixture.out)"
+as_tester "sh $checks codexbar $version"
+as_tester "sh $script --uninstall"
+
+say "no tag: an unreadable latest release (no final release yet) also falls back"
+rm -rf /tmp/api /tmp/list
+mkdir -p /tmp/api
+list_fixture "$(basename "$tarball")" "$(basename "$tarball").sha256"
+no_tag_install > /tmp/fixture.out 2>&1 || fail "fallback without a latest release failed: $(cat /tmp/fixture.out)"
+grep -q "^Note: couldn't read the latest release; installing from $list_tag instead" /tmp/fixture.out \
+    || fail "no unreadable-latest note: $(cat /tmp/fixture.out)"
+as_tester "sh $checks codexbar $version"
+as_tester "sh $script --uninstall"
+
+say "a named tag without a CLI tarball never falls back"
+rm -rf /tmp/api /tmp/list
+release_fixture usagebar-v9.9.8 "$tray" "$tray.sha256"
+list_fixture "$(basename "$tarball")" "$(basename "$tarball").sha256"
+if as_tester "USAGEBAR_API_URL=file:///tmp/api USAGEBAR_RELEASES_URL=file:///tmp/list/releases.json sh $script 9.9.8" \
+    > /tmp/fixture.out 2>&1; then
+    fail "a named tag fell back to another release: $(cat /tmp/fixture.out)"
+fi
+grep -q "release 9.9.8 of .* has no CLI tarball for" /tmp/fixture.out \
+    || fail "no 'has no CLI tarball' message: $(cat /tmp/fixture.out)"
+
+say "no tag: no release with a CLI tarball installs nothing"
+rm -rf /tmp/api /tmp/list "$home/.local"
+latest_fixture "usagebar_9.9.7_amd64.deb"
+list_fixture "$tray" "$tray.sha256"
+before=$(snapshot "$home/.local")
+if no_tag_install > /tmp/fixture.out 2>&1; then
+    fail "installed without any CLI tarball"
+fi
+grep -q "no recent release of .* has a CLI tarball for" /tmp/fixture.out \
+    || fail "no 'no recent release' message: $(cat /tmp/fixture.out)"
+assert_unchanged "$before" "$home/.local" "failed fallback changed files"
+
 if [ -n "${INSTALL_CLI_TAG:-}" ]; then
     say "download and install release $INSTALL_CLI_TAG"
     as_tester "sh $script $INSTALL_CLI_TAG"

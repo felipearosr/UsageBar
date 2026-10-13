@@ -39,9 +39,10 @@ jobs:
     if: github.repository == 'felipearosr/UsageBar'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    outputs:
+      merged: ${{ steps.merge.outcome }}
     permissions:
       contents: read
-      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,9 +117,11 @@ jobs:
         if: steps.merge.outputs.status != 'up-to-date'
         run: '"$MR" check "$OUT" "GNOME extension JS tests" -- sh -c "node --test linux/usagebar-gnome/tests/*.test.mjs"'
 
+      # Unreviewed upstream code must never write the toolchain cache read by
+      # release-usagebar.yml. Trusted ci.yml runs on main populate it.
       - name: Restore Swift toolchain cache
         if: steps.merge.outputs.status != 'up-to-date'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/swiftly
           key: swift-${{ runner.os }}-${{ runner.arch }}-${{ env.SWIFT_VERSION }}-swiftly-${{ env.SWIFTLY_VERSION }}
@@ -205,27 +208,57 @@ jobs:
           REF: ${{ steps.ref.outputs.ref }}
         run: '"$MR" check "$OUT" "Fork delta report" -- linux/upstream/fork-delta.sh --upstream "$REF" --allow-stale'
 
-      - name: Update the tracking issue
+      - name: Upload rehearsal results
         if: ${{ always() && steps.merge.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rehearsal-out
+          path: ${{ env.OUT }}
+          include-hidden-files: true
+          if-no-files-found: error
+
+  report:
+    needs: rehearse
+    if: ${{ always() && needs.rehearse.outputs.merged == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # Use the fork revision that started this run, never the merged scratch tree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rehearsal-out
+          path: ${{ runner.temp }}/out
+
+      - name: Render the tracking issue
+        run: linux/upstream/merge-rehearsal.sh report "$RUNNER_TEMP/out" > "$RUNNER_TEMP/report.md"
+
+      - name: Update the tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/report.md"
-          "$MR" report "$OUT" > "$report"
           cat "$report" >> "$GITHUB_STEP_SUMMARY"
 
-          number="$(gh issue list --repo "$GITHUB_REPOSITORY" --label merge-rehearsal --state open \
+          number="$(gh issue list -R felipearosr/UsageBar --label merge-rehearsal --state open \
             --json number --jq '.[0].number // empty')"
           if [[ -n "$number" ]]; then
-            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$report"
+            gh issue edit "$number" -R felipearosr/UsageBar --body-file "$report"
           else
-            gh label create merge-rehearsal --repo "$GITHUB_REPOSITORY" --force \
+            gh label create merge-rehearsal -R felipearosr/UsageBar --force \
               --color 5319e7 --description "Updated in place by the UsageBar merge rehearsal"
-            url="$(gh issue create --repo "$GITHUB_REPOSITORY" --title "Upstream merge rehearsal" \
+            url="$(gh issue create -R felipearosr/UsageBar --title "Upstream merge rehearsal" \
               --label merge-rehearsal --body-file "$report")"
             number="${url##*/}"
-            gh issue pin "$number" --repo "$GITHUB_REPOSITORY" \
+            gh issue pin "$number" -R felipearosr/UsageBar \
               || echo "::warning::Created #$number but could not pin it; pin it once by hand."
           fi
           echo "Tracking issue: #$number"

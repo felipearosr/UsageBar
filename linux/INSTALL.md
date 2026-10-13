@@ -88,11 +88,11 @@ The extension looks for the CLI in this order and uses the first it finds:
 `codexbar` on `PATH`, then `~/.local/bin`, `/home/linuxbrew/.linuxbrew/bin`
 and `/usr/local/bin`.
 
-The CLI tarball and the CLI-only `.deb` and `.rpm` are attached to UsageBar
-releases from the first release after 1.0.0 on. UsageBar 1.0.0 doesn't have
-them. Until that release is out, use the
-[install script](#install-script-any-distro) with the `cli-fork-f05433b`
-pre-release (x86_64 only).
+UsageBar 1.0.0 shipped the full packages only. The CLI tarball and the
+CLI-only `.deb` and `.rpm` are on the `usagebar-v1.1.0-rc.*` pre-releases, for
+x86_64 and aarch64. The [install script](#install-script-any-distro) picks the
+newest release that has a CLI tarball and says so when it isn't the latest
+release; `sh -s -- 1.1.0-rc.2` pins one.
 
 The CLI needs x86_64 or aarch64, glibc 2.38 or newer, libcurl, libsqlite3 and
 libstdc++. The packages pull these in for you.
@@ -103,8 +103,9 @@ libstdc++. The packages pull these in for you.
 curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh
 ```
 
-It downloads the CLI tarball from the latest UsageBar release, checks its
-`.sha256`, and installs it into `~/.local/lib/usagebar-cli`, with
+It downloads the CLI tarball from the latest UsageBar release, or from the
+newest release (pre-releases included) that has one when the latest doesn't,
+checks its `.sha256`, and installs it into `~/.local/lib/usagebar-cli`, with
 `~/.local/bin/codexbar` linking to it. If `~/.local/bin` isn't on your `PATH`,
 the extension still finds it there.
 
@@ -112,8 +113,8 @@ To pick a release, add it after `sh -s --`. A plain version means the
 `usagebar-v<version>` tag; anything else is used as the tag name:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh -s -- 1.0.1
-curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh -s -- cli-fork-f05433b
+curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh -s -- 1.1.0-rc.2
+curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh -s -- usagebar-v1.1.0-rc.2
 ```
 
 For every user, install under `/usr/local` (`/usr/local/bin/codexbar`). The
@@ -164,12 +165,18 @@ UsageBar package.
 
 ### Arch: AUR `usagebar-cli-bin`
 
-**AUR: coming soon.** `usagebar-cli-bin` isn't on the AUR yet. Until it is,
-build the same PKGBUILD from a checkout:
+**AUR: coming soon.** `usagebar-cli-bin` isn't on the AUR yet. The PKGBUILD
+in a checkout targets the last final release, and it only builds once a final
+release of 1.1.0 or later carries the CLI tarball. Until then, use the
+[install script](#install-script-any-distro).
+
+After such a release, pin the PKGBUILD to it and build it from a checkout
+(`bump.sh` needs `makepkg`, or podman or docker for an archlinux container):
 
 ```sh
 git clone https://github.com/felipearosr/UsageBar.git
 cd UsageBar/linux/packaging/aur
+./bump.sh <version>
 makepkg -si
 ```
 

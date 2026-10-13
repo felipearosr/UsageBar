@@ -127,9 +127,17 @@ Use a Fedora GNOME machine with no checkout and no Swift toolchain (#49):
 
 ## If a run fails
 
-A failed or cancelled run publishes nothing: `publish` runs only after
-`verify` succeeds. Fix the problem on `main`, then move the tag to the fixed
-commit **only if no release was created for it**:
-`git push origin :refs/tags/usagebar-v<version>`, then tag again. Once a
-version is published, don't reuse it. Bump to the next `-rc.N` or patch
-version instead.
+`publish` runs only after `verify` succeeds. A failed upload can leave a release
+with only some assets; re-run the failed `publish` job to upload them again. If
+that release already exists, the job replaces assets without changing its title,
+notes or pre-release flag.
+
+The `aur` job produces the `aur-usagebar-cli-bin` artifact separately from
+`publish`. It uses the verified build artifacts, can be re-run alone, and never
+blocks or un-publishes a release. Release candidates skip it.
+
+For a failure before publication, fix the problem on `main`, then move the tag
+to the fixed commit **only if no release was created for it**:
+`git push origin :refs/tags/usagebar-v<version>`, then tag again. Once a version
+is published, do not reuse it for different code. Bump to the next `-rc.N` or
+patch version instead.
