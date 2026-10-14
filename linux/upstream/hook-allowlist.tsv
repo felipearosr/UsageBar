@@ -4,10 +4,10 @@
 # Adding a line grows the fork delta: do it on purpose and say so in the PR. Remove lines as isolation tickets land.
 
 # Machine Sync: `codexbar sync` registration and help via the CLI extension hook in CLIForkCommands.swift (#57)
-Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	CLI extension hook: forkCommandDescriptors() append and runForkCommand in the dispatch default case (CLIForkCommands.swift); #57
+Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	CLI extension hook: forkCommandDescriptors() append and runForkCommand in the dispatch default case (CLIForkCommands.swift); also forkPrintVersionJSONIfRequested in the --version fast path (CLICapabilities.swift, #37); #57
 Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	CLI extension hook: forkRootHelpUsage() in rootHelp's usage list; also the /cost?days help example (#54); #57
 Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	CLI extension hook: forkHelp(for:) in printHelp's default case; #57
-docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54); #56
+docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54), /health capabilities and --version --json (#37); #56
 
 # Machine Sync: serve /sync/status and /sync/push via the route-extension hook in CLIServeForkRoutes.swift (#58)
 Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	Route-extension hook: forkServeResponse(_:runtime:) first in handleServeRequest (CLIServeForkRoutes.swift); also /cost?days (#54); #58

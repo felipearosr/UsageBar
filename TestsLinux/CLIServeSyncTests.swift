@@ -71,7 +71,7 @@ struct CLIServeSyncTests {
     @Test
     func `hook passes upstream routes through`() async throws {
         let runtime = Self.runtime()
-        for target in ["/", "/health", "/usage", "/cost?days=7", "/sync", "/sync/other"] {
+        for target in ["/", "/usage", "/cost?days=7", "/sync", "/sync/other"] {
             #expect(try await CodexBarCLI.forkServeResponse(Self.request("GET", target), runtime: runtime) == nil)
         }
         #expect(try await CodexBarCLI.forkServeResponse(Self.request("POST", "/usage"), runtime: runtime) == nil)

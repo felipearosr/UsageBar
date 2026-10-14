@@ -41,6 +41,7 @@ extension CodexBarCLI {
         codexbar sync status [--timezone <iana-id>] [--day-start <hour>] [--json]
         codexbar sync install-timer [--uninstall]
         codexbar sync link | rename <display-name> | retire <machine> | forget <machine> [--yes] | leave [--yes]
+        codexbar --version --json
         """
             .replacingOccurrences(of: "\n", with: "\n  ")
     }
