@@ -315,8 +315,8 @@ export function machineDetailView(payload, selection, {now = Date.now(), hiddenM
 }
 
 // The Machines the Providers tab's spend can follow, for its Machine picker:
-// this Machine first (id null, which keeps the local cost reports), then the
-// rest of the Sync Group, then 'all'. Empty unless at least two Machines
+// this Machine first (id 'this', which keeps the local cost reports), then
+// the rest of the Sync Group, then 'all'. Empty unless at least two Machines
 // synced, since there is nothing to pick otherwise.
 export function spendScopeOptions(payload, {colors = {}} = {}) {
     const machines = payload?.paired ? payload.status?.machines ?? [] : [];
@@ -324,7 +324,7 @@ export function spendScopeOptions(payload, {colors = {}} = {}) {
         return [];
     return [
         ...machines.map((machine, index) => ({
-            id: machine.isThisMachine ? null : machine.machineId,
+            id: machine.isThisMachine ? 'this' : machine.machineId,
             name: machine.displayName || machine.machineId,
             color: machineColor(index, machine.machineId, colors),
         })),
@@ -388,4 +388,118 @@ export function scopedProviderKpis(provider) {
         {title: 'Requests · 30 days', value: countText(spend.requests)},
         {title: 'Models · 30 days', value: countText(provider?.models.length ?? 0)},
     ];
+}
+
+// ---------- scoped cost reports (the cost dashboard) ----------
+
+const DAY_COUNT_KEYS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
+    'totalTokens', 'requests'];
+
+// Null when neither side was priced, so an unpriced day stays token-only.
+function addCost(a, b) {
+    return typeof a !== 'number' && typeof b !== 'number' ? null : (a ?? 0) + (b ?? 0);
+}
+
+function isPricedReport(report) {
+    return typeof (report?.last30DaysCostUSD ?? report?.totals?.totalCost) === 'number';
+}
+
+// Folds one `daily` entry (a cost report's, or one provider of a synced day)
+// into `byDate`, merging models by name.
+function addDay(byDate, day) {
+    const into = byDate.get(day.date) ?? {
+        date: day.date,
+        totalCost: null,
+        costIncomplete: false,
+        ...Object.fromEntries(DAY_COUNT_KEYS.map(key => [key, 0])),
+        models: new Map(),
+    };
+    into.totalCost = addCost(into.totalCost, day.totalCost);
+    into.costIncomplete ||= !!day.costIncomplete;
+    for (const key of DAY_COUNT_KEYS)
+        into[key] += day[key] ?? 0;
+    for (const model of day.modelBreakdowns ?? []) {
+        if (!model?.modelName)
+            continue;
+        const entry = into.models.get(model.modelName) ??
+            {modelName: model.modelName, cost: null, totalTokens: 0};
+        entry.cost = addCost(entry.cost, model.cost);
+        entry.totalTokens += model.totalTokens ?? 0;
+        into.models.set(model.modelName, entry);
+    }
+    byDate.set(day.date, into);
+}
+
+// One provider's cost report from its local report (or none) and the days
+// other Machines synced for it.
+function mergedReport(provider, local, syncedDays) {
+    const byDate = new Map();
+    for (const day of local?.daily ?? [])
+        addDay(byDate, day);
+    for (const day of syncedDays)
+        addDay(byDate, day);
+    const daily = [...byDate.values()]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(({models, ...day}) => {
+            const modelBreakdowns = [...models.values()].sort((a, b) =>
+                (b.cost ?? -1) - (a.cost ?? -1) || b.totalTokens - a.totalTokens ||
+                a.modelName.localeCompare(b.modelName));
+            return {...day, modelBreakdowns, modelsUsed: modelBreakdowns.map(model => model.modelName)};
+        });
+    const priced = isPricedReport(local) || daily.some(day => typeof day.totalCost === 'number');
+    const totals = Object.fromEntries(DAY_COUNT_KEYS.map(key =>
+        [key, daily.reduce((sum, day) => sum + day[key], 0)]));
+    totals.totalCost = priced ? daily.reduce((sum, day) => sum + (day.totalCost ?? 0), 0) : null;
+    return {provider, source: 'machine-sync', currencyCode: 'USD', daily, totals};
+}
+
+// Cost reports for the cost dashboard and the Providers tab's spend row in a
+// Machine scope, shaped like the local cost reports so the cost overview
+// reads them unchanged. `scope` is 'this', 'all' or a Machine id.
+//   'this'      this Machine's local reports, as they are
+//   'all'       the local reports plus every other Machine's synced `daily`,
+//               merged per provider and day. This Machine's synced copy is
+//               skipped, so its Spend counts once and is as fresh as the
+//               local scan. Retired Machines count.
+//   a Machine   only that Machine's synced `daily`
+// Unpaired, or paired before the first status read, it is always 'this'. A
+// Machine that left the Sync Group falls back to 'all'. Returns
+//   scope    the scope the reports are for, after those fallbacks
+//   reports  one per provider; `localReports` itself when nothing synced
+//            changes it
+export function scopedCostReports(localReports, payload, scope = 'all') {
+    const local = localReports ?? [];
+    const machines = payload?.paired ? payload.status?.machines ?? null : null;
+    if (!machines || scope === 'this')
+        return {scope: 'this', reports: local};
+    const machine = scope === 'all' ? null : machines.find(m => m.machineId === scope);
+    if (machine?.isThisMachine)
+        return {scope: 'this', reports: local};
+    const effective = machine ? machine.machineId : 'all';
+    const picked = machine ? [machine] : machines.filter(m => !m.isThisMachine);
+
+    const synced = new Map(); // provider → its days on the picked Machines
+    for (const m of picked) {
+        for (const day of m.daily ?? []) {
+            for (const entry of day.providers ?? []) {
+                if (!entry?.provider || !day.date)
+                    continue;
+                const days = synced.get(entry.provider) ?? [];
+                days.push({...entry, date: day.date});
+                synced.set(entry.provider, days);
+            }
+        }
+    }
+    if (effective === 'all' && !synced.size)
+        return {scope: 'all', reports: local};
+
+    const base = effective === 'all' ? local : [];
+    const reports = base.map(report => synced.has(report.provider)
+        ? mergedReport(report.provider, report, synced.get(report.provider)) : report);
+    const seen = new Set(base.map(report => report.provider));
+    for (const provider of [...synced.keys()].sort()) {
+        if (!seen.has(provider))
+            reports.push(mergedReport(provider, null, synced.get(provider)));
+    }
+    return {scope: effective, reports};
 }

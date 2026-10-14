@@ -9,6 +9,7 @@ import {
     machinesView,
     nextPushDelaySecs,
     planSyncTick,
+    scopedCostReports,
     scopedProviderKpis,
     scopedSpend,
     spendScopeOptions,
@@ -296,10 +297,10 @@ function scopedPayload() {
     return p;
 }
 
-test('the Machine picker lists this Machine first as null, the others, then All', () => {
+test('the Machine picker lists this Machine first, the others, then All', () => {
     const options = spendScopeOptions(scopedPayload());
     assert.deepEqual(options.map(o => [o.id, o.name]),
-        [[null, 'laptop'], ['deskAAAAAAAAAAAAAAAAAA', 'desk'], ['all', 'All']]);
+        [['this', 'laptop'], ['deskAAAAAAAAAAAAAAAAAA', 'desk'], ['all', 'All']]);
     assert.equal(options[1].color, MACHINE_PALETTE[1]);
     assert.deepEqual(spendScopeOptions({paired: false}), []);
     const alone = scopedPayload();
@@ -328,6 +329,7 @@ test('scoped spend for All sums every Machine per provider', () => {
 
 test('scoped spend is null for this Machine, a Machine that left, or no Sync', () => {
     assert.equal(scopedSpend(scopedPayload(), null), null);
+    assert.equal(scopedSpend(scopedPayload(), 'this'), null);
     assert.equal(scopedSpend(scopedPayload(), 'goneAAAAAAAAAAAAAAAAAA'), null);
     assert.equal(scopedSpend({paired: false}, 'all'), null);
 });
@@ -337,4 +339,131 @@ test('a provider the scoped Machine never used shows zero, not the local cost', 
     assert.deepEqual(scopedProviderKpis(s.providers.find(p => p.provider === 'claude')).map(k => k.value),
         ['$0.00', '0', '0', '0']);
     assert.deepEqual(scopedProviderKpis(s.providers[1]).map(k => k.value), ['$0.25+', '100', '1', '1']);
+});
+
+// ---------- scoped cost reports ----------
+
+function providerDay(provider, totalCost, totalTokens, models = [], extra = {}) {
+    return {
+        provider,
+        totalCost,
+        costIncomplete: false,
+        inputTokens: totalTokens,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens,
+        requests: 1,
+        modelBreakdowns: models,
+        ...extra,
+    };
+}
+
+// laptop (this Machine) and desk both synced `daily`; laptop's synced copy
+// matches its local report and must not be added again.
+function dailyPayload() {
+    const p = payload();
+    const [laptop, desk] = p.status.machines;
+    laptop.daily = [{date: '2026-09-24', providers: [
+        providerDay('claude', 2, 200, [{modelName: 'claude-sonnet-4-5', cost: 2, totalTokens: 200}]),
+    ]}];
+    desk.daily = [
+        {date: '2026-09-23', providers: [
+            providerDay('codex', 1, 100, [{modelName: 'gpt-5', cost: 1, totalTokens: 100}]),
+        ]},
+        {date: '2026-09-24', providers: [
+            providerDay('claude', 0.5, 50, [{modelName: 'claude-sonnet-4-5', cost: 0.5, totalTokens: 50}]),
+            providerDay('pi', null, 70, [{modelName: 'pi-1', cost: null, totalTokens: 70}],
+                {costIncomplete: true}),
+        ]},
+    ];
+    return p;
+}
+
+function laptopReports() {
+    return [{
+        provider: 'claude',
+        source: 'local',
+        last30DaysCostUSD: 2,
+        totals: {totalCost: 2},
+        daily: [{
+            date: '2026-09-24', totalCost: 2, totalTokens: 200, inputTokens: 200,
+            modelBreakdowns: [{modelName: 'claude-sonnet-4-5', cost: 2, totalTokens: 200}],
+        }],
+    }];
+}
+
+const totalCost = reports => reports.reduce((sum, r) => sum + (r.totals?.totalCost ?? 0), 0);
+
+test('All Machines adds the other Machines to the local reports, counting this one once', () => {
+    const local = laptopReports();
+    const {scope, reports} = scopedCostReports(local, dailyPayload(), 'all');
+    assert.equal(scope, 'all');
+    assert.deepEqual(reports.map(r => r.provider), ['claude', 'codex', 'pi']);
+    // Local claude $2 + desk claude $0.50 + desk codex $1; laptop's synced $2 is skipped.
+    assert.equal(totalCost(reports), 3.5);
+    const claude = reports[0];
+    assert.deepEqual(claude.daily.map(d => [d.date, d.totalCost, d.totalTokens]), [['2026-09-24', 2.5, 250]]);
+    // The same model on two Machines is one breakdown row.
+    assert.deepEqual(claude.daily[0].modelBreakdowns,
+        [{modelName: 'claude-sonnet-4-5', cost: 2.5, totalTokens: 250}]);
+    assert.deepEqual(reports[1].daily.map(d => d.date), ['2026-09-23']);
+    assert.equal(local[0].daily[0].totalCost, 2); // inputs are left alone
+});
+
+test('unpriced synced days stay token-only', () => {
+    const {reports} = scopedCostReports(laptopReports(), dailyPayload(), 'all');
+    const pi = reports.find(r => r.provider === 'pi');
+    assert.equal(pi.totals.totalCost, null); // the cost overview leaves it out
+    assert.equal(pi.totals.totalTokens, 70);
+    assert.deepEqual(pi.daily.map(d => [d.totalCost, d.costIncomplete, d.totalTokens]), [[null, true, 70]]);
+    assert.deepEqual(pi.daily[0].modelBreakdowns, [{modelName: 'pi-1', cost: null, totalTokens: 70}]);
+    // An unpriced day next to a priced one keeps the priced cost.
+    const p = dailyPayload();
+    p.status.machines[1].daily[1].providers[0].totalCost = null;
+    const claude = scopedCostReports(laptopReports(), p, 'all').reports[0];
+    assert.equal(claude.daily[0].totalCost, 2);
+    assert.equal(claude.daily[0].totalTokens, 250);
+});
+
+test('unpaired or not yet read, the scope is this Machine and the reports are the local ones', () => {
+    const local = laptopReports();
+    for (const p of [null, {paired: false}, {paired: true, status: null}]) {
+        const result = scopedCostReports(local, p, 'all');
+        assert.equal(result.scope, 'this');
+        assert.equal(result.reports, local);
+    }
+    assert.deepEqual(scopedCostReports(null, null, 'all').reports, []);
+});
+
+test('All Machines with no synced daily keeps the local reports as they are', () => {
+    const local = laptopReports();
+    const result = scopedCostReports(local, payload(), 'all'); // a CLI without `daily`
+    assert.equal(result.scope, 'all');
+    assert.equal(result.reports, local);
+});
+
+test('Retired Machines count in All Machines', () => {
+    const p = dailyPayload();
+    Object.assign(p.status.machines[1], {retired: true, active: false});
+    assert.equal(totalCost(scopedCostReports(laptopReports(), p, 'all').reports), 3.5);
+});
+
+test('one Machine scope holds only that Machine; this Machine is its local reports', () => {
+    const local = laptopReports();
+    const desk = scopedCostReports(local, dailyPayload(), 'deskAAAAAAAAAAAAAAAAAA');
+    assert.equal(desk.scope, 'deskAAAAAAAAAAAAAAAAAA');
+    assert.deepEqual(desk.reports.map(r => [r.provider, r.totals.totalCost]),
+        [['claude', 0.5], ['codex', 1], ['pi', null]]);
+    for (const scope of ['this', 'laptopAAAAAAAAAAAAAAAA']) {
+        const result = scopedCostReports(local, dailyPayload(), scope);
+        assert.equal(result.scope, 'this');
+        assert.equal(result.reports, local);
+    }
+});
+
+test('a Machine that left the Sync Group falls back to All Machines', () => {
+    const result = scopedCostReports(laptopReports(), dailyPayload(), 'goneAAAAAAAAAAAAAAAAAA');
+    assert.equal(result.scope, 'all');
+    assert.equal(totalCost(result.reports), 3.5);
 });
