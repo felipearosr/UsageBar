@@ -54,6 +54,7 @@ import {
     machinesView,
     nextPushDelaySecs,
     planSyncTick,
+    scopedCostReports,
     scopedProviderKpis,
     scopedSpend,
     spendScopeOptions,
@@ -1611,11 +1612,17 @@ export default class UsageBarExtension extends Extension {
         this._namesVersion = 0;
         this._selectedProvider = null;
         this._selectedMachine = null;
-        // The Machine whose spend the Providers tab shows (see
-        // _scopedSpend): null for this Machine. Kept across menu opens.
+        // Whose spend the Providers tab shows: null (the default) or 'all'
+        // for All Machines, 'this' for this Machine, or another Machine's
+        // id (see _scopedSpend). Unpaired, it is always this Machine. Kept
+        // across menu opens.
         this._spendScope = null;
         this._notified ??= new Map();
         this._costs = null;
+        // The cost reports of the spend row and dashboard, by scope; the
+        // revision changes whenever they do (see _costReports).
+        this._costReportsMemo = null;
+        this._costReportsRev = 0;
         this._costVersion = 0;
         this._costProviderVersions = new Map();
         this._costOverviewReports = {};
@@ -1998,6 +2005,7 @@ export default class UsageBarExtension extends Extension {
         // Keep this plain quota memo (strings and numbers/booleans, no actors,
         // signals or sources) across screen locks. The planner prunes old cycles.
         this._costs = null;
+        this._costReportsMemo = null;
         this._costOverviewReports = null;
         this._costProviderVersions?.clear();
         this._costProviderVersions = null;
@@ -2233,11 +2241,12 @@ export default class UsageBarExtension extends Extension {
         return this._syncSupport() === 'needs-upgrade' ? null : this._sync?.payload;
     }
 
-    // Spend of the Machine the Providers tab follows (scopedSpend), or null
-    // while it shows this Machine's own cost reports. A Machine that left
-    // the Sync Group, or a Sync Group that's gone, falls back to this one.
+    // Synced spend of another Machine the Providers tab follows
+    // (scopedSpend), or null while it shows cost reports: this Machine's, or
+    // All Machines' (_costReports). A Machine that left the Sync Group, or a
+    // Sync Group that's gone, falls back to the default.
     _scopedSpend() {
-        if (!this._spendScope)
+        if (!this._spendScope || this._spendScope === 'all' || this._spendScope === 'this')
             return null;
         const payload = this._syncPayload();
         const spend = scopedSpend(payload, this._spendScope, {colors: DISPLAY.machineColors});
@@ -2246,11 +2255,35 @@ export default class UsageBarExtension extends Extension {
         return spend;
     }
 
-    // `id` is a Machine id, 'all', or null for this Machine.
+    // `id` is a Machine id, 'all', or 'this' (or null) for this Machine.
     _setSpendScope(id) {
         const thisMachine = (this._syncPayload()?.status?.machines ?? [])
             .find(machine => machine.isThisMachine)?.machineId;
-        this._spendScope = id && id !== thisMachine ? id : null;
+        this._spendScope = !id || id === thisMachine ? 'this' : id;
+    }
+
+    // The scope the Machine picker shows as picked: 'this', 'all' or a
+    // Machine id.
+    _spendScopeId() {
+        return this._scopedSpend()?.id ?? (this._spendScope === 'this' ? 'this' : 'all');
+    }
+
+    // Cost reports for the spend row and the cost dashboard
+    // (scopedCostReports): All Machines when paired, unless the picker chose
+    // this Machine. Unpaired, or before the first status read, this
+    // Machine's own reports. Recomputed only when the local reports, the
+    // sync payload or the scope change.
+    _costReports() {
+        const payload = this._syncPayload();
+        const scope = this._spendScope === 'this' ? 'this' : 'all';
+        const memo = this._costReportsMemo;
+        if (memo?.costs === this._costs && memo.payload === payload && memo.scope === scope)
+            return memo.value;
+        const value = scopedCostReports(this._costs, payload, scope);
+        if (!memo || memo.value.reports !== value.reports || memo.value.scope !== value.scope)
+            this._costReportsRev++;
+        this._costReportsMemo = {costs: this._costs, payload, scope, value};
+        return value;
     }
 
     _machinesTabVisible() {
@@ -2716,7 +2749,20 @@ export default class UsageBarExtension extends Extension {
             const iso = new Date().toISOString();
             const spend = costUSD => ({costUSD, costIncomplete: false, totalTokens: 0, requests: 0});
             const today = localDateKey();
-            const machine = (id, thisMachine, cost, provider) => ({
+            // One provider's synced Spend today, for `daily`.
+            const dayProvider = (provider, cost, modelName) => ({
+                provider,
+                totalCost: cost,
+                costIncomplete: false,
+                inputTokens: cost * 800,
+                outputTokens: cost * 200,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                totalTokens: cost * 1000,
+                requests: 1,
+                modelBreakdowns: [{modelName, cost, totalTokens: cost * 1000}],
+            });
+            const machine = (id, thisMachine, cost, provider, daily) => ({
                 machineId: id,
                 displayName: id,
                 isThisMachine: thisMachine,
@@ -2728,6 +2774,7 @@ export default class UsageBarExtension extends Extension {
                 models: [{provider, model: `${id}-model`, spend: spend(cost)}],
                 days: [{date: today, spend: spend(cost / 3)}],
                 coverage: {from: '2026-06-25', to: '2026-09-24'},
+                daily: [{date: today, providers: daily}],
             });
             this._indicator._closeCostPanel();
             this._syncFixture = true;
@@ -2740,7 +2787,14 @@ export default class UsageBarExtension extends Extension {
                     today,
                     total: {today: spend(10 / 3), last30Days: spend(10)},
                     errors: [],
-                    machines: [machine('qa-laptop', true, 6, 'claude'), machine('qa-desk', false, 4, 'codex')],
+                    // qa-laptop (this Machine) synced the same $6 its local
+                    // report holds; the dashboard must not count it twice.
+                    machines: [
+                        machine('qa-laptop', true, 6, 'claude',
+                            [dayProvider('claude', 6, 'qa-shared-model')]),
+                        machine('qa-desk', false, 4, 'codex',
+                            [dayProvider('claude', 1, 'qa-shared-model'), dayProvider('codex', 3, 'qa-desk-model')]),
+                    ],
                 },
             };
             this._indicator.menu.open();
@@ -2757,6 +2811,8 @@ export default class UsageBarExtension extends Extension {
                         cards.every(card => card._usagebarDot.has_style_class_name('usagebar-machine-dot-active'))));
                     assertions.push(assertion('fresh data is not greyed',
                         box?._usagebarContent.opacity === 255));
+                    assertions.push(assertion('no "covers this Machine only" note', !descendants(box)
+                        .some(actor => actor instanceof St.Label && actor.text.includes('this Machine only'))));
                     assertions.push(...markAssertions('Machines tab', box, logosHidden
                         ? ['Claude', 'Codex'] : []));
                 } catch (error) {
@@ -2801,7 +2857,7 @@ export default class UsageBarExtension extends Extension {
                                 !!buttons[2]?.has_style_class_name('selected')));
                             const summary = labelsOf(this._overviewView?.summaryButton);
                             assertions.push(assertion('spend summary follows All Machines',
-                                summary.some(text => text.includes('All Machines')) &&
+                                summary.some(text => text.includes('all Machines')) &&
                                 summary.includes('$10'), {summary}));
                         } catch (error) {
                             done(error);
@@ -2827,10 +2883,11 @@ export default class UsageBarExtension extends Extension {
                                 later(300, () => {
                                     try {
                                         const summary = labelsOf(this._overviewView?.summaryButton);
-                                        // This Machine's own reports, which may have no priced cost.
+                                        // This Machine's own report alone.
                                         assertions.push(assertion('picking this Machine restores its cost reports',
-                                            this._spendScope === null &&
-                                            !summary.some(text => text.includes('qa-')), {summary}));
+                                            this._spendScope === 'this' && summary.includes('$6.00') &&
+                                            !summary.some(text => text.includes('qa-') ||
+                                                text.includes('all Machines')), {summary}));
                                     } catch (error) {
                                         done(error);
                                         return;
@@ -2842,18 +2899,64 @@ export default class UsageBarExtension extends Extension {
                         });
                     });
                 };
+                // This Machine's local cost report: the same $6 qa-laptop
+                // synced, so the All Machines total is $10, not $16.
+                const liveCosts = this._costs;
+                const setCosts = costs => {
+                    this._costs = costs;
+                    this._costVersion++;
+                    this._costOverviewReports = {};
+                    this._costOverviewCache.clear();
+                };
                 const scopeStep = next => {
+                    setCosts([{
+                        provider: 'claude',
+                        source: 'qa-fixture',
+                        last30DaysCostUSD: 6,
+                        totals: {totalCost: 6},
+                        daily: [{
+                            date: today, totalCost: 6, totalTokens: 6000, inputTokens: 4800, outputTokens: 1200,
+                            modelBreakdowns: [{modelName: 'qa-shared-model', cost: 6, totalTokens: 6000}],
+                        }],
+                    }]);
+                    this._costFetchedAt = Date.now(); // no refetch replaces it
                     this._indicator._tabButtons.get('providers').emit('clicked', 1);
                     later(300, () => {
                         try {
                             assertions.push(painted('Machine dropdown is painted',
                                 this._overviewView?.scopeHost._usagebarScopeToggle));
+                            const summary = labelsOf(this._overviewView?.summaryButton);
+                            assertions.push(assertion('spend row covers all Machines, this one once',
+                                summary.some(text => text.includes('all Machines')) &&
+                                summary.includes('$10'), {summary}));
                         } catch (error) {
                             done(error);
                             return;
                         }
-                        openPicker();
-                        later(300, () => pickStep(next));
+                        // The dashboard it opens combines both Machines.
+                        this._overviewView.summaryButton.emit('clicked', 1);
+                        later(400, () => {
+                            try {
+                                const refs = this._indicator._costPanel.child?._usagebarSmoke;
+                                assertions.push(painted('All Machines cost dashboard is painted', refs?.panel));
+                                assertions.push(assertion('dashboard total counts both Machines, this one once',
+                                    refs?.totalLabel.text === '$10*', {actual: refs?.totalLabel.text ?? null}));
+                                assertions.push(assertion('dashboard splits both Machines by provider',
+                                    JSON.stringify(refs?.providerNames) === '["claude","codex"]',
+                                    {actual: refs?.providerNames ?? null}));
+                                assertions.push(assertion('a model on two Machines is one breakdown row',
+                                    JSON.stringify(refs?.modelNames) === '["qa-shared-model","qa-desk-model"]',
+                                    {actual: refs?.modelNames ?? null}));
+                            } catch (error) {
+                                done(error);
+                                return;
+                            }
+                            capture('dashboard-all-machines.png', () => {
+                                this._indicator._closeCostPanel();
+                                openPicker();
+                                later(300, () => pickStep(next));
+                            });
+                        });
                     });
                 };
                 const staleStep = () => {
@@ -2882,8 +2985,16 @@ export default class UsageBarExtension extends Extension {
                                     !this._indicator._tabItem.visible));
                                 assertions.push(assertion('unpairing returns to the Providers tab',
                                     this._view === 'providers'));
+                                this._spendScope = null; // the default: All Machines while paired
+                                this._render();
+                                const summary = labelsOf(this._overviewView?.summaryButton);
+                                assertions.push(assertion('unpaired, the spend row is this Machine\'s alone',
+                                    summary.includes('$6.00') &&
+                                    !summary.some(text => text.includes('Machines')), {summary}));
                                 this._indicator.menu.close();
                                 this._syncFixture = false;
+                                this._spendScope = null;
+                                setCosts(liveCosts);
                                 done();
                             } catch (error) {
                                 done(error);
@@ -3376,17 +3487,23 @@ export default class UsageBarExtension extends Extension {
     }
 
     _costOverview(rangeDays = 30) {
-        if (!this._costs)
+        const {scope, reports} = this._costReports();
+        if (scope === 'this' && !this._costs)
             return null;
         if (!this._costOverviewCache)
-            return costOverview(this._costs, rangeDays);
+            return costOverview(reports, rangeDays);
         return this._costOverviewCache.get(
             this._costOverviewReports,
             this._costVersion,
             localDateKey(),
-            () => costOverview(this._costs, rangeDays),
-            String(rangeDays)
+            () => costOverview(reports, rangeDays),
+            `${this._costReportsRev}:${rangeDays}`
         );
+    }
+
+    // The spend row's scope suffix: "all Machines" while it covers them.
+    _costScopeLabel() {
+        return this._costReports().scope === 'all' ? 'all Machines' : null;
     }
 
     _displayName(provider) {
@@ -3667,8 +3784,9 @@ export default class UsageBarExtension extends Extension {
                 this._selectedMachine = null; // it left the Sync Group
         }
         const scope = this._scopedSpend();
+        const scopeId = this._spendScopeId();
         const key = JSON.stringify({view, detailView, colors: detailView ? DISPLAY.modelColors : null,
-            ranked: detailView ? DISPLAY.knownModels : null, scope: scope?.id ?? null});
+            ranked: detailView ? DISPLAY.knownModels : null, scope: scopeId});
         const popupView = detailView ? `machine:${detailView.id}` : 'machines';
         if (this._popupView === popupView && this._machinesRenderKey === key)
             return;
@@ -3738,7 +3856,7 @@ export default class UsageBarExtension extends Extension {
                     }));
                 }
                 const row = this._buildMachineRow(machine);
-                if (scope && !scope.all ? scope.id === machine.id : !scope && machine.thisMachine)
+                if (scopeId === 'this' ? machine.thisMachine : scopeId === machine.id)
                     row.add_style_class_name('usagebar-machine-row-scoped');
                 refs.set(machine.id, row);
                 content.add_child(row);
@@ -3749,11 +3867,15 @@ export default class UsageBarExtension extends Extension {
                     style_class: 'usagebar-dim usagebar-machines-note',
                 }));
             }
-            content.add_child(new St.Label({
-                text: scope ? `The Providers tab shows ${scope.name}'s spend.`
-                    : 'Cost on the Providers tab covers this Machine only.',
-                style_class: 'usagebar-dim usagebar-machines-note',
-            }));
+            // The Providers tab's spend covers All Machines unless its
+            // picker narrowed it to one.
+            const scopeName = scope?.name ?? (scopeId === 'this' ? 'this Machine' : null);
+            if (scopeName) {
+                content.add_child(new St.Label({
+                    text: `The Providers tab shows ${scopeName}'s spend.`,
+                    style_class: 'usagebar-dim usagebar-machines-note',
+                }));
+            }
         }
 
         box._usagebarMachineCards = refs;
@@ -4178,8 +4300,9 @@ export default class UsageBarExtension extends Extension {
         const hiddenChartProviders = [...DISPLAY.hiddenCostChartProviders].sort().join(',');
         const modelPrefs = JSON.stringify([[...DISPLAY.hiddenModels].sort(), DISPLAY.modelColors,
             DISPLAY.knownModels.map(entry => `${entry.p}:${entry.m}`)]);
-        return `${this._costVersion}:${localDateKey()}:${this._namesVersion}:${names}:` +
-            `${hiddenChartProviders}:${modelPrefs}`;
+        const scopeLabel = this._costScopeLabel(); // brings _costReportsRev up to date
+        return `${this._costVersion}:${this._costReportsRev}:${scopeLabel}:` +
+            `${localDateKey()}:${this._namesVersion}:${names}:${hiddenChartProviders}:${modelPrefs}`;
     }
 
     _renderOverview(rows) {
@@ -4519,11 +4642,14 @@ export default class UsageBarExtension extends Extension {
     // `scoped` (scopedSpend) when the tab follows another Machine: its
     // summary has no daily series, so a click opens that Machine's detail on
     // the Machines tab instead of the cost dashboard.
+    // Otherwise it names "all Machines" while the overview covers them.
     _buildCostSummary(ov, scoped = null) {
         const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-summary'});
         const head = new St.BoxLayout({x_expand: true});
+        const scopeLabel = scoped ? null : this._costScopeLabel();
         head.add_child(new St.Label({
-            text: scoped ? `Spend · last 30 days · ${scoped.name}` : `Spend · last ${ov.dates.length} days`,
+            text: scoped ? `Spend · last 30 days · ${scoped.name}`
+                : `Spend · last ${ov.dates.length} days${scopeLabel ? ` · ${scopeLabel}` : ''}`,
             style_class: 'usagebar-compact-title',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
@@ -4596,7 +4722,7 @@ export default class UsageBarExtension extends Extension {
     // account. The list opens inline, as the popover can't hold a menu.
     _renderScopePicker(view, scoped) {
         const options = spendScopeOptions(this._syncPayload(), {colors: DISPLAY.machineColors});
-        const selected = scoped?.id ?? null;
+        const selected = scoped?.id ?? this._spendScopeId();
         const open = !!view.scopeOpen && options.length > 0;
         const key = JSON.stringify({options, selected, open});
         if (view.scopeKey === key)
@@ -4734,7 +4860,8 @@ export default class UsageBarExtension extends Extension {
         const top = new St.BoxLayout({style_class: 'usagebar-ov-top'});
         const left = new St.BoxLayout({vertical: true, width: OV_LEFT_WIDTH});
         left.add_child(new St.Label({text: 'RAW TOKEN COST', style_class: 'usagebar-ov-caption'}));
-        left.add_child(new St.Label({text: `${fmtUSD(ov.cost)}*`, style_class: 'usagebar-ov-total'}));
+        const totalLabel = new St.Label({text: `${fmtUSD(ov.cost)}*`, style_class: 'usagebar-ov-total'});
+        left.add_child(totalLabel);
         left.add_child(new St.Label({text: '* if billed at full API rate', style_class: 'usagebar-ov-small'}));
         for (const p of chartProviders) {
             const share = ov.cost > 0 ? p.cost / ov.cost : 0;
@@ -4977,6 +5104,9 @@ export default class UsageBarExtension extends Extension {
             modelTable,
             dayTable,
             chartProviderCount: chartProviders.length,
+            totalLabel,
+            providerNames: ov.providers.map(p => p.provider),
+            modelNames: ov.models.map(m => m.name),
         };
         return panel;
     }
