@@ -1181,7 +1181,7 @@ extension CostUsageScanner {
         modelsDevCacheRoot: URL? = nil,
         priorityTurns: [String: CodexPriorityTurnMetadata]? = nil,
         pricingResolver: CostUsagePricing.CodexResolver? = nil,
-        spendBuckets: CodexSpendBucketCollector? = nil,
+        rowObserver: CostUsageRowObserver? = nil,
         modelsDevCatalogLoader: (URL?) -> ModelsDevCatalog? = {
             CostUsagePricing.modelsDevCatalog(cacheRoot: $0)
         }) -> CostUsageDailyReport
@@ -1294,8 +1294,8 @@ extension CostUsageScanner {
                     rows: pricing.rowsByDayModel[day]?[breakdown.modelName] ?? [],
                     pricing: pricing,
                     calendar: range.calendar,
-                    into: &temporalBuckets)
-                spendBuckets?.add(rows: pricing.rowsByDayModel[day]?[breakdown.modelName] ?? [], pricing: pricing)
+                    into: &temporalBuckets,
+                    rowObserver: rowObserver)
             }
             if let entryCost = entry.costUSD {
                 totalCost += entryCost

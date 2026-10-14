@@ -73,8 +73,8 @@ From #26 (23 conflicted files) and the rehearsal on 2026-10-06 (`upstream/main` 
 
 | Area | Files | Fork feature | How #26 re-applied it |
 | --- | --- | --- | --- |
-| Cost scanners | `Sources/CodexBarCore/Vendored/CostUsage/`: `CostUsageScanner.swift`, `+Claude.swift`, `+CacheHelpers.swift`, `+TemporalBuckets.swift`, `CostUsageStore+ReadView.swift`; `Sources/CodexBarCore/PiSessionCostScanner.swift` | Machine Sync: Spend Buckets | Codex: optional `CodexSpendBucketCollector` on `buildCodexReportFromCache`, per-row cost factored into `codexRowCost`. Claude: `ClaudeUsageRow.omittedFields` captured at parse time, per-row cost in `claudeRowCost`. Pi: per-file `hourContributions` and `hourKey` on keyed entries. **The one real conflict in #95 (0.72.0) was here**: upstream reworked the Claude row builder (scan-range check before pricing, `cacheCreate1h`) and removed the private `ClaudeTokens` struct. #95 kept upstream's builder and re-applied only `claudeOmittedUsageFields(usage)` → `omittedFields`; `ClaudeSpendBucketLinuxTests` "fields the log omits stay absent" fails until it is. **0.73.0** auto-merged here but added a hand-written `ClaudeUsageRow` decoder (`CostUsageScanner+ClaudeRowDecoding.swift`) that skipped the fork's `"omit"` key; the fork decodes `omittedFields` there. `ClaudeSpendBucketLinuxTests` "omitted fields survive the persisted row encoding" catches it. If upstream adds fields to that decoder, check `omit` is still read. |
-| Cache schema versions | `Vendored/CostUsage/CostUsageClaudeCache.swift` (`schemaVersion`), `PiSessionCostCache.swift` (`artifactVersion`, `pi-sessions-vN.json`) | Spend Buckets | See [Cache schema versions](#cache-schema-versions) below. |
+| Cost scanners | `Sources/CodexBarCore/Vendored/CostUsage/`: `CostUsageScanner.swift`, `+Claude.swift`, `+CacheHelpers.swift`, `+TemporalBuckets.swift`, `CostUsageStore+ReadView.swift`; `Sources/CodexBarCore/PiSessionCostScanner.swift` | Machine Sync: Spend Buckets | One per-row observer (`CostUsageRowObserver`, fork-owned) behind an optional `rowObserver` parameter: Codex calls it from `addCodexHourly` (threaded through `buildCodexReportFromCache` and `CostUsageStore+ReadView`), Claude from `claudeTemporalPricing` (incomplete rows and priced rows), Pi from `parsePiSessionFile` (made internal with `ParseResult` and `pricingContext`). Claude also keeps `ClaudeUsageRow.omittedFields` captured at parse time. Bucket building lives in `CostUsageSpendBucket.swift` and `PiSessionCostScanner+SpendBuckets.swift`; if a hook conflicts, keep upstream's loop and re-add the one observer call after the row's cost is known. **The one real conflict in #95 (0.72.0) was here**: upstream reworked the Claude row builder (scan-range check before pricing, `cacheCreate1h`) and removed the private `ClaudeTokens` struct. #95 kept upstream's builder and re-applied only `claudeOmittedUsageFields(usage)` → `omittedFields`; `ClaudeSpendBucketLinuxTests` "fields the log omits stay absent" fails until it is. **0.73.0** auto-merged here but added a hand-written `ClaudeUsageRow` decoder (`CostUsageScanner+ClaudeRowDecoding.swift`) that skipped the fork's `"omit"` key; the fork decodes `omittedFields` there. `ClaudeSpendBucketLinuxTests` "omitted fields survive the persisted row encoding" catches it. If upstream adds fields to that decoder, check `omit` is still read. |
+| Cache schema versions | `Vendored/CostUsage/CostUsageClaudeCache.swift` (`schemaVersion`) | Spend Buckets | See [Cache schema versions](#cache-schema-versions) below. |
 | CLI entry and help | `Sources/CodexBarCLI/CLIEntry.swift`, `CLIHelp.swift`, `Tests/CodexBarTests/CLIEntryTests.swift` | Machine Sync: `codexbar sync` | Register `sync` next to upstream's commands; help text in `CLIHelp`. Since 0.73.0, `main()` routes `sync` through its `default:` case to the fork-owned `runForkCommand` (`CLISyncCommand.swift`): upstream's new `plugins` case put the dispatch switch at swiftlint's cyclomatic complexity limit (20), so the fork's own `case` made it 21. |
 | CLI errors | `Sources/CodexBarCLI/CLIErrorReporting.swift`, `CLIIO.swift` | Machine Sync: error `reason` | Carry `reason` and `exit(reason:)` into upstream's error reporting. |
 | `serve` | `Sources/CodexBarCLI/CLIServeCommand.swift`, `CLILocalHTTPServer.swift` (409, 502 status cases), `Tests/CodexBarTests/CLIServeRouterTests.swift` | Machine Sync: `/sync/status`, `/sync/push`; `/cost?days=N` | `/sync/*` through upstream's data-route auth, `Cache-Control: no-store`; `ServeRuntime` takes `sync` with a default; `/cost?days=N` maps to `CostReportingPeriod.rolling(days:)`. |
@@ -84,17 +84,21 @@ From #26 (23 conflicted files) and the rehearsal on 2026-10-06 (`upstream/main` 
 
 ### Cache schema versions
 
-The fork's Spend Buckets store extra data in two upstream caches, so the fork runs its own schema numbers:
+The fork's Spend Buckets store extra data in one upstream cache, so the fork runs its own schema number there:
 
 | Cache | Constant | Fork | Upstream at v0.73.0 |
 | --- | --- | --- | --- |
 | Claude | `CostUsageClaudeCache.schemaVersion` | 6 (#88: persists `omittedFields`) | 4 |
-| Pi | `PiSessionCostCache.artifactVersion` | 10 (hour data) | 9 |
 
-**Rule: when upstream bumps either number to the fork's value or above, bump the fork's above upstream's** in
+Which usage fields a Claude log line omitted is only known while parsing it, and the Claude cache is what later
+scans read instead of the logs, so that flag has to live in its rows. Pi hour data no longer touches upstream's
+Pi cache (#59): the fork keeps it in its own `cost-usage/pi-spend-hours-v1.json`, rebuilt per changed session
+file, so `PiSessionCostCache.artifactVersion` follows upstream.
+
+**Rule: when upstream bumps the Claude number to the fork's value or above, bump the fork's above upstream's** in
 the merge PR, and list the cache rebuild under "Notes". Otherwise upstream's new version equals an old fork
 version and users keep a cache with the wrong shape. Update this table on every merge.
-`merge-rehearsal.sh drift` (step 4) prints both pairs and warns when upstream has caught up.
+`merge-rehearsal.sh drift` (step 4) prints the pair and warns when upstream has caught up.
 
 ### Fork code that outgrows an upstream file
 
@@ -141,7 +145,7 @@ podman run --rm -v "$PWD:/src:z" -w /src ghcr.io/realm/swiftlint:latest swiftlin
 podman run --rm -v "$PWD:/src:z" -w /src localhost/codexbar-swift:6.3.3 bash -c '
   swift build --build-tests &&
   . Scripts/test_environment.sh &&
-  swift test --skip-build --filter "MachineSync|CLIServeSync|CLISync|SpendBucket|OpenCode|CLIServeRouter" &&
+  swift test --skip-build --filter "MachineSync|CLIServeSync|CLISync|SpendBucket|RowObserver|OpenCode|CLIServeRouter" &&
   swift test --skip-build --parallel'
 
 # GNOME extension
@@ -178,16 +182,16 @@ Before pushing, run the drift check from the merge branch (it reads refs, so the
 linux/upstream/merge-rehearsal.sh drift origin/main $TAG
 ```
 
-It prints the fork's and upstream's cache schema versions (warning if upstream has caught up), every line
+It prints the fork's and upstream's Claude cache schema versions (warning if upstream has caught up), every line
 upstream added to `Tests/CodexBarTests` since the last merge that sets a cache `version`, names
-`schemaVersion`/`artifactVersion`, builds `ClaudeUsageRow`/`PiPackedUsage`, or walks `"Sources"`, and every fork
+`schemaVersion`, builds `ClaudeUsageRow`, or walks `"Sources"`, and every fork
 line that declares an environment dictionary without `@ProcessEnvironment`. It exits 1 when it lists anything.
 Not every hit is a bug (a test may pin an old version on purpose); read each, fix the ones that disagree with the
 fork, and say in the PR which upstream tests you adjusted and why. The same grep by hand:
 
 ```sh
 base=$(git merge-base origin/main $TAG)
-git diff -U0 $base $TAG -- Tests/CodexBarTests | grep -E '^\+.*(\.version = [0-9]+|schemaVersion|artifactVersion|ClaudeUsageRow\(|PiPackedUsage\(|"Sources")'
+git diff -U0 $base $TAG -- Tests/CodexBarTests | grep -E '^\+.*(\.version = [0-9]+|schemaVersion|ClaudeUsageRow\(|"Sources")'
 git diff -U0 $base origin/main -- Sources | grep -E '^\+.*(let|var) +\w*[Ee]nv\w* *: *\[String: *String\]' | grep -v '@ProcessEnvironment'
 ```
 

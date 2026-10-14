@@ -149,13 +149,13 @@ struct CostUsageStoreReadView: Sendable {
     func dailyReport(
         range: CostUsageScanner.CostUsageDayRange,
         cacheRoot: URL?,
-        spendBuckets: CostUsageScanner.CodexSpendBucketCollector? = nil) -> CostUsageDailyReport
+        rowObserver: CostUsageRowObserver? = nil) -> CostUsageDailyReport
     {
         CostUsageScanner.buildCodexReportFromCache(
             cache: self.cache,
             range: range,
             modelsDevCacheRoot: cacheRoot,
-            spendBuckets: spendBuckets)
+            rowObserver: rowObserver)
     }
 
     func reports(

@@ -50,39 +50,32 @@ extension CostUsageScanner {
         buckets.quotaSlices[timestamp] = timed
     }
 
-    /// One Codex row's cost as the report prices it. `hasUnpricedTokens` marks a cost that leaves some tokens out.
-    static func codexRowCost(
-        _ row: CodexUsageRow,
-        pricing: CodexReportDayPricingContext) -> (cost: Double?, hasUnpricedTokens: Bool)
-    {
-        let group = CodexDayModelKey(day: row.day, model: row.model)
-        let hasUnpricedTokens = (row.unpricedTokens ?? 0) > 0
-        let hasStablePricing = !hasUnpricedTokens
-            && !pricing.modeOwnershipMismatchGroups.contains(group)
-            && (row.eventIndex != nil || (row.input == 0 && row.output == 0))
-        // An authoritative amount (including zero) survives incomplete request evidence.
-        // Estimated prices require a stable request boundary and unambiguous ownership.
-        let cost = row.knownCostNanos != nil || hasStablePricing
-            ? self.codexResolvedCostUSD(
-                for: row,
-                priorityTurns: pricing.priorityTurns,
-                modelsDevCatalog: pricing.modelsDevCatalog,
-                modelsDevCacheRoot: pricing.modelsDevCacheRoot,
-                customPricing: pricing.customPricing,
-                pricingResolver: pricing.pricingResolver)
-            : nil
-        return (cost, hasUnpricedTokens)
-    }
-
     static func addCodexHourly(
         rows: [CodexUsageRow],
         pricing: CodexReportDayPricingContext,
         calendar: Calendar,
-        into buckets: inout TemporalBuckets)
+        into buckets: inout TemporalBuckets,
+        rowObserver: CostUsageRowObserver? = nil)
     {
         for row in rows {
             guard let timestamp = self.date(fromUnixMs: row.timestampUnixMs) else { continue }
-            let (cost, hasUnpricedTokens) = self.codexRowCost(row, pricing: pricing)
+            let group = CodexDayModelKey(day: row.day, model: row.model)
+            let hasUnpricedTokens = (row.unpricedTokens ?? 0) > 0
+            let hasStablePricing = !hasUnpricedTokens
+                && !pricing.modeOwnershipMismatchGroups.contains(group)
+                && (row.eventIndex != nil || (row.input == 0 && row.output == 0))
+            // An authoritative amount (including zero) survives incomplete request evidence.
+            // Estimated prices require a stable request boundary and unambiguous ownership.
+            let cost = row.knownCostNanos != nil || hasStablePricing
+                ? self.codexResolvedCostUSD(
+                    for: row,
+                    priorityTurns: pricing.priorityTurns,
+                    modelsDevCatalog: pricing.modelsDevCatalog,
+                    modelsDevCacheRoot: pricing.modelsDevCacheRoot,
+                    customPricing: pricing.customPricing,
+                    pricingResolver: pricing.pricingResolver)
+                : nil
+            rowObserver?.observeCodex(row, timestamp: timestamp, costUSD: hasUnpricedTokens ? nil : cost)
             let hour = self.hourStart(for: timestamp, calendar: calendar)
             var hourly = buckets.hourly[hour] ?? HourlyBucket()
             var timed = buckets.quotaSlices[timestamp] ?? HourlyBucket()

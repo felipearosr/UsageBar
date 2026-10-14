@@ -57,11 +57,9 @@ enum PiSessionCostScanner {
         }
     }
 
-    private struct ParseResult {
+    struct ParseResult {
         let contributions: [String: [String: [String: PiPackedUsage]]]
         let unkeyedContributions: [String: [String: [String: PiPackedUsage]]]
-        let hourContributions: [String: [String: [String: PiPackedUsage]]]
-        let unkeyedHourContributions: [String: [String: [String: PiPackedUsage]]]
         let entryUsages: [String: PiSessionEntryUsage]
         let parsedBytes: Int64
         let sessionID: String?
@@ -69,51 +67,6 @@ enum PiSessionCostScanner {
         let isComplete: Bool
         let unsupportedAssistantDayKeys: Set<String>
         let hasUndatedUnsupportedAssistant: Bool
-    }
-
-    /// Usage parsed from one session file, keyed by local day and again by UTC hour.
-    private struct ParsedUsages {
-        var contributions: [String: [String: [String: PiPackedUsage]]] = [:]
-        var unkeyedContributions: [String: [String: [String: PiPackedUsage]]] = [:]
-        var hourContributions: [String: [String: [String: PiPackedUsage]]] = [:]
-        var unkeyedHourContributions: [String: [String: [String: PiPackedUsage]]] = [:]
-        var entryUsages: [String: PiSessionEntryUsage] = [:]
-
-        /// Returns `false` when a sum overflows, which leaves the file's scan incomplete.
-        mutating func add(
-            identity: AssistantIdentity,
-            dayKey: String,
-            date: Date,
-            usage: PiPackedUsage,
-            entryID: String?) -> Bool
-        {
-            guard !usage.isZero else { return true }
-            let providerKey = identity.provider.rawValue
-            let hourKey = PiSessionCostScanner.utcHourKey(date)
-            let delta = [providerKey: [dayKey: [identity.modelName: usage]]]
-            let hourDelta = [providerKey: [hourKey: [identity.modelName: usage]]]
-            guard PiSessionCostScanner.applyContributions(daysByProvider: &self.contributions, contributions: delta),
-                  PiSessionCostScanner.applyContributions(
-                      daysByProvider: &self.hourContributions,
-                      contributions: hourDelta)
-            else { return false }
-
-            guard let entryID else {
-                return PiSessionCostScanner.applyContributions(
-                    daysByProvider: &self.unkeyedContributions,
-                    contributions: delta)
-                    && PiSessionCostScanner.applyContributions(
-                        daysByProvider: &self.unkeyedHourContributions,
-                        contributions: hourDelta)
-            }
-            self.entryUsages[entryID] = PiSessionEntryUsage(
-                providerRawValue: providerKey,
-                dayKey: dayKey,
-                modelName: identity.modelName,
-                usage: usage,
-                hourKey: hourKey)
-            return true
-        }
     }
 
     private struct SessionFileCandidate {
@@ -134,7 +87,7 @@ enum PiSessionCostScanner {
         let modelName: String
     }
 
-    private struct ModelsDevPricingContext {
+    struct ModelsDevPricingContext {
         let catalog: ModelsDevCatalog?
         let cacheRoot: URL?
         let pricingKey: String
@@ -450,7 +403,7 @@ enum PiSessionCostScanner {
         }
     }
 
-    private static func pricingContext(now: Date, cacheRoot: URL?) -> ModelsDevPricingContext {
+    static func pricingContext(now: Date, cacheRoot: URL?) -> ModelsDevPricingContext {
         let modelsDevArtifact = ModelsDevCache.load(now: now, cacheRoot: cacheRoot).artifact
         let customPricingFingerprint = CostUsageCustomPricing.load().fingerprint
         return ModelsDevPricingContext(
@@ -831,13 +784,7 @@ enum PiSessionCostScanner {
             guard let merged = self.mergedContributions(existing: cached.contributions, delta: delta.contributions),
                   let mergedUnkeyed = self.mergedContributions(
                       existing: cached.unkeyedContributions,
-                      delta: delta.unkeyedContributions),
-                  let mergedHours = self.mergedContributions(
-                      existing: cached.hourContributions,
-                      delta: delta.hourContributions),
-                  let mergedUnkeyedHours = self.mergedContributions(
-                      existing: cached.unkeyedHourContributions,
-                      delta: delta.unkeyedHourContributions)
+                      delta: delta.unkeyedContributions)
             else { return false }
             let mergedEntryUsages = cached.entryUsages.merging(delta.entryUsages) { _, appended in appended }
             storeFileUsage(PiSessionFileUsage(
@@ -853,9 +800,7 @@ enum PiSessionCostScanner {
                 unsupportedAssistantDayKeys: cached.unsupportedAssistantDayKeys
                     .union(delta.unsupportedAssistantDayKeys),
                 hasUndatedUnsupportedAssistant: cached.hasUndatedUnsupportedAssistant ||
-                    delta.hasUndatedUnsupportedAssistant,
-                hourContributions: mergedHours,
-                unkeyedHourContributions: mergedUnkeyedHours))
+                    delta.hasUndatedUnsupportedAssistant))
             return true
         }
 
@@ -877,28 +822,60 @@ enum PiSessionCostScanner {
             unkeyedContributions: parsed.unkeyedContributions,
             entryUsages: parsed.entryUsages,
             unsupportedAssistantDayKeys: parsed.unsupportedAssistantDayKeys,
-            hasUndatedUnsupportedAssistant: parsed.hasUndatedUnsupportedAssistant,
-            hourContributions: parsed.hourContributions,
-            unkeyedHourContributions: parsed.unkeyedHourContributions))
+            hasUndatedUnsupportedAssistant: parsed.hasUndatedUnsupportedAssistant))
         return true
     }
 
-    private static func parsePiSessionFile(
+    // swiftlint:disable:next function_body_length
+    static func parsePiSessionFile(
         fileURL: URL,
         range: CostUsageScanner.CostUsageDayRange,
         startOffset: Int64 = 0,
         initialSessionID: String? = nil,
         initialModelContext: PiModelContext? = nil,
         pricingContext: ModelsDevPricingContext? = nil,
-        checkCancellation: CostUsageScanner.CancellationCheck? = nil) throws -> ParseResult
+        checkCancellation: CostUsageScanner.CancellationCheck? = nil,
+        rowObserver: CostUsageRowObserver? = nil) throws -> ParseResult
     {
         self.sessionParseObserverForTesting?()
         var sessionID = initialSessionID
         var currentModelContext = initialModelContext
-        var usages = ParsedUsages()
+        var contributions: [String: [String: [String: PiPackedUsage]]] = [:]
+        var unkeyedContributions: [String: [String: [String: PiPackedUsage]]] = [:]
+        var entryUsages: [String: PiSessionEntryUsage] = [:]
         var unsupportedAssistantDayKeys: Set<String> = []
         var hasUndatedUnsupportedAssistant = false
         var isComplete = true
+
+        func add(
+            provider: UsageProvider,
+            dayKey: String,
+            modelName: String,
+            usage: PiPackedUsage,
+            entryID: String?)
+        {
+            guard !usage.isZero else { return }
+            let providerKey = provider.rawValue
+            let delta = [providerKey: [dayKey: [modelName: usage]]]
+            guard self.applyContributions(daysByProvider: &contributions, contributions: delta) else {
+                isComplete = false
+                return
+            }
+
+            if let entryID {
+                entryUsages[entryID] = PiSessionEntryUsage(
+                    providerRawValue: providerKey,
+                    dayKey: dayKey,
+                    modelName: modelName,
+                    usage: usage)
+            } else {
+                guard self.applyContributions(daysByProvider: &unkeyedContributions, contributions: delta)
+                else {
+                    isComplete = false
+                    return
+                }
+            }
+        }
 
         let parsedBytes: Int64
         do {
@@ -994,15 +971,18 @@ enum PiSessionCostScanner {
                             isComplete = false
                             return
                         }
-                        if !usages.add(
-                            identity: identity,
-                            dayKey: dayKey,
-                            date: date,
+                        rowObserver?.observePi(
+                            provider: identity.provider,
+                            model: identity.modelName,
+                            timestamp: date,
                             usage: usage,
                             entryID: self.entryIdentifier(from: object))
-                        {
-                            isComplete = false
-                        }
+                        add(
+                            provider: identity.provider,
+                            dayKey: dayKey,
+                            modelName: identity.modelName,
+                            usage: usage,
+                            entryID: self.entryIdentifier(from: object))
                     }
                 })
             // A scan can stop at the last complete newline while an active writer leaves a
@@ -1022,11 +1002,9 @@ enum PiSessionCostScanner {
         }
 
         return ParseResult(
-            contributions: usages.contributions,
-            unkeyedContributions: usages.unkeyedContributions,
-            hourContributions: usages.hourContributions,
-            unkeyedHourContributions: usages.unkeyedHourContributions,
-            entryUsages: usages.entryUsages,
+            contributions: contributions,
+            unkeyedContributions: unkeyedContributions,
+            entryUsages: entryUsages,
             parsedBytes: parsedBytes,
             sessionID: sessionID,
             lastModelContext: currentModelContext,

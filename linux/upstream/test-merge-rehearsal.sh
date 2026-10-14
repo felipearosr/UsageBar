@@ -112,11 +112,9 @@ drift_repo="$WORK/drift-repo"
 mkdir -p "$drift_repo"
 cd "$drift_repo"
 claude_cache=Sources/CodexBarCore/Vendored/CostUsage/CostUsageClaudeCache.swift
-pi_cache=Sources/CodexBarCore/PiSessionCostCache.swift
 mkdir -p "$(dirname "$claude_cache")" Tests/CodexBarTests
 g init -q
 printf '    private static let schemaVersion = 4\n' > "$claude_cache"
-printf '    private static let artifactVersion = 9\n' > "$pi_cache"
 g add -A
 g commit -qm base
 
@@ -128,7 +126,6 @@ g commit -qm "upstream test pins the cache version"
 
 g switch -q main
 printf '    private static let schemaVersion = 6\n' > "$claude_cache"
-printf '    private static let artifactVersion = 10\n' > "$pi_cache"
 g commit -qam "fork bumps caches"
 g tag fork-caches
 printf '    public var environment: [String: String]\n    @ProcessEnvironment var safeEnvironment: [String: String]\n' \
@@ -139,7 +136,7 @@ g commit -qm "fork stores an environment"
 if "$SCRIPT" drift main upstream > "$WORK/drift.txt"; then
   fail "drift should exit 1 when it finds something"
 fi
-expect_contains "$WORK/drift.txt" "Cache schema: Claude fork 6, upstream 4; Pi fork 10, upstream 9"
+expect_contains "$WORK/drift.txt" "Cache schema: Claude fork 6, upstream 4"
 expect_contains "$WORK/drift.txt" "NewUpstreamTests.swift:         cache.usage.version = 4"
 expect_contains "$WORK/drift.txt" "NewUpstreamTests.swift:         let row = CostUsageScanner.ClaudeUsageRow("
 expect_contains "$WORK/drift.txt" "ForkTimer.swift:     public var environment: [String: String]"
