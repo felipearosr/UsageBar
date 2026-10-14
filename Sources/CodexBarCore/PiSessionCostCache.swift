@@ -4,7 +4,7 @@ enum PiSessionCostCacheIO {
     /// Artifact schema version. Pricing changes are tracked separately by `pricingKey`.
     /// v9 invalidates artifacts produced before stricter root and parser
     /// provenance checks were introduced.
-    private static let artifactVersion = 10
+    private static let artifactVersion = 9
 
     private static func defaultCacheRoot() -> URL {
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -57,7 +57,7 @@ struct PiSessionCostCache: Codable {
     var daysByProvider: [String: [String: [String: PiPackedUsage]]] = [:]
     var files: [String: PiSessionFileUsage] = [:]
 
-    init(version: Int = 10) {
+    init(version: Int = 9) {
         self.version = version
     }
 }
@@ -74,10 +74,6 @@ struct PiSessionFileUsage: Codable {
     var entryUsages: [String: PiSessionEntryUsage]
     var unsupportedAssistantDayKeys: Set<String>
     var hasUndatedUnsupportedAssistant: Bool
-    /// `contributions` and `unkeyedContributions` again, keyed provider → UTC hour key → model
-    /// (see `PiSessionCostScanner.utcHourKey`), for Spend Buckets.
-    var hourContributions: [String: [String: [String: PiPackedUsage]]]
-    var unkeyedHourContributions: [String: [String: [String: PiPackedUsage]]]
 
     init(
         mtimeUnixMs: Int64,
@@ -90,9 +86,7 @@ struct PiSessionFileUsage: Codable {
         unkeyedContributions: [String: [String: [String: PiPackedUsage]]] = [:],
         entryUsages: [String: PiSessionEntryUsage] = [:],
         unsupportedAssistantDayKeys: Set<String> = [],
-        hasUndatedUnsupportedAssistant: Bool = false,
-        hourContributions: [String: [String: [String: PiPackedUsage]]] = [:],
-        unkeyedHourContributions: [String: [String: [String: PiPackedUsage]]] = [:])
+        hasUndatedUnsupportedAssistant: Bool = false)
     {
         self.mtimeUnixMs = mtimeUnixMs
         self.size = size
@@ -105,8 +99,6 @@ struct PiSessionFileUsage: Codable {
         self.entryUsages = entryUsages
         self.unsupportedAssistantDayKeys = unsupportedAssistantDayKeys
         self.hasUndatedUnsupportedAssistant = hasUndatedUnsupportedAssistant
-        self.hourContributions = hourContributions
-        self.unkeyedHourContributions = unkeyedHourContributions
     }
 
     var requiresFullReparseOnChange: Bool {
@@ -124,8 +116,6 @@ struct PiSessionEntryUsage: Codable, Equatable {
     var dayKey: String
     var modelName: String
     var usage: PiPackedUsage
-    /// UTC hour key of the entry (see `PiSessionCostScanner.utcHourKey`).
-    var hourKey: String?
 }
 
 struct PiModelContext: Codable, Equatable {

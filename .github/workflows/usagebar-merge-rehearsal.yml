@@ -188,7 +188,7 @@ jobs:
           # so a fork regression reads apart from an upstream Linux test failure.
           # shellcheck disable=SC2016 # expands in the child shell
           "$MR" check "$OUT" "Fork suites" -- bash -c \
-            'source Scripts/test_environment.sh && swift test --skip-build --filter "MachineSync|CLIServeSync|CLISync|SpendBucket|OpenCode"'
+            'source Scripts/test_environment.sh && swift test --skip-build --filter "MachineSync|CLIServeSync|CLISync|SpendBucket|RowObserver|OpenCode"'
           # shellcheck disable=SC2016 # expands in the child shell
           "$MR" check "$OUT" "Swift tests (Linux)" -- bash -c \
             'source Scripts/test_environment.sh && swift test --skip-build --parallel'

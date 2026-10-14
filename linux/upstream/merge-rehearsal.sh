@@ -138,35 +138,26 @@ cmd_drift() {
   local base found=0
   base="$(git merge-base "$fork" "$upstream")" || die "no merge base for $fork and $upstream"
 
-  # 1. Cache schema versions: the fork's must stay above upstream's (RUNBOOK.md, "Cache schema versions").
+  # 1. Cache schema version: the fork's Claude schema must stay above upstream's (RUNBOOK.md, "Cache schema
+  # versions"). Pi's cache is upstream's own; the fork keeps Pi hour data in its own file.
   local claude_file=Sources/CodexBarCore/Vendored/CostUsage/CostUsageClaudeCache.swift
-  local pi_file=Sources/CodexBarCore/PiSessionCostCache.swift
-  local claude_re='static let schemaVersion = [0-9]+' pi_re='static let artifactVersion = [0-9]+'
-  local fork_claude fork_pi up_claude up_pi
+  local claude_re='static let schemaVersion = [0-9]+'
+  local fork_claude up_claude
   fork_claude="$(version_at "$claude_file" "$claude_re" "$fork")"
   up_claude="$(version_at "$claude_file" "$claude_re" "$upstream")"
-  fork_pi="$(version_at "$pi_file" "$pi_re" "$fork")"
-  up_pi="$(version_at "$pi_file" "$pi_re" "$upstream")"
-  printf 'Cache schema: Claude fork %s, upstream %s; Pi fork %s, upstream %s\n' \
-    "$fork_claude" "$up_claude" "$fork_pi" "$up_pi"
-  if [[ "$fork_claude$up_claude$fork_pi$up_pi" == *'?'* ]]; then
-    printf '  WARN: a schema version could not be read; check both files by hand\n'
+  printf 'Cache schema: Claude fork %s, upstream %s\n' "$fork_claude" "$up_claude"
+  if [[ "$fork_claude$up_claude" == *'?'* ]]; then
+    printf '  WARN: a schema version could not be read; check the file by hand\n'
     found=1
-  else
-    if (( up_claude >= fork_claude )); then
-      printf '  WARN: upstream Claude schema %s >= fork %s: bump the fork above it\n' "$up_claude" "$fork_claude"
-      found=1
-    fi
-    if (( up_pi >= fork_pi )); then
-      printf '  WARN: upstream Pi artifact version %s >= fork %s: bump the fork above it\n' "$up_pi" "$fork_pi"
-      found=1
-    fi
+  elif (( up_claude >= fork_claude )); then
+    printf '  WARN: upstream Claude schema %s >= fork %s: bump the fork above it\n' "$up_claude" "$fork_claude"
+    found=1
   fi
 
   # 2. Lines upstream added to macOS-only tests that pin cache versions or row shapes.
   local hits
   hits="$(added_lines_matching "$base" "$upstream" Tests/CodexBarTests \
-    '\.version = [0-9]+|schemaVersion|artifactVersion|pi-sessions-v[0-9]+|ClaudeUsageRow\(|PiPackedUsage\(|"Sources"')"
+    '\.version = [0-9]+|schemaVersion|ClaudeUsageRow\(|"Sources"')"
   if [[ -n "$hits" ]]; then
     printf '\nNew upstream lines in macOS-only tests that may pin fork schemas or scan fork sources\n'
     printf '(cache versions must match the fork, Claude rows carry omittedFields, Sources walkers see fork files):\n'

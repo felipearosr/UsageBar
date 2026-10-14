@@ -2105,16 +2105,6 @@ enum CostUsageScanner {
         case subagent
     }
 
-    /// Encoded as its raw bitmask so identical rows always persist identical bytes.
-    struct ClaudeUsageFields: OptionSet, Codable, Hashable {
-        let rawValue: UInt8
-
-        static let input = Self(rawValue: 1 << 0)
-        static let output = Self(rawValue: 1 << 1)
-        static let cacheRead = Self(rawValue: 1 << 2)
-        static let cacheCreation = Self(rawValue: 1 << 3)
-    }
-
     struct ClaudeUsageRow: Codable, Equatable {
         let dayKey: String
         let model: String

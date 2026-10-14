@@ -214,7 +214,6 @@ extension CostUsageScanner {
                         let cacheCreate1h = Self.claudeOneHourCacheCreationTokens(
                             usage: usage,
                             total: cacheCreate)
-                        let omittedFields = Self.claudeOmittedUsageFields(usage)
 
                         // Proxies may put a local, cache-unaware estimate in message_start.
                         // Missing stop_reason alone is not evidence of incomplete legacy usage.
@@ -258,7 +257,7 @@ extension CostUsageScanner {
                             costNanos: costNanos ?? 0,
                             costPriced: costNanos != nil,
                             isIncomplete: isIncomplete ? true : nil,
-                            omittedFields: omittedFields.isEmpty ? nil : omittedFields)
+                            omittedFields: Self.claudeOmittedUsageFields(usage))
 
                         // Keep the final cumulative chunk for each response.
                         if let key = Self.claudeCanonicalRowKey(row) {
@@ -899,20 +898,23 @@ extension CostUsageScanner {
         cache: CostUsageCache,
         range: CostUsageDayRange,
         now: Date = Date(),
-        modelsDevCacheRoot: URL? = nil) -> CostUsageDailyReport
+        modelsDevCacheRoot: URL? = nil,
+        rowObserver: CostUsageRowObserver? = nil) -> CostUsageDailyReport
     {
         self.buildClaudeReportFromCache(
             cache: cache,
             rows: self.reconciledClaudeRows(cache: cache),
             range: range,
-            pricingResolver: CostUsagePricing.ClaudeResolver(now: now, cacheRoot: modelsDevCacheRoot))
+            pricingResolver: CostUsagePricing.ClaudeResolver(now: now, cacheRoot: modelsDevCacheRoot),
+            rowObserver: rowObserver)
     }
 
     private static func buildClaudeReportFromCache(
         cache: CostUsageCache,
         rows: [ClaudeUsageRow],
         range: CostUsageDayRange,
-        pricingResolver: CostUsagePricing.ClaudeResolver) -> CostUsageDailyReport
+        pricingResolver: CostUsagePricing.ClaudeResolver,
+        rowObserver: CostUsageRowObserver? = nil) -> CostUsageDailyReport
     {
         var entries: [CostUsageDailyReport.Entry] = []
         var temporalBuckets = TemporalBuckets()
@@ -928,7 +930,8 @@ extension CostUsageScanner {
             rows: rows,
             range: range,
             pricingResolver: pricingResolver,
-            temporalBuckets: &temporalBuckets)
+            temporalBuckets: &temporalBuckets,
+            rowObserver: rowObserver)
 
         let hasCompleteRows = !cache.files.isEmpty && cache.files.values.allSatisfy { $0.claudeRows != nil }
         let modelsByDay = hasCompleteRows
@@ -1053,8 +1056,10 @@ extension CostUsageScanner {
         rows: [ClaudeUsageRow],
         range: CostUsageDayRange,
         pricingResolver: CostUsagePricing.ClaudeResolver,
-        temporalBuckets: inout TemporalBuckets) -> [ClaudeDayModelKey: ClaudeReportAggregate]
+        temporalBuckets: inout TemporalBuckets,
+        rowObserver: CostUsageRowObserver? = nil) -> [ClaudeDayModelKey: ClaudeReportAggregate]
     {
+        let costScale = 1_000_000_000.0
         var repricedCosts: [ClaudeDayModelKey: ClaudeReportAggregate] = [:]
         if !rows.isEmpty {
             pricingResolver.prepareCatalog()
@@ -1069,6 +1074,7 @@ extension CostUsageScanner {
             if row.isIncomplete == true {
                 aggregate.incompleteRequestCount += 1
                 repricedCosts[key] = aggregate
+                rowObserver?.observeClaude(row, costUSD: nil)
                 continue
             }
             aggregate.sampleCount += 1
@@ -1076,134 +1082,37 @@ extension CostUsageScanner {
             aggregate.output.add(row.output)
             aggregate.cacheRead.add(row.cacheRead)
             aggregate.cacheCreate.add(row.cacheCreate)
-            let cost = Self.claudeRowCostUSD(row, pricingResolver: pricingResolver)
+            let isPriced = row.costPriced ?? (row.costNanos > 0)
+            let currentPricingCost = pricingResolver.costUSD(
+                model: row.model,
+                inputTokens: row.input,
+                cacheReadInputTokens: row.cacheRead,
+                cacheCreationInputTokens: row.cacheCreate,
+                cacheCreationInputTokens1h: row.cacheCreate1h ?? 0,
+                outputTokens: row.output,
+                pricingDate: row.timestampUnixMs.map {
+                    Date(timeIntervalSince1970: Double($0) / 1000)
+                })
+            let cost: Double? = if isPriced, row.costNanos == 0 {
+                0
+            } else if let currentPricingCost {
+                currentPricingCost
+            } else if isPriced {
+                Double(row.costNanos) / costScale
+            } else {
+                nil
+            }
             if let cost {
                 aggregate.total += cost
             } else {
                 aggregate.unresolved = true
             }
             repricedCosts[key] = aggregate
+            rowObserver?.observeClaude(row, costUSD: cost)
 
             self.addClaudeTemporal(row: row, costUSD: cost, range: range, into: &temporalBuckets)
         }
 
         return repricedCosts
-    }
-
-    /// Current-pricing cost for one cached row, or `nil` when the row's model can't be priced.
-    static func claudeRowCostUSD(
-        _ row: ClaudeUsageRow,
-        pricingResolver: CostUsagePricing.ClaudeResolver) -> Double?
-    {
-        let isPriced = row.costPriced ?? (row.costNanos > 0)
-        let currentPricingCost = pricingResolver.costUSD(
-            model: row.model,
-            inputTokens: row.input,
-            cacheReadInputTokens: row.cacheRead,
-            cacheCreationInputTokens: row.cacheCreate,
-            cacheCreationInputTokens1h: row.cacheCreate1h ?? 0,
-            outputTokens: row.output,
-            pricingDate: row.timestampUnixMs.map {
-                Date(timeIntervalSince1970: Double($0) / 1000)
-            })
-        return if isPriced, row.costNanos == 0 {
-            0
-        } else if let currentPricingCost {
-            currentPricingCost
-        } else if isPriced {
-            Double(row.costNanos) / Self.costScale
-        } else {
-            nil
-        }
-    }
-
-    /// Usage fields missing (or `null`) in a log line's `usage` object.
-    private static func claudeOmittedUsageFields(_ usage: ClaudeJSONObject) -> ClaudeUsageFields {
-        let usageKeys: [(String, ClaudeUsageFields)] = [
-            ("input_tokens", .input),
-            ("output_tokens", .output),
-            ("cache_read_input_tokens", .cacheRead),
-            ("cache_creation_input_tokens", .cacheCreation),
-        ]
-        return ClaudeUsageFields(usageKeys.filter { key, _ in usage[key] == nil || usage[key] is NSNull }.map(\.1))
-    }
-
-    /// Scans Claude logs into UTC-hour Spend Buckets whose hour starts in `since..<until`.
-    static func loadClaudeSpendBuckets(
-        since: Date,
-        until: Date,
-        now: Date,
-        options: Options,
-        checkCancellation: CancellationCheck?) throws -> [CostUsageSpendBucket]
-    {
-        // The daily report refreshes and saves the cache; the buckets then read the same rows.
-        // Provider-specific by design: Claude buckets refresh and then read the Claude transcript cache.
-        _ = try self.loadDailyReportCancellable(
-            provider: .claude,
-            since: since,
-            until: until,
-            now: now,
-            options: options,
-            checkCancellation: checkCancellation)
-        let range = CostUsageDayRange(since: since, until: until, calendar: options.calendar)
-        let cache = CostUsageClaudeCacheIO.load(
-            provider: .claude,
-            cacheRoot: options.cacheRoot,
-            reportContext: .regular,
-            calendar: range.calendar).usage
-        return Self.buildClaudeSpendBucketsFromCache(
-            cache: cache,
-            since: since,
-            until: until,
-            pricingResolver: CostUsagePricing.ClaudeResolver(now: now, cacheRoot: options.cacheRoot))
-    }
-
-    static func buildClaudeSpendBucketsFromCache(
-        cache: CostUsageCache,
-        since: Date,
-        until: Date,
-        pricingResolver: CostUsagePricing.ClaudeResolver) -> [CostUsageSpendBucket]
-    {
-        var buckets: [CostUsageSpendBucket] = []
-        for row in Self.reconciledClaudeRows(cache: cache) {
-            // Rows cached before timestamps were recorded can't be placed in an hour.
-            guard let timestampUnixMs = row.timestampUnixMs else { continue }
-            let hourStart = CostUsageSpendBucket.hourStart(
-                of: Date(timeIntervalSince1970: Double(timestampUnixMs) / 1000))
-            guard hourStart >= since, hourStart < until else { continue }
-            // An incomplete streaming estimate has no trustworthy counts or cost; it still counts as a request.
-            guard row.isIncomplete != true else {
-                // Provider-specific by design: rows here come only from the Claude transcript cache.
-                buckets.append(CostUsageSpendBucket(
-                    hourStart: hourStart,
-                    provider: .claude,
-                    model: row.model,
-                    costUSD: nil,
-                    inputTokens: nil,
-                    outputTokens: nil,
-                    cacheReadTokens: nil,
-                    cacheCreationTokens: nil,
-                    totalTokens: nil,
-                    requests: 1))
-                continue
-            }
-            let omitted = row.omittedFields ?? []
-            func reported(_ value: Int, _ field: ClaudeUsageFields) -> Int? {
-                omitted.contains(field) ? nil : value
-            }
-            // Provider-specific by design: rows here come only from the Claude transcript cache.
-            buckets.append(CostUsageSpendBucket(
-                hourStart: hourStart,
-                provider: .claude,
-                model: row.model,
-                costUSD: Self.claudeRowCostUSD(row, pricingResolver: pricingResolver),
-                inputTokens: reported(row.input, .input),
-                outputTokens: reported(row.output, .output),
-                cacheReadTokens: reported(row.cacheRead, .cacheRead),
-                cacheCreationTokens: reported(row.cacheCreate, .cacheCreation),
-                totalTokens: row.input + row.cacheRead + row.cacheCreate + row.output,
-                requests: 1))
-        }
-        return CostUsageSpendBucket.merged(buckets)
     }
 }
