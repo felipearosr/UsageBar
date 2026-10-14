@@ -50,12 +50,15 @@ import {
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
 import {
+    costScopeLabel,
+    costScopeOptions,
     machineDetailView,
     machinesView,
     nextPushDelaySecs,
     planSyncTick,
     scopedCostReports,
     scopedProviderKpis,
+    scopeControlMode,
     scopedSpend,
     spendScopeOptions,
 } from './machinesync.js';
@@ -637,6 +640,8 @@ print(json.dumps({
 // ---------- cost overview (All-view summary + hover panel) ----------
 
 const OV_LEFT_WIDTH = 270;
+// Entries per column of the dashboard's Machine scope dropdown.
+const SCOPE_LIST_ROWS = 6;
 const OV_CHART_HEIGHT = 170;
 const OV_MAX_MODELS = 12;
 const OV_MAX_DAYS = 12;
@@ -1612,10 +1617,11 @@ export default class UsageBarExtension extends Extension {
         this._namesVersion = 0;
         this._selectedProvider = null;
         this._selectedMachine = null;
-        // Whose spend the Providers tab shows: null (the default) or 'all'
-        // for All Machines, 'this' for this Machine, or another Machine's
-        // id (see _scopedSpend). Unpaired, it is always this Machine. Kept
-        // across menu opens.
+        // Whose spend the Providers tab and the cost dashboard show: null
+        // (the default) or 'all' for All Machines, 'this' for this Machine,
+        // or another Machine's id (see _costReports and _scopedSpend).
+        // Unpaired, it is always this Machine. Back to All Machines each
+        // time the menu opens.
         this._spendScope = null;
         this._notified ??= new Map();
         this._costs = null;
@@ -1791,6 +1797,7 @@ export default class UsageBarExtension extends Extension {
             if (open) {
                 this._selectedProvider = null; // default to the All tab each open
                 this._selectedMachine = null;
+                this._spendScope = null; // All Machines while paired
                 if (this._overviewView)
                     this._overviewView.scopeOpen = false;
                 this._view = 'providers';
@@ -2265,17 +2272,21 @@ export default class UsageBarExtension extends Extension {
     // The scope the Machine picker shows as picked: 'this', 'all' or a
     // Machine id.
     _spendScopeId() {
-        return this._scopedSpend()?.id ?? (this._spendScope === 'this' ? 'this' : 'all');
+        if (this._spendScope === 'this')
+            return 'this';
+        const {scope} = this._costReports(); // falls back from a Machine that left
+        return scope === 'this' ? 'all' : scope;
     }
 
     // Cost reports for the spend row and the cost dashboard
-    // (scopedCostReports): All Machines when paired, unless the picker chose
-    // this Machine. Unpaired, or before the first status read, this
-    // Machine's own reports. Recomputed only when the local reports, the
-    // sync payload or the scope change.
+    // (scopedCostReports) in the picked scope: All Machines when paired,
+    // this Machine, or one other Machine. Unpaired, or before the first
+    // status read, this Machine's own reports. A Machine that left the Sync
+    // Group puts the scope back to All Machines. Recomputed only when the
+    // local reports, the sync payload or the scope change.
     _costReports() {
         const payload = this._syncPayload();
-        const scope = this._spendScope === 'this' ? 'this' : 'all';
+        const scope = !this._spendScope ? 'all' : this._spendScope;
         const memo = this._costReportsMemo;
         if (memo?.costs === this._costs && memo.payload === payload && memo.scope === scope)
             return memo.value;
@@ -2283,6 +2294,8 @@ export default class UsageBarExtension extends Extension {
         if (!memo || memo.value.reports !== value.reports || memo.value.scope !== value.scope)
             this._costReportsRev++;
         this._costReportsMemo = {costs: this._costs, payload, scope, value};
+        if (scope !== 'all' && scope !== 'this' && value.scope === 'all')
+            this._spendScope = null; // that Machine left the Sync Group
         return value;
     }
 
@@ -2868,8 +2881,8 @@ export default class UsageBarExtension extends Extension {
                             try {
                                 const summary = labelsOf(this._overviewView?.summaryButton);
                                 assertions.push(assertion('picking qa-desk shows only its spend',
-                                    summary.some(text => text.includes('qa-desk')) &&
-                                    summary.includes('$4.00') && !summary.some(text => text.includes('Claude')),
+                                    summary.some(text => text.includes('· qa-desk')) &&
+                                    summary.includes('$4.00') && !summary.some(text => text.includes('all Machines')),
                                     {summary}));
                             } catch (error) {
                                 done(error);
@@ -2883,10 +2896,11 @@ export default class UsageBarExtension extends Extension {
                                 later(300, () => {
                                     try {
                                         const summary = labelsOf(this._overviewView?.summaryButton);
-                                        // This Machine's own report alone.
+                                        // This Machine's own report alone, named after it.
                                         assertions.push(assertion('picking this Machine restores its cost reports',
                                             this._spendScope === 'this' && summary.includes('$6.00') &&
-                                            !summary.some(text => text.includes('qa-') ||
+                                            summary.some(text => text.includes('· qa-laptop')) &&
+                                            !summary.some(text => text.includes('qa-desk') ||
                                                 text.includes('all Machines')), {summary}));
                                     } catch (error) {
                                         done(error);
@@ -2907,6 +2921,155 @@ export default class UsageBarExtension extends Extension {
                     this._costVersion++;
                     this._costOverviewReports = {};
                     this._costOverviewCache.clear();
+                };
+                // The dashboard's own Machine scope switch, with the All
+                // Machines dashboard open: picking qa-desk redraws it and the
+                // spend row for qa-desk alone, the range and chart metric
+                // keep it, a Machine that leaves falls back to All Machines,
+                // many Machines turn it into a dropdown, and reopening the
+                // menu starts on All Machines again.
+                const panelRefs = () => this._indicator._costPanel.child?._usagebarSmoke;
+                const selectedScope = refs => [...(refs?.scopeButtons ?? new Map())]
+                    .filter(([, button]) => button.has_style_class_name('selected')).map(([id]) => id);
+                const dashboardScopeStep = after => {
+                    const fullPayload = this._sync.payload;
+                    let refs;
+                    let baseWidth;
+                    try {
+                        refs = panelRefs();
+                        baseWidth = refs?.panel.get_width() ?? 0;
+                        assertions.push(assertion('dashboard scope switch is segmented while it fits',
+                            refs?.scopeMode === 'segmented', {actual: refs?.scopeMode ?? null}));
+                        assertions.push(painted('dashboard scope switch is painted', refs?.scopeSwitch));
+                        assertions.push(assertion('scope switch lists All Machines, then each Machine',
+                            JSON.stringify([...refs.scopeButtons.keys()]) === '["all","this","qa-desk"]',
+                            {actual: [...refs.scopeButtons.keys()]}));
+                        for (const [id, button] of refs.scopeButtons)
+                            assertions.push(painted(`scope switch entry ${id} is painted`, button));
+                        assertions.push(assertion('the dashboard starts on All Machines',
+                            JSON.stringify(selectedScope(refs)) === '["all"]', {actual: selectedScope(refs)}));
+                    } catch (error) {
+                        done(error);
+                        return;
+                    }
+                    refs.scopeButtons.get('qa-desk').emit('clicked', 1);
+                    later(300, () => {
+                        try {
+                            const scoped = panelRefs();
+                            assertions.push(painted('qa-desk dashboard is painted', scoped?.panel));
+                            assertions.push(assertion('picking qa-desk changes the dashboard total',
+                                scoped?.totalLabel.text === '$4.00*', {actual: scoped?.totalLabel.text ?? null}));
+                            assertions.push(assertion('qa-desk dashboard holds only its providers',
+                                JSON.stringify(scoped?.providerNames) === '["codex","claude"]',
+                                {actual: scoped?.providerNames ?? null}));
+                            assertions.push(assertion('qa-desk is selected in the switch',
+                                JSON.stringify(selectedScope(scoped)) === '["qa-desk"]',
+                                {actual: selectedScope(scoped)}));
+                            const summary = labelsOf(this._overviewView?.summaryButton);
+                            assertions.push(assertion('spend row follows and names the dashboard scope',
+                                summary.some(text => text.includes('· qa-desk')) && summary.includes('$4.00'),
+                                {summary}));
+                        } catch (error) {
+                            done(error);
+                            return;
+                        }
+                        capture('dashboard-scope-machine.png', () => {
+                            panelRefs().rangeButtons.get(7).emit('clicked', 1);
+                            later(250, () => {
+                                try {
+                                    const ranged = panelRefs();
+                                    assertions.push(assertion('a range change keeps the scope',
+                                        this._indicator._costPanel._usagebarRangeDays === 7 &&
+                                        JSON.stringify(selectedScope(ranged)) === '["qa-desk"]' &&
+                                        ranged.totalLabel.text === '$4.00*',
+                                        {selected: selectedScope(ranged), total: ranged?.totalLabel.text}));
+                                    ranged.metricButtons.get('tokens').emit('clicked', 1);
+                                    assertions.push(assertion('a chart metric change keeps the scope',
+                                        this._spendScopeId() === 'qa-desk' &&
+                                        ranged.chartTitle.text === 'Daily tokens'));
+                                    // qa-desk leaves the Sync Group.
+                                    this._sync.payload = {...fullPayload, status: {...fullPayload.status,
+                                        machines: fullPayload.status.machines.filter(m => m.machineId !== 'qa-desk')}};
+                                    this._render();
+                                    const fallen = panelRefs();
+                                    assertions.push(assertion('a Machine that left falls back to All Machines',
+                                        this._spendScope === null &&
+                                        JSON.stringify([...fallen.scopeButtons.keys()]) === '["all","this"]' &&
+                                        JSON.stringify(selectedScope(fallen)) === '["all"]' &&
+                                        fallen.totalLabel.text === '$6.00*',
+                                        {keys: [...(fallen?.scopeButtons.keys() ?? [])],
+                                            total: fallen?.totalLabel.text}));
+                                    // Many Machines: a dropdown, and the header stays inside the panel.
+                                    const many = Array.from({length: 8}, (_, i) => machine(
+                                        `qa-workstation-${i + 1}`, false, 1, 'codex',
+                                        [dayProvider('codex', 1, 'qa-desk-model')]));
+                                    this._sync.payload = {...fullPayload, status: {...fullPayload.status,
+                                        machines: [...fullPayload.status.machines, ...many]}};
+                                    this._render();
+                                } catch (error) {
+                                    done(error);
+                                    return;
+                                }
+                                later(300, () => {
+                                    let crowded;
+                                    try {
+                                        crowded = panelRefs();
+                                        assertions.push(assertion('many Machines turn the switch into a dropdown',
+                                            crowded?.scopeMode === 'dropdown' && !crowded.scopeSwitch.visible,
+                                            {actual: crowded?.scopeMode ?? null}));
+                                        assertions.push(painted('scope dropdown is painted', crowded?.scopeToggle));
+                                        const [px] = crowded.panel.get_transformed_position();
+                                        const [hx] = crowded.header.get_transformed_position();
+                                        assertions.push(assertion('the header does not overflow the panel',
+                                            crowded.panel.get_width() === baseWidth &&
+                                            hx + crowded.header.get_width() <= px + crowded.panel.get_width(),
+                                            {panel: crowded.panel.get_width(), baseWidth,
+                                                header: crowded.header.get_width()}));
+                                        crowded.scopeToggle.emit('clicked', 1);
+                                    } catch (error) {
+                                        done(error);
+                                        return;
+                                    }
+                                    later(200, () => {
+                                        try {
+                                            assertions.push(painted('scope dropdown list is painted',
+                                                crowded.scopeList));
+                                            assertions.push(assertion('the dropdown lists every Machine',
+                                                crowded.scopeItems.size === 11, {actual: crowded.scopeItems.size}));
+                                        } catch (error) {
+                                            done(error);
+                                            return;
+                                        }
+                                        capture('dashboard-scope-dropdown.png', () => {
+                                            crowded.scopeItems.get('qa-workstation-3').emit('clicked', 1);
+                                            later(300, () => {
+                                                try {
+                                                    const picked = panelRefs();
+                                                    const summary = labelsOf(this._overviewView?.summaryButton);
+                                                    assertions.push(assertion('the dropdown picks a Machine',
+                                                        this._spendScopeId() === 'qa-workstation-3' &&
+                                                        picked?.totalLabel.text === '$1.00*' &&
+                                                        summary.some(text => text.includes('· qa-workstation-3')),
+                                                        {total: picked?.totalLabel.text, summary}));
+                                                    // Reopening the menu starts on All Machines.
+                                                    this._sync.payload = fullPayload;
+                                                    this._setSpendScope('qa-desk');
+                                                    this._indicator.menu.close();
+                                                    this._indicator.menu.open();
+                                                    assertions.push(assertion('opening the menu resets to All Machines',
+                                                        this._spendScope === null && this._spendScopeId() === 'all'));
+                                                } catch (error) {
+                                                    done(error);
+                                                    return;
+                                                }
+                                                later(300, after);
+                                            });
+                                        });
+                                    });
+                                });
+                            });
+                        });
+                    });
                 };
                 const scopeStep = next => {
                     setCosts([{
@@ -2951,11 +3114,11 @@ export default class UsageBarExtension extends Extension {
                                 done(error);
                                 return;
                             }
-                            capture('dashboard-all-machines.png', () => {
+                            capture('dashboard-all-machines.png', () => dashboardScopeStep(() => {
                                 this._indicator._closeCostPanel();
                                 openPicker();
                                 later(300, () => pickStep(next));
-                            });
+                            }));
                         });
                     });
                 };
@@ -3501,9 +3664,10 @@ export default class UsageBarExtension extends Extension {
         );
     }
 
-    // The spend row's scope suffix: "all Machines" while it covers them.
+    // The spend row's scope suffix while paired: "all Machines" or the
+    // Machine's name.
     _costScopeLabel() {
-        return this._costReports().scope === 'all' ? 'all Machines' : null;
+        return costScopeLabel(this._syncPayload(), this._costReports().scope);
     }
 
     _displayName(provider) {
@@ -4346,16 +4510,14 @@ export default class UsageBarExtension extends Extension {
         if (view.container.get_parent() !== detail)
             detail.add_child(view.container);
 
-        const scoped = this._scopedSpend();
-        this._renderScopePicker(view, scoped);
-        const overview = scoped ? this._scopedOverview(scoped) : this._costOverview();
-        const summaryKey = scoped
-            ? `scope:${JSON.stringify(scoped)}:${this._namesVersion}` : this._overviewSummaryKey(overview);
+        this._renderScopePicker(view);
+        const overview = this._costOverview();
+        const summaryKey = this._overviewSummaryKey(overview);
         if (view.summaryKey !== summaryKey) {
             view.summaryHost.destroy_all_children();
             view.summaryButton = null;
             if (overview) {
-                view.summaryButton = this._buildCostSummary(overview, scoped);
+                view.summaryButton = this._buildCostSummary(overview);
                 view.summaryHost.add_child(view.summaryButton);
                 view.summaryHost.add_child(new St.Widget({
                     style_class: 'usagebar-separator usagebar-row-sep',
@@ -4367,9 +4529,7 @@ export default class UsageBarExtension extends Extension {
         }
 
         const holder = this._indicator._costPanel;
-        if (holder?.visible && scoped) {
-            this._indicator._closeCostPanel();
-        } else if (holder?.visible) {
+        if (holder?.visible) {
             holder._usagebarAnchor = view.summaryButton;
             const rangeDays = holder._usagebarRangeDays ?? 30;
             const panelOverview = this._costOverview(rangeDays);
@@ -4381,6 +4541,8 @@ export default class UsageBarExtension extends Extension {
                         panelOverview,
                         holder._usagebarAnchor,
                         rangeDays));
+                    holder.child._usagebarFitScope?.();
+                    this._keepCostPanelOnScreen();
                     holder._usagebarSummaryKey = panelKey;
                 } else {
                     this._indicator._closeCostPanel();
@@ -4639,17 +4801,14 @@ export default class UsageBarExtension extends Extension {
     // Compact spend row for the All view: window total, a provider-colored
     // split bar and per-provider totals. Clicking it toggles the full cost
     // dashboard beside the menu.
-    // `scoped` (scopedSpend) when the tab follows another Machine: its
-    // summary has no daily series, so a click opens that Machine's detail on
-    // the Machines tab instead of the cost dashboard.
-    // Otherwise it names "all Machines" while the overview covers them.
-    _buildCostSummary(ov, scoped = null) {
+    // While paired it names the Machine scope it covers, the same one the
+    // dashboard shows: "all Machines" or a Machine's name.
+    _buildCostSummary(ov) {
         const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-summary'});
         const head = new St.BoxLayout({x_expand: true});
-        const scopeLabel = scoped ? null : this._costScopeLabel();
+        const scopeLabel = this._costScopeLabel();
         head.add_child(new St.Label({
-            text: scoped ? `Spend · last 30 days · ${scoped.name}`
-                : `Spend · last ${ov.dates.length} days${scopeLabel ? ` · ${scopeLabel}` : ''}`,
+            text: `Spend · last ${ov.dates.length} days${scopeLabel ? ` · ${scopeLabel}` : ''}`,
             style_class: 'usagebar-compact-title',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
@@ -4693,36 +4852,20 @@ export default class UsageBarExtension extends Extension {
             can_focus: true,
             style_class: 'usagebar-compact-row',
         });
-        if (scoped) {
-            button.connect('clicked', () => {
-                this._view = 'machines';
-                this._selectMachine(scoped.id);
-            });
-            return button;
-        }
         // Opens only: while the panel is open its grab turns a click here
         // into an outside press that closes it.
         button.connect('clicked', () => this._showCostPanel(button, ov));
         return button;
     }
 
-    // What _buildCostSummary reads of a cost overview, from scoped spend.
-    _scopedOverview(scoped) {
-        const providers = scoped.providers.map(p => ({
-            provider: p.provider,
-            color: PROVIDER_META[p.provider]?.color ?? '#9a9996',
-            cost: p.spend.costUSD,
-        }));
-        return {providers, cost: providers.reduce((sum, p) => sum + p.cost, 0)};
-    }
-
     // Machine dropdown above the spend summary while two or more Machines
     // sync: this Machine, the others, then All. Picks whose spend the tab
-    // shows; the usage limits stay as they are, since they belong to the
-    // account. The list opens inline, as the popover can't hold a menu.
-    _renderScopePicker(view, scoped) {
+    // and the cost dashboard show (the dashboard's own switch picks the
+    // same scope); the usage limits stay as they are, since they belong to
+    // the account. The list opens inline, as the popover can't hold a menu.
+    _renderScopePicker(view) {
         const options = spendScopeOptions(this._syncPayload(), {colors: DISPLAY.machineColors});
-        const selected = scoped?.id ?? this._spendScopeId();
+        const selected = this._spendScopeId();
         const open = !!view.scopeOpen && options.length > 0;
         const key = JSON.stringify({options, selected, open});
         if (view.scopeKey === key)
@@ -4809,6 +4952,7 @@ export default class UsageBarExtension extends Extension {
         holder._usagebarAnchor = anchor;
         Main.uiGroup.set_child_above_sibling(holder, null);
         this._indicator._openCostPanel();
+        holder.child._usagebarFitScope?.();
         const [, pw] = holder.get_preferred_width(-1);
         const [, ph] = holder.get_preferred_height(pw);
         const [ax, ay] = anchor.get_transformed_position();
@@ -4830,8 +4974,17 @@ export default class UsageBarExtension extends Extension {
         const panel = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-panel'});
         const header = new St.BoxLayout({
             style_class: 'usagebar-ov-header',
-            x_align: Clutter.ActorAlign.END,
+            x_expand: true,
         });
+        // The summary row the dashboard hangs off; _renderOverview replaces
+        // it whenever the row is rebuilt.
+        const currentAnchor = () => this._indicator?._costPanel?._usagebarAnchor ?? anchor;
+        const scope = this._buildCostScopeSwitch();
+        if (scope) {
+            header.add_child(scope.segmented);
+            header.add_child(scope.toggle);
+        }
+        header.add_child(new St.Widget({x_expand: true}));
         const rangeSwitch = new St.BoxLayout({
             style_class: 'usagebar-ov-switch',
             y_align: Clutter.ActorAlign.CENTER,
@@ -4849,13 +5002,38 @@ export default class UsageBarExtension extends Extension {
                     return;
                 const overview = this._costOverview(option.days);
                 if (overview)
-                    this._showCostPanel(anchor, overview, option.days);
+                    this._showCostPanel(currentAnchor(), overview, option.days);
             });
             rangeButtons.set(option.days, button);
             rangeSwitch.add_child(button);
         });
         header.add_child(rangeSwitch);
         panel.add_child(header);
+        if (scope) {
+            panel.add_child(scope.list);
+            // Segmented while it fits beside the range switch, else a
+            // dropdown. Needs the theme, so the panel must be on the stage.
+            panel._usagebarFitScope = () => {
+                const node = panel.get_theme_node();
+                scope.segmented.hide();
+                scope.toggle.show();
+                const [, panelWidth] = panel.get_preferred_width(-1);
+                const available = panelWidth - node.get_horizontal_padding() -
+                    node.get_border_width(St.Side.LEFT) - node.get_border_width(St.Side.RIGHT);
+                const mode = scopeControlMode({
+                    segmentedWidth: scope.segmented.get_preferred_width(-1)[1],
+                    rangeWidth: rangeSwitch.get_preferred_width(-1)[1],
+                    // Two gaps: the switch, the filler, the range switch.
+                    spacing: 2 * header.get_theme_node().get_length('spacing'),
+                    available,
+                });
+                scope.segmented.visible = mode === 'segmented';
+                scope.toggle.visible = mode === 'dropdown';
+                if (mode === 'segmented')
+                    scope.list.hide();
+                panel._usagebarSmoke.scopeMode = mode;
+            };
+        }
 
         const top = new St.BoxLayout({style_class: 'usagebar-ov-top'});
         const left = new St.BoxLayout({vertical: true, width: OV_LEFT_WIDTH});
@@ -5107,8 +5285,138 @@ export default class UsageBarExtension extends Extension {
             totalLabel,
             providerNames: ov.providers.map(p => p.provider),
             modelNames: ov.models.map(m => m.name),
+            scopeSwitch: scope?.segmented ?? null,
+            scopeButtons: scope?.buttons ?? new Map(),
+            scopeToggle: scope?.toggle ?? null,
+            scopeList: scope?.list ?? null,
+            scopeItems: scope?.items ?? new Map(),
+            scopeMode: null,
         };
         return panel;
+    }
+
+    // The dashboard header's Machine scope switch while paired: All
+    // Machines, then each Machine in its Machine color. Both forms are
+    // built, segmented buttons and a dropdown (a toggle plus an inline
+    // list), and the panel's _usagebarFitScope shows the one that fits.
+    // Picking a scope redraws the dashboard and the spend row with it; the
+    // range stays.
+    _buildCostScopeSwitch() {
+        const options = costScopeOptions(this._syncPayload(), {colors: DISPLAY.machineColors});
+        if (!options.length)
+            return null;
+        const selected = this._spendScopeId();
+        const current = options.find(option => option.id === selected) ?? options[0];
+        // Rendering rebuilds the spend row and, as its key changed, this
+        // panel in place (see _renderOverview); the new row isn't laid out
+        // yet, so the panel stays where it is.
+        const pick = id => {
+            if (id === selected)
+                return;
+            this._setSpendScope(id);
+            this._render();
+        };
+        const optionContent = (option, extra = []) => {
+            const content = new St.BoxLayout({style_class: 'usagebar-scope-option'});
+            content.add_child(new St.Widget({
+                style_class: 'usagebar-scope-dot',
+                style: option.color ? `background-color: ${option.color}; border-width: 0;` : '',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            content.add_child(new St.Label({
+                text: option.name,
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            for (const child of extra)
+                content.add_child(child);
+            return content;
+        };
+
+        const segmented = new St.BoxLayout({
+            style_class: 'usagebar-ov-switch usagebar-ov-scope-switch',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const buttons = new Map();
+        options.forEach((option, index) => {
+            const edge = index === 0 ? ' usagebar-ov-switch-left'
+                : index === options.length - 1 ? ' usagebar-ov-switch-right' : '';
+            const button = new St.Button({
+                child: optionContent(option),
+                can_focus: true,
+                style_class: `usagebar-ov-switch-button${edge}${option.id === current.id ? ' selected' : ''}`,
+            });
+            button.connect('clicked', () => pick(option.id));
+            buttons.set(option.id, button);
+            segmented.add_child(button);
+        });
+
+        // Columns of up to SCOPE_LIST_ROWS entries, so a long list stays
+        // short enough for the panel to fit on screen.
+        const list = new St.BoxLayout({
+            style_class: 'usagebar-ov-scope-list',
+            x_align: Clutter.ActorAlign.START,
+            visible: false,
+        });
+        const columns = [];
+        const arrow = new St.Icon({
+            icon_name: 'pan-down-symbolic',
+            icon_size: 12,
+            style_class: 'usagebar-btn-icon',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const toggle = new St.Button({
+            child: optionContent(current, [arrow]),
+            can_focus: true,
+            visible: false,
+            y_align: Clutter.ActorAlign.CENTER,
+            style_class: 'usagebar-ov-switch-button usagebar-ov-scope-toggle',
+        });
+        toggle.connect('clicked', () => {
+            list.visible = !list.visible;
+            arrow.icon_name = list.visible ? 'pan-up-symbolic' : 'pan-down-symbolic';
+            this._keepCostPanelOnScreen();
+        });
+        const items = new Map();
+        for (const [index, option] of options.entries()) {
+            if (index % SCOPE_LIST_ROWS === 0) {
+                columns.push(new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-scope-column'}));
+                list.add_child(columns.at(-1));
+            }
+            const item = new St.Button({
+                child: optionContent(option, [new St.Icon({
+                    icon_name: 'object-select-symbolic',
+                    icon_size: 12,
+                    opacity: option.id === current.id ? 255 : 0,
+                    y_align: Clutter.ActorAlign.CENTER,
+                })]),
+                can_focus: true,
+                x_expand: true,
+                style_class: `usagebar-scope-item${option.id === current.id ? ' selected' : ''}`,
+            });
+            item.child.x_expand = true; // left-aligned, the check mark at the end
+            item.connect('clicked', () => {
+                list.hide();
+                pick(option.id);
+            });
+            items.set(option.id, item);
+            columns.at(-1).add_child(item);
+        }
+        return {segmented, buttons, toggle, list, items};
+    }
+
+    // Moves the open cost dashboard up when it grew past the bottom of the
+    // monitor (the scope dropdown's list opening inline).
+    _keepCostPanelOnScreen() {
+        const holder = this._indicator?._costPanel;
+        if (!holder?.visible)
+            return;
+        const [, pw] = holder.get_preferred_width(-1);
+        const [, ph] = holder.get_preferred_height(pw);
+        const monitor = Main.layoutManager.currentMonitor;
+        const y = Math.max(monitor.y + 8, Math.min(holder.y, monitor.y + monitor.height - ph - 8));
+        if (y !== holder.y)
+            holder.set_position(holder.x, Math.round(y));
     }
 
     // Daily cost as one smoothed, lightly filled line per provider over

@@ -464,6 +464,7 @@
 }
 
 .usagebar-ov-header {
+  spacing: 12px;
   min-height: 30px;
   margin-bottom: 14px;
 }
@@ -634,6 +635,37 @@
 .usagebar-scope-item:hover,
 .usagebar-scope-item:focus {
   background-color: rgba(88, 104, 122, 0.32);
+}
+
+/* Machine scope switch in the cost dashboard header (paired only):
+   segmented like the range switch, or a dropdown once it doesn't fit. */
+.usagebar-ov-scope-switch .usagebar-scope-option {
+  spacing: 5px;
+}
+
+.usagebar-ov-scope-toggle {
+  padding: 4px 8px 4px 10px;
+  border-radius: 6px;
+}
+
+.usagebar-ov-scope-list {
+  margin: 0 0 12px 0;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(160, 160, 166, 0.35);
+  background-color: rgba(60, 70, 82, 0.25);
+}
+
+.usagebar-ov-scope-list {
+  spacing: 8px;
+}
+
+.usagebar-ov-scope-column {
+  min-width: 170px;
+}
+
+.usagebar-ov-scope-list .usagebar-scope-item {
+  font-size: 8pt;
 }
 
 /* The Machine (or All Machines) the Providers tab follows. */

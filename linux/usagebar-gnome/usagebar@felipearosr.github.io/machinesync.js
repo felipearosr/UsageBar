@@ -503,3 +503,43 @@ export function scopedCostReports(localReports, payload, scope = 'all') {
     }
     return {scope: effective, reports};
 }
+
+// Entries of the cost dashboard's Machine scope switch: All Machines, then
+// every Machine in the Sync Group in the Machines tab order (this Machine
+// first), each in its Machine color. This Machine's id is 'this', so it
+// reads its local reports. Empty, so no switch, while this Machine isn't
+// paired or before the first status read.
+export function costScopeOptions(payload, {colors = {}} = {}) {
+    const machines = payload?.paired ? payload.status?.machines ?? [] : [];
+    if (!machines.length)
+        return [];
+    const entries = machines.map((machine, index) => ({
+        id: machine.isThisMachine ? 'this' : machine.machineId,
+        name: machine.displayName || machine.machineId,
+        color: machineColor(index, machine.machineId, colors),
+    }));
+    return [
+        {id: 'all', name: 'All Machines', color: null},
+        ...entries.filter(entry => entry.id === 'this'),
+        ...entries.filter(entry => entry.id !== 'this'),
+    ];
+}
+
+// What the spend row names after "Spend · last N days" for the scope
+// scopedCostReports settled on: "all Machines", a Machine's name, or null
+// while this Machine isn't paired (there is nothing to tell apart).
+export function costScopeLabel(payload, scope) {
+    const machines = payload?.paired ? payload.status?.machines ?? [] : [];
+    if (!machines.length)
+        return null;
+    if (scope === 'all')
+        return 'all Machines';
+    const machine = machines.find(m => scope === 'this' ? m.isThisMachine : m.machineId === scope);
+    return machine ? machine.displayName || machine.machineId : null;
+}
+
+// How the scope switch is drawn: 'segmented' while it fits beside the range
+// switch in the dashboard header (`available` px wide), else 'dropdown'.
+export function scopeControlMode({segmentedWidth, rangeWidth, spacing = 0, available}) {
+    return segmentedWidth + spacing + rangeWidth <= available ? 'segmented' : 'dropdown';
+}

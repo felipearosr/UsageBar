@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    costScopeLabel,
+    costScopeOptions,
     countText,
     coverageText,
     MACHINE_PALETTE,
@@ -11,6 +13,7 @@ import {
     planSyncTick,
     scopedCostReports,
     scopedProviderKpis,
+    scopeControlMode,
     scopedSpend,
     spendScopeOptions,
     spendText,
@@ -466,4 +469,54 @@ test('a Machine that left the Sync Group falls back to All Machines', () => {
     const result = scopedCostReports(laptopReports(), dailyPayload(), 'goneAAAAAAAAAAAAAAAAAA');
     assert.equal(result.scope, 'all');
     assert.equal(totalCost(result.reports), 3.5);
+});
+
+// ---------- the dashboard's Machine scope switch ----------
+
+test('the scope switch lists All Machines, then this Machine first, in Machine colors', () => {
+    const p = dailyPayload();
+    p.status.machines.reverse(); // this Machine first even when the status lists it later
+    const options = costScopeOptions(p, {colors: {laptopAAAAAAAAAAAAAAAA: '#ff00ff'}});
+    assert.deepEqual(options, [
+        {id: 'all', name: 'All Machines', color: null},
+        {id: 'this', name: 'laptop', color: '#ff00ff'},
+        {id: 'deskAAAAAAAAAAAAAAAAAA', name: 'desk', color: MACHINE_PALETTE[0]},
+    ]);
+});
+
+test('no scope switch while unpaired or before the first status read', () => {
+    for (const p of [null, {paired: false}, {paired: true, status: null}, {paired: false, status: payload().status}])
+        assert.deepEqual(costScopeOptions(p), []);
+});
+
+test('a Machine that left the Sync Group drops out of the switch', () => {
+    const p = dailyPayload();
+    p.status.machines = p.status.machines.filter(m => m.isThisMachine);
+    assert.deepEqual(costScopeOptions(p).map(o => o.id), ['all', 'this']);
+    // The dashboard's scope falls back with it.
+    const result = scopedCostReports(laptopReports(), p, 'deskAAAAAAAAAAAAAAAAAA');
+    assert.equal(result.scope, 'all');
+    assert.equal(costScopeLabel(p, result.scope), 'all Machines');
+});
+
+test('a single Machine scope covers only that Machine and is named after it', () => {
+    const p = dailyPayload();
+    const desk = scopedCostReports(laptopReports(), p, 'deskAAAAAAAAAAAAAAAAAA');
+    // desk's $0.50 claude and $1 codex; nothing of the local $2.
+    assert.equal(totalCost(desk.reports), 1.5);
+    assert.ok(desk.reports.every(r => r.source === 'machine-sync'));
+    assert.equal(costScopeLabel(p, desk.scope), 'desk');
+    assert.equal(costScopeLabel(p, 'this'), 'laptop');
+    assert.equal(costScopeLabel(p, 'all'), 'all Machines');
+    assert.equal(costScopeLabel(null, 'this'), null);
+    assert.equal(costScopeLabel({paired: false}, 'all'), null);
+});
+
+test('the scope switch is segmented while it fits and a dropdown once it does not', () => {
+    assert.equal(scopeControlMode({segmentedWidth: 300, rangeWidth: 250, spacing: 12, available: 732}),
+        'segmented');
+    assert.equal(scopeControlMode({segmentedWidth: 470, rangeWidth: 250, spacing: 12, available: 732}),
+        'segmented');
+    assert.equal(scopeControlMode({segmentedWidth: 471, rangeWidth: 250, spacing: 12, available: 732}),
+        'dropdown');
 });
