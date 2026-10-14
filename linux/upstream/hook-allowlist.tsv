@@ -9,9 +9,9 @@ Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	CLI extension hook:
 Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	CLI extension hook: forkHelp(for:) in printHelp's default case; #57
 docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54); #56
 
-# Machine Sync: serve /sync/status and /sync/push (isolation: #58)
-Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	/sync/* routes, ServeRuntime.sync, serveJSON/serveError made internal; also /cost?days (#54); #58
-Sources/CodexBarCLI/CLILocalHTTPServer.swift	Machine Sync: serve /sync routes	409 and 502 status cases; #58
+# Machine Sync: serve /sync/status and /sync/push via the route-extension hook in CLIServeForkRoutes.swift (#58)
+Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	Route-extension hook: forkServeResponse(_:runtime:) first in handleServeRequest (CLIServeForkRoutes.swift); also /cost?days (#54); #58
+Sources/CodexBarCLI/CLILocalHTTPServer.swift	Machine Sync: serve /sync routes	409 and 502 CLIHTTPStatus cases (POST /sync/push: not paired, push failed); a closed enum can't gain cases from fork code; #58
 
 # serve /cost?days=N rolling window (upstream candidate: #54)
 Tests/CodexBarTests/CLIServeRouterTests.swift	serve /cost?days	route test for days=; #54
