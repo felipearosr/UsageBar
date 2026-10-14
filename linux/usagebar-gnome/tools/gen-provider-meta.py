@@ -81,9 +81,96 @@ def spec_block(src):
     return src[start:i]
 
 
-def str_field(block, field):
-    m = re.search(rf'\b{field}:\s*"((?:[^"\\]|\\.)*)"', block)
-    return m.group(1) if m else None
+def _skip_string(src, i):
+    """Index just past the Swift string literal whose quote is at src[i].
+
+    Escapes and nested \\( ... ) interpolations are skipped as a unit, so
+    their quotes, commas and parens never end the literal or the argument.
+    """
+    i += 1
+    while i < len(src):
+        ch = src[i]
+        if ch == '"':
+            return i + 1
+        if ch == '\\':
+            if src[i + 1:i + 2] == '(':
+                i = _skip_group(src, i + 2)
+            else:
+                i += 2
+            continue
+        i += 1
+    raise ValueError('unterminated string literal in descriptor')
+
+
+def _skip_group(src, i):
+    """Index just past the bracket closing a group whose body starts at src[i]."""
+    depth = 1
+    while i < len(src):
+        ch = src[i]
+        if ch == '"':
+            i = _skip_string(src, i)
+            continue
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+            if not depth:
+                return i + 1
+        i += 1
+    raise ValueError('unbalanced descriptor call')
+
+
+def call_arguments(block):
+    """Top-level labelled arguments of a descriptor call, as {label: expression}.
+
+    Each expression is the complete argument text up to the next top-level
+    comma or the closing paren, so callers validate the whole argument rather
+    than a prefix of it.
+    """
+    i = block.index('(') + 1
+    end = _skip_group(block, i) - 1
+    pieces = []
+    arg_start = i
+    while i < end:
+        ch = block[i]
+        if ch == '"':
+            i = _skip_string(block, i)
+            continue
+        if ch in '([{':
+            i = _skip_group(block, i + 1)
+            continue
+        if ch == ',':
+            pieces.append(block[arg_start:i])
+            arg_start = i + 1
+        i += 1
+    pieces.append(block[arg_start:end])
+    args = {}
+    for piece in pieces:
+        label = re.match(r'\s*([A-Za-z_]\w*)\s*:(?!:)', piece)
+        if label:
+            args.setdefault(label.group(1), piece[label.end():].strip())
+    return args
+
+
+PLAIN_LITERAL = re.compile(r'"([^"\\]*)"')
+
+
+def str_field(args, field, provider=None):
+    """A plain string literal, or None for nil or an opaque non-literal expression.
+
+    An expression mixing a literal with anything else (concatenation,
+    interpolation, escapes, method calls) is rejected rather than reduced to
+    its first literal, which would silently publish a stale URL.
+    """
+    expr = args.get(field)
+    if expr is None or expr == 'nil':
+        return None
+    literal = PLAIN_LITERAL.fullmatch(expr)
+    if literal:
+        return literal.group(1)
+    if '"' in expr:
+        raise ValueError(f'unsupported {field} expression for {provider}: {expr}')
+    return None
 
 
 def color_field(src):
@@ -119,13 +206,17 @@ def descriptor_color(src, block):
     return color_field(without_widgets)
 
 
-def kimi_dashboard(block, region_path):
+KIMI_DASHBOARD_EXPR = 'KimiRegion.china.consoleURL.absoluteString'
+
+
+def kimi_dashboard(expr, region_path):
     """Resolve only the known China domain -> web base -> console URL chain.
 
-    Fail closed if its descriptor expression or any relevant property changes
-    shape. Literal domain/path changes are reflected in the generated URL.
+    Fail closed unless the complete dashboardURL argument is exactly the known
+    expression, or if any relevant property changes shape. Literal domain/path
+    changes are reflected in the generated URL.
     """
-    if not re.search(r'\bdashboardURL:\s*KimiRegion\.china\.consoleURL\.absoluteString\s*,', block):
+    if expr != KIMI_DASHBOARD_EXPR:
         raise ValueError('unsupported Kimi dashboard expression; update the bounded resolver')
     with open(region_path, encoding='utf-8') as f:
         src = f.read()
@@ -158,17 +249,19 @@ def parse(path):
     pid = re.search(r'\bid:\s*\.(\w+)', block)
     if not pid:
         return None
+    provider = pid.group(1)
+    args = call_arguments(block)
     entry = {}
     for swift, js in STR_FIELDS.items():
-        val = str_field(block, swift)
+        val = str_field(args, swift, provider)
         if val:
             entry[js] = val
     color = descriptor_color(src, block)
     if color:
         entry['color'] = color
-    provider = pid.group(1)
     if provider == 'kimi' and 'dashboard' not in entry:
-        entry['dashboard'] = kimi_dashboard(block, os.path.join(os.path.dirname(path), 'KimiRegion.swift'))
+        region = os.path.join(os.path.dirname(path), 'KimiRegion.swift')
+        entry['dashboard'] = kimi_dashboard(args.get('dashboardURL'), region)
     page = (entry.get('statusPage') or '').rstrip('/')
     feed = STATUS_FEED_OVERRIDES.get(page)
     if not feed and page:
