@@ -6,12 +6,17 @@ import Foundation
 /// file, before its own router, so upstream's route and runtime changes rarely conflict with the fork:
 /// - `forkServeResponse(_:runtime:)` gets first refusal on every request. It answers a fork route (including the
 ///   405 for a fork path with the wrong method) or returns `nil`, and upstream's router handles the request as if
-///   the fork weren't there.
+///   the fork weren't there. `GET /health` is answered here too, with upstream's fields plus the capabilities.
 extension CodexBarCLI {
     static func forkServeResponse(
         _ request: CLILocalHTTPRequest,
         runtime: ServeRuntime) async -> CLILocalHTTPResponse?
     {
+        // `/health` gains the version halves and capabilities (CLICapabilities.swift). A wrong method falls
+        // through to upstream's router and its 405.
+        if request.method.uppercased() == "GET", request.path == "/health" {
+            return self.forkServeJSON(CLICapabilitiesPayload.health(version: runtime.healthVersion))
+        }
         let route: CLIServeSyncRoute?
         do {
             route = try CLIServeSyncRoute.route(

@@ -40,6 +40,7 @@ enum CodexBarCLI {
             Self.printHelp(for: command)
         }
         if argv.contains("-V") || argv.contains("--version") {
+            Self.forkPrintVersionJSONIfRequested(argv: argv) // UsageBar: --version --json (CLICapabilities.swift)
             Self.printVersion()
         }
 
