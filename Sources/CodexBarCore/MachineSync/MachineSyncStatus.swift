@@ -335,6 +335,9 @@ public struct MachineSyncStatus: Encodable, Sendable, Equatable {
         /// Last 30 Reporting Days that have Spend, oldest first.
         public let days: [DaySpend]
         public let coverage: Coverage?
+        /// Up to 90 Reporting Days that have Spend, oldest first, split by provider and model like a local cost
+        /// report's `daily` entries.
+        public let daily: [DailyEntry]
     }
 
     public struct ReportingDay: Encodable, Sendable, Equatable {
@@ -358,6 +361,8 @@ public struct MachineSyncStatus: Encodable, Sendable, Equatable {
     /// A Machine is active while its Last Seen is under 5 minutes old (§8.3).
     public static let activeWindow: TimeInterval = 5 * 60
     public static let windowDays = 30
+    /// How many Reporting Days `daily` reaches back: the longest range the cost dashboard shows.
+    public static let dailyWindowDays = 90
 
     public init(
         cache: MachineSyncCache,
@@ -367,6 +372,8 @@ public struct MachineSyncStatus: Encodable, Sendable, Equatable {
     {
         let window = reportingDay.days(endingAt: now, count: Self.windowDays)
         let windowSet = Set(window)
+        let dailyWindow = reportingDay.days(endingAt: now, count: Self.dailyWindowDays)
+        let dailyWindowSet = Set(dailyWindow)
         let today = window.last ?? reportingDay.day(of: now)
         let oldestRetained = MachineSyncDay.oldestRetainedDate(retentionDays: cache.retentionDays, now: now)
 
@@ -376,11 +383,15 @@ public struct MachineSyncStatus: Encodable, Sendable, Equatable {
         for (machineID, cached) in cache.machines {
             var byDay: [String: Spend] = [:]
             var byModel: [String: (provider: String, model: String, spend: Spend)] = [:]
+            var daily = DailyAccumulator()
             for (utcDate, blob) in cached.days {
                 for bucket in blob.buckets {
                     guard let hourStart = MachineSyncDay.hourStart(utcDate: utcDate, hour: bucket.hour)
                     else { continue }
                     let day = reportingDay.day(of: hourStart)
+                    if dailyWindowSet.contains(day), oldestRetained.map({ utcDate >= $0 }) ?? true {
+                        daily.add(bucket, day: day)
+                    }
                     guard windowSet.contains(day) else { continue }
                     byDay[day, default: Spend()].add(bucket)
                     let key = "\(bucket.provider)/\(bucket.model)"
@@ -411,7 +422,8 @@ public struct MachineSyncStatus: Encodable, Sendable, Equatable {
                     .map { ModelSpend(provider: $0.provider, model: $0.model, spend: $0.spend) }
                     .sorted { ($0.spend.costUSD, $1.provider, $1.model) > ($1.spend.costUSD, $0.provider, $0.model) },
                 days: window.compactMap { day in byDay[day].map { DaySpend(date: day, spend: $0) } },
-                coverage: Self.coverage(cached, oldestRetained: oldestRetained)))
+                coverage: Self.coverage(cached, oldestRetained: oldestRetained),
+                daily: daily.entries(in: dailyWindow)))
             totalToday.add(todaySpend)
             total30.add(last30)
         }
