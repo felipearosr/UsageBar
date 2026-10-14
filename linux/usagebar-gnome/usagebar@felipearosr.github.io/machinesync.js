@@ -464,19 +464,37 @@ function mergedReport(provider, local, syncedDays) {
 //   a Machine   only that Machine's synced `daily`
 // Unpaired, or paired before the first status read, it is always 'this'. A
 // Machine that left the Sync Group falls back to 'all'. Returns
-//   scope    the scope the reports are for, after those fallbacks
-//   reports  one per provider; `localReports` itself when nothing synced
-//            changes it
-export function scopedCostReports(localReports, payload, scope = 'all') {
+//   scope     the scope the reports are for, after those fallbacks
+//   reports   one per provider; `localReports` itself when nothing synced
+//             changes it
+//   coverage  the synced Machines the reports draw on, as {id, name, from}
+//             with `from` the first day of their Coverage (null without
+//             one); empty for 'this'. coverageShortfall() picks out the ones
+//             whose history is shorter than a range.
+//   shortCoverage  with `rangeDays` (and `today`, the dashboard's local
+//             date) given, coverageShortfall() for that range
+export function scopedCostReports(localReports, payload, scope = 'all', {rangeDays = null, today = null} = {}) {
+    const result = scopedCostReportsFor(localReports, payload, scope);
+    if (rangeDays)
+        result.shortCoverage = coverageShortfall(result.coverage, rangeDays, today);
+    return result;
+}
+
+function scopedCostReportsFor(localReports, payload, scope) {
     const local = localReports ?? [];
     const machines = payload?.paired ? payload.status?.machines ?? null : null;
     if (!machines || scope === 'this')
-        return {scope: 'this', reports: local};
+        return {scope: 'this', reports: local, coverage: []};
     const machine = scope === 'all' ? null : machines.find(m => m.machineId === scope);
     if (machine?.isThisMachine)
-        return {scope: 'this', reports: local};
+        return {scope: 'this', reports: local, coverage: []};
     const effective = machine ? machine.machineId : 'all';
     const picked = machine ? [machine] : machines.filter(m => !m.isThisMachine);
+    const coverage = picked.map(m => ({
+        id: m.machineId,
+        name: m.displayName || m.machineId,
+        from: m.coverage?.from ?? null,
+    }));
 
     const synced = new Map(); // provider → its days on the picked Machines
     for (const m of picked) {
@@ -491,7 +509,7 @@ export function scopedCostReports(localReports, payload, scope = 'all') {
         }
     }
     if (effective === 'all' && !synced.size)
-        return {scope: 'all', reports: local};
+        return {scope: 'all', reports: local, coverage};
 
     const base = effective === 'all' ? local : [];
     const reports = base.map(report => synced.has(report.provider)
@@ -501,7 +519,56 @@ export function scopedCostReports(localReports, payload, scope = 'all') {
         if (!seen.has(provider))
             reports.push(mergedReport(provider, null, synced.get(provider)));
     }
-    return {scope: effective, reports};
+    return {scope: effective, reports, coverage};
+}
+
+// `date` (YYYY-MM-DD) moved by `days`.
+function shiftDate(date, days) {
+    const [y, m, d] = date.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + days, 12)).toISOString().slice(0, 10);
+}
+
+// The Machines of scopedCostReports' `coverage` whose synced history starts
+// inside a range of `rangeDays` days ending `today`, so the range's earlier
+// days are missing for them rather than zero. A Machine without Coverage
+// has no synced history at all and counts as short.
+export function coverageShortfall(coverage, rangeDays, today = null) {
+    const end = today ?? new Date().toISOString().slice(0, 10);
+    const start = shiftDate(end, -(Math.max(1, rangeDays) - 1));
+    return (coverage ?? []).filter(entry => !entry.from || entry.from > start);
+}
+
+// The cost dashboard's note for Machines with short Coverage, or null.
+export function shortCoverageText(short) {
+    if (!short?.length)
+        return null;
+    const since = entry => (entry.from ? `from ${dayText(entry.from)}` : 'none yet');
+    if (short.length === 1) {
+        const [entry] = short;
+        return entry.from
+            ? `${entry.name}'s synced history starts ${dayText(entry.from)}; its earlier days are missing, not $0.`
+            : `${entry.name} has no synced history yet; its days are missing, not $0.`;
+    }
+    const names = short.map(entry => `${entry.name} (${since(entry)})`);
+    const list = `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+    return `Synced history is shorter on ${list}; their earlier days are missing, not $0.`;
+}
+
+// What the cost dashboard flags about synced data in a scope, for a range
+// of `rangeDays` days ending `today`. `scoped` is scopedCostReports' result.
+// Nothing unless other Machines' data is shown (paired, scope not 'this').
+//   note    shortCoverageText for Machines whose Coverage starts in range
+//   banner  the Machines tab's banner when the last Sync Server read
+//           failed, serve isn't answering (`fetchError`), or the data is
+//           older than 5 minutes; null when it is current
+//   stale   the synced contribution is greyed out
+export function costSyncNotice(payload, scoped, {now = Date.now(), fetchError = null, rangeDays = 30, today = null} = {}) {
+    const none = {short: [], note: null, banner: null, stale: false};
+    if (!payload?.paired || !payload.status || !scoped || scoped.scope === 'this')
+        return none;
+    const short = coverageShortfall(scoped.coverage, rangeDays, today);
+    const banner = staleBanner(payload, now, fetchError);
+    return {short, note: shortCoverageText(short), banner, stale: !!banner};
 }
 
 // Entries of the cost dashboard's Machine scope switch: All Machines, then

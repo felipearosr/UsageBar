@@ -52,6 +52,7 @@ import {defaultScope, scopeMap} from './statusscopes.js';
 import {
     costScopeLabel,
     costScopeOptions,
+    costSyncNotice,
     machineDetailView,
     machinesView,
     nextPushDelaySecs,
@@ -3071,6 +3072,100 @@ export default class UsageBarExtension extends Extension {
                         });
                     });
                 };
+                // Synced data the dashboard lacks or holds stale, with the
+                // All Machines dashboard open: qa-desk's Coverage starts 20
+                // days ago and the payload is 10 minutes old. The 90-day
+                // range names qa-desk, the 7-day one doesn't; the Machines
+                // tab's banner shows and the other Machines' part is greyed,
+                // all of it in qa-desk's scope, none of it in this Machine's.
+                const dashboardSyncStep = after => {
+                    const fullPayload = this._sync.payload;
+                    const daysAgo = n => {
+                        const date = new Date();
+                        date.setDate(date.getDate() - n);
+                        return localDateKey(date);
+                    };
+                    const pickScope = id => panelRefs().scopeButtons.get(id).emit('clicked', 1);
+                    try {
+                        this._sync.payload = {
+                            ...fullPayload,
+                            refreshedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+                            status: {...fullPayload.status, machines: fullPayload.status.machines.map(m =>
+                                m.machineId === 'qa-desk' ? {...m, coverage: {from: daysAgo(20), to: today}} : m)},
+                        };
+                        this._render();
+                    } catch (error) {
+                        done(error);
+                        return;
+                    }
+                    // The rebuilt spend row the dashboard hangs off needs a
+                    // layout before a range change places the panel by it.
+                    later(300, () => panelRefs().rangeButtons.get(90).emit('clicked', 1));
+                    later(600, () => {
+                        try {
+                            const refs = panelRefs();
+                            assertions.push(painted('stale dashboard is painted', refs?.panel));
+                            assertions.push(assertion('stale sync data shows the Machines-tab banner',
+                                !!refs?.syncBanner?.has_style_class_name('usagebar-machines-banner') &&
+                                refs.syncBanner.text.includes('Machine data is out of date.'),
+                                {actual: refs?.syncBanner?.text ?? null}));
+                            assertions.push(painted('dashboard sync banner is painted', refs?.syncBanner));
+                            assertions.push(assertion('the other Machines\' part is greyed, this one\'s is not',
+                                refs?.syncedTotalLabel?.opacity < 255 && refs.syncedBars.length > 0 &&
+                                refs.syncedBars.every(bar => bar.opacity < 255) && refs.body.opacity === 255,
+                                {synced: refs?.syncedTotalLabel?.opacity ?? null, body: refs?.body.opacity}));
+                            assertions.push(assertion('90 days: a note names the Machine with short Coverage',
+                                !!refs?.coverageNote?.text.startsWith('qa-desk\'s synced history starts'),
+                                {actual: refs?.coverageNote?.text ?? null}));
+                            assertions.push(painted('short Coverage note is painted', refs?.coverageNote));
+                        } catch (error) {
+                            done(error);
+                            return;
+                        }
+                        capture('dashboard-stale.png', () => {
+                            panelRefs().rangeButtons.get(7).emit('clicked', 1);
+                            later(250, () => {
+                                try {
+                                    assertions.push(assertion('7 days: no short Coverage note',
+                                        panelRefs()?.coverageNote === null));
+                                    pickScope('qa-desk');
+                                } catch (error) {
+                                    done(error);
+                                    return;
+                                }
+                                later(300, () => {
+                                    try {
+                                        const refs = panelRefs();
+                                        assertions.push(assertion('another Machine\'s stale dashboard is greyed',
+                                            !!refs?.syncBanner && refs.body.opacity < 255,
+                                            {body: refs?.body.opacity}));
+                                        pickScope('this');
+                                    } catch (error) {
+                                        done(error);
+                                        return;
+                                    }
+                                    later(300, () => {
+                                        try {
+                                            const refs = panelRefs();
+                                            assertions.push(assertion('this Machine\'s dashboard shows no sync notice',
+                                                refs?.syncBanner === null && refs.coverageNote === null &&
+                                                refs.body.opacity === 255));
+                                            // Back to fresh data, All Machines and 30 days.
+                                            pickScope('all');
+                                            this._sync.payload = fullPayload;
+                                            this._render();
+                                        } catch (error) {
+                                            done(error);
+                                            return;
+                                        }
+                                        later(300, () => panelRefs().rangeButtons.get(30).emit('clicked', 1));
+                                        later(600, after);
+                                    });
+                                });
+                            });
+                        });
+                    });
+                };
                 const scopeStep = next => {
                     setCosts([{
                         provider: 'claude',
@@ -3110,15 +3205,18 @@ export default class UsageBarExtension extends Extension {
                                 assertions.push(assertion('a model on two Machines is one breakdown row',
                                     JSON.stringify(refs?.modelNames) === '["qa-shared-model","qa-desk-model"]',
                                     {actual: refs?.modelNames ?? null}));
+                                assertions.push(assertion('fresh data with full Coverage: no note, no banner',
+                                    refs?.syncBanner === null && refs?.coverageNote === null &&
+                                    refs?.syncedTotalLabel === null));
                             } catch (error) {
                                 done(error);
                                 return;
                             }
-                            capture('dashboard-all-machines.png', () => dashboardScopeStep(() => {
+                            capture('dashboard-all-machines.png', () => dashboardSyncStep(() => dashboardScopeStep(() => {
                                 this._indicator._closeCostPanel();
                                 openPicker();
                                 later(300, () => pickStep(next));
-                            }));
+                            })));
                         });
                     });
                 };
@@ -3668,6 +3766,24 @@ export default class UsageBarExtension extends Extension {
     // Machine's name.
     _costScopeLabel() {
         return costScopeLabel(this._syncPayload(), this._costReports().scope);
+    }
+
+    // What the cost dashboard flags about synced data in a range of
+    // `rangeDays` (costSyncNotice): a note naming Machines whose Coverage is
+    // shorter than the range, and the Machines tab's banner while synced
+    // data is stale. Nothing while the scope is this Machine or unpaired.
+    _costSyncNotice(rangeDays) {
+        return costSyncNotice(this._syncPayload(), this._costReports(), {
+            fetchError: this._sync?.fetchError,
+            rangeDays,
+            today: localDateKey(),
+        });
+    }
+
+    // The dashboard is rebuilt when this changes: its data, or the notice.
+    _costPanelKey(ov, rangeDays) {
+        const notice = this._costSyncNotice(rangeDays);
+        return `${this._overviewSummaryKey(ov)}:${notice.note}:${notice.banner}`;
     }
 
     _displayName(provider) {
@@ -4533,7 +4649,7 @@ export default class UsageBarExtension extends Extension {
             holder._usagebarAnchor = view.summaryButton;
             const rangeDays = holder._usagebarRangeDays ?? 30;
             const panelOverview = this._costOverview(rangeDays);
-            const panelKey = this._overviewSummaryKey(panelOverview);
+            const panelKey = panelOverview ? this._costPanelKey(panelOverview, rangeDays) : 'none';
             if (holder._usagebarSummaryKey !== panelKey) {
                 holder.child?.destroy();
                 if (panelOverview) {
@@ -4947,7 +5063,7 @@ export default class UsageBarExtension extends Extension {
             return;
         holder.child?.destroy();
         holder.set_child(this._buildCostPanel(ov, anchor, rangeDays));
-        holder._usagebarSummaryKey = this._overviewSummaryKey(ov);
+        holder._usagebarSummaryKey = this._costPanelKey(ov, rangeDays);
         holder._usagebarRangeDays = rangeDays;
         holder._usagebarAnchor = anchor;
         Main.uiGroup.set_child_above_sibling(holder, null);
@@ -5035,12 +5151,65 @@ export default class UsageBarExtension extends Extension {
             };
         }
 
+        // Synced data the dashboard doesn't have: Machines whose history is
+        // shorter than the range, so their missing days don't read as $0,
+        // and stale data with the Machines tab's banner. Stale synced Spend
+        // is greyed out: all of it for another Machine's scope, the other
+        // Machines' part of the total and of each provider bar for All
+        // Machines. This Machine's local numbers stay as they are.
+        const notice = this._costSyncNotice(rangeDays);
+        let syncBanner = null;
+        if (notice.banner) {
+            syncBanner = new St.Label({
+                text: `⚠ ${notice.banner}`,
+                style_class: 'usagebar-banner usagebar-machines-banner usagebar-ov-sync-banner',
+                x_expand: true,
+            });
+            syncBanner.clutter_text.line_wrap = true;
+            panel.add_child(syncBanner);
+        }
+        let coverageNote = null;
+        if (notice.note) {
+            coverageNote = new St.Label({
+                text: notice.note,
+                style_class: 'usagebar-ov-small usagebar-ov-coverage-note',
+                x_expand: true,
+            });
+            coverageNote.clutter_text.line_wrap = true;
+            panel.add_child(coverageNote);
+        }
+        const allScope = this._costReports().scope === 'all';
+        const greyAll = notice.stale && !allScope;
+        // This Machine's part of each provider's cost, to grey the rest.
+        const localCost = new Map();
+        if (notice.stale && allScope) {
+            for (const p of costOverview(this._costs ?? [], rangeDays)?.providers ?? [])
+                localCost.set(p.provider, p.cost);
+        }
+        const localTotal = [...localCost.values()].reduce((sum, cost) => sum + cost, 0);
+        let syncedTotalLabel = null;
+        const syncedBars = [];
+
         const top = new St.BoxLayout({style_class: 'usagebar-ov-top'});
         const left = new St.BoxLayout({vertical: true, width: OV_LEFT_WIDTH});
         left.add_child(new St.Label({text: 'RAW TOKEN COST', style_class: 'usagebar-ov-caption'}));
         const totalLabel = new St.Label({text: `${fmtUSD(ov.cost)}*`, style_class: 'usagebar-ov-total'});
         left.add_child(totalLabel);
         left.add_child(new St.Label({text: '* if billed at full API rate', style_class: 'usagebar-ov-small'}));
+        if (notice.stale && allScope) {
+            const split = new St.BoxLayout({style_class: 'usagebar-ov-sync-split'});
+            split.add_child(new St.Label({
+                text: `This Machine ${fmtUSD(localTotal)}`,
+                style_class: 'usagebar-ov-small',
+            }));
+            syncedTotalLabel = new St.Label({
+                text: `· other Machines ${fmtUSD(Math.max(0, ov.cost - localTotal))}`,
+                style_class: 'usagebar-ov-small usagebar-ov-synced-stale',
+                opacity: 128, // St CSS has no opacity property
+            });
+            split.add_child(syncedTotalLabel);
+            left.add_child(split);
+        }
         for (const p of chartProviders) {
             const share = ov.cost > 0 ? p.cost / ov.cost : 0;
             const block = new St.BoxLayout({vertical: true, style_class: 'usagebar-ov-provider'});
@@ -5061,11 +5230,26 @@ export default class UsageBarExtension extends Extension {
             }));
             block.add_child(head);
             const track = new St.BoxLayout({width: OV_LEFT_WIDTH, height: 4, style_class: 'usagebar-ov-track'});
-            track.add_child(new St.Widget({
-                width: Math.round(share * OV_LEFT_WIDTH),
-                height: 4,
-                style: `background-color: ${p.color};`,
-            }));
+            if (notice.stale && allScope) {
+                // This Machine's part in full color, the stale synced rest greyed.
+                const own = Math.min(p.cost, localCost.get(p.provider) ?? 0);
+                const ownWidth = ov.cost > 0 ? Math.round(own / ov.cost * OV_LEFT_WIDTH) : 0;
+                track.add_child(new St.Widget({width: ownWidth, height: 4, style: `background-color: ${p.color};`}));
+                const synced = new St.Widget({
+                    width: Math.max(0, Math.round(share * OV_LEFT_WIDTH) - ownWidth),
+                    height: 4,
+                    style: `background-color: ${p.color};`,
+                    opacity: 90,
+                });
+                track.add_child(synced);
+                syncedBars.push(synced);
+            } else {
+                track.add_child(new St.Widget({
+                    width: Math.round(share * OV_LEFT_WIDTH),
+                    height: 4,
+                    style: `background-color: ${p.color};`,
+                }));
+            }
             block.add_child(track);
             block.add_child(new St.Label({
                 text: `${fmtPct(share)} of cost · ${fmtTokens(p.tokens)} tokens`,
@@ -5270,6 +5454,13 @@ export default class UsageBarExtension extends Extension {
         modelButton.connect('clicked', () => selectBreakdown('model'));
         dayButton.connect('clicked', () => selectBreakdown('day'));
         selectBreakdown('model');
+        // Another Machine's scope is synced data only: grey all of it.
+        if (greyAll) {
+            for (const actor of [top, kpis, modelTable, dayTable]) {
+                actor.add_style_class_name('usagebar-ov-synced-stale');
+                actor.opacity = 128;
+            }
+        }
         panel._usagebarSmoke = {
             panel,
             header,
@@ -5291,6 +5482,11 @@ export default class UsageBarExtension extends Extension {
             scopeList: scope?.list ?? null,
             scopeItems: scope?.items ?? new Map(),
             scopeMode: null,
+            syncBanner,
+            coverageNote,
+            syncedTotalLabel,
+            syncedBars,
+            body: top,
         };
         return panel;
     }
