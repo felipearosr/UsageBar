@@ -169,6 +169,55 @@ class ProviderMetaTests(unittest.TestCase):
         result = self.parse('ProviderMetadata(id: .kimi, dashboardURL: "https://literal.example")')
         self.assertEqual(result[1]['dashboard'], 'https://literal.example')
 
+    def test_kimi_rejects_concatenation_and_interpolation(self):
+        self.kimi_source()
+        current = 'https://www.kimi.com/code/console'
+        for expr in [
+            f'"{current}" + "/new"',
+            f'"{current}"+"/new"',
+            f'"{current}" + suffix',
+            f'"{current}".appending("/new")',
+            f'KimiRegion.china.consoleURL.absoluteString + "/new"',
+            f'"/new" + KimiRegion.china.consoleURL.absoluteString',
+            '"\\(KimiRegion.china.consoleURL.absoluteString)/new"',
+            f'"{current}\\(suffix)"',
+            f'"{current}\\("/new")"',
+            f'"{current}\\u{{2F}}new"',
+        ]:
+            for tail in (',)', ')', ', statusPageURL: nil)'):
+                with self.subTest(expr=expr, tail=tail):
+                    with self.assertRaisesRegex(ValueError, 'unsupported'):
+                        self.parse(f'ProviderMetadata(id: .kimi, dashboardURL: {expr}{tail}')
+        for expr in ['KimiRegion.china.consoleURL.absoluteString.lowercased()',
+                     'KimiRegion.china.consoleURL.absoluteString ?? fallback',
+                     '(KimiRegion.china.consoleURL.absoluteString)',
+                     'nil']:
+            with self.subTest(expr=expr):
+                with self.assertRaisesRegex(ValueError, 'unsupported Kimi dashboard'):
+                    self.parse(f'ProviderMetadata(id: .kimi, dashboardURL: {expr})')
+        for tail in (')', ',)', ', statusPageURL: nil)', '\n)'):
+            with self.subTest(tail=tail):
+                result = self.parse(
+                    f'ProviderMetadata(id: .kimi, dashboardURL: KimiRegion.china.consoleURL.absoluteString{tail}')
+                self.assertEqual(result[1]['dashboard'], current)
+
+    def test_string_fields_validate_the_complete_argument(self):
+        for field in gen.STR_FIELDS:
+            for expr in ['"https://old.example" + "/new"', '"https://old.example\\(path)"',
+                         '"https://old.example".lowercased()']:
+                with self.subTest(field=field, expr=expr):
+                    with self.assertRaisesRegex(ValueError, f'unsupported {field} expression'):
+                        self.parse(f'ProviderMetadata(id: .fixture, {field}: {expr})')
+        # Commas, parens and quotes inside literals and nested calls do not split arguments.
+        result = self.parse('''ProviderMetadata(id: .fixture,
+            displayName: "Fixture, (beta)",
+            isValid: { Fixture(rawValue: $0, label: "x") != nil },
+            dashboardURL: Fixture.url(for: region, flags: [1, 2]).absoluteString,
+            statusPageURL: "https://status.example.com")''')
+        self.assertEqual(result[1]['name'], 'Fixture, (beta)')
+        self.assertNotIn('dashboard', result[1])
+        self.assertEqual(result[1]['statusPage'], 'https://status.example.com')
+
     def test_real_descriptors_have_names_and_brand_colors(self):
         paths = sorted(Path(gen.REPO).glob('Sources/CodexBarCore/Providers/*/*ProviderDescriptor.swift'))
         self.assertTrue(paths)
