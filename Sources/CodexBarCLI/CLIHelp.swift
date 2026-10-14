@@ -273,6 +273,7 @@ extension CodexBarCLI {
           GET /usage?provider=all
           GET /cost
           GET /cost?provider=codex
+          GET /cost?provider=codex&days=90
           GET /dashboard/v1/snapshot
 
         Examples:

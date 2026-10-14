@@ -2,6 +2,10 @@
 
 ## 0.75.1 — Unreleased
 
+### Added
+
+- CLI: `codexbar serve` accepts `GET /cost?days=N` (clamped to 1–365) to report a rolling window for that request instead of the app's Cost reporting period.
+
 ## 0.75.0 — 2026-10-13
 
 ### Highlights

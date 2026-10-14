@@ -52,7 +52,8 @@ enum CLIServeRoute: Equatable {
     case health
     case accounts(id: String?)
     case usage(provider: String?)
-    case cost(provider: String?)
+    /// `days` overrides the app's Cost reporting period with a rolling window for this request only.
+    case cost(provider: String?, days: Int?)
     case dashboardSnapshot(provider: String?, detail: String?)
 }
 
@@ -69,6 +70,9 @@ enum CLIServeRouter {
 
         let provider = queryItems["provider"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedProvider = provider?.isEmpty == false ? provider : nil
+        let days = queryItems["days"]
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .map { max(1, min(365, $0)) }
 
         switch path {
         case "/":
@@ -88,7 +92,7 @@ enum CLIServeRouter {
         case "/usage":
             return .usage(provider: normalizedProvider)
         case "/cost":
-            return .cost(provider: normalizedProvider)
+            return .cost(provider: normalizedProvider, days: days)
         case "/dashboard/v1/snapshot":
             let detail = queryItems["detail"]?.trimmingCharacters(in: .whitespacesAndNewlines)
             return .dashboardSnapshot(
@@ -924,12 +928,12 @@ extension CodexBarCLI {
                             providerDeadline: providerDeadline,
                             providerOperations: runtime.providerOperations))
                 }))
-        case let .cost(provider):
+        case let .cost(provider, days):
             guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
                 return Self.serveUnauthorizedResponse()
             }
             let now = Date()
-            let period = Self.costReportingPeriodFromDefaults()
+            let period = days.map { CostReportingPeriod.rolling(days: $0) } ?? Self.costReportingPeriodFromDefaults()
             let calendar = CostUsageBucketTimeZone.calendar(
                 identifier: Self.stringFromAppDefaults("tokenCostUsageBucketTimeZone"))
             let periodIdentity = period.identity(now: now, calendar: calendar)
@@ -937,7 +941,7 @@ extension CodexBarCLI {
             let operationKey: String
             do {
                 snapshot = try Self.loadServeConfigSnapshot(configStore: runtime.configStore)
-                operationKey = try Self.serveOperationKey(kind: "cost", provider: provider)
+                operationKey = try Self.serveCostOperationKey(period: period, provider: provider)
             } catch {
                 let status: CLIHTTPStatus = error is CLIServeArgumentError ? .badRequest : .internalServerError
                 return Self.addingNoStore(Self.serveError(status: status, message: error.localizedDescription))
@@ -1122,6 +1126,13 @@ extension CodexBarCLI {
             throw CLIServeArgumentError.invalidProvider(provider)
         }
         return "\(kind):\(selection.asList.map(\.rawValue).joined(separator: ","))"
+    }
+
+    /// Keeps each reporting period in its own in-flight slot, so concurrent `/cost` requests for
+    /// different windows neither share a result nor evict each other's pending refresh. The `cost:`
+    /// prefix is preserved for the per-provider last-good merge in ``CLIServeResponseCache``.
+    static func serveCostOperationKey(period: CostReportingPeriod, provider: String?) throws -> String {
+        try "\(self.serveOperationKey(kind: "cost", provider: provider)):\(period.rawValue)"
     }
 
     static func serveCacheKey(operationKey: String, configToken: String) -> String {
