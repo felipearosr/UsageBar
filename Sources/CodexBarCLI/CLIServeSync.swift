@@ -4,6 +4,10 @@ import Foundation
 /// Runs one Machine Sync refresh and one push at a time for `codexbar serve`. A request that arrives while the
 /// same operation is running waits for it and shares its result instead of starting a second one.
 actor CLIServeSyncCoordinator {
+    /// The one `codexbar serve` uses. It lives here rather than on upstream's `ServeRuntime`, which a serve process
+    /// builds once.
+    static let shared = CLIServeSyncCoordinator()
+
     private var refreshTask: Task<Result<MachineSyncRefreshResult, any Error>, Never>?
     private var pushTask: Task<Result<MachineSyncPushOutcome, any Error>, Never>?
 
@@ -34,6 +38,28 @@ actor CLIServeSyncCoordinator {
     }
 }
 
+/// The `/sync/*` routes `codexbar serve` answers through ``CodexBarCLI/forkServeResponse(_:runtime:)``.
+enum CLIServeSyncRoute: Equatable {
+    /// This Machine's view of its Sync Group. `refresh` pulls new blobs from the Sync Server first.
+    case syncStatus(refresh: Bool)
+    /// One Machine Sync push cycle (§8.1).
+    case syncPush
+
+    /// `nil` for a path that isn't Machine Sync's. Pushing uploads Spend, so it takes POST; status only reads.
+    static func route(method: String, path: String, queryItems: [String: String]) throws -> CLIServeSyncRoute? {
+        switch path {
+        case "/sync/push":
+            guard method.uppercased() == "POST" else { throw CLIServeRouteError.methodNotAllowed }
+            return .syncPush
+        case "/sync/status":
+            guard method.uppercased() == "GET" else { throw CLIServeRouteError.methodNotAllowed }
+            return .syncStatus(refresh: ["1", "true"].contains(queryItems["refresh"]?.lowercased() ?? ""))
+        default:
+            return nil
+        }
+    }
+}
+
 /// `GET /sync/status`: what the Machines view shows.
 struct ServeSyncStatusPayload: Encodable {
     /// `false` hides every Machine Sync surface; the other fields are then absent.
@@ -51,9 +77,10 @@ struct ServeSyncStatusPayload: Encodable {
 extension CodexBarCLI {
     /// `/sync/*` behind the same data-route auth as `/usage` and `/cost`, never cached.
     static func serveSyncRoute(
-        _ route: CLIServeRoute,
+        _ route: CLIServeSyncRoute,
         request: CLILocalHTTPRequest,
-        runtime: ServeRuntime) async -> CLILocalHTTPResponse
+        runtime: ServeRuntime,
+        coordinator: CLIServeSyncCoordinator = .shared) async -> CLILocalHTTPResponse
     {
         guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
             return self.serveUnauthorizedResponse()
@@ -64,11 +91,9 @@ extension CodexBarCLI {
             return await self.addingNoStore(self.serveSyncStatus(
                 refresh: refresh,
                 environment: environment,
-                coordinator: runtime.sync))
+                coordinator: coordinator))
         case .syncPush:
-            return await self.addingNoStore(self.serveSyncPush(environment: environment, coordinator: runtime.sync))
-        default:
-            return self.serveError(status: .notFound, message: "not found")
+            return await self.addingNoStore(self.serveSyncPush(environment: environment, coordinator: coordinator))
         }
     }
 
@@ -82,12 +107,12 @@ extension CodexBarCLI {
         coordinator: CLIServeSyncCoordinator) async -> CLILocalHTTPResponse
     {
         do {
-            return try await self.serveJSON(self.serveSyncStatusPayload(
+            return try await self.forkServeJSON(self.serveSyncStatusPayload(
                 refresh: refresh,
                 environment: environment,
                 coordinator: coordinator))
         } catch {
-            return self.serveError(status: .internalServerError, message: self.syncErrorMessage(error))
+            return self.forkServeError(status: .internalServerError, message: self.syncErrorMessage(error))
         }
     }
 
@@ -138,12 +163,12 @@ extension CodexBarCLI {
     {
         switch await coordinator.push(environment: environment) {
         case let .success(outcome):
-            return self.serveJSON(SyncPushPayload(outcome))
+            return self.forkServeJSON(SyncPushPayload(outcome))
         case let .failure(error):
             if case MachineSyncError.notPaired = error {
-                return self.serveError(status: .conflict, message: self.syncErrorMessage(error))
+                return self.forkServeError(status: .conflict, message: self.syncErrorMessage(error))
             }
-            return self.serveError(status: .badGateway, message: self.syncErrorMessage(error))
+            return self.forkServeError(status: .badGateway, message: self.syncErrorMessage(error))
         }
     }
 }

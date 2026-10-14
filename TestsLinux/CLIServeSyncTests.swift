@@ -23,20 +23,90 @@ struct CLIServeSyncTests {
         return try self.object(response)
     }
 
+    private static func runtime(bindHost: String = "127.0.0.1", token: String? = nil) -> ServeRuntime {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CLIServeSyncTests-\(UUID().uuidString)", isDirectory: true)
+        return ServeRuntime(
+            configStore: CodexBarConfigStore(fileURL: directory.appendingPathComponent("config.json")),
+            cache: CLIServeResponseCache(),
+            providerOperations: CLIServeOperationCoordinator(),
+            costOperations: CLIServeOperationCoordinator(),
+            refreshInterval: 60,
+            requestTimeout: 30,
+            healthVersion: nil,
+            dashboardAuth: CLIServeDashboardAuth(bearer: token),
+            bindHost: bindHost)
+    }
+
+    private static func request(
+        _ method: String,
+        _ target: String,
+        authorization: String? = nil) throws -> CLILocalHTTPRequest
+    {
+        var raw = "\(method) \(target) HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        if let authorization { raw += "Authorization: \(authorization)\r\n" }
+        raw += "\r\n"
+        return try CLILocalHTTPRequest.parse(Data(raw.utf8)).get()
+    }
+
     @Test
     func `routes sync status and push`() throws {
-        #expect(try CLIServeRouter.route(method: "GET", path: "/sync/status", queryItems: [:])
+        #expect(try CLIServeSyncRoute.route(method: "GET", path: "/sync/status", queryItems: [:])
             == .syncStatus(refresh: false))
-        #expect(try CLIServeRouter.route(method: "GET", path: "/sync/status", queryItems: ["refresh": "1"])
+        #expect(try CLIServeSyncRoute.route(method: "GET", path: "/sync/status", queryItems: ["refresh": "1"])
             == .syncStatus(refresh: true))
-        #expect(try CLIServeRouter.route(method: "GET", path: "/sync/status", queryItems: ["refresh": "0"])
+        #expect(try CLIServeSyncRoute.route(method: "GET", path: "/sync/status", queryItems: ["refresh": "0"])
             == .syncStatus(refresh: false))
-        #expect(try CLIServeRouter.route(method: "post", path: "/sync/push", queryItems: [:]) == .syncPush)
+        #expect(try CLIServeSyncRoute.route(method: "post", path: "/sync/push", queryItems: [:]) == .syncPush)
         #expect(throws: CLIServeRouteError.methodNotAllowed) {
-            try CLIServeRouter.route(method: "GET", path: "/sync/push", queryItems: [:])
+            try CLIServeSyncRoute.route(method: "GET", path: "/sync/push", queryItems: [:])
         }
         #expect(throws: CLIServeRouteError.methodNotAllowed) {
-            try CLIServeRouter.route(method: "POST", path: "/sync/status", queryItems: [:])
+            try CLIServeSyncRoute.route(method: "POST", path: "/sync/status", queryItems: [:])
+        }
+        #expect(try CLIServeSyncRoute.route(method: "GET", path: "/usage", queryItems: [:]) == nil)
+        #expect(try CLIServeSyncRoute.route(method: "GET", path: "/sync", queryItems: [:]) == nil)
+    }
+
+    @Test
+    func `hook passes upstream routes through`() async throws {
+        let runtime = Self.runtime()
+        for target in ["/", "/health", "/usage", "/cost?days=7", "/sync", "/sync/other"] {
+            #expect(try await CodexBarCLI.forkServeResponse(Self.request("GET", target), runtime: runtime) == nil)
+        }
+        #expect(try await CodexBarCLI.forkServeResponse(Self.request("POST", "/usage"), runtime: runtime) == nil)
+    }
+
+    @Test
+    func `wrong method answers 405 before auth and without no-store`() async throws {
+        let runtime = Self.runtime(bindHost: "0.0.0.0", token: "secret")
+        for (method, target) in [("GET", "/sync/push"), ("POST", "/sync/status"), ("DELETE", "/sync/push")] {
+            let response = try await CodexBarCLI.handleServeRequest(Self.request(method, target), runtime: runtime)
+            #expect(response.status == .methodNotAllowed)
+            #expect(try Self.object(response)["error"] as? String == "method not allowed")
+            #expect(!response.extraHeaders.contains { $0.0 == "Cache-Control" })
+        }
+    }
+
+    @Test
+    func `non-loopback binds require the bearer token`() async throws {
+        let runtime = Self.runtime(bindHost: "0.0.0.0", token: "secret")
+        for (method, target) in [("GET", "/sync/status"), ("GET", "/sync/status?refresh=1"), ("POST", "/sync/push")] {
+            for authorization in [nil, "Bearer wrong"] {
+                let response = try await CodexBarCLI.handleServeRequest(
+                    Self.request(method, target, authorization: authorization),
+                    runtime: runtime)
+                #expect(response.status == .unauthorized)
+                #expect(response.extraHeaders.contains { $0 == ("WWW-Authenticate", "Bearer") })
+                #expect(response.extraHeaders.contains { $0 == ("Cache-Control", "no-store") })
+            }
+        }
+    }
+
+    @Test
+    func `upstream router no longer knows sync paths`() {
+        #expect(throws: CLIServeRouteError.notFound) {
+            try CLIServeRouter.route(method: "GET", path: "/sync/status", queryItems: [:])
         }
     }
 

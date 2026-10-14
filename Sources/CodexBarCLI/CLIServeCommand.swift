@@ -51,10 +51,6 @@ enum CLIServeRoute: Equatable {
     /// `days` overrides the app's Cost reporting period with a rolling window of that many days.
     case cost(provider: String?, days: Int?)
     case dashboardSnapshot(provider: String?, detail: String?)
-    /// This Machine's view of its Sync Group. `refresh` pulls new blobs from the Sync Server first.
-    case syncStatus(refresh: Bool)
-    /// One Machine Sync push cycle (§8.1).
-    case syncPush
 }
 
 enum CLIServeRouteError: Error, Equatable {
@@ -64,11 +60,6 @@ enum CLIServeRouteError: Error, Equatable {
 
 enum CLIServeRouter {
     static func route(method: String, path: String, queryItems: [String: String]) throws -> CLIServeRoute {
-        // Pushing uploads Spend, so it takes POST; everything else only reads.
-        if path == "/sync/push" {
-            guard method.uppercased() == "POST" else { throw CLIServeRouteError.methodNotAllowed }
-            return .syncPush
-        }
         guard method.uppercased() == "GET" else {
             throw CLIServeRouteError.methodNotAllowed
         }
@@ -90,8 +81,6 @@ enum CLIServeRouter {
             return .usage(provider: normalizedProvider)
         case "/cost":
             return .cost(provider: normalizedProvider, days: days)
-        case "/sync/status":
-            return .syncStatus(refresh: ["1", "true"].contains(queryItems["refresh"]?.lowercased() ?? ""))
         case "/dashboard/v1/snapshot":
             let detail = queryItems["detail"]?.trimmingCharacters(in: .whitespacesAndNewlines)
             return .dashboardSnapshot(
@@ -136,7 +125,6 @@ struct ServeRuntime {
     let refreshInterval: TimeInterval
     let requestTimeout: TimeInterval
     let healthVersion: String?
-    let sync: CLIServeSyncCoordinator
     let dashboardAuth: CLIServeDashboardAuth
     /// Identity detail for dashboard snapshots. `nil` means no `--identity` startup
     /// option was given, so each request follows the app's "Hide personal information"
@@ -157,7 +145,6 @@ struct ServeRuntime {
         refreshInterval: TimeInterval,
         requestTimeout: TimeInterval,
         healthVersion: String?,
-        sync: CLIServeSyncCoordinator = CLIServeSyncCoordinator(),
         dashboardAuth: CLIServeDashboardAuth,
         dashboardIdentityMode: DashboardIdentityMode? = nil,
         bindHost: String)
@@ -169,7 +156,6 @@ struct ServeRuntime {
         self.refreshInterval = refreshInterval
         self.requestTimeout = requestTimeout
         self.healthVersion = healthVersion
-        self.sync = sync
         self.dashboardAuth = dashboardAuth
         self.dashboardIdentityMode = dashboardIdentityMode
         self.dataRoutesRequireAuth = !CLIServeSecurity.isLoopbackHost(bindHost)
@@ -755,7 +741,6 @@ extension CodexBarCLI {
             refreshInterval: refreshInterval,
             requestTimeout: requestTimeout,
             healthVersion: Self.currentVersion(),
-            sync: CLIServeSyncCoordinator(),
             dashboardAuth: CLIServeDashboardAuth(bearer: dashboardBearer),
             dashboardIdentityMode: dashboardIdentityMode,
             bindHost: bindHost)
@@ -881,6 +866,7 @@ extension CodexBarCLI {
         _ request: CLILocalHTTPRequest,
         runtime: ServeRuntime) async -> CLILocalHTTPResponse
     {
+        if let response = await forkServeResponse(request, runtime: runtime) { return response }
         let startedAt = ContinuousClock().now
         let requestDeadline = Self.serveRequestDeadline(
             startedAt: startedAt,
@@ -911,8 +897,6 @@ extension CodexBarCLI {
                 ?? Self.serveError(status: .notFound, message: "not found")
         case .health:
             return Self.serveHealthResponse(version: runtime.healthVersion)
-        case .syncStatus, .syncPush:
-            return await Self.serveSyncRoute(route, request: request, runtime: runtime)
         case let .usage(provider):
             // On non-loopback binds every data route requires the bearer token,
             // checked before any cache access so unauthenticated requests can
@@ -1694,7 +1678,7 @@ extension CodexBarCLI {
             ])
     }
 
-    static func serveJSON(
+    private static func serveJSON(
         _ payload: some Encodable,
         status: CLIHTTPStatus = .ok,
         extraHeaders: [(String, String)] = [],
@@ -1708,7 +1692,7 @@ extension CodexBarCLI {
             usageCacheKeys: usageCacheKeys)
     }
 
-    static func serveError(status: CLIHTTPStatus, message: String) -> CLILocalHTTPResponse {
+    private static func serveError(status: CLIHTTPStatus, message: String) -> CLILocalHTTPResponse {
         self.serveJSON(ServeErrorPayload(error: message), status: status)
     }
 }
