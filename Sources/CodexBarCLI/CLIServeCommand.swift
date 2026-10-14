@@ -102,6 +102,8 @@ enum CLIServeRouter {
 
 private struct ServeErrorPayload: Encodable {
     let error: String
+    /// Optional machine-readable failure name; omitted when nil so existing bodies are unchanged.
+    var reason: String?
 }
 
 private struct ServeHealthPayload: Encodable {
@@ -603,19 +605,27 @@ private enum CLIServeArgumentError: LocalizedError {
     }
 }
 
-private struct CLIServeProviderTimeoutError: LocalizedError {
+private struct CLIServeProviderTimeoutError: LocalizedError, CLIErrorReasonProviding {
     let provider: UsageProvider
 
     var errorDescription: String? {
         "\(self.provider.rawValue) usage timed out"
     }
+
+    var cliErrorReason: String {
+        CodexBarCLI.serveTimeoutReason
+    }
 }
 
-private struct CLIServeCostTimeoutError: LocalizedError {
+private struct CLIServeCostTimeoutError: LocalizedError, CLIErrorReasonProviding {
     let provider: UsageProvider
 
     var errorDescription: String? {
         "\(self.provider.rawValue) cost refresh timed out"
+    }
+
+    var cliErrorReason: String {
+        CodexBarCLI.serveTimeoutReason
     }
 }
 
@@ -628,8 +638,11 @@ extension CodexBarCLI {
         min(max(requestTimeout, 0), self.maximumServeRequestTimeout)
     }
 
+    /// `reason` reported when a serve request or a provider fetch inside it exceeds its time budget.
+    static let serveTimeoutReason = "timeout"
+
     static func serveTimeoutResponse() -> CLILocalHTTPResponse {
-        self.serveError(status: .gatewayTimeout, message: "request timed out")
+        self.serveError(status: .gatewayTimeout, message: "request timed out", reason: self.serveTimeoutReason)
     }
 
     static func runServe(_ values: ParsedValues) async {
@@ -1652,7 +1665,7 @@ extension CodexBarCLI {
             usageCacheKeys: usageCacheKeys)
     }
 
-    static func serveError(status: CLIHTTPStatus, message: String) -> CLILocalHTTPResponse {
-        self.serveJSON(ServeErrorPayload(error: message), status: status)
+    static func serveError(status: CLIHTTPStatus, message: String, reason: String? = nil) -> CLILocalHTTPResponse {
+        self.serveJSON(ServeErrorPayload(error: message, reason: reason), status: status)
     }
 }

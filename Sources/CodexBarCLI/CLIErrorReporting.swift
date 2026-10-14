@@ -12,6 +12,21 @@ struct ProviderErrorPayload: Encodable, Sendable {
     let code: Int32
     let message: String
     let kind: CLIErrorKind?
+    /// Stable, machine-readable name for the failure (for example `timeout`), so clients can explain it
+    /// without matching on `message`. Omitted from the encoded payload when nil.
+    var reason: String?
+
+    init(code: Int32, message: String, kind: CLIErrorKind?, reason: String? = nil) {
+        self.code = code
+        self.message = message
+        self.kind = kind
+        self.reason = reason
+    }
+}
+
+/// Errors that can name their failure with a stable `reason` string in CLI error payloads.
+protocol CLIErrorReasonProviding: Error {
+    var cliErrorReason: String { get }
 }
 
 extension CodexBarCLI {
@@ -19,14 +34,25 @@ extension CodexBarCLI {
         ProviderErrorPayload(
             code: self.mapError(error).rawValue,
             message: error.localizedDescription,
-            kind: kind)
+            kind: kind,
+            reason: (error as? any CLIErrorReasonProviding)?.cliErrorReason)
     }
 
-    static func makeErrorPayload(code: ExitCode, message: String, kind: CLIErrorKind? = nil) -> ProviderErrorPayload {
-        ProviderErrorPayload(code: code.rawValue, message: message, kind: kind)
+    static func makeErrorPayload(
+        code: ExitCode,
+        message: String,
+        kind: CLIErrorKind? = nil,
+        reason: String? = nil) -> ProviderErrorPayload
+    {
+        ProviderErrorPayload(code: code.rawValue, message: message, kind: kind, reason: reason)
     }
 
-    static func makeCLIErrorProviderPayload(message: String, code: ExitCode, kind: CLIErrorKind) -> ProviderPayload {
+    static func makeCLIErrorProviderPayload(
+        message: String,
+        code: ExitCode,
+        kind: CLIErrorKind,
+        reason: String? = nil) -> ProviderPayload
+    {
         ProviderPayload(
             providerID: "cli",
             account: nil,
@@ -37,16 +63,17 @@ extension CodexBarCLI {
             credits: nil,
             antigravityPlanInfo: nil,
             openaiDashboard: nil,
-            error: ProviderErrorPayload(code: code.rawValue, message: message, kind: kind))
+            error: ProviderErrorPayload(code: code.rawValue, message: message, kind: kind, reason: reason))
     }
 
     static func makeCLIErrorPayload(
         message: String,
         code: ExitCode,
         kind: CLIErrorKind,
+        reason: String? = nil,
         pretty: Bool) -> String?
     {
-        let payload = self.makeCLIErrorProviderPayload(message: message, code: code, kind: kind)
+        let payload = self.makeCLIErrorProviderPayload(message: message, code: code, kind: kind, reason: reason)
         return self.encodeJSON([payload], pretty: pretty)
     }
 
@@ -105,12 +132,13 @@ extension CodexBarCLI {
         code: ExitCode,
         message: String? = nil,
         output: CLIOutputPreferences? = nil,
-        kind: CLIErrorKind = .runtime) -> Never
+        kind: CLIErrorKind = .runtime,
+        reason: String? = nil) -> Never
     {
         if self.shouldPrintExitError(code: code, message: message) {
             if let output, output.usesJSONOutput {
                 self.printProviderPayloads(
-                    [self.makeCLIErrorProviderPayload(message: message ?? "", code: code, kind: kind)],
+                    [self.makeCLIErrorProviderPayload(message: message ?? "", code: code, kind: kind, reason: reason)],
                     output: output)
             } else if let message {
                 self.writeStderr("\(message)\n")
