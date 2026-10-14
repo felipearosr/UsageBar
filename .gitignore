@@ -8,7 +8,6 @@ xcuserdata/
 # Build products
 .build/
 DerivedData
-linux/codexbar-tray/src-tauri/target/
 
 # Bundles / artifacts
 # Main app bundle (any variation)
@@ -46,7 +45,3 @@ docs/.astro/
 # Swift Package Manager metadata (leave sources tracked)
 # Packages/
 # Package.resolved
-
-# Local working tickets
-.scratch/
-linux/dist/

@@ -1,0 +1,3 @@
+# UsageBar build outputs (fork-owned; keeps the root .gitignore identical to upstream).
+/codexbar-tray/src-tauri/target/
+/dist/

@@ -1,0 +1,3 @@
+# Local working tickets (fork-owned; keeps the root .gitignore identical to upstream).
+*
+!.gitignore
