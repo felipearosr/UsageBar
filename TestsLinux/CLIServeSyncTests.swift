@@ -77,6 +77,14 @@ struct CLIServeSyncTests {
         #expect(machines.count == 1)
         #expect(machines.first?["isThisMachine"] as? Bool == true)
         #expect(machines.first?["active"] as? Bool == true)
+        // `daily` passes through unchanged from the `sync status --json` payload.
+        let daily = try #require(machines.first?["daily"] as? [[String: Any]])
+        #expect(daily.count == 1)
+        #expect(daily.first?["totalCost"] as? Double == 2)
+        let providers = try #require(daily.first?["providers"] as? [[String: Any]])
+        #expect(providers.first?["provider"] as? String == "claude")
+        let models = try #require(providers.first?["modelBreakdowns"] as? [[String: Any]])
+        #expect(models.first?["modelName"] as? String == "claude-sonnet-4-5")
     }
 
     @Test
