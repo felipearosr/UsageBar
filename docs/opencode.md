@@ -11,6 +11,9 @@ read_when:
 - Browser cookies from `opencode.ai`. Two session cookies matter: `auth` (legacy pages and server
   functions) and `__Host-console_session` (the console). Both are forwarded, and either one alone is
   enough for an import to succeed, because a migrated workspace may carry only the console cookie.
+- OpenCode local history from `~/.local/share/opencode/opencode.db` on macOS and Linux, reading
+  `providerID = "opencode"` assistant costs. Used as the fallback source in Auto mode when no browser
+  cookies are available (for example on Linux, where browser-cookie import is macOS-only).
 - OpenCode Go usage API at `GET https://opencode.ai/zen/go/v1/usage`, authenticated by `OPENCODE_API_KEY` or
   `providers[].apiKey`, or a selected token account's API key.
 - OpenCode Go local history from `~/.local/share/opencode/opencode.db` on macOS and Linux.
@@ -98,6 +101,12 @@ usage is a separate [OpenAI provider](openai.md), not Codex subscription quota.
   this Console balance mapping. A failed optional balance read does not discard valid Go usage.
 - Cached cookies: Keychain cache `com.steipete.codexbar.cache` (account `cookie.opencode`, source + timestamp). Browser
   import only runs when the cached cookie fails.
+- OpenCode Auto mode tries web usage first. When no browser cookies are available, it derives rolling (5-hour) and
+  weekly (Monday 00:00 UTC) windows from local `opencode` assistant costs instead. A manual cookie never falls back,
+  so its authentication failures stay visible. The local reader uses OpenCode Go's documented dollar caps ($12/5h,
+  $30/week) as the rolling and weekly limits; the original OpenCode plan's caps are not published, so revisit these
+  constants if the web source reports different windows. The local file is read read-only and nothing leaves the
+  machine.
 - OpenCode Go unscoped Auto mode tries daily cost history derived from local `opencode-go` assistant costs first,
   overlays authoritative API windows when an API key is configured, then falls back through the API and legacy web
   sources when local history is unavailable. Auto stays web-first when a Cookie token account, manual cookie, or workspace

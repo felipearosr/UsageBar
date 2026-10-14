@@ -70,10 +70,43 @@ public enum OpenCodeProviderDescriptor {
             }),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .web],
-                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [OpenCodeUsageFetchStrategy()] })),
+                pipeline: ProviderFetchPipeline(resolveStrategies: self.resolveStrategies)),
             cli: ProviderCLIConfig(
                 name: "opencode",
-                versionDetector: nil))
+                versionDetector: nil,
+                browserSupportExemption: { sourceMode, _, settings in
+                    sourceMode == .auto || settings?.opencode?.cookieSource == .manual
+                }))
+    }
+
+    private static func resolveStrategies(context: ProviderFetchContext) async -> [any ProviderFetchStrategy] {
+        if context.sourceMode == .web {
+            return [OpenCodeUsageFetchStrategy()]
+        }
+        return [
+            OpenCodeUsageFetchStrategy(),
+            OpenCodeLocalUsageFetchStrategy(),
+        ]
+    }
+}
+
+struct OpenCodeLocalUsageFetchStrategy: ProviderFetchStrategy {
+    let id: String = "opencode.local"
+    let kind: ProviderFetchKind = .localProbe
+
+    func isAvailable(_: ProviderFetchContext) async -> Bool {
+        true
+    }
+
+    func fetch(_: ProviderFetchContext) async throws -> ProviderFetchResult {
+        let snapshot = try OpenCodeLocalUsageReader().fetch()
+        return self.makeResult(
+            usage: snapshot.toUsageSnapshot(),
+            sourceLabel: "local")
+    }
+
+    func shouldFallback(on error: Error, context _: ProviderFetchContext) -> Bool {
+        error is OpenCodeLocalUsageError
     }
 }
 
@@ -116,8 +149,28 @@ struct OpenCodeUsageFetchStrategy: ProviderFetchStrategy {
         }
     }
 
-    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        false
+    func shouldFallback(on error: Error, context: ProviderFetchContext) -> Bool {
+        guard context.sourceMode == .auto else { return false }
+        // A manual cookie names a specific account. Its authentication failures must be surfaced
+        // instead of silently falling through to an account-agnostic local estimate.
+        guard context.settings?.opencode?.cookieSource != .manual,
+              context.selectedTokenAccountID == nil
+        else {
+            return false
+        }
+        #if os(macOS)
+        if case OpenCodeCookieImportError.noCookies = error {
+            return true
+        }
+        #endif
+        return switch error {
+        case OpenCodeSettingsError.missingCookie,
+             OpenCodeSettingsError.invalidCookie,
+             OpenCodeUsageError.invalidCredentials:
+            true
+        default:
+            false
+        }
     }
 
     private static func resolveCookieHeader(context: ProviderFetchContext, allowCached: Bool) throws -> String {

@@ -2,6 +2,10 @@
 
 ## 0.75.1 — Unreleased
 
+### Fixed
+
+- OpenCode: in Auto mode, fall back to rolling and weekly windows estimated from local OpenCode history when no browser cookies are available, so the Linux CLI shows OpenCode usage instead of the macOS-only web error.
+
 ## 0.75.0 — 2026-10-13
 
 ### Highlights
