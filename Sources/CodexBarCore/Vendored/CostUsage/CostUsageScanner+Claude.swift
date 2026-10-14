@@ -897,20 +897,23 @@ extension CostUsageScanner {
         cache: CostUsageCache,
         range: CostUsageDayRange,
         now: Date = Date(),
-        modelsDevCacheRoot: URL? = nil) -> CostUsageDailyReport
+        modelsDevCacheRoot: URL? = nil,
+        rowObserver: CostUsageRowObserver? = nil) -> CostUsageDailyReport
     {
         self.buildClaudeReportFromCache(
             cache: cache,
             rows: self.reconciledClaudeRows(cache: cache),
             range: range,
-            pricingResolver: CostUsagePricing.ClaudeResolver(now: now, cacheRoot: modelsDevCacheRoot))
+            pricingResolver: CostUsagePricing.ClaudeResolver(now: now, cacheRoot: modelsDevCacheRoot),
+            rowObserver: rowObserver)
     }
 
     private static func buildClaudeReportFromCache(
         cache: CostUsageCache,
         rows: [ClaudeUsageRow],
         range: CostUsageDayRange,
-        pricingResolver: CostUsagePricing.ClaudeResolver) -> CostUsageDailyReport
+        pricingResolver: CostUsagePricing.ClaudeResolver,
+        rowObserver: CostUsageRowObserver? = nil) -> CostUsageDailyReport
     {
         var entries: [CostUsageDailyReport.Entry] = []
         var temporalBuckets = TemporalBuckets()
@@ -926,7 +929,8 @@ extension CostUsageScanner {
             rows: rows,
             range: range,
             pricingResolver: pricingResolver,
-            temporalBuckets: &temporalBuckets)
+            temporalBuckets: &temporalBuckets,
+            rowObserver: rowObserver)
 
         let hasCompleteRows = !cache.files.isEmpty && cache.files.values.allSatisfy { $0.claudeRows != nil }
         let modelsByDay = hasCompleteRows
@@ -1051,7 +1055,8 @@ extension CostUsageScanner {
         rows: [ClaudeUsageRow],
         range: CostUsageDayRange,
         pricingResolver: CostUsagePricing.ClaudeResolver,
-        temporalBuckets: inout TemporalBuckets) -> [ClaudeDayModelKey: ClaudeReportAggregate]
+        temporalBuckets: inout TemporalBuckets,
+        rowObserver: CostUsageRowObserver? = nil) -> [ClaudeDayModelKey: ClaudeReportAggregate]
     {
         let costScale = 1_000_000_000.0
         var repricedCosts: [ClaudeDayModelKey: ClaudeReportAggregate] = [:]
@@ -1068,6 +1073,7 @@ extension CostUsageScanner {
             if row.isIncomplete == true {
                 aggregate.incompleteRequestCount += 1
                 repricedCosts[key] = aggregate
+                rowObserver?.observeClaude(row, costUSD: nil)
                 continue
             }
             aggregate.sampleCount += 1
@@ -1101,6 +1107,7 @@ extension CostUsageScanner {
                 aggregate.unresolved = true
             }
             repricedCosts[key] = aggregate
+            rowObserver?.observeClaude(row, costUSD: cost)
 
             self.addClaudeTemporal(row: row, costUSD: cost, range: range, into: &temporalBuckets)
         }

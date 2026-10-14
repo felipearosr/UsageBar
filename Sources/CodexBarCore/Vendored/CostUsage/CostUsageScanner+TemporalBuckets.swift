@@ -55,7 +55,8 @@ extension CostUsageScanner {
         pricing: CodexReportDayPricingContext,
         allowIncluded: Bool,
         calendar: Calendar,
-        into buckets: inout TemporalBuckets)
+        into buckets: inout TemporalBuckets,
+        rowObserver: CostUsageRowObserver? = nil)
     {
         for row in rows {
             guard let timestamp = self.date(fromUnixMs: row.timestampUnixMs) else { continue }
@@ -76,6 +77,7 @@ extension CostUsageScanner {
                     customPricing: pricing.customPricing,
                     pricingResolver: pricing.pricingResolver)
                 : nil
+            rowObserver?.observeCodex(row, timestamp: timestamp, costUSD: hasUnpricedTokens ? nil : cost)
             let hour = self.hourStart(for: timestamp, calendar: calendar)
             var hourly = buckets.hourly[hour] ?? HourlyBucket()
             var timed = buckets.quotaSlices[timestamp] ?? HourlyBucket()

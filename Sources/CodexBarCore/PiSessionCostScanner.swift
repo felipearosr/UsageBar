@@ -57,7 +57,7 @@ enum PiSessionCostScanner {
         }
     }
 
-    private struct ParseResult {
+    struct ParseResult {
         let contributions: [String: [String: [String: PiPackedUsage]]]
         let unkeyedContributions: [String: [String: [String: PiPackedUsage]]]
         let entryUsages: [String: PiSessionEntryUsage]
@@ -87,7 +87,7 @@ enum PiSessionCostScanner {
         let modelName: String
     }
 
-    private struct ModelsDevPricingContext {
+    struct ModelsDevPricingContext {
         let catalog: ModelsDevCatalog?
         let cacheRoot: URL?
         let pricingKey: String
@@ -403,7 +403,7 @@ enum PiSessionCostScanner {
         }
     }
 
-    private static func pricingContext(now: Date, cacheRoot: URL?) -> ModelsDevPricingContext {
+    static func pricingContext(now: Date, cacheRoot: URL?) -> ModelsDevPricingContext {
         let modelsDevArtifact = ModelsDevCache.load(now: now, cacheRoot: cacheRoot).artifact
         let customPricingFingerprint = CostUsageCustomPricing.load().fingerprint
         return ModelsDevPricingContext(
@@ -826,14 +826,16 @@ enum PiSessionCostScanner {
         return true
     }
 
-    private static func parsePiSessionFile(
+    // swiftlint:disable:next function_body_length
+    static func parsePiSessionFile(
         fileURL: URL,
         range: CostUsageScanner.CostUsageDayRange,
         startOffset: Int64 = 0,
         initialSessionID: String? = nil,
         initialModelContext: PiModelContext? = nil,
         pricingContext: ModelsDevPricingContext? = nil,
-        checkCancellation: CostUsageScanner.CancellationCheck? = nil) throws -> ParseResult
+        checkCancellation: CostUsageScanner.CancellationCheck? = nil,
+        rowObserver: CostUsageRowObserver? = nil) throws -> ParseResult
     {
         self.sessionParseObserverForTesting?()
         var sessionID = initialSessionID
@@ -969,6 +971,12 @@ enum PiSessionCostScanner {
                             isComplete = false
                             return
                         }
+                        rowObserver?.observePi(
+                            provider: identity.provider,
+                            model: identity.modelName,
+                            timestamp: date,
+                            usage: usage,
+                            entryID: self.entryIdentifier(from: object))
                         add(
                             provider: identity.provider,
                             dayKey: dayKey,

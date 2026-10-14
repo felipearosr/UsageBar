@@ -146,8 +146,16 @@ struct CostUsageStoreReadView: Sendable {
         return path.hasPrefix("/private/var/") ? String(path.dropFirst("/private".count)) : path
     }
 
-    func dailyReport(range: CostUsageScanner.CostUsageDayRange, cacheRoot: URL?) -> CostUsageDailyReport {
-        CostUsageScanner.buildCodexReportFromCache(cache: self.cache, range: range, modelsDevCacheRoot: cacheRoot)
+    func dailyReport(
+        range: CostUsageScanner.CostUsageDayRange,
+        cacheRoot: URL?,
+        rowObserver: CostUsageRowObserver? = nil) -> CostUsageDailyReport
+    {
+        CostUsageScanner.buildCodexReportFromCache(
+            cache: self.cache,
+            range: range,
+            modelsDevCacheRoot: cacheRoot,
+            rowObserver: rowObserver)
     }
 
     func reports(
