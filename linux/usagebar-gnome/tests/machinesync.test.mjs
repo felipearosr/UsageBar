@@ -5,6 +5,8 @@ import {
     costScopeLabel,
     costScopeOptions,
     countText,
+    costSyncNotice,
+    coverageShortfall,
     coverageText,
     MACHINE_PALETTE,
     machineDetailView,
@@ -15,6 +17,7 @@ import {
     scopedProviderKpis,
     scopeControlMode,
     scopedSpend,
+    shortCoverageText,
     spendScopeOptions,
     spendText,
     SYNC_PUSH_SECS,
@@ -469,6 +472,103 @@ test('a Machine that left the Sync Group falls back to All Machines', () => {
     const result = scopedCostReports(laptopReports(), dailyPayload(), 'goneAAAAAAAAAAAAAAAAAA');
     assert.equal(result.scope, 'all');
     assert.equal(totalCost(result.reports), 3.5);
+});
+
+// ---------- short Coverage and stale sync data on the dashboard ----------
+
+// desk's Coverage starts 20 days before the status's Reporting Day.
+function shortPayload() {
+    const p = dailyPayload();
+    p.status.machines[1].coverage = {from: '2026-09-04', to: '2026-09-24'};
+    return p;
+}
+
+test('the scoped reports name Machines whose Coverage starts inside the range', () => {
+    const p = shortPayload();
+    const ninety = scopedCostReports(laptopReports(), p, 'all', {rangeDays: 90, today: '2026-09-24'});
+    assert.deepEqual(ninety.coverage, [{id: 'deskAAAAAAAAAAAAAAAAAA', name: 'desk', from: '2026-09-04'}]);
+    assert.deepEqual(ninety.shortCoverage.map(entry => entry.name), ['desk']);
+    for (const rangeDays of [1, 7]) {
+        const result = scopedCostReports(laptopReports(), p, 'all', {rangeDays, today: '2026-09-24'});
+        assert.deepEqual(result.shortCoverage, [], `${rangeDays} days`);
+    }
+    // The range's first day is the Coverage's first day: nothing is missing.
+    assert.deepEqual(coverageShortfall(ninety.coverage, 21, '2026-09-24'), []);
+    assert.equal(coverageShortfall(ninety.coverage, 22, '2026-09-24').length, 1);
+    // Without a range there is no shortfall to report.
+    assert.equal(scopedCostReports(laptopReports(), p, 'all').shortCoverage, undefined);
+});
+
+test('this Machine is never short: its local reports have no synced Coverage', () => {
+    const p = shortPayload();
+    p.status.machines[0].coverage = {from: '2026-09-20', to: '2026-09-24'};
+    for (const scope of ['this', 'laptopAAAAAAAAAAAAAAAA']) {
+        const result = scopedCostReports(laptopReports(), p, scope, {rangeDays: 90, today: '2026-09-24'});
+        assert.deepEqual(result.coverage, []);
+        assert.deepEqual(result.shortCoverage, []);
+    }
+    const all = scopedCostReports(laptopReports(), p, 'all', {rangeDays: 90, today: '2026-09-24'});
+    assert.deepEqual(all.shortCoverage.map(entry => entry.name), ['desk']);
+});
+
+test('one Machine scope reports only that Machine\'s Coverage', () => {
+    const p = shortPayload();
+    const desk = scopedCostReports(laptopReports(), p, 'deskAAAAAAAAAAAAAAAAAA', {rangeDays: 30, today: '2026-09-24'});
+    assert.deepEqual(desk.shortCoverage.map(entry => entry.id), ['deskAAAAAAAAAAAAAAAAAA']);
+    delete p.status.machines[1].coverage;
+    const none = scopedCostReports(laptopReports(), p, 'deskAAAAAAAAAAAAAAAAAA', {rangeDays: 1, today: '2026-09-24'});
+    assert.deepEqual(none.shortCoverage, [{id: 'deskAAAAAAAAAAAAAAAAAA', name: 'desk', from: null}]);
+});
+
+test('the short Coverage note names the Machines and when their history starts', () => {
+    assert.equal(shortCoverageText([]), null);
+    assert.equal(shortCoverageText([{name: 'desk', from: '2026-09-04'}]),
+        "desk's synced history starts Sep 4; its earlier days are missing, not $0.");
+    assert.equal(shortCoverageText([{name: 'desk', from: null}]),
+        'desk has no synced history yet; its days are missing, not $0.');
+    assert.equal(shortCoverageText([
+        {name: 'desk', from: '2026-09-04'}, {name: 'tower', from: '2026-09-10'}, {name: 'pi', from: null},
+    ]), 'Synced history is shorter on desk (from Sep 4), tower (from Sep 10) and pi (none yet); ' +
+        'their earlier days are missing, not $0.');
+});
+
+test('the dashboard notice: a note for short Coverage, the Machines-tab banner when stale', () => {
+    const p = shortPayload();
+    const at = (range, payloadValue = p, options = {}) => costSyncNotice(payloadValue,
+        scopedCostReports(laptopReports(), payloadValue, options.scope ?? 'all'),
+        {now: NOW, rangeDays: range, today: '2026-09-24', ...options});
+    const ninety = at(90);
+    assert.match(ninety.note, /^desk's synced history starts Sep 4/);
+    assert.equal(ninety.banner, null);
+    assert.equal(ninety.stale, false);
+    assert.equal(at(7).note, null);
+
+    // A failed Sync Server read, a stale payload, serve down: the same
+    // banner text as the Machines tab, and the synced part is greyed.
+    const failed = at(30, {...p, error: 'timeout'});
+    assert.equal(failed.banner, machinesView({...p, error: 'timeout'}, {now: NOW}).banner);
+    assert.equal(failed.stale, true);
+    const old = {...p, refreshedAt: new Date(NOW - secs(SYNC_STALE_SECS + 60)).toISOString()};
+    assert.equal(at(30, old).banner, 'Machine data is out of date. Showing data from 6 min ago.');
+    const down = at(30, p, {fetchError: {status: 0}});
+    assert.match(down.banner, /^codexbar serve isn't answering\./);
+    assert.equal(down.stale, true);
+    // One other Machine's scope is all synced data: it is flagged too.
+    assert.equal(at(30, {...p, error: 'timeout'}, {scope: 'deskAAAAAAAAAAAAAAAAAA'}).stale, true);
+});
+
+test('fresh data with full Coverage, this Machine\'s scope, or unpaired: no notice', () => {
+    const none = {short: [], note: null, banner: null, stale: false};
+    const p = dailyPayload();
+    p.status.machines[1].coverage = {from: '2026-06-01', to: '2026-09-24'};
+    const notice = (payloadValue, scope = 'all', options = {}) => costSyncNotice(payloadValue,
+        scopedCostReports(laptopReports(), payloadValue, scope),
+        {now: NOW, rangeDays: 90, today: '2026-09-24', ...options});
+    assert.deepEqual(notice(p), none);
+    // This Machine's own reports show no synced data, stale or not.
+    assert.deepEqual(notice({...shortPayload(), error: 'timeout'}, 'this'), none);
+    for (const unpaired of [null, {paired: false}, {paired: true, status: null, error: 'timeout'}])
+        assert.deepEqual(notice(unpaired, 'all', {fetchError: {status: 0}}), none);
 });
 
 // ---------- the dashboard's Machine scope switch ----------

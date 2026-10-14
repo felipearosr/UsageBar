@@ -668,6 +668,22 @@
   font-size: 8pt;
 }
 
+/* Synced data the dashboard lacks or holds stale (paired only): the
+   Machines tab's banner, a note on short Coverage, and the This Machine /
+   other Machines split of the total. Greying itself is actor opacity. */
+.usagebar-ov-panel .usagebar-ov-sync-banner {
+  margin: 0 0 6px 0;
+}
+
+.usagebar-ov-coverage-note {
+  margin: 0 0 10px 0;
+}
+
+.usagebar-ov-sync-split {
+  spacing: 4px;
+  padding: 2px 0 0 0;
+}
+
 /* The Machine (or All Machines) the Providers tab follows. */
 .usagebar-machine-row-scoped {
   background-color: rgba(88, 104, 122, 0.22);
