@@ -3,11 +3,10 @@
 # Columns are TAB-separated: <upstream path> <TAB> <fork feature> <TAB> <note: what the edit is, which ticket shrinks it>
 # Adding a line grows the fork delta: do it on purpose and say so in the PR. Remove lines as isolation tickets land.
 
-# Machine Sync: `codexbar sync` registration and help (isolation: #57)
-Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	sync dispatch via the default case (runForkCommand) and command descriptor; #57
-Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	syncHelp text; also the /cost?days help example (#54); #57
-Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	`help sync` case; #57
-Tests/CodexBarTests/CLIEntryTests.swift	Machine Sync: sync command	sync descriptor tests; also the OpenCode Auto-mode web-support exemption (#53); #57
+# Machine Sync: `codexbar sync` registration and help via the CLI extension hook in CLIForkCommands.swift (#57)
+Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	CLI extension hook: forkCommandDescriptors() append and runForkCommand in the dispatch default case (CLIForkCommands.swift); #57
+Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	CLI extension hook: forkRootHelpUsage() in rootHelp's usage list; also the /cost?days help example (#54); #57
+Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	CLI extension hook: forkHelp(for:) in printHelp's default case; #57
 docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54); #56
 
 # Machine Sync: serve /sync/status and /sync/push (isolation: #58)
@@ -43,6 +42,7 @@ Tests/CodexBarTests/PiSessionCostV8UpgradeTests.swift	Spend Buckets	Pi cache art
 
 # OpenCode on Linux: local-history fallback in Auto mode (upstream candidate: #53)
 Sources/CodexBarCore/Providers/OpenCode/OpenCodeProviderDescriptor.swift	OpenCode on Linux	Auto-mode local-history fallback and web-support exemption; #53
+Tests/CodexBarTests/CLIEntryTests.swift	OpenCode on Linux	Auto-mode web-support exemption assertions; #53
 docs/opencode.md	OpenCode on Linux	local-history source and Auto-mode order; #53
 
 # Codex app-server exit diagnostics (upstream candidate, no ticket yet)

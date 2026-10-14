@@ -389,72 +389,6 @@ extension CodexBarCLI {
         """
     }
 
-    static func syncHelp(version: String) -> String {
-        """
-        CodexBar \(version)
-
-        Usage:
-          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>] [--yes]
-                               [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync pair <pairing-link> [--name <display-name>] [--yes]
-                             [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync push [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync status [--timezone <iana-id>] [--day-start <hour>]
-                               [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync install-timer [--uninstall] [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync link [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync rename <display-name> [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync retire <machine-id-or-name> [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync forget <machine-id-or-name> [--yes] [--format text|json] [--json] [--json-only] [--pretty]
-          codexbar sync leave [--yes] [--format text|json] [--json] [--json-only] [--pretty]
-
-        Description:
-          Machine Sync shares each Machine's Spend (local-log cost, tokens, and requests) with your other
-          Machines through a Sync Server, end-to-end encrypted. It stays off until you create a Sync Group.
-
-          create  Generates the Sync Group key on this Machine, registers the group on the server (with an
-                  Enrollment Token if the server requires one), backfills this Machine's Spend, and prints the
-                  Pairing Link. Store the link somewhere safe: it is the recovery key for the group.
-                  A plain http:// server that isn't loopback asks first; --yes skips the question.
-          pair    Joins the Sync Group in a Pairing Link and backfills this Machine's Spend for every day the
-                  server keeps. A codexbar-sync+http:// link to a host that isn't loopback asks first; --yes
-                  skips the question.
-          push    Uploads today's and yesterday's UTC Spend plus this Machine's profile, skipping anything
-                  unchanged since the last push. Only one push runs at a time per Machine.
-          status  Shows every Machine: display name, active (Last Seen under 5 minutes), today's and 30-day
-                  Spend, the split by provider and model, and Coverage. Days follow the Reporting Day: the
-                  system timezone and midnight unless sync.json sets "reportingDay" or the flags override it.
-          install-timer
-                  For Machines without a desktop surface (VPS, SSH devbox): installs a systemd user timer
-                  (Linux) or launchd agent (macOS) that runs `codexbar sync push` about every 150 s, with
-                  +/-20 s of jitter. It needs no graphical session. On Linux the timer stops at logout unless
-                  lingering is on: `loginctl enable-linger $USER`. Pushes take the push lock, so the timer can
-                  run next to the desktop app or GNOME extension. --uninstall stops the job and removes only
-                  its unit or agent files.
-          link    Prints the Pairing Link (the warning goes to stderr). Anyone who has it can read and change
-                  the group's Spend.
-          rename  Changes this Machine's display name and pushes it so the other Machines see it.
-          retire  Marks another Machine as gone, for example after a reinstall. Its Spend stays in totals but
-                  it no longer shows as active. If it pushes again, it shows as active again.
-          forget  Deletes another Machine and all its Spend from the Sync Server. Asks first; --yes skips the
-                  question (needed without a terminal or with JSON output).
-          leave   Unpairs this Machine and forgets the Pairing Link. Its Spend stays on the server, and pairing
-                  again restores the same Machine. Asks first; --yes skips the question.
-
-        Examples:
-          codexbar sync create --server https://sync.example.com --token tok_123 --name laptop
-          codexbar sync pair 'codexbar-sync://sync.example.com#<key>' --name desk
-          codexbar sync push
-          codexbar sync status --timezone America/Los_Angeles --day-start 4
-          codexbar sync status --json --pretty
-          codexbar sync install-timer
-          codexbar sync install-timer --uninstall
-          codexbar sync rename "work laptop"
-          codexbar sync retire old-desktop
-          codexbar sync forget old-desktop --yes
-        """
-    }
-
     static func diagnoseHelp(version: String) -> String {
         """
         CodexBar \(version)
@@ -589,12 +523,7 @@ extension CodexBarCLI {
           codexbar cache clear <--cookies|--cost|--all> [--provider <name>]
           codexbar cookie refresh <--provider <name>|--all> [--allow-keychain-prompt]
           codexbar diagnose --provider <name|all> --format json [--redact] [--output <path>] [--pretty]
-          codexbar sync create --server <url> [--token <enrollment-token>] [--name <display-name>]
-          codexbar sync pair <pairing-link> [--name <display-name>] [--yes]
-          codexbar sync push
-          codexbar sync status [--timezone <iana-id>] [--day-start <hour>] [--json]
-          codexbar sync install-timer [--uninstall]
-          codexbar sync link | rename <display-name> | retire <machine> | forget <machine> [--yes] | leave [--yes]
+          \(self.forkRootHelpUsage())
           codexbar guard --provider <name> [--min-remaining <percent>] [--window session|weekly] [--json]
 
         Global flags:

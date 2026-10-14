@@ -49,14 +49,12 @@ extension CodexBarCLI {
             print(Self.cookieHelp(version: version))
         case "diagnose":
             print(Self.diagnoseHelp(version: version))
-        case "sync":
-            print(Self.syncHelp(version: version))
         case "guard":
             print(Self.guardHelp(version: version))
         case "plugins":
             print(Self.pluginsHelp(version: version))
         default:
-            print(Self.rootHelp(version: version))
+            print(Self.forkHelp(for: command, version: version) ?? Self.rootHelp(version: version))
         }
         Self.platformExit(0)
     }
