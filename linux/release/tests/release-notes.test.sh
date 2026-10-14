@@ -49,7 +49,7 @@ assets() {
     for arch in x86_64 aarch64; do
         touch "$d/usagebar-cli-$v-linux-$arch.tar.gz" "$d/UsageBarTray-$v-linux-$arch.tar.gz"
     done
-    touch "$d/usagebar@felipearosr.github.io-$v.shell-extension.zip"
+    touch "$d/usagebar@felipearosr.github.io-$v.shell-extension.zip" "$d/usagebar-provider-icons-$v.json"
     if [[ $2 == distro ]]; then
         touch "$d/usagebar_${v}_amd64.deb" "$d/usagebar_${v}_arm64.deb" \
             "$d/usagebar-$v-1.x86_64.rpm" "$d/usagebar-$v-1.aarch64.rpm" \

@@ -95,6 +95,8 @@ describe_asset() {
     case "$name" in
         "${resolved[extension_asset]}")
             echo "GNOME Shell extension (the extensions.gnome.org build)|the-extension-from-extensionsgnomeorg" ;;
+        "${resolved[logos_asset]}")
+            echo "Provider logos, downloaded on request by the extension's Provider logos setting|the-extension-from-extensionsgnomeorg" ;;
         usagebar_"$version"_*.deb | usagebar-"$version"-1.*.rpm)
             echo "UsageBar package: the extension and the CLI|the-usagebar-package" ;;
         usagebar-cli_"$version"_*.deb)
