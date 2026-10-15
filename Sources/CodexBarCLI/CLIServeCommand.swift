@@ -945,7 +945,7 @@ extension CodexBarCLI {
             let operationKey: String
             do {
                 snapshot = try Self.loadServeConfigSnapshot(configStore: runtime.configStore)
-                operationKey = try Self.serveOperationKey(kind: "cost-\(period.rawValue)", provider: provider)
+                operationKey = try Self.serveCostOperationKey(period: period, provider: provider)
             } catch {
                 let status: CLIHTTPStatus = error is CLIServeArgumentError ? .badRequest : .internalServerError
                 return Self.addingNoStore(Self.serveError(status: status, message: error.localizedDescription))
@@ -1125,6 +1125,13 @@ extension CodexBarCLI {
             throw CLIServeArgumentError.invalidProvider(provider)
         }
         return "\(kind):\(selection.asList.map(\.rawValue).joined(separator: ","))"
+    }
+
+    /// Keeps each reporting period in its own in-flight slot, so concurrent `/cost` requests for
+    /// different windows neither share a result nor evict each other's pending refresh. The `cost:`
+    /// prefix is preserved for the per-provider last-good merge in ``CLIServeResponseCache``.
+    static func serveCostOperationKey(period: CostReportingPeriod, provider: String?) throws -> String {
+        try "\(self.serveOperationKey(kind: "cost", provider: provider)):\(period.rawValue)"
     }
 
     static func serveCacheKey(operationKey: String, configToken: String) -> String {
