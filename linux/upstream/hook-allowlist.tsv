@@ -48,12 +48,9 @@ docs/opencode.md	OpenCode on Linux	local-history source and Auto-mode order; #53
 Sources/CodexBarCore/UsageFetcher.swift	Codex app-server exit diagnostics	RPCWireError.processExited with exit status and stderr tail
 Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift	Codex app-server exit diagnostics	CodexUIErrorMapper treats app-server exits as connection errors
 
-# Repo plumbing (isolation: #56)
-CHANGELOG.md	Repo plumbing	fork changelog entries; #56
-AGENTS.md	Repo plumbing	GNOME dev-kit agent note; #56
-Makefile	Repo plumbing	test-linux-ui target; #56
-Scripts/lint.sh	Repo plumbing	Machine Sync protocol vector check; #56
-.gitignore	Repo plumbing	linux/ build outputs and .scratch/; #56
+# Repo plumbing: one hook line each into fork-owned files under linux/ (stays; #56 moved the rest out)
+Makefile	Repo plumbing	`-include linux/fork.mk` (test-linux-ui); one hook line
+Scripts/lint.sh	Repo plumbing	calls linux/lint-fork.sh (Machine Sync protocol vector checks); one hook line
 
 # Launch housekeeping (stays)
 LICENSE	Launch: license attribution	UsageBar copyright line next to upstream's; required attribution, not shrinkable

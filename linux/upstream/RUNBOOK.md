@@ -80,7 +80,7 @@ From #26 (23 conflicted files) and the rehearsal on 2026-10-06 (`upstream/main` 
 | `serve` | `Sources/CodexBarCLI/CLIServeCommand.swift`, `CLILocalHTTPServer.swift` (409, 502 status cases), `Tests/CodexBarTests/CLIServeRouterTests.swift` | Machine Sync: `/sync/status`, `/sync/push`; `/cost?days=N` | `/sync/*` through upstream's data-route auth, `Cache-Control: no-store`; `ServeRuntime` takes `sync` with a default; `/cost?days=N` maps to `CostReportingPeriod.rolling(days:)`. |
 | OpenCode | `Sources/CodexBarCore/Providers/OpenCode/OpenCodeProviderDescriptor.swift` | OpenCode on Linux | Browser-support exemption lives in the descriptor, like OpenCode Go. |
 | macOS menu | `StatusItemController+MenuCardItems.swift`, `+MenuTypes.swift`, `+Menu.swift` | none (macOS UI) | Upstream's side taken, fork change dropped. |
-| Plumbing | `CHANGELOG.md`, `AGENTS.md`, `Makefile`, `Scripts/lint.sh`, `.gitignore`, `docs/cli.md`, `docs/opencode.md` | repo plumbing | Insert the fork's lines into upstream's text; never reorder upstream's. |
+| Plumbing | `Makefile` (`-include linux/fork.mk`), `Scripts/lint.sh` (calls `linux/lint-fork.sh`), `docs/cli.md`, `docs/opencode.md` | repo plumbing | Insert the fork's lines into upstream's text; never reorder upstream's. Since #56 `CHANGELOG.md`, `AGENTS.md` and `.gitignore` match upstream: take upstream's side; fork entries live in `linux/CHANGELOG.md`, `linux/AGENTS.md`, `linux/.gitignore` and `.scratch/.gitignore`. `Makefile` and `Scripts/lint.sh` keep one hook line each; fork targets and checks go in `linux/fork.mk` and `linux/lint-fork.sh`. |
 
 ### Cache schema versions
 

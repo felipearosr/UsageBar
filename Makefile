@@ -4,7 +4,7 @@ SHELL := /bin/bash
 unexport FILTER
 test_filter_arg = $(if $(value FILTER),--filter '$(subst ','"'"',$(value FILTER))')
 
-.PHONY: build check docs-list format lint release restart start start-debug start-release stop test test-fast test-linux-ui test-skip-build test-live test-tty
+.PHONY: build check docs-list format lint release restart start start-debug start-release stop test test-fast test-skip-build test-live test-tty
 
 start:
 	./Scripts/compile_and_run.sh
@@ -49,8 +49,6 @@ test-tty:
 test-live:
 	export CODEXBAR_ALLOW_TEST_KEYCHAIN_ACCESS=1 && source ./Scripts/test_environment.sh && LIVE_TEST=1 swift test --filter LiveAccountTests
 
-test-linux-ui:
-	./linux/test-devkit-ui.sh
-
 release:
 	./Scripts/package_app.sh release
+-include linux/fork.mk
