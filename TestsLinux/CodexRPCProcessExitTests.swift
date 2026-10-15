@@ -113,7 +113,21 @@ struct CodexRPCProcessExitTests {
         #expect(error.localizedDescription == "codex app-server exited (signal 9)")
     }
 
+    /// Retries when exec fails with ETXTBSY: a process forked concurrently by another test can briefly hold
+    /// the script's write descriptor, so `/usr/bin/env` exits 126 with "Text file busy" before the script runs.
     private func fetchError(script: String) async throws -> RPCWireError? {
+        var error = try await self.fetchErrorOnce(script: script)
+        for _ in 0..<5 {
+            guard case let .processExited(.exited(126), stderr)? = error,
+                  stderr?.contains("Text file busy") == true
+            else { break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            error = try await self.fetchErrorOnce(script: script)
+        }
+        return error
+    }
+
+    private func fetchErrorOnce(script: String) async throws -> RPCWireError? {
         let scriptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-rpc-exit-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: scriptURL) }
