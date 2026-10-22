@@ -59,8 +59,13 @@ public enum ClaudeOAuthFetchError: LocalizedError, Sendable {
 
 enum ClaudeOAuthUsageFetcher {
     private static let baseURL = "https://api.anthropic.com"
+    #if os(Linux)
+    private static let usageTransport = ClaudeOAuthSharedUsageTransport(upstream: ProviderHTTPClient(
+        session: ProviderHTTPClient.redirectGuardedSession(configuration: Self.usageSessionConfiguration())))
+    #else
     private static let usageTransport = ProviderHTTPClient(
         session: ProviderHTTPClient.redirectGuardedSession(configuration: Self.usageSessionConfiguration()))
+    #endif
     private static let usagePath = "/api/oauth/usage"
     private static let profilePath = "/api/oauth/profile"
     private static let betaHeader = "oauth-2025-04-20"

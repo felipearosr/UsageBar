@@ -54,3 +54,5 @@ Scripts/lint.sh	Repo plumbing	calls linux/lint-fork.sh (Machine Sync protocol ve
 
 # Launch housekeeping (stays)
 LICENSE	Launch: license attribution	UsageBar copyright line next to upstream's; required attribution, not shrinkable
+
+Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift	Claude shared usage cache	Wrap default Linux usage transport with cross-process cache and rate-limit backoff
