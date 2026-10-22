@@ -5,7 +5,7 @@ set -euo pipefail
 glib-compile-schemas "$(pwd)/linux/usagebar-gnome/usagebar@felipearosr.github.io/schemas/"
 
 # Ensure extension symlink is active
-extensions_dir=~/.local/share/gnome-shell/extensions
+extensions_dir="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions"
 installed=$extensions_dir/usagebar@felipearosr.github.io
 if [[ -e $installed && ! -L $installed ]]; then
   echo "A UsageBar release is installed at $installed, so the dev kit can't link this checkout there." >&2

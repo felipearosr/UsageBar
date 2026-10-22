@@ -11,6 +11,7 @@ import {
     MACHINE_PALETTE,
     machineDetailView,
     machinesView,
+    shareText,
     nextPushDelaySecs,
     planSyncTick,
     scopedCostReports,
@@ -139,6 +140,8 @@ test('two Machines used at once both show as active with their share', () => {
         [['claude', 'claude-sonnet-4-5', '$2.00'], ['codex', 'gpt-5', '$1.00']]);
     assert.equal(laptop.coverage, 'Coverage Jun 25 – Sep 24');
     assert.equal(laptop.lastSeen, 'Last seen 2 min ago');
+    assert.equal(laptop.status, 'Active · 2 min ago');
+    assert.equal(laptop.shareText, '75%');
     assert.equal(desk.today, '$0.50+');
     assert.equal(desk.share, 0.25);
     assert.equal(desk.coverage, 'Coverage Sep 24');
@@ -619,4 +622,40 @@ test('the scope switch is segmented while it fits and a dropdown once it does no
         'segmented');
     assert.equal(scopeControlMode({segmentedWidth: 471, rangeWidth: 250, spacing: 12, available: 732}),
         'dropdown');
+});
+
+test('a Machine daily chart splits spend by provider and model', () => {
+    const p = detailPayload();
+    p.status.machines[1].daily = [{date: '2026-09-24', providers: [{
+        provider: 'claude', modelBreakdowns: [
+            {modelName: 'claude-sonnet-4-5', cost: 0.4, totalTokens: 80000},
+            {modelName: 'example-model', cost: 0.6, totalTokens: 120000},
+        ],
+    }]}];
+    const view = machineDetailView(p, 'deskAAAAAAAAAAAAAAAAAA', {now: NOW});
+    assert.deepEqual(view.chart.points.at(-1).models,
+        [['claude/example-model', 0.6], ['claude/claude-sonnet-4-5', 0.4]]);
+});
+
+test('a failed local scan falls back to this Machine\'s synced copy', () => {
+    const failed = [{provider: 'claude', daily: [], error: {code: 1, message: 'claude cost refresh timed out'}}];
+    const all = scopedCostReports(failed, dailyPayload(), 'all');
+    // laptop's synced claude $2 + desk claude $0.50 + desk codex $1.
+    assert.equal(totalCost(all.reports), 3.5);
+    const mine = scopedCostReports(failed, dailyPayload(), 'this');
+    assert.deepEqual(mine.reports.map(r => [r.provider, r.totals.totalCost]), [['claude', 2]]);
+    // An empty but successful scan is real data and stays.
+    const empty = [{provider: 'claude', daily: []}];
+    assert.equal(scopedCostReports(empty, dailyPayload(), 'this').reports, empty);
+});
+
+test('the Machines table status line and share', () => {
+    const p = payload();
+    Object.assign(p.status.machines[1], {active: false});
+    assert.equal(machinesView(p, {now: NOW}).machines[1].status, 'Seen 3 min ago');
+    Object.assign(p.status.machines[1], {retired: true});
+    assert.equal(machinesView(p, {now: NOW}).machines[1].status, 'Retired · seen 3 min ago');
+    delete p.status.machines[1].lastSeen;
+    assert.equal(machinesView(p, {now: NOW}).machines[1].status, 'Never seen');
+    assert.deepEqual([null, 0, 0.004, 0.005, 0.995, 1].map(shareText), ['', '0%', '<1%', '1%', '100%', '100%']);
 });

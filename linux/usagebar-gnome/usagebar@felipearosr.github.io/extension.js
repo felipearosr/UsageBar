@@ -83,6 +83,36 @@ import {
 import {findCodexbar, withClaudeOAuth} from './cli.js';
 import {featureState, readReport, syncProbeFromHttpStatus} from './clicompat.js';
 
+// Sizes a container from its first child only and floats the rest at
+// their preferred size in the top-right corner, so an open dropdown
+// overlaps what's below it instead of growing the container.
+const OverlayLayout = GObject.registerClass(
+class OverlayLayout extends Clutter.LayoutManager {
+    vfunc_get_preferred_width(container, forHeight) {
+        return container.get_first_child()?.get_preferred_width(forHeight) ?? [0, 0];
+    }
+
+    vfunc_get_preferred_height(container, forWidth) {
+        return container.get_first_child()?.get_preferred_height(forWidth) ?? [0, 0];
+    }
+
+    vfunc_allocate(container, box) {
+        const base = container.get_first_child();
+        for (const child of container.get_children()) {
+            if (child === base) {
+                child.allocate(box);
+                continue;
+            }
+            const [, w] = child.get_preferred_width(-1);
+            const [, h] = child.get_preferred_height(w);
+            const childBox = new Clutter.ActorBox();
+            childBox.set_origin(box.x2 - w, box.y1);
+            childBox.set_size(w, h);
+            child.allocate(childBox);
+        }
+    }
+});
+
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
@@ -1195,17 +1225,34 @@ class UsageBarIndicator extends PanelMenu.Button {
         this._setPanelText([]);
 
         this.menu.box.add_style_class_name('usagebar-menu');
-        // Header: title left, "updated Xs ago" then a refresh icon button right.
+        // Navigation is the header; the machine source belongs to Spend below.
         const header = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        header.add_child(new St.Label({
-            text: 'UsageBar',
-            style_class: 'usagebar-title',
+        header.add_style_class_name('usagebar-content-header');
+        const tabs = new St.BoxLayout({
+            style_class: 'usagebar-content-tabs',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
-        }));
+        });
+        this._tabButtons = new Map();
+        this._tabItem = new St.BoxLayout({visible: false});
+        for (const [name, label] of [['providers', 'Providers'], ['machines', 'Machines']]) {
+            const button = new St.Button({
+                label,
+                can_focus: true,
+                style_class: 'usagebar-content-tab',
+            });
+            this._tabButtons.set(name, button);
+            if (name === 'machines') {
+                this._tabItem.add_child(button);
+                tabs.add_child(this._tabItem);
+            } else {
+                tabs.add_child(button);
+            }
+        }
+        header.add_child(tabs);
         this._updatedLabel = new St.Label({
             text: '',
-            style_class: 'usagebar-dim',
+            style_class: 'usagebar-dim usagebar-header-updated',
             y_align: Clutter.ActorAlign.CENTER,
         });
         header.add_child(this._updatedLabel);
@@ -1232,29 +1279,6 @@ class UsageBarIndicator extends PanelMenu.Button {
         this._statusItem.add_child(this._statusLabel);
         this._statusItem.visible = false;
         this.menu.addMenuItem(this._statusItem);
-
-        // Providers | Machines. Shown only while this Machine is in a Sync
-        // Group; otherwise the popover looks exactly as before.
-        this._tabItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-        this._tabItem.add_style_class_name('usagebar-tab-item');
-        const tabs = new St.BoxLayout({
-            style_class: 'usagebar-ov-switch usagebar-tabs',
-            x_expand: true,
-            x_align: Clutter.ActorAlign.CENTER,
-        });
-        this._tabButtons = new Map();
-        for (const [name, label, edge] of [['providers', 'Providers', 'left'], ['machines', 'Machines', 'right']]) {
-            const button = new St.Button({
-                label,
-                can_focus: true,
-                style_class: `usagebar-ov-switch-button usagebar-tab-button usagebar-ov-switch-${edge}`,
-            });
-            this._tabButtons.set(name, button);
-            tabs.add_child(button);
-        }
-        this._tabItem.add_child(tabs);
-        this._tabItem.visible = false;
-        this.menu.addMenuItem(this._tabItem);
 
         const detailItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         detailItem.add_style_class_name('usagebar-detail-item');
@@ -1593,7 +1617,8 @@ class UsageBarIndicator extends PanelMenu.Button {
     }
 
     setUpdated(text) {
-        this._updatedLabel.text = text;
+        this._updatedLabel.text = text.replace(/^updated /i, '').replace(/^just now$/i, 'Just now');
+        this._refreshButton.accessible_name = `Refresh usage · ${text}`;
     }
 
     setTabs(visible, selected) {
@@ -2544,6 +2569,10 @@ export default class UsageBarExtension extends Extension {
         for (const report of reports) {
             const i = next.findIndex(c => c.provider === report.provider);
             const previous = i >= 0 ? next[i] : null;
+            // A refresh that failed (e.g. a scan timeout) keeps the last
+            // report that had days rather than dropping its spend to zero.
+            if (report?.error && !report.daily?.length && previous?.daily?.length)
+                continue;
             if (i >= 0)
                 next[i] = report;
             else
@@ -2827,8 +2856,7 @@ export default class UsageBarExtension extends Extension {
                         box?._usagebarContent.opacity === 255));
                     assertions.push(assertion('no "covers this Machine only" note', !descendants(box)
                         .some(actor => actor instanceof St.Label && actor.text.includes('this Machine only'))));
-                    assertions.push(...markAssertions('Machines tab', box, logosHidden
-                        ? ['Claude', 'Codex'] : []));
+                    assertions.push(...markAssertions('Machines tab', box, []));
                 } catch (error) {
                     done(error);
                     return;
@@ -2877,38 +2905,40 @@ export default class UsageBarExtension extends Extension {
                             done(error);
                             return;
                         }
-                        buttons[1].emit('clicked', 1);
-                        later(300, () => {
-                            try {
-                                const summary = labelsOf(this._overviewView?.summaryButton);
-                                assertions.push(assertion('picking qa-desk shows only its spend',
-                                    summary.some(text => text.includes('· qa-desk')) &&
-                                    summary.includes('$4.00') && !summary.some(text => text.includes('all Machines')),
-                                    {summary}));
-                            } catch (error) {
-                                done(error);
-                                return;
-                            }
-                            assertions.push(assertion('picking a Machine closes the dropdown',
-                                !this._overviewView?.scopeHost._usagebarScopeButtons.length));
-                            capture('providers-scoped.png', () => {
-                                openPicker();
-                                this._overviewView.scopeHost._usagebarScopeButtons[0].emit('clicked', 1);
-                                later(300, () => {
-                                    try {
-                                        const summary = labelsOf(this._overviewView?.summaryButton);
-                                        // This Machine's own report alone, named after it.
-                                        assertions.push(assertion('picking this Machine restores its cost reports',
-                                            this._spendScope === 'this' && summary.includes('$6.00') &&
-                                            summary.some(text => text.includes('· qa-laptop')) &&
-                                            !summary.some(text => text.includes('qa-desk') ||
-                                                text.includes('all Machines')), {summary}));
-                                    } catch (error) {
-                                        done(error);
-                                        return;
-                                    }
-                                    this._indicator._tabButtons.get('machines').emit('clicked', 1);
-                                    later(200, next);
+                        capture('providers-scope-picker.png', () => {
+                            buttons[1].emit('clicked', 1);
+                            later(300, () => {
+                                try {
+                                    const summary = labelsOf(this._overviewView?.summaryButton);
+                                    assertions.push(assertion('picking qa-desk shows only its spend',
+                                        summary.some(text => text.includes('· qa-desk')) &&
+                                        summary.includes('$4.00') && !summary.some(text => text.includes('all Machines')),
+                                        {summary}));
+                                } catch (error) {
+                                    done(error);
+                                    return;
+                                }
+                                assertions.push(assertion('picking a Machine closes the dropdown',
+                                    !this._overviewView?.scopeHost._usagebarScopeButtons.length));
+                                capture('providers-scoped.png', () => {
+                                    openPicker();
+                                    this._overviewView.scopeHost._usagebarScopeButtons[0].emit('clicked', 1);
+                                    later(300, () => {
+                                        try {
+                                            const summary = labelsOf(this._overviewView?.summaryButton);
+                                            // This Machine's own report alone, named after it.
+                                            assertions.push(assertion('picking this Machine restores its cost reports',
+                                                this._spendScope === 'this' && summary.includes('$6.00') &&
+                                                summary.some(text => text.includes('· qa-laptop')) &&
+                                                !summary.some(text => text.includes('qa-desk') ||
+                                                    text.includes('all Machines')), {summary}));
+                                        } catch (error) {
+                                            done(error);
+                                            return;
+                                        }
+                                        this._indicator._tabButtons.get('machines').emit('clicked', 1);
+                                        later(200, next);
+                                    });
                                 });
                             });
                         });
@@ -4116,43 +4146,38 @@ export default class UsageBarExtension extends Extension {
                     style_class: 'usagebar-dim usagebar-detail-empty',
                 }));
             }
-            if (view.total && view.machines.length) {
-                const summary = this._buildMachinesSummary(view);
-                if (scope?.all)
-                    summary.add_style_class_name('usagebar-machine-row-scoped');
-                content.add_child(summary);
-                content.add_child(new St.Widget({
-                    style_class: 'usagebar-separator usagebar-row-sep',
-                    height: 1,
-                    x_expand: true,
-                }));
-            }
-            view.machines.forEach((machine, index) => {
-                if (index > 0) {
-                    content.add_child(new St.Widget({
-                        style_class: 'usagebar-separator usagebar-row-sep',
-                        height: 1,
-                        x_expand: true,
-                    }));
+            if (view.machines.length) {
+                const table = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-mtable'});
+                const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-mtable-head'});
+                head.add_child(new St.Label({text: 'MACHINE', x_expand: true}));
+                for (const cell of this._machineCells('TODAY', '30 DAYS', 'SHARE'))
+                    head.add_child(cell);
+                table.add_child(head);
+                view.machines.forEach((machine, index) => {
+                    if (index > 0) {
+                        table.add_child(new St.Widget({
+                            style_class: 'usagebar-mtable-sep',
+                            height: 1,
+                            x_expand: true,
+                        }));
+                    }
+                    const row = this._buildMachineRow(machine);
+                    if (scopeId === 'this' ? machine.thisMachine : scopeId === machine.id)
+                        row.add_style_class_name('usagebar-machine-row-scoped');
+                    refs.set(machine.id, row);
+                    table.add_child(row);
+                });
+                if (view.total) {
+                    const total = this._buildMachinesTotal(view);
+                    if (scope?.all)
+                        total.add_style_class_name('usagebar-machine-row-scoped');
+                    table.add_child(total);
                 }
-                const row = this._buildMachineRow(machine);
-                if (scopeId === 'this' ? machine.thisMachine : scopeId === machine.id)
-                    row.add_style_class_name('usagebar-machine-row-scoped');
-                refs.set(machine.id, row);
-                content.add_child(row);
-            });
+                content.add_child(table);
+            }
             if (view.errors) {
                 content.add_child(new St.Label({
                     text: `${view.errors} synced item${view.errors === 1 ? '' : 's'} couldn't be read.`,
-                    style_class: 'usagebar-dim usagebar-machines-note',
-                }));
-            }
-            // The Providers tab's spend covers All Machines unless its
-            // picker narrowed it to one.
-            const scopeName = scope?.name ?? (scopeId === 'this' ? 'this Machine' : null);
-            if (scopeName) {
-                content.add_child(new St.Label({
-                    text: `The Providers tab shows ${scopeName}'s spend.`,
                     style_class: 'usagebar-dim usagebar-machines-note',
                 }));
             }
@@ -4175,144 +4200,92 @@ export default class UsageBarExtension extends Extension {
         this._render();
     }
 
-    // All Machines row: 30-day total, a Machine-colored split bar and
-    // per-Machine totals, like the Providers spend summary.
-    _buildMachinesSummary(view) {
-        const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-summary'});
-        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-head'});
-        head.add_child(new St.Label({
-            text: 'All Machines',
-            style_class: 'usagebar-compact-title',
-            y_align: Clutter.ActorAlign.CENTER,
+    // Right-aligned Today / 30 days / Share cells of a Machines table row,
+    // fixed-width so the columns line up.
+    _machineCells(today, last30, share) {
+        return [
+            [today, 'usagebar-mtable-today'],
+            [last30, 'usagebar-mtable-month'],
+            [share, 'usagebar-mtable-share'],
+        ].map(([text, cls]) => new St.Bin({
+            style_class: `usagebar-mtable-cell ${cls}`,
+            y_align: Clutter.ActorAlign.START,
+            child: new St.Label({text, x_align: Clutter.ActorAlign.END}),
         }));
-        head.add_child(new St.Label({
-            text: `Today ${view.total.today}`,
-            style_class: 'usagebar-dim usagebar-compact-subtitle',
+    }
+
+    // The table's total band; opens every Machine's combined detail.
+    _buildMachinesTotal(view) {
+        const row = new St.BoxLayout({x_expand: true});
+        row.add_child(new St.Label({
+            text: 'All machines',
+            style_class: 'usagebar-mtable-total-name',
             x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
         }));
-        head.add_child(new St.Label({
-            text: view.total.last30,
-            style_class: 'usagebar-kpi-value',
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
-        row.add_child(head);
-
         const total30 = view.machines.reduce((sum, machine) => sum + machine.cost30, 0);
-        const visible = view.machines
-            .filter(machine => machine.cost30 > 0)
-            .map(machine => ({cost: machine.cost30, color: machine.color}));
-        if (visible.length) {
-            const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
-            const segs = visible.map(machine => {
-                const seg = new St.Widget({height: 4});
-                split.add_child(seg);
-                return [seg, machine];
-            });
-            split.connect('notify::allocation', () => {
-                const layout = buildSummaryBarSegments(visible, total30, split.allocation.get_width());
-                segs.forEach(([seg, machine], index) => {
-                    const {width, radius} = layout[index];
-                    seg.set_style(`background-color: ${machine.color}; border-radius: ${radius};`);
-                    if (seg.width !== width)
-                        seg.set_width(width);
-                });
-            });
-            row.add_child(split);
-        }
-
-        const legend = new St.BoxLayout({style_class: 'usagebar-ov-summary-legend'});
-        for (const machine of view.machines) {
-            const entry = new St.BoxLayout({style_class: 'usagebar-model-entry'});
-            entry.add_child(new St.Widget({
-                style: `width: 8px; height: 8px; border-radius: 4px; background-color: ${machine.color};`,
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            entry.add_child(new St.Label({
-                text: `${machine.name} ${machine.last30}`,
-                style_class: 'usagebar-dim',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-            legend.add_child(entry);
-        }
-        row.add_child(legend);
-
+        for (const cell of this._machineCells(view.total.today, view.total.last30, total30 > 0 ? '100%' : ''))
+            row.add_child(cell);
         const button = new St.Button({
             child: row,
             x_expand: true,
             can_focus: true,
-            style_class: 'usagebar-compact-row',
+            accessible_name: `All machines, ${view.total.last30} in 30 days`,
+            style_class: 'usagebar-mtable-total',
         });
         button.connect('clicked', () => this._selectMachine('all'));
         return button;
     }
 
+    // One Machine's table row: its color, name and status line, then today,
+    // 30 days and its share of the total.
     _buildMachineRow(machine) {
-        const body = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-machine-body'});
-        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-head'});
+        const row = new St.BoxLayout({x_expand: true});
+        const name = new St.BoxLayout({vertical: true, x_expand: true});
+        const title = new St.BoxLayout({style_class: 'usagebar-mtable-title'});
+        title.add_child(new St.Widget({
+            style_class: 'usagebar-mtable-color',
+            style: `background-color: ${machine.color};`,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        title.add_child(new St.Label({
+            text: machine.name,
+            style_class: 'usagebar-mtable-name',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        if (machine.thisMachine) {
+            title.add_child(new St.Label({
+                text: 'this machine',
+                style_class: 'usagebar-dim usagebar-mtable-me',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        name.add_child(title);
+        const status = new St.BoxLayout({style_class: 'usagebar-mtable-status'});
         const state = machine.retired ? 'retired' : machine.active ? 'active' : 'idle';
         const dot = new St.Widget({
             style_class: `usagebar-machine-dot usagebar-machine-dot-${state}`,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        head.add_child(dot);
-        head.add_child(new St.Label({
-            text: machine.name,
-            style_class: 'usagebar-compact-title',
+        status.add_child(dot);
+        status.add_child(new St.Label({
+            text: machine.status,
+            style_class: 'usagebar-dim',
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        const tags = [];
-        if (machine.thisMachine)
-            tags.push('this Machine');
-        if (machine.retired)
-            tags.push('retired');
-        else if (machine.active)
-            tags.push('active');
-        head.add_child(new St.Label({
-            text: tags.join(' · '),
-            style_class: 'usagebar-dim usagebar-machine-tags',
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
-        if (machine.share !== null) {
-            head.add_child(new St.Label({
-                text: `${Math.round(machine.share * 100)}%`,
-                style_class: 'usagebar-worst',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
-        body.add_child(head);
-
-        // Spend on the left; the providers this Machine used on the right.
-        const line = new St.BoxLayout({x_expand: true, style_class: 'usagebar-machine-line'});
-        line.add_child(new St.Widget({
-            style: `width: 3px; height: 12px; border-radius: 2px; background-color: ${machine.color};`,
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
-        line.add_child(new St.Label({
-            text: `Today ${machine.today} · 30 days ${machine.last30}`,
-            style_class: 'usagebar-machine-spend',
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
-        const providers = [...new Set(machine.models.map(model => model.provider))];
-        for (const provider of providers) {
-            line.add_child(this._providerIcon(provider, 12) ??
-                providerNameLabel(provider, this._displayName(provider),
-                    this._popoverSurface(), 'usagebar-machine-provider'));
-        }
-        body.add_child(line);
-
-        body.add_child(new St.Label({
-            text: [machine.coverage, machine.lastSeen].filter(Boolean).join(' · '),
-            style_class: 'usagebar-dim usagebar-machine-foot',
-        }));
+        name.add_child(status);
+        row.add_child(name);
+        const cells = this._machineCells(machine.today, machine.last30, machine.shareText);
+        cells[1].add_style_class_name('usagebar-mtable-value');
+        cells[2].add_style_class_name('usagebar-dim');
+        for (const cell of cells)
+            row.add_child(cell);
 
         const button = new St.Button({
-            child: body,
+            child: row,
             x_expand: true,
             can_focus: true,
-            style_class: 'usagebar-compact-row usagebar-machine-row',
+            accessible_name: `${machine.name}, ${machine.last30} in 30 days`,
+            style_class: 'usagebar-mtable-row',
         });
         button._usagebarDot = dot;
         button.connect('clicked', () => this._selectMachine(machine.id));
@@ -4413,6 +4386,26 @@ export default class UsageBarExtension extends Extension {
 
         if (d.chart) {
             const colors = new Map(d.chart.colors);
+            if (!d.all) {
+                const namesByProvider = new Map();
+                for (const point of d.chart.points) {
+                    for (const [key] of point.models) {
+                        const slash = key.indexOf('/');
+                        if (slash < 0)
+                            continue;
+                        const provider = key.slice(0, slash);
+                        const names = namesByProvider.get(provider) ?? new Set();
+                        names.add(key.slice(slash + 1));
+                        namesByProvider.set(provider, names);
+                    }
+                }
+                for (const [provider, names] of namesByProvider) {
+                    const modelColors = this._modelColors(provider, [], [...names,
+                        ...d.models.filter(model => model.provider === provider).map(model => model.model)]);
+                    for (const name of names)
+                        colors.set(`${provider}/${name}`, modelColors.get(name));
+                }
+            }
             card.add_child(this._buildTrendChart(d.chart.points, d.color, colors));
             // Only the combined chart is split by Machine.
             const legend = d.all ? buildModelLegend(d.chart.points, colors, (anchor, rows) => {
@@ -4594,9 +4587,16 @@ export default class UsageBarExtension extends Extension {
             const container = new St.BoxLayout({vertical: true, x_expand: true});
             view = {
                 container,
+                spendCard: new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-spend-card'}),
                 promptHost: new St.BoxLayout({vertical: true, x_expand: true}),
                 promptKey: null,
                 scopeHost: new St.BoxLayout({vertical: true, x_expand: true}),
+                // The open machine list floats over the summary instead of
+                // pushing it down.
+                scopeListHost: new St.BoxLayout({
+                    vertical: true,
+                    style_class: 'usagebar-scope-overlay',
+                }),
                 scopeKey: null,
                 summaryHost: new St.BoxLayout({vertical: true, x_expand: true}),
                 rowsBox: new St.BoxLayout({vertical: true, x_expand: true}),
@@ -4609,8 +4609,17 @@ export default class UsageBarExtension extends Extension {
                 summaryKey: null,
             };
             container.add_child(view.promptHost);
-            container.add_child(view.scopeHost);
-            container.add_child(view.summaryHost);
+            const spendBody = new St.BoxLayout({vertical: true, x_expand: true});
+            spendBody.add_child(view.scopeHost);
+            spendBody.add_child(view.summaryHost);
+            const spendStack = new St.Widget({
+                layout_manager: new OverlayLayout(),
+                x_expand: true,
+            });
+            spendStack.add_child(spendBody);
+            spendStack.add_child(view.scopeListHost);
+            view.spendCard.add_child(spendStack);
+            container.add_child(view.spendCard);
             container.add_child(view.rowsBox);
             this._overviewView = view;
         }
@@ -4628,6 +4637,7 @@ export default class UsageBarExtension extends Extension {
 
         this._renderScopePicker(view);
         const overview = this._costOverview();
+        view.spendCard.visible = !!overview || spendScopeOptions(this._syncPayload()).length > 0;
         const summaryKey = this._overviewSummaryKey(overview);
         if (view.summaryKey !== summaryKey) {
             view.summaryHost.destroy_all_children();
@@ -4635,11 +4645,7 @@ export default class UsageBarExtension extends Extension {
             if (overview) {
                 view.summaryButton = this._buildCostSummary(overview);
                 view.summaryHost.add_child(view.summaryButton);
-                view.summaryHost.add_child(new St.Widget({
-                    style_class: 'usagebar-separator usagebar-row-sep',
-                    height: 1,
-                    x_expand: true,
-                }));
+
             }
             view.summaryKey = summaryKey;
         }
@@ -4921,20 +4927,29 @@ export default class UsageBarExtension extends Extension {
     // dashboard shows: "all Machines" or a Machine's name.
     _buildCostSummary(ov) {
         const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-ov-summary'});
-        const head = new St.BoxLayout({x_expand: true});
+        const head = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-spend-values'});
         const scopeLabel = this._costScopeLabel();
         head.add_child(new St.Label({
-            text: `Spend · last ${ov.dates.length} days${scopeLabel ? ` · ${scopeLabel}` : ''}`,
-            style_class: 'usagebar-compact-title',
-            x_expand: true,
+            text: formatSummaryUSD(ov.cost),
+            style_class: 'usagebar-spend-total',
             y_align: Clutter.ActorAlign.CENTER,
         }));
         head.add_child(new St.Label({
-            text: formatSummaryUSD(ov.cost),
-            style_class: 'usagebar-kpi-value',
-            y_align: Clutter.ActorAlign.CENTER,
+            text: `Last ${ov.dates.length} days${scopeLabel ? ` · ${scopeLabel}` : ''}`,
+            style_class: 'usagebar-dim usagebar-spend-period',
         }));
-        row.add_child(head);
+        // A chevron that shows on hover/focus, hinting the dashboard.
+        const top = new St.BoxLayout({x_expand: true});
+        const hint = new St.Icon({
+            icon_name: 'go-next-symbolic',
+            icon_size: 14,
+            opacity: 0,
+            y_align: Clutter.ActorAlign.CENTER,
+            style_class: 'usagebar-spend-hint',
+        });
+        top.add_child(head);
+        top.add_child(hint);
+        row.add_child(top);
 
         const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
         const visibleProviders = ov.providers.filter(provider => provider.cost > 0);
@@ -4966,8 +4981,16 @@ export default class UsageBarExtension extends Extension {
             child: row,
             x_expand: true,
             can_focus: true,
-            style_class: 'usagebar-compact-row',
+            style_class: 'usagebar-spend-summary-button',
         });
+        const syncHint = () => hint.ease({
+            opacity: button.hover || button.has_key_focus() ? 255 : 0,
+            duration: 120,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        });
+        button.connect('notify::hover', syncHint);
+        button.connect('key-focus-in', syncHint);
+        button.connect('key-focus-out', syncHint);
         // Opens only: while the panel is open its grab turns a click here
         // into an outside press that closes it.
         button.connect('clicked', () => this._showCostPanel(button, ov));
@@ -4978,7 +5001,8 @@ export default class UsageBarExtension extends Extension {
     // sync: this Machine, the others, then All. Picks whose spend the tab
     // and the cost dashboard show (the dashboard's own switch picks the
     // same scope); the usage limits stay as they are, since they belong to
-    // the account. The list opens inline, as the popover can't hold a menu.
+    // the account. The list opens inline, as the popover can't hold a menu,
+    // floating over the summary so nothing below it moves.
     _renderScopePicker(view) {
         const options = spendScopeOptions(this._syncPayload(), {colors: DISPLAY.machineColors});
         const selected = this._spendScopeId();
@@ -4988,10 +5012,13 @@ export default class UsageBarExtension extends Extension {
             return;
         view.scopeKey = key;
         view.scopeHost.destroy_all_children();
+        view.scopeListHost.destroy_all_children();
         view.scopeHost._usagebarScopeToggle = null;
         view.scopeHost._usagebarScopeButtons = [];
-        if (!options.length)
+        if (!options.length) {
+            view.scopeHost.add_child(new St.Label({text: 'Spend', style_class: 'usagebar-spend-label'}));
             return;
+        }
         const current = options.find(option => option.id === selected) ?? options[0];
         const optionContent = (option, extra = []) => {
             const content = new St.BoxLayout({style_class: 'usagebar-scope-option'});
@@ -5001,7 +5028,7 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
             content.add_child(new St.Label({
-                text: option.id === 'all' ? 'All Machines' : option.name,
+                text: option.id === 'all' ? 'All machines' : option.name,
                 x_expand: true,
                 y_align: Clutter.ActorAlign.CENTER,
             }));
@@ -5018,19 +5045,33 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             })]),
             can_focus: true,
-            x_align: Clutter.ActorAlign.START,
+            x_align: Clutter.ActorAlign.END,
+            accessible_name: `Spend from ${current.name}`,
             style_class: 'usagebar-ov-switch-button usagebar-scope-toggle',
         });
         toggle.connect('clicked', () => {
             view.scopeOpen = !view.scopeOpen;
             this._render();
         });
-        view.scopeHost.add_child(toggle);
+        const header = new St.BoxLayout({x_expand: true, style_class: 'usagebar-scope-header'});
+        header.add_child(new St.Label({
+            text: 'Spend',
+            style_class: 'usagebar-dim usagebar-scope-label',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        header.add_child(toggle);
+        view.scopeHost.add_child(header);
         view.scopeHost._usagebarScopeToggle = toggle;
         if (!open)
             return;
 
-        const list = new St.BoxLayout({vertical: true, style_class: 'usagebar-scope-list'});
+        const list = new St.BoxLayout({
+            vertical: true,
+            x_align: Clutter.ActorAlign.END,
+            style_class: 'usagebar-scope-list',
+        });
+        const buttons = [];
         for (const option of options) {
             const check = new St.Icon({
                 icon_name: 'object-select-symbolic',
@@ -5038,12 +5079,29 @@ export default class UsageBarExtension extends Extension {
                 opacity: option.id === selected ? 255 : 0,
                 y_align: Clutter.ActorAlign.CENTER,
             });
+            if (option.id === 'all') {
+                list.add_child(new St.Widget({
+                    height: 1,
+                    x_expand: true,
+                    style_class: 'usagebar-scope-divider',
+                }));
+            }
+            const extra = [];
+            if (option.id === 'this') {
+                extra.push(new St.Label({
+                    text: 'This machine',
+                    style_class: 'usagebar-dim usagebar-scope-meta',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            }
+            extra.push(check);
             const button = new St.Button({
-                child: optionContent(option, [check]),
+                child: optionContent(option, extra),
                 can_focus: true,
                 x_expand: true,
                 style_class: 'usagebar-scope-item',
             });
+            button.child.x_expand = true;
             if (option.id === selected)
                 button.add_style_class_name('selected');
             button.connect('clicked', () => {
@@ -5052,9 +5110,10 @@ export default class UsageBarExtension extends Extension {
                 this._render();
             });
             list.add_child(button);
+            buttons.push(button);
         }
-        view.scopeHost.add_child(list);
-        view.scopeHost._usagebarScopeButtons = list.get_children();
+        view.scopeListHost.add_child(list);
+        view.scopeHost._usagebarScopeButtons = buttons;
     }
 
     _showCostPanel(anchor, ov, rangeDays = 30) {
