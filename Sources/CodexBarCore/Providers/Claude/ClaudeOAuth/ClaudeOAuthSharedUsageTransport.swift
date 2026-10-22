@@ -1,7 +1,11 @@
 #if os(Linux)
 import Foundation
 import FoundationNetworking
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Same-user, cross-process coordination for the default OAuth usage transport.
 /// Never stores bearer tokens, response headers, or reset-credit grant identifiers.
@@ -41,9 +45,17 @@ struct ClaudeOAuthSharedUsageTransport: ProviderHTTPTransport {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
         let lockPath = self.directory.appendingPathComponent(key + ".lock").path
+        #if canImport(Glibc)
         let fd = Glibc.open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+        #else
+        let fd = Musl.open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+        #endif
         guard fd >= 0 else { throw POSIXError(.EACCES) }
+        #if canImport(Glibc)
         defer { _ = Glibc.close(fd) }
+        #else
+        defer { _ = Musl.close(fd) }
+        #endif
         let deadline = ContinuousClock.now.advanced(by: .seconds(95))
         while flock(fd, LOCK_EX | LOCK_NB) != 0 {
             guard errno == EWOULDBLOCK || errno == EAGAIN else { throw POSIXError(.EIO) }
