@@ -109,26 +109,8 @@
   font-size: 9.5pt;
 }
 
-/* Provider error banner: warning text over a row of small actions. */
-.usagebar-error-banner {
-  spacing: 4px;
-}
-
 .usagebar-banner-actions {
   spacing: 6px;
-}
-
-.usagebar-banner-btn {
-  font-size: 9pt;
-  padding: 2px 8px;
-}
-
-.usagebar-banner-btn:insensitive {
-  color: rgba(200, 200, 206, 0.6);
-}
-
-.usagebar-login-btn {
-  border: 1px solid rgba(160, 160, 166, 0.4);
 }
 
 .usagebar-detail-head {
@@ -168,7 +150,7 @@
 /* Per-provider tabs: same content, no card chrome — sections are split by
    .usagebar-separator rules instead. */
 .usagebar-card-flat {
-  padding: 4px 14px;
+  padding: 4px 12px;
   margin: 4px 0;
   spacing: 4px;
 }
@@ -182,16 +164,15 @@
 /* Overview row dividers sit centered between rows, so the space above and
    below each provider row is equal. */
 .usagebar-row-sep {
-  margin-top: 4px;
-  margin-bottom: 4px;
+  margin: 4px 12px;
 }
 
 /* Compact overview rows (All tab) */
 .usagebar-compact-row {
   background-color: transparent;
-  border-radius: 12px;
-  padding: 6px 12px;
-  margin: 2px 0;
+  border-radius: 9px;
+  padding: 6px 8px;
+  margin: 2px 12px;
 }
 
 /* Match the popup-menu-item hover the footer items use. */
@@ -737,8 +718,8 @@
 }
 
 .usagebar-links {
-  margin-top: 8px;
-  spacing: 12px;
+  margin-top: 10px;
+  spacing: 6px;
 }
 
 .usagebar-link {
@@ -944,7 +925,7 @@
 
 /* Content-first popover: one navigation toolbar, then a scoped spend card. */
 .usagebar-content-header {
-  padding: 8px 12px 4px 12px;
+  padding: 8px 0 4px 0;
   margin: 0 12px;
   border-bottom: 1px solid rgba(160, 160, 166, 0.2);
   spacing: 6px;
@@ -1131,4 +1112,195 @@
   font-weight: normal;
   font-size: 8.5pt;
   color: rgba(170, 180, 192, 0.85);
+}
+
+/* Provider issues: one banner above the overview, short row labels, and the
+   Details dialog (see providerissues.js). */
+.usagebar-issues-banner {
+  spacing: 8px;
+  margin: 0 12px 8px;
+  padding: 7px 8px 7px 12px;
+  border-radius: 9px;
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.usagebar-issues-banner-urgent {
+  background-color: rgba(237, 51, 59, 0.16);
+}
+
+.usagebar-issues-headline {
+  font-size: 9.5pt;
+}
+
+.usagebar-issue-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+}
+
+.usagebar-issue-error { background-color: #ed333b; }
+.usagebar-issue-warn { background-color: #f5c211; }
+.usagebar-issue-info { background-color: #62a0ea; }
+.usagebar-issue-muted { background-color: #9a9996; }
+
+.usagebar-issue-text-error { color: #ff7b63; }
+.usagebar-issue-text-warn { color: #f5c211; }
+.usagebar-issue-text-info { color: #99c1f1; }
+.usagebar-issue-text-muted { color: #9a9996; }
+
+.usagebar-issue-btn {
+  font-size: 9pt;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(160, 160, 166, 0.35);
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+.usagebar-issue-btn:hover,
+.usagebar-issue-btn:focus {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.usagebar-issue-btn-primary {
+  border-color: transparent;
+  background-color: #3584e4;
+}
+
+.usagebar-issue-btn-primary:hover,
+.usagebar-issue-btn-primary:focus {
+  background-color: #4a90e8;
+}
+
+.usagebar-issues-dialog .modal-dialog-content-box {
+  padding: 18px 20px 6px;
+  spacing: 10px;
+}
+
+.usagebar-issues-header {
+  spacing: 10px;
+  padding-bottom: 6px;
+}
+
+.usagebar-issues-title {
+  font-size: 13pt;
+  font-weight: bold;
+}
+
+.usagebar-issues-scroll {
+  max-height: 460px;
+  width: 520px;
+}
+
+.usagebar-issues-list {
+  spacing: 8px;
+  padding-right: 6px;
+}
+
+.usagebar-issues-group {
+  spacing: 6px;
+  padding-top: 6px;
+}
+
+.usagebar-issues-group-title {
+  font-size: 8.5pt;
+  color: rgba(200, 200, 206, 0.8);
+}
+
+.usagebar-issue-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background-color: rgba(255, 255, 255, 0.04);
+  spacing: 6px;
+}
+
+.usagebar-issue-head {
+  spacing: 8px;
+}
+
+.usagebar-issue-name {
+  font-weight: bold;
+}
+
+.usagebar-issue-pill {
+  font-size: 8.5pt;
+  font-weight: bold;
+  padding: 1px 7px;
+  border-radius: 9px;
+}
+
+.usagebar-issue-pill-error { color: #ff7b63; background-color: rgba(237, 51, 59, 0.18); }
+.usagebar-issue-pill-warn { color: #f5c211; background-color: rgba(245, 194, 17, 0.15); }
+.usagebar-issue-pill-info { color: #99c1f1; background-color: rgba(98, 160, 234, 0.18); }
+.usagebar-issue-pill-muted { color: #c0bfbc; background-color: rgba(255, 255, 255, 0.08); }
+
+.usagebar-issue-body {
+  padding-left: 26px;
+  spacing: 4px;
+}
+
+.usagebar-issue-summary {
+  font-size: 10pt;
+}
+
+.usagebar-issue-meta {
+  font-size: 8.5pt;
+}
+
+.usagebar-issue-toggle {
+  font-size: 9pt;
+  padding: 2px 0;
+  color: rgba(200, 200, 206, 0.85);
+}
+
+.usagebar-issue-toggle:hover {
+  color: #ffffff;
+}
+
+.usagebar-issue-details {
+  spacing: 6px;
+}
+
+.usagebar-issue-raw {
+  font-family: monospace;
+  font-size: 8.5pt;
+  padding: 8px;
+  border-radius: 6px;
+  color: rgba(200, 200, 206, 0.9);
+  background-color: rgba(0, 0, 0, 0.3);
+}
+
+/* The provider view's error box: the overview banner's shape, filling the
+   card's content width, with the explanation under the state. */
+.usagebar-provider-issue {
+  margin: 4px 0 6px;
+  padding: 8px 8px 9px 12px;
+}
+
+.usagebar-provider-issue-head {
+  spacing: 8px;
+}
+
+.usagebar-provider-issue-label {
+  font-size: 10pt;
+  font-weight: bold;
+}
+
+.usagebar-provider-issue-summary {
+  font-size: 9.5pt;
+  padding-left: 15px;
+  padding-top: 4px;
+  color: rgba(222, 222, 228, 0.9);
+}
+
+.usagebar-issue-btn:insensitive {
+  color: rgba(200, 200, 206, 0.6);
+}
+
+/* Keep the refresh glyph on the content's right edge. */
+.usagebar-content-header .usagebar-refresh-btn {
+  width: 20px;
+  height: 20px;
+  padding: 3px;
 }

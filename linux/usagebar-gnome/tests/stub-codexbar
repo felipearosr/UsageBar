@@ -7,6 +7,8 @@ like upstream's CLI: no `codexbar sync` and no /sync/* routes in `serve`.
 STUB_CODEXBAR_REPORT=1 adds a capability report to /health.
 STUB_CODEXBAR_PAIRED=1 (with sync) pretends this Machine is in a Sync Group
 with one other Machine, so the Machines tab and the paired Settings page show.
+STUB_CODEXBAR_ISSUES=1 makes /usage return one healthy provider and one of
+each provider error state, for the issues banner and Details dialog.
 """
 
 import json
@@ -20,6 +22,7 @@ from urllib.parse import urlsplit
 SYNC = os.environ.get("STUB_CODEXBAR_SYNC", "1") != "0"
 REPORT = os.environ.get("STUB_CODEXBAR_REPORT") == "1"
 PAIRED = SYNC and os.environ.get("STUB_CODEXBAR_PAIRED") == "1"
+ISSUES = os.environ.get("STUB_CODEXBAR_ISSUES") == "1"
 VERSION = "0.69.0"
 REPORTING_DAY = {"timeZone": None, "startHour": 0, "effectiveTimeZone": "UTC"}
 
@@ -49,6 +52,26 @@ def sync_status():
                        "errors": [],
                        "machines": [machine("stub-laptop", True, 6, "claude"),
                                     machine("stub-desk", False, 4, "codex")]}}
+
+
+def issue_rows():
+    def failing(provider, message, code=1, kind="provider"):
+        return {"provider": provider, "source": "stub",
+                "error": {"code": code, "kind": kind, "message": message}}
+    window = {"usedPercent": 40, "windowMinutes": 300}
+    return [
+        failing("codex", "Codex connection failed: failed to fetch codex rate limits: "
+                '{"error": {"message": "Provided authentication token is expired. Please try '
+                'signing in again.", "type": "invalid_request_error", "code": "token_expired"}, '
+                '"status": 401}'),
+        failing("gemini", "Gemini credentials not found. Not logged in."),
+        failing("claude", "Claude OAuth usage endpoint is rate limited by Anthropic."),
+        failing("copilot", "Request timed out", code=4, kind="runtime"),
+        failing("cursor", "HTTP 503 Service Unavailable"),
+        failing("openrouter", "Could not parse OpenRouter usage: unexpected key 'limits'"),
+        {"provider": "opencodego", "source": "stub",
+         "usage": {"primary": window, "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}},
+    ]
 
 
 def unknown_command(name):
@@ -81,6 +104,8 @@ class Handler(BaseHTTPRequestHandler):
                 body["usagebarVersion"] = VERSION
                 body["upstreamVersion"] = VERSION
             self.send_json(200, body)
+        elif path == "/usage" and ISSUES:
+            self.send_json(200, issue_rows())
         elif path in ("/usage", "/cost"):
             self.send_json(200, [])
         elif path == "/sync/status" and SYNC:
