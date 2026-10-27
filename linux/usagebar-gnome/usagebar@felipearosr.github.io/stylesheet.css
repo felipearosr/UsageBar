@@ -600,8 +600,16 @@
 }
 
 /* Machine dropdown on the Providers tab (Machine Sync with 2+ Machines). */
+.usagebar-scope-header {
+  margin: 0 8px 2px 8px;
+  spacing: 12px;
+}
+
+.usagebar-scope-label {
+  font-size: 9pt;
+}
+
 .usagebar-scope-toggle {
-  margin: 2px 12px 6px 12px;
   padding: 4px 8px 4px 10px;
   border-radius: 6px;
   font-size: 9pt;
@@ -618,16 +626,22 @@
   border: 1px solid rgba(160, 160, 166, 0.6);
 }
 
+/* Drops just below the toggle, over the spend summary. */
+.usagebar-scope-overlay {
+  margin: 30px 8px 0 0;
+}
+
 .usagebar-scope-list {
-  margin: 0 12px 8px 12px;
+  min-width: 228px;
   padding: 4px;
   border-radius: 8px;
   border: 1px solid rgba(160, 160, 166, 0.35);
-  background-color: rgba(60, 70, 82, 0.25);
+  background-color: #262d36;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
 }
 
 .usagebar-scope-item {
-  padding: 5px 8px;
+  padding: 9px 10px;
   border-radius: 5px;
   font-size: 9pt;
 }
@@ -635,6 +649,20 @@
 .usagebar-scope-item:hover,
 .usagebar-scope-item:focus {
   background-color: rgba(88, 104, 122, 0.32);
+}
+
+.usagebar-scope-item.selected {
+  background-color: rgba(83, 131, 191, 0.28);
+  color: #dceaff;
+}
+
+.usagebar-scope-meta {
+  font-size: 8pt;
+}
+
+.usagebar-scope-divider {
+  background-color: rgba(160, 160, 166, 0.25);
+  margin: 5px 8px;
 }
 
 /* Machine scope switch in the cost dashboard header (paired only):
@@ -912,4 +940,195 @@
 .usagebar-logo-prompt-actions .usagebar-onboarding-btn {
   margin-top: 0;
   min-width: 96px;
+}
+
+/* Content-first popover: one navigation toolbar, then a scoped spend card. */
+.usagebar-content-header {
+  padding: 8px 12px 4px 12px;
+  margin: 0 12px;
+  border-bottom: 1px solid rgba(160, 160, 166, 0.2);
+  spacing: 6px;
+}
+
+.usagebar-content-tabs {
+  spacing: 3px;
+}
+
+.usagebar-content-tab {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 9pt;
+  color: #a6b1bf;
+  border: 1px solid transparent;
+}
+
+.usagebar-content-tab:hover,
+.usagebar-content-tab:focus {
+  background-color: rgba(110, 130, 154, 0.2);
+  color: #ffffff;
+}
+
+.usagebar-content-tab.selected {
+  background-color: rgba(90, 115, 145, 0.4);
+  border-color: rgba(145, 168, 195, 0.35);
+  color: #edf3fc;
+}
+
+.usagebar-header-updated {
+  font-size: 8pt;
+}
+
+.usagebar-spend-card {
+  margin: 2px 12px 10px 12px;
+  padding: 12px 5px 5px 5px;
+  border-radius: 9px;
+  border: 1px solid rgba(145, 165, 190, 0.18);
+  background-color: rgba(100, 120, 145, 0.1);
+}
+
+.usagebar-spend-label,
+.usagebar-spend-period {
+  font-size: 9pt;
+}
+
+/* The card's side/bottom padding moves into the button so its hover
+   tile fills the card's lower half with even insets. */
+.usagebar-spend-summary-button {
+  border-radius: 7px;
+  padding: 6px 7px 7px 7px;
+  border: 1px solid transparent;
+  transition-duration: 120ms;
+}
+
+.usagebar-spend-summary-button:hover,
+.usagebar-spend-summary-button:focus {
+  background-color: rgba(150, 170, 190, 0.1);
+  border-color: rgba(160, 180, 205, 0.22);
+}
+
+.usagebar-spend-summary-button:active {
+  background-color: rgba(150, 170, 190, 0.16);
+}
+
+.usagebar-spend-hint {
+  color: #a6b1bf;
+}
+
+.usagebar-spend-card .usagebar-ov-summary {
+  padding: 0;
+  spacing: 8px;
+}
+
+.usagebar-spend-values {
+  spacing: 2px;
+}
+
+.usagebar-spend-total {
+  font-size: 20pt;
+  font-weight: bold;
+  color: #edf3fc;
+}
+
+/* Machines tab: a table of Machines (Today / 30 days / Share) with the
+   total in a tinted band. */
+.usagebar-mtable {
+  margin: 2px 12px 4px 12px;
+}
+
+.usagebar-mtable-head {
+  padding: 0 8px 6px 8px;
+  font-size: 7pt;
+  font-weight: bold;
+  letter-spacing: 0.6px;
+  color: rgba(170, 180, 192, 0.75);
+}
+
+.usagebar-mtable-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.usagebar-mtable-today { width: 64px; }
+.usagebar-mtable-month { width: 76px; }
+.usagebar-mtable-share { width: 46px; }
+
+.usagebar-mtable-row {
+  padding: 8px;
+  border-radius: 7px;
+  font-size: 9.5pt;
+  color: #b9c2cc;
+}
+
+.usagebar-mtable-row:hover,
+.usagebar-mtable-row:focus {
+  background-color: rgba(150, 170, 190, 0.1);
+}
+
+.usagebar-mtable-sep {
+  margin: 0 8px;
+  background-color: rgba(160, 160, 166, 0.12);
+}
+
+.usagebar-mtable-title {
+  spacing: 7px;
+}
+
+.usagebar-mtable-color {
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+}
+
+.usagebar-mtable-name {
+  font-weight: bold;
+  color: #ffffff;
+}
+
+.usagebar-mtable-me {
+  font-size: 8.5pt;
+}
+
+.usagebar-mtable-status {
+  margin: 3px 0 0 14px;
+  spacing: 5px;
+  font-size: 8.5pt;
+}
+
+.usagebar-mtable-status .usagebar-machine-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 3px;
+}
+
+.usagebar-mtable-value {
+  font-weight: bold;
+  color: #edf3fc;
+}
+
+.usagebar-mtable-share.usagebar-dim {
+  font-size: 8.5pt;
+}
+
+.usagebar-mtable-total {
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 7px;
+  font-size: 9.5pt;
+  font-weight: bold;
+  color: #ffffff;
+  background-color: rgba(100, 120, 145, 0.14);
+}
+
+.usagebar-mtable-total:hover,
+.usagebar-mtable-total:focus {
+  background-color: rgba(110, 130, 155, 0.24);
+}
+
+.usagebar-mtable-total-name {
+  color: #b9c2cc;
+}
+
+.usagebar-mtable-total .usagebar-mtable-share {
+  font-weight: normal;
+  font-size: 8.5pt;
+  color: rgba(170, 180, 192, 0.85);
 }

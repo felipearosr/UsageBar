@@ -249,3 +249,23 @@ the same config.
 
 None of these delete your settings and provider configuration in
 `~/.config/codexbar/`. Remove that directory yourself if you want it gone.
+
+### Shared Claude quota cache
+
+Linux UsageBar processes running as the same OS user share Claude OAuth quota
+results for five minutes under `$XDG_CACHE_HOME/usagebar/claude-oauth` (normally
+`~/.cache/usagebar/claude-oauth`). A per-credential file lock allows only one
+upstream quota request at a time, including when the desktop and devkit run
+together. Different credentials have separate hashed cache keys.
+
+HTTP 429 responses establish a shared cooldown of 5, 10, 20, 40, then 60 minutes
+for repeated failures, or longer when Anthropic supplies a longer `Retry-After`.
+Manual refresh respects that cooldown. Success resets the backoff. Requests for
+other providers are unaffected. Existing stale display data remains available
+through each client's normal error handling; a cooldown is not reported as a
+fresh successful fetch.
+
+The user-private cache contains quota fields, not access tokens, account identity,
+or reset-credit grant inventory. Optional reset-credit inventory is available
+only on a live response. Cache files are written atomically with user-only
+permissions; the request lock releases when the owning process exits.

@@ -150,6 +150,8 @@ export function machinesView(payload, {now = Date.now(), fetchError = null, colo
             share: cost30 > 0 ? (model.spend?.costUSD ?? 0) / cost30 : 0,
         }));
         const lastSeen = machine.lastSeen ? Date.parse(machine.lastSeen) : NaN;
+        const ago = Number.isFinite(lastSeen) ? syncAgoText(Math.max(0, (now - lastSeen) / 1000)) : null;
+        const share = total30 > 0 ? cost30 / total30 : null;
         return {
             id: machine.machineId,
             color: machineColor(index, machine.machineId, colors),
@@ -160,12 +162,16 @@ export function machinesView(payload, {now = Date.now(), fetchError = null, colo
             retired: !!machine.retired,
             today: spendText(machine.today),
             last30: spendText(machine.last30Days),
-            share: total30 > 0 ? cost30 / total30 : null,
+            share,
+            shareText: shareText(share),
             models,
             moreModels: Math.max(0, (machine.models ?? []).length - models.length),
             coverage: coverageText(machine.coverage),
-            lastSeen: Number.isFinite(lastSeen)
-                ? `Last seen ${syncAgoText(Math.max(0, (now - lastSeen) / 1000))}` : 'Never seen',
+            lastSeen: ago ? `Last seen ${ago}` : 'Never seen',
+            // The Machines table's status line.
+            status: !ago ? 'Never seen'
+                : machine.retired ? `Retired · seen ${ago}`
+                : machine.active ? `Active · ${ago}` : `Seen ${ago}`,
         };
     });
     return {
@@ -181,6 +187,16 @@ export function machinesView(payload, {now = Date.now(), fetchError = null, colo
         },
         errors: (status.errors ?? []).length,
     };
+}
+
+// A Machine's share of the 30-day Spend as a whole percent: "<1%" for a
+// sliver, empty when nothing was spent.
+export function shareText(share) {
+    if (share === null || share === undefined)
+        return '';
+    if (share > 0 && share < 0.005)
+        return '<1%';
+    return `${Math.round(share * 100)}%`;
 }
 
 // The Reporting Days of the chart, oldest first, ending with `today`.
@@ -246,6 +262,24 @@ export function machineDetailView(payload, selection, {now = Date.now(), hiddenM
                     .sort((a, b) => b[1] - a[1]),
             };
         });
+    // A single Machine uses model segments when the synced daily detail is
+    // available. Older peers without daily detail retain their aggregate bars.
+    if (!all) {
+        const days = new Map((picked[0].machine.daily ?? []).map(day => [day.date, day]));
+        for (const point of points) {
+            const segments = new Map();
+            for (const provider of days.get(point.date)?.providers ?? []) {
+                for (const model of provider.modelBreakdowns ?? []) {
+                    const key = `${provider.provider}/${model.modelName}`;
+                    const value = (useCost ? model.cost : model.totalTokens) ?? 0;
+                    if (value > 0)
+                        segments.set(key, (segments.get(key) ?? 0) + value);
+                }
+            }
+            if (segments.size)
+                point.models = [...segments].sort((a, b) => b[1] - a[1]);
+        }
+    }
     const hasHistory = points.some(point => point.value > 0);
 
     // Models merged across the selected Machines, most expensive first.
@@ -460,7 +494,9 @@ function mergedReport(provider, local, syncedDays) {
 //   'all'       the local reports plus every other Machine's synced `daily`,
 //               merged per provider and day. This Machine's synced copy is
 //               skipped, so its Spend counts once and is as fresh as the
-//               local scan. Retired Machines count.
+//               local scan, except for a provider whose local scan failed
+//               (an `error` and no days): that one uses the synced copy
+//               rather than counting as zero. Retired Machines count.
 //   a Machine   only that Machine's synced `daily`
 // Unpaired, or paired before the first status read, it is always 'this'. A
 // Machine that left the Sync Group falls back to 'all'. Returns
@@ -480,9 +516,29 @@ export function scopedCostReports(localReports, payload, scope = 'all', {rangeDa
     return result;
 }
 
+// A local report whose scan failed and left nothing to show.
+function isFailedReport(report) {
+    return !!report?.error && !report.daily?.length;
+}
+
 function scopedCostReportsFor(localReports, payload, scope) {
-    const local = localReports ?? [];
     const machines = payload?.paired ? payload.status?.machines ?? null : null;
+    const self = machines?.find(m => m.isThisMachine);
+    // Failed local scans give way to this Machine's synced copy.
+    const failed = new Set((localReports ?? []).filter(isFailedReport).map(r => r.provider));
+    const selfDays = new Map();
+    for (const day of failed.size ? self?.daily ?? [] : []) {
+        for (const entry of day.providers ?? []) {
+            if (!entry?.provider || !day.date || !failed.has(entry.provider))
+                continue;
+            const days = selfDays.get(entry.provider) ?? [];
+            days.push({...entry, date: day.date});
+            selfDays.set(entry.provider, days);
+        }
+    }
+    const local = selfDays.size
+        ? localReports.map(r => selfDays.has(r.provider) ? mergedReport(r.provider, null, selfDays.get(r.provider)) : r)
+        : localReports ?? [];
     if (!machines || scope === 'this')
         return {scope: 'this', reports: local, coverage: []};
     const machine = scope === 'all' ? null : machines.find(m => m.machineId === scope);
