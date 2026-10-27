@@ -35,6 +35,14 @@ import {PROVIDER_META} from './providermeta.js';
 import {capName, readableBrandColor, surfaceColor} from './brandtext.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
+    describeIssue,
+    formatAge,
+    GROUP_TITLES,
+    ISSUE_GROUPS,
+    issuesReport,
+    summarizeIssues,
+} from './providerissues.js';
+import {
     buildCostDateRange,
     buildDailyCostRows,
     buildSummaryBarSegments,
@@ -1994,6 +2002,9 @@ export default class UsageBarExtension extends Extension {
         }
         this._aboutDialog?.destroy();
         this._aboutDialog = null;
+        this._issuesDialog?.destroy();
+        this._issuesDialog = null;
+        this._issueSince = null;
         this._settings = null;
         if (this._fetchId) {
             GLib.source_remove(this._fetchId);
@@ -2474,6 +2485,7 @@ export default class UsageBarExtension extends Extension {
             } else {
                 this._rows = enrichAntigravityModels(mergeStale(this._rows, rows));
                 this._lastFetchAt = Date.now();
+                this._trackIssueSince(this._rows);
                 this._indicator.setStatus('');
                 this._scheduleFetch(FETCH_OK_SECS);
                 this._maybeNotify();
@@ -3538,6 +3550,100 @@ export default class UsageBarExtension extends Extension {
             });
         };
 
+        // Run with USAGEBAR_UI_SMOKE_ISSUES=1 against the stub CLI with
+        // STUB_CODEXBAR_ISSUES=1: the All tab leads with one issues banner,
+        // rows show short labels, and Details opens the grouped dialog.
+        const issuesSmoke = assertions => {
+            let waited = 0;
+            const ready = () => {
+                if (!(this._rows ?? []).some(row => row.error) && waited < 15000) {
+                    waited += 250;
+                    later(250, ready);
+                    return;
+                }
+                try {
+                    this._indicator.menu.open();
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => {
+                    try {
+                        const view = this._overviewView;
+                        const headline = descendants(view?.issuesHost)
+                            .find(actor => actor.style_class === 'usagebar-issues-headline');
+                        assertions.push(painted('issues banner is painted', headline));
+                        assertions.push(assertion('issues banner headline',
+                            headline?.text === '2 providers need you to act', {actual: headline?.text ?? null}));
+                        const subtitles = descendants(view?.rowsBox)
+                            .filter(actor => actor.style_class?.includes('usagebar-compact-subtitle'))
+                            .map(actor => actor.text);
+                        assertions.push(assertion('rows show short issue labels, not raw errors',
+                            subtitles.includes('Sign-in expired') &&
+                            !subtitles.some(text => text.includes('{')), {actual: subtitles}));
+                    } catch (error) {
+                        finish(assertions, error);
+                        return;
+                    }
+                    // Show one row's hover box so the screenshot shows its edges.
+                    this._overviewView?.rows.get('claude')?.rowBox.add_style_pseudo_class('hover');
+                    capture('issues-popover.png', () => {
+                        // The open machine list, when this Machine is paired.
+                        if (this._overviewView && spendScopeOptions(this._syncPayload()).length) {
+                            this._overviewView.scopeOpen = true;
+                            this._render();
+                        }
+                        later(400, () => capture('issues-scope.png', () => {
+                            if (this._overviewView)
+                                this._overviewView.scopeOpen = false;
+                            openDialog();
+                        }));
+                    });
+                });
+            };
+            const openDialog = () => {
+                try {
+                    this._showIssues();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => {
+                    try {
+                        const cards = descendants(this._issuesDialog)
+                            .filter(actor => actor.style_class === 'usagebar-issue-card');
+                        assertions.push(assertion('Details dialog lists every issue',
+                            cards.length === 6, {actual: cards.length}));
+                        const toggle = descendants(cards[0])
+                            .find(actor => actor.style_class === 'usagebar-issue-toggle');
+                        toggle?.emit('clicked', 1);
+                    } catch (error) {
+                        finish(assertions, error);
+                        return;
+                    }
+                    later(300, () => capture('issues-dialog.png', () => {
+                        this._issuesDialog?.close();
+                        // The provider views: one failing, one healthy.
+                        const shots = ['codex', 'opencodego'];
+                        const shoot = () => {
+                            const provider = shots.shift();
+                            if (!provider) {
+                                finish(assertions);
+                                return;
+                            }
+                            this._indicator.menu.open();
+                            this._selectedProvider = provider;
+                            this._render();
+                            later(600, () => capture(`issues-provider-${provider}.png`, shoot));
+                        };
+                        later(400, shoot);
+                    }));
+                });
+            };
+            ready();
+        };
+
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
         // locally (test-devkit-ui.sh): the All tab offers the download, "Not
         // now" hides the offer, and Download installs the logos, which the
@@ -3642,6 +3748,10 @@ export default class UsageBarExtension extends Extension {
             }
             if (GLib.getenv('USAGEBAR_UI_SMOKE_LOGOS') === '1') {
                 logoSmoke(assertions);
+                return;
+            }
+            if (GLib.getenv('USAGEBAR_UI_SMOKE_ISSUES') === '1') {
+                issuesSmoke(assertions);
                 return;
             }
             steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
@@ -4588,6 +4698,8 @@ export default class UsageBarExtension extends Extension {
             view = {
                 container,
                 spendCard: new St.BoxLayout({vertical: true, x_expand: true, style_class: 'usagebar-spend-card'}),
+                issuesHost: new St.BoxLayout({vertical: true, x_expand: true}),
+                issuesKey: null,
                 promptHost: new St.BoxLayout({vertical: true, x_expand: true}),
                 promptKey: null,
                 scopeHost: new St.BoxLayout({vertical: true, x_expand: true}),
@@ -4608,6 +4720,7 @@ export default class UsageBarExtension extends Extension {
                 summaryButton: null,
                 summaryKey: null,
             };
+            container.add_child(view.issuesHost);
             container.add_child(view.promptHost);
             const spendBody = new St.BoxLayout({vertical: true, x_expand: true});
             spendBody.add_child(view.scopeHost);
@@ -4624,6 +4737,7 @@ export default class UsageBarExtension extends Extension {
             this._overviewView = view;
         }
         this._renderLogoPrompt(view);
+        this._renderIssuesBanner(view, rows);
 
         // Remove a detail card while keeping the overview container and all
         // its provider rows alive for an immediate back/reopen.
@@ -5094,9 +5208,11 @@ export default class UsageBarExtension extends Extension {
                     y_align: Clutter.ActorAlign.CENTER,
                 }));
             }
-            extra.push(check);
+            // The check leads the row so the right edge stays flush.
+            const content = optionContent(option, extra);
+            content.insert_child_at_index(check, 0);
             const button = new St.Button({
-                child: optionContent(option, extra),
+                child: content,
                 can_focus: true,
                 x_expand: true,
                 style_class: 'usagebar-scope-item',
@@ -5982,30 +6098,311 @@ export default class UsageBarExtension extends Extension {
             this._settings.set_strv('known-windows', encoded);
     }
 
+    // ----- provider issues (banner + Details dialog) -----
+
+    // Remember when each provider entered its current issue state, for the
+    // Details dialog's "Since" line. A changed state restarts the clock.
+    _trackIssueSince(rows) {
+        const now = Date.now();
+        const next = new Map();
+        for (const row of rows) {
+            const issue = describeIssue(row, row.provider);
+            if (!issue)
+                continue;
+            const prev = this._issueSince?.get(row.provider);
+            next.set(row.provider, prev?.state === issue.state ? prev : {state: issue.state, since: now});
+        }
+        this._issueSince = next;
+    }
+
+    _issueSummary(rows = this._rows ?? []) {
+        return summarizeIssues(rows, provider => this._displayName(provider));
+    }
+
+    // One strip above the overview: red with Fix + Details when a provider
+    // needs the user, a quiet Details-only strip when everything failing
+    // retries on its own, hidden when every provider is healthy.
+    _renderIssuesBanner(view, rows) {
+        const summary = this._issueSummary(rows);
+        const key = summary.total
+            ? `${summary.headline}|${summary.fix?.provider ?? ''}|${summary.urgent}`
+            : null;
+        if (view.issuesKey === key)
+            return;
+        view.issuesKey = key;
+        view.issuesHost.destroy_all_children();
+        if (!summary.total)
+            return;
+
+        const banner = new St.BoxLayout({
+            style_class: summary.urgent
+                ? 'usagebar-issues-banner usagebar-issues-banner-urgent'
+                : 'usagebar-issues-banner',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        banner.add_child(new St.Widget({
+            style_class: `usagebar-issue-dot usagebar-issue-${summary.urgent ? 'error' : 'warn'}`,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        const text = new St.Label({
+            text: summary.headline,
+            style_class: 'usagebar-issues-headline',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        text.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        banner.add_child(text);
+
+        const details = new St.Button({
+            label: 'Details',
+            style_class: 'usagebar-issue-btn',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        details.connect('clicked', () => this._showIssues());
+        banner.add_child(details);
+
+        if (summary.fix) {
+            const fix = new St.Button({
+                label: 'Fix',
+                style_class: 'usagebar-issue-btn usagebar-issue-btn-primary',
+                can_focus: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const {provider, login} = summary.fix;
+            fix.connect('clicked', () => this._launchLogin(provider, login));
+            banner.add_child(fix);
+        }
+        view.issuesHost.add_child(banner);
+    }
+
+    _copyText(text) {
+        St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
+    }
+
+    // Modal listing every failing provider, grouped by what the user can do
+    // about it. A snapshot: actions that refresh close it.
+    _showIssues() {
+        this._issuesDialog?.destroy();
+        const summary = this._issueSummary();
+        if (!summary.total)
+            return;
+        this._indicator?.menu.close();
+
+        const dialog = new ModalDialog.ModalDialog({
+            destroyOnClose: true,
+            styleClass: 'usagebar-issues-dialog',
+        });
+        this._issuesDialog = dialog;
+        dialog.connect('destroy', () => {
+            if (this._issuesDialog === dialog)
+                this._issuesDialog = null;
+        });
+
+        const header = new St.BoxLayout({style_class: 'usagebar-issues-header', x_expand: true});
+        header.add_child(new St.Label({
+            text: 'Provider issues',
+            style_class: 'usagebar-issues-title',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        const checked = this._lastFetchAt ? ` · last check ${formatAge(this._lastFetchAt)}` : '';
+        header.add_child(new St.Label({
+            text: `${summary.total} issue${summary.total === 1 ? '' : 's'}${checked}`,
+            style_class: 'usagebar-dim usagebar-issues-count',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        dialog.contentLayout.add_child(header);
+
+        const list = new St.BoxLayout({vertical: true, style_class: 'usagebar-issues-list', x_expand: true});
+        for (const group of ISSUE_GROUPS) {
+            const issues = summary.groups[group];
+            if (!issues.length)
+                continue;
+            const title = new St.BoxLayout({style_class: 'usagebar-issues-group'});
+            title.add_child(new St.Widget({
+                style_class: `usagebar-issue-dot usagebar-issue-${issues[0].tone}`,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            title.add_child(new St.Label({
+                text: GROUP_TITLES[group].toUpperCase(),
+                style_class: 'usagebar-issues-group-title',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            list.add_child(title);
+            for (const issue of issues)
+                list.add_child(this._buildIssueCard(issue, dialog));
+        }
+        const scroll = new St.ScrollView({
+            style_class: 'usagebar-issues-scroll',
+            hscrollbar_policy: St.PolicyType.NEVER,
+            vscrollbar_policy: St.PolicyType.AUTOMATIC,
+            overlay_scrollbars: true,
+            x_expand: true,
+            y_expand: true,
+        });
+        scroll.set_child(list);
+        dialog.contentLayout.add_child(scroll);
+
+        dialog.addButton({
+            label: 'Copy all',
+            action: () => this._copyText(issuesReport(summary)),
+        });
+        dialog.addButton({
+            label: 'Retry all',
+            action: () => {
+                dialog.close();
+                this._retryInFlight = true;
+                if (!this._fetchInFlight)
+                    this._fetchUsage(true);
+            },
+        });
+        dialog.addButton({
+            label: 'Close',
+            action: () => dialog.close(),
+            default: true,
+            key: Clutter.KEY_Escape,
+        });
+        dialog.open();
+    }
+
+    _buildIssueCard(issue, dialog) {
+        const card = new St.BoxLayout({vertical: true, style_class: 'usagebar-issue-card', x_expand: true});
+
+        const head = new St.BoxLayout({style_class: 'usagebar-issue-head', x_expand: true});
+        const icon = this._providerIcon(issue.provider, 18);
+        if (icon)
+            head.add_child(new St.Bin({child: icon, y_align: Clutter.ActorAlign.CENTER}));
+        head.add_child(new St.Label({
+            text: issue.name,
+            style_class: 'usagebar-issue-name',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        head.add_child(new St.Label({
+            text: issue.label,
+            style_class: `usagebar-issue-pill usagebar-issue-pill-${issue.tone}`,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        head.add_child(new St.Widget({x_expand: true}));
+        const button = (label, primary, onClick) => {
+            const b = new St.Button({
+                label,
+                style_class: primary ? 'usagebar-issue-btn usagebar-issue-btn-primary' : 'usagebar-issue-btn',
+                can_focus: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            b.connect('clicked', onClick);
+            return b;
+        };
+        if (issue.login) {
+            head.add_child(button('Sign in', true, () => {
+                dialog.close();
+                this._launchLogin(issue.provider, issue.login);
+            }));
+        } else {
+            // Serve has no per-provider refresh; this refreshes them all.
+            head.add_child(button('Retry now', false, () => {
+                dialog.close();
+                this._retryInFlight = true;
+                if (!this._fetchInFlight)
+                    this._fetchUsage(true);
+            }));
+        }
+        card.add_child(head);
+
+        const body = new St.BoxLayout({vertical: true, style_class: 'usagebar-issue-body', x_expand: true});
+        const summaryLabel = new St.Label({text: issue.summary, style_class: 'usagebar-issue-summary'});
+        summaryLabel.clutter_text.line_wrap = true;
+        summaryLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        body.add_child(summaryLabel);
+
+        const meta = [];
+        const since = this._issueSince?.get(issue.provider);
+        if (since)
+            meta.push(`Since ${formatAge(since.since)}`);
+        if (issue.stale) {
+            const row = this._rows?.find(r => r.provider === issue.provider);
+            const updated = Date.parse(row?.usage?.updatedAt ?? '');
+            meta.push(Number.isFinite(updated)
+                ? `Last good data: ${formatAge(updated)}` : 'Showing last known data');
+        }
+        if (issue.group === 'retrying')
+            meta.push('Refreshes with the next poll');
+        if (meta.length) {
+            body.add_child(new St.Label({
+                text: meta.join('   ·   '),
+                style_class: 'usagebar-dim usagebar-issue-meta',
+            }));
+        }
+
+        const detailsBox = new St.BoxLayout({vertical: true, visible: false, style_class: 'usagebar-issue-details'});
+        const raw = new St.Label({text: issue.details, style_class: 'usagebar-issue-raw'});
+        raw.clutter_text.line_wrap = true;
+        raw.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+        raw.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        detailsBox.add_child(raw);
+        const copy = button('Copy error', false, () => this._copyText(`${issue.name}: ${issue.details}`));
+        copy.x_align = Clutter.ActorAlign.START;
+        detailsBox.add_child(copy);
+
+        const toggle = new St.Button({
+            label: '▸ Technical details',
+            style_class: 'usagebar-issue-toggle',
+            can_focus: true,
+            x_align: Clutter.ActorAlign.START,
+        });
+        toggle.connect('clicked', () => {
+            detailsBox.visible = !detailsBox.visible;
+            toggle.label = `${detailsBox.visible ? '▾' : '▸'} Technical details`;
+        });
+        body.add_child(toggle);
+        body.add_child(detailsBox);
+        card.add_child(body);
+        return card;
+    }
+
     // Provider error banner: the warning text, then a row of small action
     // buttons (Retry today; more actions slot into the same actions box).
     _addErrorBanner(card, row) {
+        const issue = describeIssue(row, this._displayName(row.provider));
+        const urgent = issue.group === 'action';
         const box = new St.BoxLayout({
             vertical: true,
-            style_class: 'usagebar-error-banner',
+            style_class: urgent
+                ? 'usagebar-issues-banner usagebar-issues-banner-urgent usagebar-provider-issue'
+                : 'usagebar-issues-banner usagebar-provider-issue',
             x_expand: true,
         });
-        const msg = row.error.message ?? 'provider fetch failed';
-        const suffix = row.stale ? ' — showing last known data' : '';
-        const label = new St.Label({
-            text: `⚠ ${msg}${suffix}`,
-            style_class: 'usagebar-banner',
+        const head = new St.BoxLayout({style_class: 'usagebar-provider-issue-head', x_expand: true});
+        head.add_child(new St.Widget({
+            style_class: `usagebar-issue-dot usagebar-issue-${issue.tone}`,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        head.add_child(new St.Label({
+            text: issue.label,
+            style_class: `usagebar-provider-issue-label usagebar-issue-text-${issue.tone}`,
             x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        const details = new St.Button({
+            label: 'Details',
+            style_class: 'usagebar-issue-btn',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
         });
-        label.clutter_text.line_wrap = true;
-        box.add_child(label);
+        details.connect('clicked', () => this._showIssues());
+        head.add_child(details);
+        head.add_child(this._buildLoginButton(row) ?? this._buildRetryButton());
+        box.add_child(head);
 
-        const actions = new St.BoxLayout({style_class: 'usagebar-banner-actions'});
-        actions.add_child(this._buildRetryButton());
-        const login = this._buildLoginButton(row);
-        if (login)
-            actions.add_child(login);
-        box.add_child(actions);
+        const summary = new St.Label({
+            text: issue.summary,
+            style_class: 'usagebar-provider-issue-summary',
+            x_expand: true,
+        });
+        summary.clutter_text.line_wrap = true;
+        summary.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        box.add_child(summary);
         card.add_child(box);
     }
 
@@ -6016,7 +6413,7 @@ export default class UsageBarExtension extends Extension {
     _buildRetryButton() {
         const button = new St.Button({
             label: this._retryInFlight ? 'Retrying…' : 'Retry',
-            style_class: 'usagebar-link usagebar-banner-btn',
+            style_class: 'usagebar-issue-btn',
             can_focus: true,
             reactive: !this._retryInFlight,
             y_align: Clutter.ActorAlign.CENTER,
@@ -6042,8 +6439,8 @@ export default class UsageBarExtension extends Extension {
         if (!argv)
             return null;
         const button = new St.Button({
-            label: 'Log in',
-            style_class: 'usagebar-link usagebar-banner-btn usagebar-login-btn',
+            label: 'Sign in',
+            style_class: 'usagebar-issue-btn usagebar-issue-btn-primary',
             can_focus: true,
             reactive: true,
             x_align: Clutter.ActorAlign.START,
@@ -6286,8 +6683,8 @@ export default class UsageBarExtension extends Extension {
                 if (!url)
                     continue;
                 const btn = new St.Button({
-                    label,
-                    style_class: 'usagebar-link',
+                    label: `${label} ↗`,
+                    style_class: 'usagebar-issue-btn',
                     y_align: Clutter.ActorAlign.CENTER,
                 });
                 btn.connect('clicked', () => {
@@ -6389,6 +6786,12 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
+    _compactSubtitleClass(issue) {
+        if (!issue)
+            return 'usagebar-dim usagebar-compact-subtitle';
+        return `usagebar-compact-subtitle usagebar-issue-text-${issue.tone}`;
+    }
+
     _buildCompactRow(row) {
         const rowBox = new St.BoxLayout({
             vertical: true,
@@ -6405,7 +6808,6 @@ export default class UsageBarExtension extends Extension {
             subtitleLabel: null,
             metricRefs: [],
             extraLabel: null,
-            unavailableLabel: null,
             contentBtn: null,
             separator: null,
         };
@@ -6461,8 +6863,11 @@ export default class UsageBarExtension extends Extension {
         head.add_child(state.titleLabel);
 
         let subtitle = '';
-        if (row.error) {
-            subtitle = row.error.message ?? 'fetch failed';
+        const issue = describeIssue(row, row.provider);
+        // Rows waiting on the user fade back so the banner leads.
+        rowBox.opacity = issue?.group === 'action' ? 150 : 255;
+        if (issue) {
+            subtitle = issue.label;
         } else {
             for (const {w} of windowsOf(row)) {
                 const rt = resetText(w);
@@ -6475,7 +6880,7 @@ export default class UsageBarExtension extends Extension {
         if (subtitle) {
             state.subtitleLabel = new St.Label({
                 text: subtitle,
-                style_class: row.error ? 'usagebar-banner usagebar-compact-subtitle' : 'usagebar-dim usagebar-compact-subtitle',
+                style_class: this._compactSubtitleClass(issue),
                 y_align: Clutter.ActorAlign.CENTER,
             });
             head.add_child(state.subtitleLabel);
@@ -6545,15 +6950,11 @@ export default class UsageBarExtension extends Extension {
                 });
                 metricsBox.add_child(state.extraLabel);
             }
-        } else if (row.error) {
-            state.unavailableLabel = new St.Label({
-                text: 'Unavailable',
-                style_class: 'usagebar-dim',
-            });
-            metricsBox.add_child(state.unavailableLabel);
         }
 
-        body.add_child(metricsBox);
+        // Without bars the subtitle already says what's wrong.
+        if (displayItems.length > 0 || extraCount > 0)
+            body.add_child(metricsBox);
         contentBox.add_child(body);
         contentBtn.set_child(contentBox);
         mainRow.add_child(contentBtn);
@@ -6564,8 +6965,11 @@ export default class UsageBarExtension extends Extension {
             state.titleLabel.text = this._displayName(next.provider);
             if (state.subtitleLabel) {
                 let nextSubtitle = '';
-                if (next.error) {
-                    nextSubtitle = next.error.message ?? 'fetch failed';
+                const nextIssue = describeIssue(next, next.provider);
+                rowBox.opacity = nextIssue?.group === 'action' ? 150 : 255;
+                state.subtitleLabel.style_class = this._compactSubtitleClass(nextIssue);
+                if (nextIssue) {
+                    nextSubtitle = nextIssue.label;
                 } else {
                     for (const {w} of windowsOf(next)) {
                         const rt = resetText(w);
@@ -6592,8 +6996,6 @@ export default class UsageBarExtension extends Extension {
                 ref.fill.set_size((known && used > 0)
                     ? Math.max(2, Math.round(24 * used / 100)) : 0, 4);
             });
-            if (state.unavailableLabel)
-                state.unavailableLabel.visible = !!next.error && !items.length;
             if (state.extraLabel)
                 state.extraLabel.text = `+${items.extraCount}`;
         };
