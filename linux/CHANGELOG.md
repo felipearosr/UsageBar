@@ -6,6 +6,7 @@ identical to upstream (steipete/CodexBar).
 ## Unreleased
 
 ### Added
+- Claude: opt-in Claude Code statusLine feed (`"statusLineFeed": true` on the `claude` provider in config.json). Pipe your statusLine payload to `codexbar claude statusline capture`; a capture from the last 15 minutes replaces the throttled `/api/oauth/usage` request, and when OAuth is rate limited a capture up to 6 hours old is shown greyed instead of the error, minus windows that have since reset; every other OAuth outcome is unchanged. Captures are bound to the signed-in Claude account. Restored from upstream #2769, which upstream removed in #3006.
 - Linux development: add a nested-GNOME dashboard smoke test with deterministic fixtures, rendered-control assertions, interaction checks, logs, and a screenshot artifact.
 
 ### Fixed

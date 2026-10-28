@@ -29,7 +29,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {planNotifications} from './notify.js';
-import {extraWindowsOf, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
+import {extraWindowsOf, isStaleSource, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {PROVIDER_META} from './providermeta.js';
 import {capName, readableBrandColor, surfaceColor} from './brandtext.js';
@@ -248,8 +248,11 @@ function worstPercent(row) {
 
 // Serve replaces a failing provider's row with a bare error row; carry the
 // last good usage forward, marked stale (port of client.rs merge_stale).
+// A Claude row answered from an old statusLine capture is stale as served.
 function mergeStale(previous, fresh) {
     for (const row of fresh) {
+        if (isStaleSource(row))
+            row.stale = true;
         if (row.error && windowsOf(row).length === 0) {
             const prev = previous.find(p => p.provider === row.provider &&
                 windowsOf(p).length > 0);
@@ -6548,6 +6551,14 @@ export default class UsageBarExtension extends Extension {
             head.add_child(new St.Label({
                 text: 'stale',
                 style_class: 'usagebar-badge usagebar-badge-stale',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        // The opt-in feed is labelled as coming from the user's own statusLine.
+        if (isStatusLineSource(row)) {
+            head.add_child(new St.Label({
+                text: 'statusLine',
+                style_class: 'usagebar-badge',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }

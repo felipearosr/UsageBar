@@ -21,6 +21,17 @@ export function windowsOf(row) {
                 w.usedPercent !== undefined);
 }
 
+// Rows serve answered from the user's own Claude Code statusLine (opt-in feed),
+// which the card labels as such.
+export function isStatusLineSource(row) {
+    return row?.source === 'statusline' || row?.source === 'statusline-stale';
+}
+
+// Rows serve answered from an old Claude statusLine capture while OAuth was rate limited.
+export function isStaleSource(row) {
+    return row?.source === 'statusline-stale';
+}
+
 export function extraWindowsOf(row) {
     return (row.usage?.extraRateWindows ?? []).filter(x => x?.window);
 }

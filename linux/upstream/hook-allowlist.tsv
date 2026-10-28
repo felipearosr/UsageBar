@@ -56,3 +56,5 @@ Scripts/lint.sh	Repo plumbing	calls linux/lint-fork.sh (Machine Sync protocol ve
 LICENSE	Launch: license attribution	UsageBar copyright line next to upstream's; required attribution, not shrinkable
 
 Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift	Claude shared usage cache	Wrap default Linux usage transport with cross-process cache and rate-limit backoff
+Sources/CodexBarCore/Providers/Claude/ClaudeProviderSettings.swift	Claude statusLine feed	Add the opt-in statusLineFeedEnabled flag (default off); shrinks if upstream restores #2769
+Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift	Claude statusLine feed	Read the flag from config.json and route the plan through ClaudeStatusLineFeedRouting (one call)

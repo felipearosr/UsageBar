@@ -269,3 +269,36 @@ The user-private cache contains quota fields, not access tokens, account identit
 or reset-credit grant inventory. Optional reset-credit inventory is available
 only on a live response. Cache files are written atomically with user-only
 permissions; the request lock releases when the owning process exits.
+
+### Claude Code statusLine feed (opt-in)
+
+Anthropic throttles `/api/oauth/usage` hard: one machine polling every five
+minutes still sees 429s. Claude Code already receives your 5-hour and 7-day
+windows on every response and passes them to your `statusLine` command. With the
+feed on, UsageBar reads them from there instead of asking the endpoint.
+
+1. Turn it on for the `claude` provider in `~/.config/codexbar/config.json`:
+
+   ```json
+   { "id": "claude", "enabled": true, "source": "oauth", "statusLineFeed": true }
+   ```
+
+2. Have your statusLine command forward its stdin. If you already have one, add
+   this near the top of it (it prints nothing and runs in the background):
+
+   ```sh
+   input=$(cat)
+   (printf '%s' "$input" | /usr/libexec/usagebar/codexbar claude statusline capture >/dev/null 2>&1 &)
+   ```
+
+   Without a statusLine of your own, point `statusLine.command` in
+   `~/.claude/settings.json` at a script that does only that.
+
+A capture from the last 15 minutes is used instead of the OAuth request. When
+there is none, OAuth runs as before; if it is rate limited, a capture up to 6
+hours old is shown greyed instead of an error, minus any window whose reset
+time has passed. Captures are stored under `~/.local/share/CodexBar/claude-statusline/`
+(mode 0600) and hold only the two windows, the capture time, and one-way hashes
+of the Claude profile and account. A capture from another account is ignored.
+The feed has no model-scoped weekly limits, extra usage or credits; those appear
+when an OAuth refresh succeeds. See `docs/claude-statusline-feed.md`.

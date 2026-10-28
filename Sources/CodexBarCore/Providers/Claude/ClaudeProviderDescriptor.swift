@@ -117,7 +117,8 @@ public enum ClaudeProviderDescriptor {
                     webExtrasEnabled: false,
                     cookieSource: cookieSource,
                     manualCookieHeader: routing.manualCookieHeader,
-                    organizationID: context.account?.sanitizedOrganizationID)
+                    organizationID: context.account?.sanitizedOrganizationID,
+                    statusLineFeedEnabled: ClaudeStatusLineFeedRouting.isEnabled(in: context.config)) // UsageBar
             }),
             credentials: self.credentials,
             metadata: ProviderMetadata(
@@ -282,7 +283,7 @@ public enum ClaudeProviderDescriptor {
         let plan = ClaudeSourcePlanner.resolve(input: planningInput)
         let webEnrichmentAccess = Self.webEnrichmentAccess(context: context)
 
-        return plan.orderedSteps.map { step in
+        let planned: [any ProviderFetchStrategy] = plan.orderedSteps.map { step in
             let strategy: any ProviderFetchStrategy = switch step.dataSource {
             case .api:
                 ClaudeAdminAPIFetchStrategy()
@@ -306,6 +307,7 @@ public enum ClaudeProviderDescriptor {
             }
             return ClaudePlannedFetchStrategy(base: strategy, plannedStep: step)
         }
+        return ClaudeStatusLineFeedRouting.route(planned, context: context) // UsageBar: statusLine feed
     }
 
     private static func hasAutoAdminAPIKey(context: ProviderFetchContext) -> Bool {

@@ -6,19 +6,23 @@ public struct ClaudeProviderSettings: Sendable {
     public let cookieSource: ProviderCookieSource
     public let manualCookieHeader: String?
     public let organizationID: String?
+    /// UsageBar: opt-in Claude Code statusLine feed (`statusLineFeed` in config.json). Off unless the user turns it on.
+    public let statusLineFeedEnabled: Bool
 
     public init(
         usageDataSource: ClaudeUsageDataSource,
         webExtrasEnabled: Bool,
         cookieSource: ProviderCookieSource,
         manualCookieHeader: String?,
-        organizationID: String? = nil)
+        organizationID: String? = nil,
+        statusLineFeedEnabled: Bool = false)
     {
         self.usageDataSource = usageDataSource
         self.webExtrasEnabled = webExtrasEnabled
         self.cookieSource = cookieSource
         self.manualCookieHeader = manualCookieHeader
         self.organizationID = organizationID
+        self.statusLineFeedEnabled = statusLineFeedEnabled
     }
 }
 
