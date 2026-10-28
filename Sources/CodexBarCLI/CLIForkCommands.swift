@@ -19,8 +19,9 @@ extension CodexBarCLI {
         switch path.first {
         case "sync":
             await self.runSync(path: path, values: values)
+        // Provider-specific by design: `codexbar claude statusline capture` is Claude Code's statusLine hook.
+        // Capture must never print or fail loudly: Claude Code renders its stdout.
         case "claude" where path == ["claude", "statusline", "capture"]:
-            // Statusline capture must never print or fail loudly: Claude Code renders its stdout.
             self.runClaudeStatusLineCapture()
         default:
             self.exit(code: .failure, message: "Unknown command", output: output, kind: .args)

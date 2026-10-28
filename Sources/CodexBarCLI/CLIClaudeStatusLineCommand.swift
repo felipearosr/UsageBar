@@ -6,6 +6,7 @@ import Foundation
 
 extension CodexBarCLI {
     static func claudeCommandDescriptor() -> CommandDescriptor {
+        // Provider-specific by design: the statusLine payload is a Claude Code integration with no other provider.
         CommandDescriptor(
             name: "claude",
             abstract: "Claude Code integrations",
