@@ -50,6 +50,7 @@ when an OAuth refresh succeeds.
 
 ## How stale numbers look
 
-The stale step returns a success with source `statusline-stale`. The GNOME extension greys a row with that source, the
-same way it greys last good numbers it carries forward over a provider error (`mergeStale`). A fresh capture (source
-`statusline`) and a successful OAuth fetch (source `oauth`) render normally.
+A stale answer is a success with source `statusline-stale`. The GNOME extension greys a row with that source, the
+same way it greys last good numbers it carries forward over a provider error (`mergeStale`). Both feed sources also get a
+`statusLine` badge on the card, so numbers from the user's own statusLine are always labelled; OAuth rows (source
+`oauth`) render as before.

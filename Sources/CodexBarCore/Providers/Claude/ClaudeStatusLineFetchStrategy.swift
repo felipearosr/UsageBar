@@ -132,9 +132,9 @@ struct ClaudeStatusLineRateLimitFallbackStrategy: ProviderFetchStrategy {
         do {
             return try await self.base.fetch(context)
         } catch where ClaudeUsageError.isClaudeOAuthUsageRateLimit(error) {
-            let stale = ClaudeStatusLineFetchStrategy(mode: .stale)
-            guard await stale.isAvailable(context) else { throw error }
-            return try await stale.fetch(context)
+            // One read: a capture that ages out between two reads must still surface the rate limit.
+            guard let stale = try? await ClaudeStatusLineFetchStrategy(mode: .stale).fetch(context) else { throw error }
+            return stale
         }
     }
 
