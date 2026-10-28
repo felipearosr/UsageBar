@@ -27,6 +27,7 @@ there belong to steipete/CodexBar (#62).
 | 004  | Stop repeated quota notifications; `notify.js` + `payload.js` under test | P1 | M | — | DONE (PR #114) |
 | 005  | Fix the provider-metadata generator, regenerate, add a drift check | P1 | M | — | DONE (PR #112) |
 | 006  | Idempotent `publish`, separate AUR job, isolate the merge rehearsal | P1 | S | — | DONE (PR #115) |
+| 007  | Share Claude quota between Machines (Machine Sync protocol amendment) | P2 | M | Claude statusLine feed; Sync Server change | PROPOSAL (needs owner approval) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 

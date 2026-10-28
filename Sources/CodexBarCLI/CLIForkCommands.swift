@@ -12,20 +12,27 @@ import Foundation
 /// - `rootHelp(version:)` interpolates `forkRootHelpUsage()` into its usage list.
 extension CodexBarCLI {
     static func forkCommandDescriptors() -> [CommandDescriptor] {
-        [self.syncCommandDescriptor()]
+        [self.syncCommandDescriptor(), self.claudeCommandDescriptor()]
     }
 
     static func runForkCommand(path: [String], values: ParsedValues, output: CLIOutputPreferences) async {
-        guard path.first == "sync" else {
+        switch path.first {
+        case "sync":
+            await self.runSync(path: path, values: values)
+        case "claude":
+            // Statusline capture must never print or fail loudly: Claude Code renders its stdout.
+            self.runClaudeStatusLineCapture()
+        default:
             self.exit(code: .failure, message: "Unknown command", output: output, kind: .args)
         }
-        await self.runSync(path: path, values: values)
     }
 
     static func forkHelp(for command: String?, version: String) -> String? {
         switch command {
         case "sync":
             self.syncHelp(version: version)
+        case "claude", "statusline", "capture":
+            self.claudeStatusLineHelp(version: version)
         default:
             nil
         }
@@ -41,6 +48,7 @@ extension CodexBarCLI {
         codexbar sync status [--timezone <iana-id>] [--day-start <hour>] [--json]
         codexbar sync install-timer [--uninstall]
         codexbar sync link | rename <display-name> | retire <machine> | forget <machine> [--yes] | leave [--yes]
+        codexbar claude statusline capture
         codexbar --version --json
         """
             .replacingOccurrences(of: "\n", with: "\n  ")

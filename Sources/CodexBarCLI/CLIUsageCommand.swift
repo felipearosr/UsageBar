@@ -381,10 +381,8 @@ extension CodexBarCLI {
             base: baseSource,
             provider: provider,
             account: account)
-        let cacheAccountKey = Self.usageCacheAccountKey(
-            provider: provider,
-            account: account,
-            codexVisibleAccount: codexVisibleAccount)
+        // UsageBar: upstream's key, falling back to the ambient Claude account key.
+        let cacheAccountKey = Self.forkUsageCacheAccountKey(provider, account, codexVisibleAccount, env)
 
         #if !os(macOS)
         if Self.sourceModeRequiresWebSupport(
