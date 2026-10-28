@@ -13,7 +13,7 @@ UI and managed installer were not restored: the feed is turned on in `config.jso
 
 ## Why
 
-Measured on 2026-10-28 with two machines on one account and `Scripts/claude_usage_ratelimit_probe.py`: with one machine
+Measured on 2026-10-28 with two machines on one account and `linux/claude-usage-ratelimit-probe.py`: with one machine
 silent for 25 minutes, the other, sending one request every five minutes, still got 429 on 2 of 5 requests. Responses
 come back in 30–50 ms with `Retry-After: 0` and no rate-limit headers. Coordinating machines cannot fix that; avoiding
 the request can. Claude Code receives the same windows on every Messages API response and passes them to the
@@ -33,22 +33,23 @@ Observations live at `~/.local/share/CodexBar/claude-statusline/<profile-hash>.j
 ## How it is used
 
 Opt in with `"statusLineFeed": true` on the `claude` provider entry. It applies to the ambient account in Auto and OAuth
-source modes, never to a selected token account. `ClaudeStatusLineFeedRouting` turns the planned chain into:
+source modes, never to a selected token account. `ClaudeStatusLineFeedRouting` changes the planned chain in two ways:
 
-1. `claude.statusline`: an observation at most 15 minutes old for the current account. No usage request is sent.
-2. the planned OAuth step, wrapped so a usage rate limit (`ClaudeUsageError.isClaudeOAuthUsageRateLimit`) falls through;
-3. `claude.statusline.stale`: an observation at most 6 hours old, with any window whose `resets_at` has passed removed;
-4. the rest of the plan, unchanged.
+1. `claude.statusline` goes first: an observation at most 15 minutes old for the current account, with both of its
+   windows still current. It answers and no usage request is sent.
+2. The planned OAuth step is wrapped. When OAuth throws a usage rate limit (`ClaudeUsageError.isClaudeOAuthUsageRateLimit`)
+   and an observation at most 6 hours old exists, that observation answers, with any window whose `resets_at` has
+   passed removed. Otherwise the OAuth error and its fallback decision pass through unchanged, so no other failure ever
+   shows a stale capture and the rest of the plan runs exactly as before.
 
 An observation is ignored unless its account hash matches the account signed in now, so switching accounts can never
-show the previous account's numbers. If the stale step has nothing, the OAuth rate-limit error is what surfaces. Other
-OAuth failures keep their existing fallback rules.
+show the previous account's numbers.
 
 Feed snapshots carry the two windows only. Model-scoped weekly limits, extra usage, credits and plan details come back
 when an OAuth refresh succeeds.
 
-## serve keeps the last good Claude row
+## How stale numbers look
 
-Separately from the feed, `serve` keys the ambient Claude row as `claude:account:<account hash>`. Its existing last-good
-merge then replaces a failed Claude row with that account's last good row within the stale window, instead of showing an
-empty error card. Without a provable signed-in account the key is nil and nothing is substituted.
+The stale step returns a success with source `statusline-stale`. The GNOME extension greys a row with that source, the
+same way it greys last good numbers it carries forward over a provider error (`mergeStale`). A fresh capture (source
+`statusline`) and a successful OAuth fetch (source `oauth`) render normally.

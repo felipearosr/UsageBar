@@ -11,7 +11,7 @@ local: a Machine only has fresh numbers while a Claude Code session on it is act
 `/api/oauth/usage`, which 429s even at one request every five minutes, and shows stale or missing Claude numbers while
 the desktop next to it has fresh ones.
 
-Measured on 2026-10-28 (`Scripts/claude_usage_ratelimit_probe.py`, two Machines, one account): Anthropic's throttle is
+Measured on 2026-10-28 (`linux/claude-usage-ratelimit-probe.py`, two Machines, one account): Anthropic's throttle is
 not something Machines can coordinate their way out of. With one Machine silent for 25 minutes the other still got 429
 on 2 of 5 requests. So the goal is not a shared request budget. It is **one Machine's fresh observation answering for
 the others**, which removes their requests altogether.

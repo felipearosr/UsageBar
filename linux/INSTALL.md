@@ -296,8 +296,8 @@ feed on, UsageBar reads them from there instead of asking the endpoint.
 
 A capture from the last 15 minutes is used instead of the OAuth request. When
 there is none, OAuth runs as before; if it is rate limited, a capture up to 6
-hours old is shown instead of an error, minus any window whose reset time has
-passed. Captures are stored under `~/.local/share/CodexBar/claude-statusline/`
+hours old is shown greyed instead of an error, minus any window whose reset
+time has passed. Captures are stored under `~/.local/share/CodexBar/claude-statusline/`
 (mode 0600) and hold only the two windows, the capture time, and one-way hashes
 of the Claude profile and account. A capture from another account is ignored.
 The feed has no model-scoped weekly limits, extra usage or credits; those appear

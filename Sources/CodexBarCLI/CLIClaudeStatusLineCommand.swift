@@ -75,30 +75,3 @@ extension CodexBarCLI {
         return result
     }
 }
-
-extension CodexBarCLI {
-    /// UsageBar: upstream's usage cache key, falling back to the ambient Claude account key.
-    static func forkUsageCacheAccountKey(
-        _ provider: UsageProvider,
-        _ account: ProviderTokenAccount?,
-        _ codexVisibleAccount: CodexVisibleAccount?,
-        _ environment: [String: String]) -> String?
-    {
-        self.usageCacheAccountKey(provider: provider, account: account, codexVisibleAccount: codexVisibleAccount)
-            ?? self.ambientClaudeUsageCacheAccountKey(provider: provider, account: account, environment: environment)
-    }
-
-    /// UsageBar: keys the ambient Claude row by the signed-in account, so `serve` can stand its last good numbers in
-    /// for a rate-limited refresh. Access tokens rotate every few hours; the account UUID does not. Nil (no
-    /// substitution) whenever Claude Code's config cannot prove which account is signed in.
-    static func ambientClaudeUsageCacheAccountKey(
-        provider: UsageProvider,
-        account: ProviderTokenAccount?,
-        environment: [String: String]) -> String?
-    {
-        guard provider == .claude, account == nil,
-              let accountID = ClaudeStatusLineProfile.accountID(environment: environment)
-        else { return nil }
-        return "claude:account:\(accountID)"
-    }
-}

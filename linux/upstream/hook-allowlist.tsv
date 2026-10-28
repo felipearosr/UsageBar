@@ -58,4 +58,3 @@ LICENSE	Launch: license attribution	UsageBar copyright line next to upstream's; 
 Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift	Claude shared usage cache	Wrap default Linux usage transport with cross-process cache and rate-limit backoff
 Sources/CodexBarCore/Providers/Claude/ClaudeProviderSettings.swift	Claude statusLine feed	Add the opt-in statusLineFeedEnabled flag (default off); shrinks if upstream restores #2769
 Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift	Claude statusLine feed	Read the flag from config.json and route the plan through ClaudeStatusLineFeedRouting (one call)
-Sources/CodexBarCLI/CLIUsageCommand.swift	Claude statusLine feed	Fall back to an account-keyed cache key for the ambient Claude row so serve's last-good merge covers 429s

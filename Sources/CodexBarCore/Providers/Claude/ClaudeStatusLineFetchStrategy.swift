@@ -7,8 +7,9 @@ import Foundation
 // user's statusLine command, which can pipe them to `codexbar claude statusline capture`. With the feed opted in:
 //
 // 1. a fresh observation (≤ 15 min) answers before OAuth, so no usage request is sent;
-// 2. otherwise OAuth runs as before, and when it is rate limited an older observation (≤ 6 h, minus windows that
-//    have since reset) answers instead of an error.
+// 2. otherwise OAuth runs as before, and only when it is rate limited does an older observation (≤ 6 h, minus windows
+//    that have since reset) answer instead of the error. Every other OAuth outcome, including its fallback rules, is
+//    unchanged.
 //
 // Observations carry a hash of the account UUID from Claude Code's config and are ignored for any other account.
 
@@ -25,21 +26,16 @@ enum ClaudeStatusLineFeedRouting {
         return context.sourceMode == .auto || context.sourceMode == .oauth
     }
 
-    /// Puts the fresh feed first and lets a rate-limited OAuth step fall through to the stale feed.
+    /// Puts the fresh feed first and lets a rate-limited OAuth step answer from the stale feed.
     static func route(_ strategies: [any ProviderFetchStrategy], context: ProviderFetchContext)
         -> [any ProviderFetchStrategy]
     {
         guard self.applies(to: context) else { return strategies }
-        var routed: [any ProviderFetchStrategy] = [ClaudeStatusLineFetchStrategy(mode: .fresh)]
-        for strategy in strategies {
-            if strategy.id == ClaudeStatusLineRateLimitFallbackStrategy.oauthStrategyID {
-                routed.append(ClaudeStatusLineRateLimitFallbackStrategy(base: strategy))
-                routed.append(ClaudeStatusLineFetchStrategy(mode: .stale))
-            } else {
-                routed.append(strategy)
-            }
+        return [ClaudeStatusLineFetchStrategy(mode: .fresh)] + strategies.map { strategy in
+            strategy.id == ClaudeStatusLineRateLimitFallbackStrategy.oauthStrategyID
+                ? ClaudeStatusLineRateLimitFallbackStrategy(base: strategy)
+                : strategy
         }
-        return routed
     }
 }
 
@@ -63,7 +59,7 @@ struct ClaudeStatusLineFetchStrategy: ProviderFetchStrategy {
         }
     }
 
-    typealias ObservationLoader = @Sendable (ProviderFetchContext, TimeInterval) -> ClaudeStatusLineRateLimits?
+    typealias ObservationLoader = @Sendable (ProviderFetchContext, Mode) -> ClaudeStatusLineRateLimits?
 
     #if DEBUG
     @TaskLocal static var observationLoaderOverrideForTesting: ObservationLoader?
@@ -97,7 +93,7 @@ struct ClaudeStatusLineFetchStrategy: ProviderFetchStrategy {
     private func loadObservation(_ context: ProviderFetchContext) -> ClaudeStatusLineRateLimits? {
         #if DEBUG
         if let override = Self.observationLoaderOverrideForTesting {
-            return override(context, self.mode.maximumAge)
+            return override(context, self.mode)
         }
         #endif
         guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
@@ -107,11 +103,14 @@ struct ClaudeStatusLineFetchStrategy: ProviderFetchStrategy {
             applicationSupport: support,
             expectedProfileID: ClaudeStatusLineProfile.identifier(environment: context.env),
             expectedAccountID: accountID,
-            maximumAge: self.mode.maximumAge)
+            maximumAge: self.mode.maximumAge,
+            // A fresh capture must cover both of its windows; one that has reset would hide that bar until it ages out.
+            allowsResetWindows: self.mode == .stale)
     }
 }
 
-/// Wraps the OAuth step so a usage-endpoint rate limit falls through to the stale feed instead of ending the chain.
+/// Wraps the OAuth step: when the usage endpoint is rate limited and a stale capture exists, that capture answers.
+/// Otherwise the OAuth error and its fallback decision are passed through untouched.
 struct ClaudeStatusLineRateLimitFallbackStrategy: ProviderFetchStrategy {
     static let oauthStrategyID = "claude.oauth"
 
@@ -130,14 +129,17 @@ struct ClaudeStatusLineRateLimitFallbackStrategy: ProviderFetchStrategy {
     }
 
     func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
-        try await self.base.fetch(context)
+        do {
+            return try await self.base.fetch(context)
+        } catch where ClaudeUsageError.isClaudeOAuthUsageRateLimit(error) {
+            let stale = ClaudeStatusLineFetchStrategy(mode: .stale)
+            guard await stale.isAvailable(context) else { throw error }
+            return try await stale.fetch(context)
+        }
     }
 
     func shouldFallback(on error: Error, context: ProviderFetchContext) -> Bool {
-        if ClaudeUsageError.isClaudeOAuthUsageRateLimit(error) {
-            return true
-        }
-        return self.base.shouldFallback(on: error, context: context)
+        self.base.shouldFallback(on: error, context: context)
     }
 }
 

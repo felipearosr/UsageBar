@@ -19,7 +19,7 @@ extension CodexBarCLI {
         switch path.first {
         case "sync":
             await self.runSync(path: path, values: values)
-        case "claude":
+        case "claude" where ["claude", "statusline", "capture"].starts(with: path):
             // Statusline capture must never print or fail loudly: Claude Code renders its stdout.
             self.runClaudeStatusLineCapture()
         default:

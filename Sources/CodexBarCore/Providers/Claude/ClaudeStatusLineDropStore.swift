@@ -53,12 +53,14 @@ public enum ClaudeStatusLineDropStore {
     }
 
     /// Loads the observation for `expectedProfileID` if it belongs to `expectedAccountID` and is at most
-    /// `maximumAge` old. Windows whose reset time has passed are dropped: their percentage no longer applies.
+    /// `maximumAge` old. Windows whose reset time has passed are dropped: their percentage no longer applies. With
+    /// `allowsResetWindows` false, an observation that lost a window that way is not returned at all.
     public static func load(
         applicationSupport: URL,
         expectedProfileID: String,
         expectedAccountID: String,
         maximumAge: TimeInterval = Self.freshnessWindow,
+        allowsResetWindows: Bool = true,
         now: Date = Date()) -> ClaudeStatusLineRateLimits?
     {
         let url = self.observationURL(applicationSupport: applicationSupport, profileID: expectedProfileID)
@@ -70,7 +72,9 @@ public enum ClaudeStatusLineDropStore {
               self.isValid(envelope.observation),
               self.isWithinAge(envelope.observation, maximumAge: maximumAge, now: now)
         else { return nil }
-        return self.droppingResetWindows(envelope.observation, now: now)
+        let current = self.droppingResetWindows(envelope.observation, now: now)
+        guard allowsResetWindows || current == envelope.observation else { return nil }
+        return current
     }
 
     public static func isWithinAge(_ observation: ClaudeStatusLineRateLimits, maximumAge: TimeInterval, now: Date)

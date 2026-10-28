@@ -53,12 +53,18 @@ struct ClaudeStatusLineFeedLinuxTests {
             Self.payload, capturedAt: captured, environment: profile.env))
         try ClaudeStatusLineDropStore.write(limits, applicationSupport: profile.support)
 
-        func load(account: String?, age: TimeInterval, after: TimeInterval) -> ClaudeStatusLineRateLimits? {
+        func load(
+            account: String?,
+            age: TimeInterval,
+            after: TimeInterval,
+            allowsReset: Bool = true) -> ClaudeStatusLineRateLimits?
+        {
             ClaudeStatusLineDropStore.load(
                 applicationSupport: profile.support,
                 expectedProfileID: limits.profileID,
                 expectedAccountID: account ?? limits.accountID,
                 maximumAge: age,
+                allowsResetWindows: allowsReset,
                 now: captured.addingTimeInterval(after))
         }
         #expect(load(account: nil, age: ClaudeStatusLineDropStore.freshnessWindow, after: 60) == limits)
@@ -67,6 +73,12 @@ struct ClaudeStatusLineFeedLinuxTests {
         #expect(load(account: nil, age: ClaudeStatusLineDropStore.staleWindow, after: 16 * 60) == limits)
         #expect(load(account: nil, age: ClaudeStatusLineDropStore.staleWindow, after: 7 * 3600) == nil)
         #expect(load(account: nil, age: ClaudeStatusLineDropStore.freshnessWindow, after: -10 * 60) == nil)
+        // The payload's five-hour window resets at 1_900_000_000: a stale read drops it, a fresh read refuses the
+        // capture.
+        let pastReset = 1_900_000_000 - captured.timeIntervalSince1970 + 1
+        #expect(load(account: nil, age: .infinity, after: pastReset)?.fiveHour == nil)
+        #expect(load(account: nil, age: .infinity, after: pastReset)?.sevenDay != nil)
+        #expect(load(account: nil, age: .infinity, after: pastReset, allowsReset: false) == nil)
 
         let mode = try FileManager.default.attributesOfItem(atPath: ClaudeStatusLineDropStore.observationURL(
             applicationSupport: profile.support, profileID: limits.profileID).path)[.posixPermissions] as? Int
@@ -102,13 +114,15 @@ struct ClaudeStatusLineFeedLinuxTests {
     }
 
     @Test
-    func `routing puts the fresh feed first and the stale feed right after OAuth`() {
+    func `routing puts the fresh feed first and wraps only the OAuth step`() {
         let strategies: [any ProviderFetchStrategy] = [
             StubStrategy(id: "claude.oauth", outcome: .success),
             StubStrategy(id: "claude.cli", outcome: .success),
         ]
         let routed = ClaudeStatusLineFeedRouting.route(strategies, context: Self.context(feed: true, sourceMode: .auto))
-        #expect(routed.map(\.id) == ["claude.statusline", "claude.oauth", "claude.statusline.stale", "claude.cli"])
+        #expect(routed.map(\.id) == ["claude.statusline", "claude.oauth", "claude.cli"])
+        #expect(routed[1] is ClaudeStatusLineRateLimitFallbackStrategy)
+        #expect(!(routed[2] is ClaudeStatusLineRateLimitFallbackStrategy))
         let off = ClaudeStatusLineFeedRouting.route(strategies, context: Self.context(feed: false, sourceMode: .auto))
         #expect(off.map(\.id) == ["claude.oauth", "claude.cli"])
     }
@@ -155,6 +169,23 @@ struct ClaudeStatusLineFeedLinuxTests {
     }
 
     @Test
+    func `a rate-limited OAuth without a stale capture keeps today's fallback decision`() async {
+        let oauth = StubStrategy(id: "claude.oauth", outcome: .rateLimited)
+        let cli = StubStrategy(id: "claude.cli", outcome: .success)
+        _ = await Self.run([oauth, cli], fresh: false, stale: false)
+        #expect(cli.calls.value == 0)
+    }
+
+    @Test
+    func `the stale capture never answers for a failure other than a rate limit`() async {
+        let oauth = StubStrategy(id: "claude.oauth", outcome: .unauthorized, fallsBack: true)
+        let cli = StubStrategy(id: "claude.cli", outcome: .success)
+        let outcome = await Self.run([oauth, cli], fresh: false, stale: true)
+        #expect(Self.sourceLabel(outcome) == "claude.cli")
+        #expect(cli.calls.value == 1)
+    }
+
+    @Test
     func `a non rate-limit OAuth failure on explicit OAuth does not fall back`() async {
         let oauth = StubStrategy(id: "claude.oauth", outcome: .unauthorized)
         let outcome = await Self.run([oauth], fresh: false, stale: true)
@@ -184,21 +215,6 @@ struct ClaudeStatusLineFeedLinuxTests {
         #expect(stored.contains("accountID"))
         #expect(!stored.contains("secret"))
         #expect(!stored.contains("/repo"))
-    }
-
-    @Test
-    func `ambient Claude rows are keyed by account, token accounts and other providers are not`() throws {
-        let profile = try Profile(accountUuid: "A")
-        let key = CodexBarCLI.ambientClaudeUsageCacheAccountKey(
-            provider: .claude,
-            account: nil,
-            environment: profile.env)
-        #expect(try key == "claude:account:\(#require(ClaudeStatusLineProfile.accountID(environment: profile.env)))")
-        #expect(CodexBarCLI.ambientClaudeUsageCacheAccountKey(provider: .codex, account: nil, environment: profile.env)
-            == nil)
-        let signedOut = try Profile(accountUuid: nil)
-        #expect(CodexBarCLI.ambientClaudeUsageCacheAccountKey(
-            provider: .claude, account: nil, environment: signedOut.env) == nil)
     }
 
     // MARK: Helpers
@@ -259,9 +275,8 @@ struct ClaudeStatusLineFeedLinuxTests {
         let pipeline = ProviderFetchPipeline(
             resolveStrategies: { context in ClaudeStatusLineFeedRouting.route(strategies, context: context) },
             retrySleeper: { _ in })
-        let loader: ClaudeStatusLineFetchStrategy.ObservationLoader = { _, maximumAge in
-            let isFresh = maximumAge == ClaudeStatusLineDropStore.freshnessWindow
-            return (isFresh ? fresh : stale) ? observation : nil
+        let loader: ClaudeStatusLineFetchStrategy.ObservationLoader = { _, mode in
+            (mode == .fresh ? fresh : stale) ? observation : nil
         }
         return await ClaudeStatusLineFetchStrategy.$observationLoaderOverrideForTesting.withValue(loader) {
             await pipeline.fetch(context: context, provider: .claude)
@@ -291,6 +306,7 @@ private struct StubStrategy: ProviderFetchStrategy {
 
     let id: String
     let outcome: Outcome
+    var fallsBack = false
     let kind: ProviderFetchKind = .oauth
     let calls = Counter()
 
@@ -304,7 +320,7 @@ private struct StubStrategy: ProviderFetchStrategy {
         case .success:
             return self.makeResult(
                 usage: UsageSnapshot(primary: nil, secondary: nil, updatedAt: Date()),
-                sourceLabel: "oauth")
+                sourceLabel: self.id)
         case .rateLimited:
             throw ClaudeUsageError.oauthFailed(ClaudeOAuthFetchError.rateLimited(retryAfter: nil).localizedDescription)
         case .unauthorized:
@@ -313,6 +329,6 @@ private struct StubStrategy: ProviderFetchStrategy {
     }
 
     func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
-        false
+        self.fallsBack
     }
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {extraWindowsOf, isLongWindow, paceOf, resetSecs, windowLabel, windowsOf}
+import {extraWindowsOf, isLongWindow, isStaleSource, paceOf, resetSecs, windowLabel, windowsOf}
     from '../usagebar@felipearosr.github.io/payload.js';
 
 const NOW = Date.parse('2026-10-12T12:00:00Z');
@@ -49,4 +49,12 @@ test('window labels preserve the full duration ladder', () => {
         [9000, 1, 'Weekly'], [2880, 1, '2-day'], [300, 0, 'Session (5h)'],
         [90, 1, '2h'], [30, 1, '30m']])
         assert.equal(windowLabel(minutes, slot), expected);
+});
+
+test('only the stale Claude statusLine source counts as stale as served', () => {
+    assert.equal(isStaleSource({provider: 'claude', source: 'statusline-stale'}), true);
+    assert.equal(isStaleSource({provider: 'claude', source: 'statusline'}), false);
+    assert.equal(isStaleSource({provider: 'claude', source: 'oauth'}), false);
+    assert.equal(isStaleSource({}), false);
+    assert.equal(isStaleSource(null), false);
 });
