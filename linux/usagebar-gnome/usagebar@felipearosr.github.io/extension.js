@@ -6852,7 +6852,7 @@ export default class UsageBarExtension extends Extension {
         return planLabel(row, this._displayName(row.provider), PROVIDER_META[row.provider]?.planLabels);
     }
 
-        _compactSubtitleClass(issue) {
+    _compactSubtitleClass(issue) {
         if (!issue)
             return 'usagebar-dim usagebar-compact-subtitle';
         return `usagebar-compact-subtitle usagebar-issue-text-${issue.tone}`;

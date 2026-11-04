@@ -49,7 +49,7 @@ export function planOf(row) {
 }
 
 function rowEmail(row) {
-    return String(row.usage?.identity?.accountEmail ?? row.usage?.accountEmail ?? row.account ?? '')
+    return String(row.usage?.identity?.accountEmail ?? row.usage?.accountEmail ?? '')
         .trim().toLowerCase();
 }
 

@@ -87,7 +87,7 @@ test('the cached Claude label wins over the plan table', () => {
 test('cached label follows the account email, not just the plan family', () => {
     const plan = {name: 'Ultra', family: 'max', email: 'me@example.com'};
     const row = (email, loginMethod = 'Claude Max 20x') =>
-        ({provider: 'claude', account: email, usage: {loginMethod, identity: {accountEmail: email}}});
+        ({provider: 'claude', usage: {loginMethod, identity: {accountEmail: email}}});
     const [mine, other] = applyClaudeAccountPlan(
         [row('ME@example.com'), row('other@example.com', 'Claude Max 5x')], plan);
     assert.equal(planLabel(mine, 'Claude'), 'Ultra');
