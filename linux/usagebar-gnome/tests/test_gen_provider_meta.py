@@ -218,6 +218,19 @@ class ProviderMetaTests(unittest.TestCase):
         self.assertNotIn('dashboard', result[1])
         self.assertEqual(result[1]['statusPage'], 'https://status.example.com')
 
+    def test_plan_labels_publish_plain_string_pairs(self):
+        result = self.parse('''ProviderMetadata(id: .fixture,
+            sharePlanLabels: [
+                "pro": "Pro 20x", "prolite": "Pro 5x",
+            ],
+            displayName: "Fixture")''')
+        self.assertEqual(result[1]['planLabels'], {'pro': 'Pro 20x', 'prolite': 'Pro 5x'})
+        self.assertNotIn('planLabels', self.parse('ProviderMetadata(id: .fixture, sharePlanLabels: [:])')[1])
+        for expr in ['Fixture.labels', '["pro": label]', '["pro": "Pro" + "x"]']:
+            with self.subTest(expr=expr):
+                with self.assertRaisesRegex(ValueError, 'unsupported sharePlanLabels'):
+                    self.parse(f'ProviderMetadata(id: .fixture, sharePlanLabels: {expr})')
+
     def test_real_descriptors_have_names_and_brand_colors(self):
         paths = sorted(Path(gen.REPO).glob('Sources/CodexBarCore/Providers/*/*ProviderDescriptor.swift'))
         self.assertTrue(paths)
@@ -234,3 +247,5 @@ class ProviderMetaTests(unittest.TestCase):
         self.assertEqual(providers['manus']['color'], '#34322d')
         self.assertEqual(providers['poe']['color'], '#5d5cde')
         self.assertEqual(providers['kimi']['dashboard'], 'https://www.kimi.com/code/console')
+        self.assertEqual(providers['codex']['planLabels']['prolite'], 'Pro 5x')
+        self.assertEqual(providers['claude']['planLabels']['claude max 20x'], 'Max 20x')
