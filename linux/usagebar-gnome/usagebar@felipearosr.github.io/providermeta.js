@@ -8,6 +8,12 @@ export const PROVIDER_META = {
     "abacus": {
         "name": "Abacus AI",
         "dashboard": "https://apps.abacus.ai/chatllm/admin/compute-points-usage",
+        "planLabels": {
+            "basic": "Basic",
+            "enterprise": "Enterprise",
+            "pro": "Pro",
+            "team": "Team"
+        },
         "color": "#814ee8"
     },
     "aiand": {
@@ -23,11 +29,25 @@ export const PROVIDER_META = {
     "alibaba": {
         "name": "Alibaba",
         "statusLink": "https://status.aliyun.com",
+        "planLabels": {
+            "active pro": "Pro",
+            "alibaba coding plan pro": "Pro",
+            "coding plan lite": "Lite",
+            "enterprise": "Enterprise",
+            "lite": "Lite",
+            "pro": "Pro",
+            "starter": "Starter"
+        },
         "color": "#ff6a00"
     },
     "alibabatokenplan": {
         "name": "Alibaba Token Plan",
         "statusLink": "https://status.aliyun.com",
+        "planLabels": {
+            "token plan": "Token Plan",
+            "token plan plus": "Token Plan Plus",
+            "token plan pro": "Token Plan Pro"
+        },
         "color": "#ff6a00"
     },
     "amp": {
@@ -38,6 +58,13 @@ export const PROVIDER_META = {
     "antigravity": {
         "name": "Antigravity",
         "statusLink": "https://www.google.com/appsstatus/dashboard/products/npdyhgECDJ6tB66MxXyo/history",
+        "planLabels": {
+            "free": "Free",
+            "google ai ultra": "Google AI Ultra",
+            "paid": "Paid",
+            "pro": "Pro",
+            "ultra": "Google AI Ultra"
+        },
         "color": "#60ba7e"
     },
     "atlascloud": {
@@ -49,6 +76,14 @@ export const PROVIDER_META = {
         "name": "Augment",
         "dashboard": "https://app.augmentcode.com/account/subscription",
         "statusPage": "https://status.augmentcode.com",
+        "planLabels": {
+            "community": "Community",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "indie": "Indie",
+            "pro": "Pro",
+            "team": "Team"
+        },
         "color": "#1aa049",
         "statusFeed": {
             "kind": "statuspage",
@@ -81,6 +116,26 @@ export const PROVIDER_META = {
         "dashboard": "https://console.anthropic.com/settings/billing",
         "subscriptionDashboard": "https://claude.ai/settings/usage",
         "statusPage": "https://status.claude.com/",
+        "planLabels": {
+            "claude enterprise": "Enterprise",
+            "claude free": "Free",
+            "claude max": "Max",
+            "claude max 20x": "Max 20x",
+            "claude max 5x": "Max 5x",
+            "claude pro": "Pro",
+            "claude team": "Team",
+            "claude team premium": "Team Premium",
+            "claude team standard": "Team Standard",
+            "claude ultra": "Ultra",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "max": "Max",
+            "max 20x": "Max 20x",
+            "max 5x": "Max 5x",
+            "pro": "Pro",
+            "team": "Team",
+            "ultra": "Ultra"
+        },
         "color": "#cc7c5e",
         "statusFeed": {
             "kind": "statuspage",
@@ -119,6 +174,31 @@ export const PROVIDER_META = {
         "name": "Codex",
         "dashboard": "https://chatgpt.com/codex/cloud/settings/analytics#usage",
         "statusPage": "https://status.openai.com/",
+        "planLabels": {
+            "business": "Business",
+            "chatgpt plus": "Plus",
+            "chatgpt-plus": "Plus",
+            "chatgpt_plus": "Plus",
+            "codex pro": "Pro 20x",
+            "codex pro lite": "Pro 5x",
+            "edu": "Edu",
+            "education": "Education",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "free_workspace": "Free Workspace",
+            "go": "Go",
+            "guest": "Guest",
+            "k12": "K12",
+            "plus": "Plus",
+            "plus plan": "Plus",
+            "pro": "Pro 20x",
+            "pro lite": "Pro 5x",
+            "pro-lite": "Pro 5x",
+            "pro_lite": "Pro 5x",
+            "prolite": "Pro 5x",
+            "quorum": "Quorum",
+            "team": "Team"
+        },
         "color": "#49a3b0",
         "statusFeed": {
             "kind": "incidentio",
@@ -141,6 +221,13 @@ export const PROVIDER_META = {
         "name": "Copilot",
         "dashboard": "https://github.com/settings/copilot",
         "statusPage": "https://www.githubstatus.com/",
+        "planLabels": {
+            "business": "Business",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "individual": "Individual",
+            "pro": "Individual"
+        },
         "color": "#a855f7",
         "statusFeed": {
             "kind": "statuspage",
@@ -161,6 +248,22 @@ export const PROVIDER_META = {
         "name": "Cursor",
         "dashboard": "https://cursor.com/dashboard?tab=usage",
         "statusPage": "https://status.cursor.com",
+        "planLabels": {
+            "business": "Cursor Business",
+            "cursor business": "Cursor Business",
+            "cursor enterprise": "Cursor Enterprise",
+            "cursor free": "Cursor Free",
+            "cursor hobby": "Cursor Hobby",
+            "cursor pro": "Cursor Pro",
+            "cursor team": "Cursor Team",
+            "cursor ultra": "Cursor Ultra",
+            "enterprise": "Cursor Enterprise",
+            "free": "Cursor Free",
+            "hobby": "Cursor Hobby",
+            "pro": "Cursor Pro",
+            "team": "Cursor Team",
+            "ultra": "Cursor Ultra"
+        },
         "color": "#f54e00",
         "statusFeed": {
             "kind": "statuspage",
@@ -189,6 +292,13 @@ export const PROVIDER_META = {
         "name": "Devin",
         "dashboard": "https://app.devin.ai",
         "subscriptionDashboard": "https://app.devin.ai/settings/usage",
+        "planLabels": {
+            "core": "Core",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "pro": "Pro",
+            "team": "Team"
+        },
         "color": "#317cff"
     },
     "devpass": {
@@ -206,6 +316,16 @@ export const PROVIDER_META = {
         "dashboard": "https://elevenlabs.io/app/developers/usage",
         "subscriptionDashboard": "https://elevenlabs.io/app/subscription",
         "statusLink": "https://status.elevenlabs.io",
+        "planLabels": {
+            "business": "Business",
+            "creator": "Creator",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "growing business": "Business",
+            "pro": "Pro",
+            "scale": "Scale",
+            "starter": "Starter"
+        },
         "color": "#ebebe6"
     },
     "factory": {
@@ -227,6 +347,14 @@ export const PROVIDER_META = {
         "name": "Gemini",
         "dashboard": "https://gemini.google.com",
         "statusLink": "https://www.google.com/appsstatus/dashboard/products/npdyhgECDJ6tB66MxXyo/history",
+        "planLabels": {
+            "free": "Free",
+            "gemini code assist in google one ai pro": "Google One AI Pro",
+            "legacy": "Legacy",
+            "paid": "Paid",
+            "plus": "Plus",
+            "workspace": "Workspace"
+        },
         "color": "#ab87ea"
     },
     "gitkraken": {
@@ -338,6 +466,21 @@ export const PROVIDER_META = {
     "minimax": {
         "name": "MiniMax",
         "dashboard": "https://platform.minimax.io/user-center/payment/coding-plan?cycle_type=3",
+        "planLabels": {
+            "coding plan pro": "Coding Plan Pro",
+            "combo star": "Combo Star",
+            "free": "Free",
+            "max": "Max",
+            "minimax star": "MiniMax Star",
+            "plus": "Plus",
+            "pro": "Pro",
+            "token plan pro": "Token Plan Pro",
+            "token plan · tokenplanplus-年度会员": "Token Plan Plus",
+            "tokenplanmax-年度会员": "Token Plan Max",
+            "tokenplanplus-年度会员": "Token Plan Plus",
+            "tokenplanultra-年度会员": "Token Plan Ultra",
+            "ultra": "Ultra"
+        },
         "color": "#fe603c"
     },
     "mistral": {
@@ -372,6 +515,12 @@ export const PROVIDER_META = {
         "name": "Notion AI",
         "dashboard": "https://app.notion.com/",
         "statusLink": "https://status.notion.so/",
+        "planLabels": {
+            "business": "Business",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "plus": "Plus"
+        },
         "color": "#337ea9"
     },
     "nous": {
@@ -415,6 +564,10 @@ export const PROVIDER_META = {
         "name": "Perplexity",
         "dashboard": "https://www.perplexity.ai/account/usage",
         "statusLink": "https://status.perplexity.com/",
+        "planLabels": {
+            "max": "Max",
+            "pro": "Pro"
+        },
         "color": "#20b2aa"
     },
     "pi": {
@@ -449,6 +602,12 @@ export const PROVIDER_META = {
     "sakana": {
         "name": "Sakana AI",
         "dashboard": "https://console.sakana.ai/billing",
+        "planLabels": {
+            "enterprise": "Enterprise",
+            "pro": "Pro",
+            "standard": "Standard",
+            "standard $20/mo": "Standard"
+        },
         "color": "#2975db"
     },
     "stepfun": {
@@ -458,16 +617,35 @@ export const PROVIDER_META = {
     },
     "sub2api": {
         "name": "sub2api",
+        "planLabels": {
+            "claude team": "Team",
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "pro": "Pro",
+            "team": "Team",
+            "wallet plan": "Wallet"
+        },
         "color": "#14b8a6"
     },
     "synthetic": {
         "name": "Synthetic",
+        "planLabels": {
+            "enterprise": "Enterprise",
+            "pro": "Pro",
+            "starter": "Starter",
+            "team": "Team"
+        },
         "color": "#141414"
     },
     "t3chat": {
         "name": "T3 Chat",
         "dashboard": "https://t3.chat/settings/customization",
         "subscriptionDashboard": "https://t3.chat/settings/subscription",
+        "planLabels": {
+            "free": "Free",
+            "pro": "Pro",
+            "team": "Team"
+        },
         "color": "#f56647"
     },
     "typesafe": {
@@ -508,6 +686,14 @@ export const PROVIDER_META = {
     "windsurf": {
         "name": "Windsurf",
         "dashboard": "https://windsurf.com/subscription/usage",
+        "planLabels": {
+            "enterprise": "Enterprise",
+            "free": "Free",
+            "pro": "Pro",
+            "team": "Teams",
+            "teams": "Teams",
+            "ultimate": "Ultimate"
+        },
         "color": "#34e8bb"
     },
     "workbuddy": {
@@ -528,10 +714,23 @@ export const PROVIDER_META = {
     },
     "zai": {
         "name": "z.ai / GLM",
+        "planLabels": {
+            "free": "Free",
+            "max": "Max",
+            "pro": "Pro",
+            "team": "Team"
+        },
         "color": "#e85a6a"
     },
     "zed": {
         "name": "Zed",
+        "planLabels": {
+            "zed business": "Zed Business",
+            "zed free": "Zed Free",
+            "zed pro": "Zed Pro",
+            "zed pro trial": "Zed Pro Trial",
+            "zed student": "Zed Student"
+        },
         "color": "#084eff"
     },
     "zenmux": {

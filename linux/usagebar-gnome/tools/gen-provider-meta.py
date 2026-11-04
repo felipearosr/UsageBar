@@ -173,6 +173,33 @@ def str_field(args, field, provider=None):
     return None
 
 
+PLAN_LABEL_PAIR = re.compile(r'\s*"([^"\\]*)"\s*:\s*"([^"\\]*)"\s*')
+
+
+def plan_labels_field(args, provider=None):
+    """sharePlanLabels as {raw lowercase plan: display name}, or None when absent.
+
+    Only a dictionary literal of plain string pairs is accepted; anything else
+    raises rather than publishing a partial table.
+    """
+    expr = args.get('sharePlanLabels')
+    if expr is None:
+        return None
+    body = expr.strip()
+    if not (body.startswith('[') and body.endswith(']')):
+        raise ValueError(f'unsupported sharePlanLabels expression for {provider}: {expr}')
+    body = body[1:-1].strip().rstrip(',')
+    if not body or body == ':':
+        return None
+    labels = {}
+    for pair in body.split(','):
+        match = PLAN_LABEL_PAIR.fullmatch(pair)
+        if not match:
+            raise ValueError(f'unsupported sharePlanLabels entry for {provider}: {pair.strip()}')
+        labels[match.group(1)] = match.group(2)
+    return labels
+
+
 def color_field(src):
     hex_color = re.search(r'(?:ProviderColor|\.init)\(\s*hex:\s*0x([0-9A-Fa-f]{6})\s*\)', src)
     if hex_color:
@@ -256,6 +283,9 @@ def parse(path):
         val = str_field(args, swift, provider)
         if val:
             entry[js] = val
+    labels = plan_labels_field(args, provider)
+    if labels:
+        entry['planLabels'] = dict(sorted(labels.items()))
     color = descriptor_color(src, block)
     if color:
         entry['color'] = color

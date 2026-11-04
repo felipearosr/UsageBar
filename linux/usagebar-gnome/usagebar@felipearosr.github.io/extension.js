@@ -32,6 +32,13 @@ import {planNotifications} from './notify.js';
 import {extraWindowsOf, isStaleSource, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {PROVIDER_META} from './providermeta.js';
+import {
+    claudeAccountConfigPaths,
+    parseClaudeAccountPlan,
+    planLabel,
+    planOf,
+    applyClaudeAccountPlan,
+} from './planlabel.js';
 import {capName, readableBrandColor, surfaceColor} from './brandtext.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
@@ -157,12 +164,6 @@ function providerLinks(row) {
 }
 
 // ---------- payload helpers (ported from codexbar-tray dist/app.js) ----------
-
-// The row's plan ("claude max", "plus", …) — the payload carries
-// loginMethod either on usage or under usage.identity, source-dependent.
-function planOf(row) {
-    return row.usage?.loginMethod ?? row.usage?.identity?.loginMethod;
-}
 
 // Stable per-bar identity shared by the card renderer and the prefs catalog,
 // so a "provider:key" entry in hidden-windows removes the right bar. Standard
@@ -2049,6 +2050,7 @@ export default class UsageBarExtension extends Extension {
         this._indicator?.destroy();
         this._indicator = null;
         this._rows = [];
+        this._claudeAccountPlan = null;
         // Keep this plain quota memo (strings and numbers/booleans, no actors,
         // signals or sources) across screen locks. The planner prunes old cycles.
         this._costs = null;
@@ -2486,7 +2488,9 @@ export default class UsageBarExtension extends Extension {
                 this._indicator.setStatus(`usage fetch failed: ${error.detail ?? error.message}`);
                 this._scheduleFetch(FETCH_RETRY_SECS);
             } else {
-                this._rows = enrichAntigravityModels(mergeStale(this._rows, rows));
+                this._rows = applyClaudeAccountPlan(
+                    enrichAntigravityModels(mergeStale(this._rows, rows)), this._claudeAccountPlan);
+                this._loadClaudeAccountPlan();
                 this._lastFetchAt = Date.now();
                 this._trackIssueSince(this._rows);
                 this._indicator.setStatus('');
@@ -2500,6 +2504,51 @@ export default class UsageBarExtension extends Extension {
             }
             this._requestRender();
         });
+    }
+
+    // Claude Code caches Anthropic's current plan label in its account
+    // config. Read it after each poll (async, local file, no prompt) and
+    // re-render only when it changes.
+    _loadClaudeAccountPlan() {
+        // UI smoke runs over fixtures and must not read the user's Claude config.
+        if (GLib.getenv('USAGEBAR_UI_SMOKE_RESULT') || !this._rows.some(row => row.provider === 'claude'))
+            return;
+        const generation = this._generation;
+        const env = {CLAUDE_CONFIG_DIR: GLib.getenv('CLAUDE_CONFIG_DIR') ?? ''};
+        const paths = claudeAccountConfigPaths(env, GLib.get_home_dir());
+        const apply = next => {
+            const prev = this._claudeAccountPlan;
+            if (prev?.name === next?.name && prev?.family === next?.family && prev?.email === next?.email)
+                return;
+            this._claudeAccountPlan = next;
+            this._rows = applyClaudeAccountPlan(this._rows, next);
+            this._requestRender();
+        };
+        // Missing or unreadable config: drop any label from an earlier read.
+        const tryPath = index => {
+            if (index >= paths.length) {
+                apply(null);
+                return;
+            }
+            Gio.File.new_for_path(paths[index]).load_contents_async(this._cancellable, (file, res) => {
+                if (generation !== this._generation || !this._indicator)
+                    return;
+                let bytes;
+                try {
+                    [, bytes] = file.load_contents_finish(res);
+                } catch (e) {
+                    if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        return;
+                    if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
+                        tryPath(index + 1);
+                    else
+                        apply(null);
+                    return;
+                }
+                apply(parseClaudeAccountPlan(new TextDecoder().decode(bytes)));
+            });
+        };
+        tryPath(0);
     }
 
     _notify(title, body) {
@@ -3450,6 +3499,11 @@ export default class UsageBarExtension extends Extension {
                     assertions.push(assertion('All tab lists providers', rows.length > 0,
                         {actual: rows.length}));
                     assertions.push(...markAssertions('All tab', box, []));
+                    const tags = descendants(box)
+                        .filter(actor => actor.has_style_class_name?.('usagebar-plan-tag') && actor.visible)
+                        .map(actor => actor.text);
+                    assertions.push(assertion('All tab tags each plan beside its name',
+                        JSON.stringify(tags) === JSON.stringify(['Max 20x', 'Plus']), {actual: tags}));
                     if (logosHidden) {
                         assertions.push(assertion('All tab rows leave out the icon slot',
                             !descendants(box).some(actor =>
@@ -3494,9 +3548,10 @@ export default class UsageBarExtension extends Extension {
             // Opening refetches from the CLI; install the fixtures after that.
             later(500, () => {
                 this._rows = [
-                    {provider: 'claude', usage: {primary: {usedPercent: 42}, secondary: {usedPercent: 18}}},
-                    {provider: 'codex', usage: {primary: {usedPercent: 73}}},
-                    {provider: 'opencodego', usage: {primary: {usedPercent: 12}}},
+                    {provider: 'claude', usage: {primary: {usedPercent: 42}, secondary: {usedPercent: 18},
+                        loginMethod: 'Claude Max 20x'}},
+                    {provider: 'codex', usage: {primary: {usedPercent: 73}, identity: {loginMethod: 'plus'}}},
+                    {provider: 'opencodego', usage: {primary: {usedPercent: 12}, loginMethod: 'API key'}},
                     {provider: 'alibabatokenplan', usage: {primary: {usedPercent: 95}}},
                 ];
                 if (this._costs !== fixtureCosts) {
@@ -6533,14 +6588,8 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-card-title',
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        let plan = planOf(row);
+        const plan = this._planLabel(row);
         if (plan) {
-            plan = plan.charAt(0).toUpperCase() + plan.slice(1);
-            // Drop a leading provider name ("Claude Max" → "Max"): the card
-            // title already says it.
-            const name = this._displayName(row.provider);
-            if (plan.toLowerCase().startsWith(`${name.toLowerCase()} `))
-                plan = plan.slice(name.length + 1);
             head.add_child(new St.Label({
                 text: plan,
                 style_class: 'usagebar-badge',
@@ -6797,6 +6846,12 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
+    // Plan tag text for a row's name ('' for none), shared by the compact
+    // list and the provider detail header.
+    _planLabel(row) {
+        return planLabel(row, this._displayName(row.provider), PROVIDER_META[row.provider]?.planLabels);
+    }
+
     _compactSubtitleClass(issue) {
         if (!issue)
             return 'usagebar-dim usagebar-compact-subtitle';
@@ -6816,6 +6871,7 @@ export default class UsageBarExtension extends Extension {
             provider: row.provider,
             structureKey: this._compactRowStructureKey(row),
             titleLabel: null,
+            planLabel: null,
             subtitleLabel: null,
             metricRefs: [],
             extraLabel: null,
@@ -6872,6 +6928,15 @@ export default class UsageBarExtension extends Extension {
             y_align: Clutter.ActorAlign.CENTER,
         });
         head.add_child(state.titleLabel);
+        // Always built so an in-place update can show or hide it.
+        const plan = this._planLabel(row);
+        state.planLabel = new St.Label({
+            text: plan,
+            style_class: 'usagebar-plan-tag',
+            y_align: Clutter.ActorAlign.CENTER,
+            visible: !!plan,
+        });
+        head.add_child(state.planLabel);
 
         let subtitle = '';
         const issue = describeIssue(row, row.provider);
@@ -6974,6 +7039,9 @@ export default class UsageBarExtension extends Extension {
         state.update = next => {
             state.provider = next.provider;
             state.titleLabel.text = this._displayName(next.provider);
+            const nextPlan = this._planLabel(next);
+            state.planLabel.text = nextPlan;
+            state.planLabel.visible = !!nextPlan;
             if (state.subtitleLabel) {
                 let nextSubtitle = '';
                 const nextIssue = describeIssue(next, next.provider);
