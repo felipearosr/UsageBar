@@ -1318,4 +1318,5 @@
 .usagebar-theme-system .usagebar-plan-tag {
   border-color: -st-border-color;
   color: -st-foreground-color;
+  opacity: 0.7;
 }

@@ -5,7 +5,7 @@ import {
     claudeAccountConfigPaths,
     parseClaudeAccountPlan,
     planLabel,
-    withClaudePlanName,
+    applyClaudeAccountPlan,
 } from '../usagebar@felipearosr.github.io/planlabel.js';
 import {PROVIDER_META} from '../usagebar@felipearosr.github.io/providermeta.js';
 
@@ -25,7 +25,10 @@ test('account config paths follow Claude Code lookup order', () => {
 test('parses the cached plan label with its family', () => {
     assert.deepEqual(
         parseClaudeAccountPlan(config({planDisplayName: ' Ultra ', organizationType: 'claude_max'})),
-        {name: 'Ultra', family: 'max'});
+        {name: 'Ultra', family: 'max', email: ''});
+    assert.equal(parseClaudeAccountPlan(config({
+        planDisplayName: 'Ultra', organizationType: 'claude_max', emailAddress: ' Me@Example.com ',
+    })).email, 'me@example.com');
 });
 
 test('rejects configs without a usable label', () => {
@@ -38,21 +41,21 @@ test('rejects configs without a usable label', () => {
 });
 
 test('cached label replaces the derived Claude plan when families match', () => {
-    const [row] = withClaudePlanName([claudeRow('Claude Max 20x')], {name: 'Ultra', family: 'max'});
+    const [row] = applyClaudeAccountPlan([claudeRow('Claude Max 20x')], {name: 'Ultra', family: 'max'});
     assert.equal(planLabel(row, 'Claude'), 'Ultra');
 });
 
 test('cached label is ignored for a different plan family or provider', () => {
     const plan = {name: 'Ultra', family: 'max'};
-    const [pro] = withClaudePlanName([claudeRow('Claude Pro')], plan);
+    const [pro] = applyClaudeAccountPlan([claudeRow('Claude Pro')], plan);
     assert.equal(planLabel(pro, 'Claude'), 'Pro');
-    const [codex] = withClaudePlanName([{provider: 'codex', usage: {loginMethod: 'max'}}], plan);
+    const [codex] = applyClaudeAccountPlan([{provider: 'codex', usage: {loginMethod: 'max'}}], plan);
     assert.equal(planLabel(codex, 'Codex'), 'Max');
 });
 
 test('a missing config clears a previously applied label', () => {
-    const [labelled] = withClaudePlanName([claudeRow('Claude Max 20x')], {name: 'Ultra', family: 'max'});
-    const [cleared] = withClaudePlanName([labelled], null);
+    const [labelled] = applyClaudeAccountPlan([claudeRow('Claude Max 20x')], {name: 'Ultra', family: 'max'});
+    const [cleared] = applyClaudeAccountPlan([labelled], null);
     assert.equal(planLabel(cleared, 'Claude'), 'Max 20x');
 });
 
@@ -76,7 +79,25 @@ test('provider plan tables turn raw codes into display names', () => {
 });
 
 test('the cached Claude label wins over the plan table', () => {
-    const [row] = withClaudePlanName([claudeRow('Claude Max 20x')], {name: 'Ultra', family: 'max'});
+    const [row] = applyClaudeAccountPlan([claudeRow('Claude Max 20x')], {name: 'Ultra', family: 'max'});
     assert.equal(planLabel(row, 'Claude', PROVIDER_META.claude.planLabels), 'Ultra');
     assert.equal(planLabel(claudeRow('Claude Max 20x'), 'Claude', PROVIDER_META.claude.planLabels), 'Max 20x');
+});
+
+test('cached label follows the account email, not just the plan family', () => {
+    const plan = {name: 'Ultra', family: 'max', email: 'me@example.com'};
+    const row = (email, loginMethod = 'Claude Max 20x') =>
+        ({provider: 'claude', account: email, usage: {loginMethod, identity: {accountEmail: email}}});
+    const [mine, other] = applyClaudeAccountPlan(
+        [row('ME@example.com'), row('other@example.com', 'Claude Max 5x')], plan);
+    assert.equal(planLabel(mine, 'Claude'), 'Ultra');
+    assert.equal(planLabel(other, 'Claude'), 'Max 5x');
+});
+
+test('without emails the label applies only to a lone Claude row', () => {
+    const plan = {name: 'Ultra', family: 'max', email: ''};
+    const [lone] = applyClaudeAccountPlan([claudeRow('Claude Max 20x')], plan);
+    assert.equal(planLabel(lone, 'Claude'), 'Ultra');
+    const pair = applyClaudeAccountPlan([claudeRow('Claude Max 20x'), claudeRow('Claude Max 5x')], plan);
+    assert.deepEqual(pair.map(r => planLabel(r, 'Claude')), ['Max 20x', 'Max 5x']);
 });

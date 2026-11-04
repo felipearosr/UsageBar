@@ -37,7 +37,7 @@ import {
     parseClaudeAccountPlan,
     planLabel,
     planOf,
-    withClaudePlanName,
+    applyClaudeAccountPlan,
 } from './planlabel.js';
 import {capName, readableBrandColor, surfaceColor} from './brandtext.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
@@ -2488,7 +2488,7 @@ export default class UsageBarExtension extends Extension {
                 this._indicator.setStatus(`usage fetch failed: ${error.detail ?? error.message}`);
                 this._scheduleFetch(FETCH_RETRY_SECS);
             } else {
-                this._rows = withClaudePlanName(
+                this._rows = applyClaudeAccountPlan(
                     enrichAntigravityModels(mergeStale(this._rows, rows)), this._claudeAccountPlan);
                 this._loadClaudeAccountPlan();
                 this._lastFetchAt = Date.now();
@@ -2516,9 +2516,20 @@ export default class UsageBarExtension extends Extension {
         const generation = this._generation;
         const env = {CLAUDE_CONFIG_DIR: GLib.getenv('CLAUDE_CONFIG_DIR') ?? ''};
         const paths = claudeAccountConfigPaths(env, GLib.get_home_dir());
-        const tryPath = index => {
-            if (index >= paths.length)
+        const apply = next => {
+            const prev = this._claudeAccountPlan;
+            if (prev?.name === next?.name && prev?.family === next?.family && prev?.email === next?.email)
                 return;
+            this._claudeAccountPlan = next;
+            this._rows = applyClaudeAccountPlan(this._rows, next);
+            this._requestRender();
+        };
+        // Missing or unreadable config: drop any label from an earlier read.
+        const tryPath = index => {
+            if (index >= paths.length) {
+                apply(null);
+                return;
+            }
             Gio.File.new_for_path(paths[index]).load_contents_async(this._cancellable, (file, res) => {
                 if (generation !== this._generation || !this._indicator)
                     return;
@@ -2526,17 +2537,15 @@ export default class UsageBarExtension extends Extension {
                 try {
                     [, bytes] = file.load_contents_finish(res);
                 } catch (e) {
+                    if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        return;
                     if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
                         tryPath(index + 1);
+                    else
+                        apply(null);
                     return;
                 }
-                const next = parseClaudeAccountPlan(new TextDecoder().decode(bytes));
-                const prev = this._claudeAccountPlan;
-                if (prev?.name === next?.name && prev?.family === next?.family)
-                    return;
-                this._claudeAccountPlan = next;
-                this._rows = withClaudePlanName(this._rows, next);
-                this._requestRender();
+                apply(parseClaudeAccountPlan(new TextDecoder().decode(bytes)));
             });
         };
         tryPath(0);
@@ -6579,7 +6588,7 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-card-title',
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        const plan = planLabel(row, this._displayName(row.provider), PROVIDER_META[row.provider]?.planLabels);
+        const plan = this._planLabel(row);
         if (plan) {
             head.add_child(new St.Label({
                 text: plan,
@@ -6837,7 +6846,13 @@ export default class UsageBarExtension extends Extension {
         });
     }
 
-    _compactSubtitleClass(issue) {
+    // Plan tag text for a row's name ('' for none), shared by the compact
+    // list and the provider detail header.
+    _planLabel(row) {
+        return planLabel(row, this._displayName(row.provider), PROVIDER_META[row.provider]?.planLabels);
+    }
+
+        _compactSubtitleClass(issue) {
         if (!issue)
             return 'usagebar-dim usagebar-compact-subtitle';
         return `usagebar-compact-subtitle usagebar-issue-text-${issue.tone}`;
@@ -6914,7 +6929,7 @@ export default class UsageBarExtension extends Extension {
         });
         head.add_child(state.titleLabel);
         // Always built so an in-place update can show or hide it.
-        const plan = planLabel(row, this._displayName(row.provider), PROVIDER_META[row.provider]?.planLabels);
+        const plan = this._planLabel(row);
         state.planLabel = new St.Label({
             text: plan,
             style_class: 'usagebar-plan-tag',
@@ -7024,8 +7039,7 @@ export default class UsageBarExtension extends Extension {
         state.update = next => {
             state.provider = next.provider;
             state.titleLabel.text = this._displayName(next.provider);
-            const nextPlan = planLabel(next, this._displayName(next.provider),
-                PROVIDER_META[next.provider]?.planLabels);
+            const nextPlan = this._planLabel(next);
             state.planLabel.text = nextPlan;
             state.planLabel.visible = !!nextPlan;
             if (state.subtitleLabel) {
