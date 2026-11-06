@@ -2,7 +2,8 @@
 #
 # The UsageBar fork's codexbar CLI (upstream CodexBar plus `codexbar sync`),
 # repackaged from the release tarball. Same layout as the .deb and .rpm: the
-# CLI in /usr/lib/usagebar-cli, /usr/bin/codexbar linking to it.
+# CLI in /usr/lib/usagebar-cli, /usr/bin/usagebar and the older name
+# /usr/bin/codexbar linking to it.
 # Bump with: linux/packaging/aur/bump.sh <version>
 
 pkgname=usagebar-cli-bin
@@ -33,6 +34,7 @@ package() {
     install -d "$lib" "$pkgdir/usr/bin"
     bsdtar -xf "$srcdir/usagebar-cli-$pkgver-linux-$CARCH.tar.gz" -C "$lib" --no-same-owner
     test -x "$lib/CodexBarCLI" -a -f "$lib/VERSION" -a -d "$lib/CodexBar_CodexBarCore.bundle"
+    ln -s ../lib/usagebar-cli/CodexBarCLI "$pkgdir/usr/bin/usagebar"
     ln -s ../lib/usagebar-cli/CodexBarCLI "$pkgdir/usr/bin/codexbar"
     install -Dm644 "$srcdir/LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 "$srcdir/LICENSE-swift-$_swiftver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-swift"

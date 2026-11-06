@@ -53,6 +53,20 @@ test('findCodexbar finds a manual ~/.local/bin install off PATH', () => {
     assert.equal(findCodexbar(lookupEnv()), null);
 });
 
+test('findCodexbar takes a usagebar anywhere over a codexbar', () => {
+    assert.equal(findCodexbar(lookupEnv({
+        executables: ['/home/u/.local/bin/usagebar'],
+        path: {codexbar: '/usr/bin/codexbar'},
+    })), '/home/u/.local/bin/usagebar', 'an off-PATH usagebar beats an upstream codexbar on PATH');
+    assert.equal(findCodexbar(lookupEnv({
+        path: {usagebar: '/usr/bin/usagebar', codexbar: '/usr/local/bin/codexbar'},
+    })), '/usr/bin/usagebar');
+    assert.equal(findCodexbar(lookupEnv({
+        executables: [PACKAGED_BIN],
+        path: {usagebar: '/usr/bin/usagebar'},
+    })), PACKAGED_BIN, 'the packaged CLI still comes first');
+});
+
 test('parseCliVersion reads the number from `codexbar --version`', () => {
     assert.equal(parseCliVersion('CodexBar 0.69.0\n'), '0.69.0');
     assert.equal(parseCliVersion('\nCodexBar 1.2.3-fork.4\n'), '1.2.3-fork.4');

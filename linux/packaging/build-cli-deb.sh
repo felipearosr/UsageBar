@@ -4,8 +4,9 @@
 #   linux/packaging/build-cli-deb.sh <usagebar-cli-…-linux-ARCH.tar.gz> <version> [out-dir]
 #
 # The tarball must have its .sha256 next to it; it is verified first. The CLI
-# goes to /usr/lib/usagebar-cli exactly as released, /usr/bin/codexbar links
-# to it (the CLI resolves the link to find its resource bundle), and LICENSE
+# goes to /usr/lib/usagebar-cli exactly as released, /usr/bin/usagebar and
+# the older name /usr/bin/codexbar link to it (the CLI resolves the link to
+# find its resource bundle), and LICENSE
 # becomes /usr/share/doc/usagebar-cli/copyright. Needs dpkg-deb. Writes
 # usagebar-cli_<version>_<arch>.deb and its .sha256.
 set -eu
@@ -36,6 +37,7 @@ if [ ! -x "$lib/CodexBarCLI" ] || [ ! -f "$lib/VERSION" ] || [ ! -d "$lib/CodexB
     echo "unexpected CLI tarball layout" >&2
     exit 1
 fi
+ln -s ../lib/usagebar-cli/CodexBarCLI "$root/usr/bin/usagebar"
 ln -s ../lib/usagebar-cli/CodexBarCLI "$root/usr/bin/codexbar"
 install -m 0644 "$repo/LICENSE" "$root/usr/share/doc/usagebar-cli/copyright"
 find "$root" -type d -exec chmod 0755 {} +
@@ -58,7 +60,8 @@ Description: codexbar CLI with Machine Sync, from UsageBar
  The codexbar command-line tool from CodexBar by Peter Steinberger, as built
  by the UsageBar fork: AI coding-provider usage limits and costs on the
  command line, the local "codexbar serve" API, and "codexbar sync".
- Conflicts with other codexbar packages, which install the same command.
+ Installs the command as "usagebar", plus "codexbar" under its older name;
+ conflicts with other codexbar packages, which install that command too.
 EOF
 
 mkdir -p "$out"

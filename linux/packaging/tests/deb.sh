@@ -26,6 +26,8 @@ before_usr=$(snapshot /usr)
 before_etc=$(snapshot /etc)
 apt-get install -y -qq "$deb" >/dev/null
 [ "$(readlink -f /usr/bin/codexbar)" = /usr/lib/usagebar-cli/CodexBarCLI ] || fail "/usr/bin/codexbar doesn't link to the CLI"
+[ "$(readlink -f /usr/bin/usagebar)" = /usr/lib/usagebar-cli/CodexBarCLI ] || fail "/usr/bin/usagebar doesn't link to the CLI"
+sh "$checks" usagebar "$version"
 [ -f /usr/share/doc/usagebar-cli/copyright ] || fail "no LICENSE in the docs directory"
 sh "$checks" codexbar "$version"
 

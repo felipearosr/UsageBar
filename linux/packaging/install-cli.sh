@@ -3,10 +3,11 @@
 # felipearosr/UsageBar release tarball, for distros without a package.
 # Run with --help for usage.
 #
-# Files land in PREFIX/lib/usagebar-cli, with PREFIX/bin/codexbar linking to
-# the binary. The script never asks for more privileges: for a prefix you
-# can't write to, run it with sudo yourself. It never replaces a codexbar it
-# didn't install.
+# Files land in PREFIX/lib/usagebar-cli, with PREFIX/bin/usagebar linking to
+# the binary, plus PREFIX/bin/codexbar under its older name when that name is
+# free. The script never asks for more privileges: for a prefix you can't
+# write to, run it with sudo yourself. It never replaces a usagebar or
+# codexbar it didn't install, so an upstream codexbar can stay next to it.
 set -eu
 umask 022
 
@@ -25,7 +26,8 @@ usage() {
     cat <<'EOF'
 Usage: install-cli.sh [options] [VERSION|TAG]
 
-Installs the UsageBar fork's codexbar CLI from a felipearosr/UsageBar release.
+Installs the UsageBar fork's codexbar CLI from a felipearosr/UsageBar release,
+as the command usagebar (and codexbar, unless another codexbar is there).
 VERSION 1.1.0 means tag usagebar-v1.1.0; anything else is used as the tag.
 Without one, the latest release is used, or the newest release (pre-releases
 included) that has a CLI tarball when the latest has none.
@@ -61,10 +63,23 @@ case "$prefix" in
 esac
 prefix=${prefix%/}
 libdir="$prefix/lib/usagebar-cli"
-link="$prefix/bin/codexbar"
+link="$prefix/bin/usagebar"
+# The command's older name, kept for scripts that call it. Skipped when
+# another codexbar (upstream's) already has it.
+alias="$prefix/bin/codexbar"
 
+# link_is_ours PATH: PATH is a link this script made to the installed CLI.
 link_is_ours() {
-    [ -L "$link" ] && [ "$(readlink "$link")" = "$libdir/CodexBarCLI" ]
+    [ -L "$1" ] && [ "$(readlink "$1")" = "$libdir/CodexBarCLI" ]
+}
+
+# Removes PATH when this script made it; says so when something else is there.
+remove_link() {
+    if link_is_ours "$1"; then
+        rm -f "$1"
+    elif [ -e "$1" ] || [ -L "$1" ]; then
+        say "Leaving $1 alone: it wasn't installed by this script."
+    fi
 }
 
 # The closest existing ancestor of $1 must be writable, or nothing can be made.
@@ -77,18 +92,15 @@ check_writable() {
 uninstall() {
     [ -f "$libdir/$MARKER" ] || die "nothing installed by this script under $prefix"
     check_writable "$libdir"
-    if link_is_ours; then
-        rm -f "$link"
-    elif [ -e "$link" ] || [ -L "$link" ]; then
-        say "Leaving $link alone: it wasn't installed by this script."
-    fi
+    remove_link "$link"
+    remove_link "$alias"
     created=$(sed -n 's/^created-dir=//p' "$libdir/$MARKER")
     rm -rf "$libdir"
     # Directories this script created, deepest first, only if now empty.
     printf '%s\n' "$created" | while IFS= read -r dir; do
         if [ -n "$dir" ]; then rmdir "$dir" 2>/dev/null || true; fi
     done
-    say "Removed codexbar from $prefix."
+    say "Removed usagebar from $prefix."
 }
 
 if [ "$action" = uninstall ]; then
@@ -99,7 +111,7 @@ fi
 # ---------- install ----------
 
 if [ -e "$link" ] || [ -L "$link" ]; then
-    link_is_ours || die "$link already exists and wasn't installed by this script (an upstream codexbar?). Remove it yourself, or install with a different --prefix."
+    link_is_ours "$link" || die "$link already exists and wasn't installed by this script. Remove it yourself, or install with a different --prefix."
 fi
 if [ -e "$libdir" ] && [ ! -f "$libdir/$MARKER" ]; then
     die "$libdir exists but wasn't installed by this script; not touching it."
@@ -231,16 +243,28 @@ if [ -e "$libdir" ]; then mv "$libdir" "$old"; fi
 mv "$new" "$libdir"
 rm -rf "$old"
 ln -sf "$libdir/CodexBarCLI" "$link"
+alias_made=
+if [ -e "$alias" ] || [ -L "$alias" ]; then
+    if link_is_ours "$alias"; then alias_made=1; fi
+else
+    ln -s "$libdir/CodexBarCLI" "$alias"
+    alias_made=1
+fi
 
 version=$("$link" --version 2>/dev/null | sed 's/^CodexBar //')
-say "Installed codexbar $version to $libdir"
+say "Installed usagebar $version to $libdir"
 say "  $link -> $libdir/CodexBarCLI"
+if [ -n "$alias_made" ]; then
+    say "  $alias -> $libdir/CodexBarCLI (the older name)"
+else
+    say "Note: $alias is another codexbar, so this one is only 'usagebar'."
+fi
 case ":${PATH:-}:" in
     *":$prefix/bin:"*)
-        found=$(command -v codexbar 2>/dev/null || true)
+        found=$(command -v usagebar 2>/dev/null || true)
         if [ -n "$found" ] && [ "$found" != "$link" ]; then
-            say "Note: $found comes first on PATH, so plain 'codexbar' runs that one."
+            say "Note: $found comes first on PATH, so plain 'usagebar' runs that one."
         fi
         ;;
-    *) say "Note: $prefix/bin is not on your PATH; add it to run 'codexbar'." ;;
+    *) say "Note: $prefix/bin is not on your PATH; add it to run 'usagebar'." ;;
 esac

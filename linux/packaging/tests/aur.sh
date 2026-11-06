@@ -66,6 +66,8 @@ set -- "$pkg"/usagebar-cli-bin-"$pkgver"-1-"$arch".pkg.tar.*
 [ -f "$1" ] || fail "makepkg built no package"
 built=$1
 [ "$(readlink -f /usr/bin/codexbar)" = /usr/lib/usagebar-cli/CodexBarCLI ] || fail "/usr/bin/codexbar doesn't link to the CLI"
+[ "$(readlink -f /usr/bin/usagebar)" = /usr/lib/usagebar-cli/CodexBarCLI ] || fail "/usr/bin/usagebar doesn't link to the CLI"
+sh "$checks" usagebar "$version"
 [ -f /usr/share/licenses/usagebar-cli-bin/LICENSE ] || fail "no LICENSE"
 sh "$checks" codexbar "$version"
 

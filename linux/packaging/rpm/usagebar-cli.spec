@@ -1,6 +1,7 @@
 # usagebar-cli: the UsageBar fork's codexbar CLI (upstream plus `codexbar
 # sync`), repackaged from the release tarball. Same layout as the .deb: the
-# CLI in /usr/lib/usagebar-cli, /usr/bin/codexbar linking to it.
+# CLI in /usr/lib/usagebar-cli, /usr/bin/usagebar and the older name
+# /usr/bin/codexbar linking to it.
 #
 # Builds as-is in COPR (SCM or SRPM) and with rpmbuild/mock. Version and the
 # tarball checksums are bumped per release by bump-spec.sh;
@@ -45,7 +46,8 @@ Conflicts:      codexbar-cli
 The codexbar command-line tool from CodexBar by Peter Steinberger, as built
 by the UsageBar fork: AI coding-provider usage limits and costs on the
 command line, the local "codexbar serve" API, and "codexbar sync".
-Conflicts with other codexbar packages, which install the same command.
+Installs the command as "usagebar", plus "codexbar" under its older name;
+conflicts with other codexbar packages, which install that command too.
 
 %prep
 %ifarch x86_64
@@ -67,6 +69,7 @@ cp -p %{SOURCE2} LICENSE
 %install
 install -d %{buildroot}%{_prefix}/lib/usagebar-cli %{buildroot}%{_bindir}
 cp -a CodexBarCLI codexbar VERSION CodexBar_CodexBarCore.bundle %{buildroot}%{_prefix}/lib/usagebar-cli/
+ln -s ../lib/usagebar-cli/CodexBarCLI %{buildroot}%{_bindir}/usagebar
 ln -s ../lib/usagebar-cli/CodexBarCLI %{buildroot}%{_bindir}/codexbar
 
 %check
@@ -76,6 +79,7 @@ test "$(CODEXBAR_RESOURCE_SMOKE=1 %{buildroot}%{_bindir}/codexbar)" = CODEXBAR_R
 %files
 %license LICENSE
 %{_prefix}/lib/usagebar-cli
+%{_bindir}/usagebar
 %{_bindir}/codexbar
 
 %changelog

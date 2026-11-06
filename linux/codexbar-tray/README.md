@@ -7,7 +7,8 @@ this app supervises as a `codexbar serve` child process.
 
 ## Requirements
 
-- The `codexbar` CLI on `$PATH`, in `~/.local/bin`, or at `$CODEXBAR_BIN`. The
+- The CLI at `$CODEXBAR_BIN`, or as `usagebar` (then `codexbar`) on `$PATH`
+  or in `~/.local/bin`. The
   UsageBar packages in [`../INSTALL.md`](../INSTALL.md) install it at
   `/usr/libexec/usagebar/codexbar`, which isn't on `PATH`, so set
   `CODEXBAR_BIN=/usr/libexec/usagebar/codexbar`.

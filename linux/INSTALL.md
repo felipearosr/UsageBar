@@ -85,8 +85,12 @@ usage, but it has no Machine Sync: `codexbar sync` doesn't exist there.
 
 The extension looks for the CLI in this order and uses the first it finds:
 `$CODEXBAR_BIN`, `/usr/libexec/usagebar/codexbar` (the UsageBar package),
-`codexbar` on `PATH`, then `~/.local/bin`, `/home/linuxbrew/.linuxbrew/bin`
-and `/usr/local/bin`.
+`usagebar` on `PATH` or in `~/.local/bin`, `/home/linuxbrew/.linuxbrew/bin` or
+`/usr/local/bin`, then `codexbar` in those same places.
+
+The CLI channels below install the command as `usagebar`, with `codexbar` as
+its older name, so you can tell it apart from upstream's CLI (which is also
+called `codexbar`). Both names run the same binary.
 
 UsageBar 1.0.0 shipped the full packages only. The CLI tarball and the
 CLI-only `.deb` and `.rpm` are on the `usagebar-v1.1.0-rc.*` pre-releases, for
@@ -106,8 +110,9 @@ curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/pac
 It downloads the CLI tarball from the latest UsageBar release, or from the
 newest release (pre-releases included) that has one when the latest doesn't,
 checks its `.sha256`, and installs it into `~/.local/lib/usagebar-cli`, with
-`~/.local/bin/codexbar` linking to it. If `~/.local/bin` isn't on your `PATH`,
-the extension still finds it there.
+`~/.local/bin/usagebar` linking to it, plus `~/.local/bin/codexbar` unless
+another `codexbar` (upstream's, say) is already there. If `~/.local/bin` isn't
+on your `PATH`, the extension still finds it there.
 
 To pick a release, add it after `sh -s --`. A plain version means the
 `usagebar-v<version>` tag; anything else is used as the tag name:
@@ -117,15 +122,15 @@ curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/pac
 curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh -s -- usagebar-v1.1.0-rc.2
 ```
 
-For every user, install under `/usr/local` (`/usr/local/bin/codexbar`). The
+For every user, install under `/usr/local` (`/usr/local/bin/usagebar`). The
 script never asks for privileges itself, so run it with `sudo`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sudo sh -s -- --system
 ```
 
-`--prefix DIR` installs anywhere else. The script refuses to replace a
-`codexbar` it didn't install; see
+`--prefix DIR` installs anywhere else. The script never replaces a
+`usagebar` or `codexbar` it didn't install; see
 [Moving from a manual install](#moving-from-a-manual-install). Run it again to
 update.
 
@@ -138,10 +143,10 @@ Download `usagebar-cli_<version>_amd64.deb` (`_arm64.deb` on ARM) from
 sudo apt install ./usagebar-cli_*.deb
 ```
 
-It installs the CLI into `/usr/lib/usagebar-cli` with `/usr/bin/codexbar`
-linking to it. There is no APT repository yet, so install new releases the same
-way. The package conflicts with other packages that ship a `codexbar`
-command. You don't need it next to the UsageBar package, which carries its own
+It installs the CLI into `/usr/lib/usagebar-cli` with `/usr/bin/usagebar`
+and `/usr/bin/codexbar` linking to it. There is no APT repository yet, so
+install new releases the same way. The package conflicts with other packages
+that ship a `codexbar` command. You don't need it next to the UsageBar package, which carries its own
 copy.
 
 ### Fedora: COPR and `usagebar-cli` .rpm
@@ -160,7 +165,7 @@ sudo dnf install ./usagebar-cli-*.rpm
 ```
 
 It uses the same layout as the `.deb` (`/usr/lib/usagebar-cli`,
-`/usr/bin/codexbar`) and the same conflicts. You don't need it next to the
+`/usr/bin/usagebar`, `/usr/bin/codexbar`) and the same conflicts. You don't need it next to the
 UsageBar package.
 
 ### Arch: AUR `usagebar-cli-bin`
@@ -180,8 +185,9 @@ cd UsageBar/linux/packaging/aur
 makepkg -si
 ```
 
-It installs into `/usr/lib/usagebar-cli` with `/usr/bin/codexbar` linking to
-it, and conflicts with the other `codexbar` packages.
+It installs into `/usr/lib/usagebar-cli` with `/usr/bin/usagebar` and
+`/usr/bin/codexbar` linking to it, and conflicts with the other `codexbar`
+packages.
 
 ## The tray app (desktops without GNOME Shell)
 
@@ -195,14 +201,15 @@ and the steps are in [`codexbar-tray/README.md`](codexbar-tray/README.md#release
 ## Check the install
 
 ```sh
-codexbar --version
-codexbar sync --help
+usagebar --version
+usagebar sync --help
 ```
 
 `--version` prints the version. `sync --help` prints the Machine Sync
-commands. If it fails because there is no `sync` command, the `codexbar` on your
-`PATH` is upstream's: run `which -a codexbar` to see every copy and remove the
-one you don't want (see the next section).
+commands. If `usagebar` isn't found, the CLI came from an older install that
+only made `codexbar`; run the same commands with `codexbar`, and if that one
+has no `sync` command, it's upstream's: run `which -a codexbar` to see every
+copy and remove the one you don't want (see the next section).
 
 With only the UsageBar package installed, use the full path:
 `/usr/libexec/usagebar/codexbar --version`.
