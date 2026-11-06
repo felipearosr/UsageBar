@@ -41,8 +41,10 @@ echo keep > "$home/.local/bin/other-tool"
 chown -R tester: "$home/.local"
 before=$(snapshot "$home/.local")
 as_tester "sh $script --tarball $tarball"
+[ -L "$home/.local/bin/usagebar" ] || fail "no ~/.local/bin/usagebar symlink"
 [ -L "$home/.local/bin/codexbar" ] || fail "no ~/.local/bin/codexbar symlink"
 [ "$(stat -c %U "$home/.local/lib/usagebar-cli/CodexBarCLI")" = tester ] || fail "per-user files not owned by tester"
+as_tester "sh $checks usagebar $version"
 as_tester "sh $checks codexbar $version"
 as_tester "sh $script --tarball $tarball"
 as_tester "sh $checks codexbar $version"
@@ -68,18 +70,35 @@ fi
 grep -q "checksum mismatch" /tmp/bad.err || fail "no checksum message: $(cat /tmp/bad.err)"
 assert_unchanged "$before" "$home/.local" "tampered install changed files"
 
-say "a codexbar the script didn't install is left alone"
+say "an upstream codexbar stays, and the CLI installs next to it as usagebar"
 mkdir -p "$home/.local/bin"
 printf '#!/bin/sh\necho upstream\n' > "$home/.local/bin/codexbar"
 chown -R tester: "$home/.local"
+upstream=$(printf '#!/bin/sh\necho upstream')
+before=$(snapshot "$home/.local")
+as_tester "sh $script --tarball $tarball" > /tmp/foreign.out 2>&1 \
+    || fail "install next to a foreign codexbar failed: $(cat /tmp/foreign.out)"
+grep -q "is another codexbar" /tmp/foreign.out || fail "no foreign-codexbar note: $(cat /tmp/foreign.out)"
+[ "$(cat "$home/.local/bin/codexbar")" = "$upstream" ] || fail "foreign codexbar modified"
+as_tester "sh $checks usagebar $version"
+as_tester "sh $script --tarball $tarball" >/dev/null
+[ "$(cat "$home/.local/bin/codexbar")" = "$upstream" ] || fail "reinstall modified the foreign codexbar"
+as_tester "sh $script --uninstall" > /tmp/foreign.out
+grep -q "Leaving $home/.local/bin/codexbar alone" /tmp/foreign.out || fail "uninstall didn't leave the foreign codexbar"
+assert_unchanged "$before" "$home/.local" "foreign codexbar case left changes behind"
+rm -rf "$home/.local"
+
+say "a usagebar the script didn't install is left alone"
+mkdir -p "$home/.local/bin"
+printf '#!/bin/sh\necho other\n' > "$home/.local/bin/usagebar"
+chown -R tester: "$home/.local"
 before=$(snapshot "$home/.local")
 if as_tester "sh $script --tarball $tarball" 2>/tmp/foreign.err; then
-    fail "install replaced a foreign codexbar"
+    fail "install replaced a foreign usagebar"
 fi
-grep -q "wasn't installed by this script" /tmp/foreign.err || fail "no foreign-codexbar message"
-assert_unchanged "$before" "$home/.local" "foreign codexbar case changed files"
-[ "$(cat "$home/.local/bin/codexbar")" = "$(printf '#!/bin/sh\necho upstream')" ] || fail "foreign codexbar modified"
-if as_tester "sh $script --uninstall" 2>/dev/null; then fail "uninstall claimed a foreign codexbar"; fi
+grep -q "wasn't installed by this script" /tmp/foreign.err || fail "no foreign-usagebar message"
+assert_unchanged "$before" "$home/.local" "foreign usagebar case changed files"
+if as_tester "sh $script --uninstall" 2>/dev/null; then fail "uninstall claimed a foreign usagebar"; fi
 rm -rf "$home/.local"
 
 say "a system prefix needs privileges the script never takes itself"
@@ -93,13 +112,13 @@ assert_unchanged "$before" /usr/local "failed --system install changed /usr/loca
 say "system-prefix install as root, check, uninstall"
 sh "$script" --system --tarball "$tarball"
 [ "$(stat -c %U /usr/local/lib/usagebar-cli/CodexBarCLI)" = root ] || fail "system files not owned by root"
-as_tester "sh $checks /usr/local/bin/codexbar $version"
+as_tester "sh $checks /usr/local/bin/usagebar $version"
 sh "$script" --system --uninstall
 assert_unchanged "$before" /usr/local "system uninstall left changes behind"
 
 say "custom --prefix"
 sh "$script" --prefix /opt/usagebar --tarball "$tarball"
-sh "$checks" /opt/usagebar/bin/codexbar "$version"
+sh "$checks" /opt/usagebar/bin/usagebar "$version"
 sh "$script" --prefix /opt/usagebar --uninstall
 [ ! -e /opt/usagebar ] || fail "custom prefix not removed"
 

@@ -16,7 +16,11 @@ use crate::client;
 pub const REFRESH_INTERVAL_SECS: u32 = 300;
 pub const REQUEST_TIMEOUT_SECS: u32 = 120;
 
-/// $CODEXBAR_BIN override → $PATH → ~/.local/bin/codexbar.
+/// The command names the CLI is installed under, in lookup order: the fork's
+/// own `usagebar`, then `codexbar` (older fork installs, and upstream's CLI).
+const COMMAND_NAMES: [&str; 2] = ["usagebar", "codexbar"];
+
+/// $CODEXBAR_BIN override → for each command name, $PATH → ~/.local/bin.
 pub fn find_binary() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("CODEXBAR_BIN") {
         let p = PathBuf::from(explicit);
@@ -24,16 +28,19 @@ pub fn find_binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let p = dir.join("codexbar");
+    let paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let local_bin = std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/bin"));
+    for name in COMMAND_NAMES {
+        for dir in paths.iter().chain(local_bin.iter()) {
+            let p = dir.join(name);
             if p.is_file() {
                 return Some(p);
             }
         }
     }
-    let fallback = PathBuf::from(std::env::var("HOME").ok()?).join(".local/bin/codexbar");
-    fallback.is_file().then_some(fallback)
+    None
 }
 
 pub fn pick_free_port() -> std::io::Result<u16> {

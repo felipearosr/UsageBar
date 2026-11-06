@@ -14,8 +14,9 @@ loopback port (restart with backoff, killed on disable) and polls
 `GET /usage` / `GET /cost`. It runs `$CODEXBAR_BIN` when that points at an
 executable; otherwise the fork's CLI that the .deb/.rpm (see
 [`../INSTALL.md`](../INSTALL.md)) ship at `/usr/libexec/usagebar/codexbar`,
-then the first `codexbar` on `PATH`, then `~/.local/bin`,
-`/home/linuxbrew/.linuxbrew/bin` and `/usr/local/bin`. The extension never
+then `usagebar` on `PATH` or in `~/.local/bin`,
+`/home/linuxbrew/.linuxbrew/bin` or `/usr/local/bin`, then `codexbar` in those
+same places. The extension never
 downloads or updates the CLI; Settings → General → codexbar CLI shows the path
 in use and its version. Machine Sync needs the fork's CLI.
 

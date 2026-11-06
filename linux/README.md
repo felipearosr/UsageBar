@@ -104,24 +104,27 @@ curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/pac
 tarball from the latest release, or from the newest release (pre-releases
 included) that has one when the latest doesn't, or from the one you name
 (`| sh -s -- 1.1.0-rc.2`). It checks the `.sha256` and installs the CLI into
-`~/.local/lib/usagebar-cli` with `~/.local/bin/codexbar` pointing at it.
+`~/.local/lib/usagebar-cli` with `~/.local/bin/usagebar` pointing at it, plus
+`~/.local/bin/codexbar` under its older name unless another `codexbar` is there.
 `--system` installs under `/usr/local` instead (run it with `sudo`; the script
 never asks for privileges itself), `--prefix DIR` anywhere else, and
-`--uninstall` removes exactly what it installed. It refuses to replace a
-`codexbar` it didn't install.
+`--uninstall` removes exactly what it installed. It never replaces a
+`usagebar` or `codexbar` it didn't install.
 
 On Ubuntu / Debian, each release also has a CLI-only package,
 `usagebar-cli_<version>_amd64.deb` (`_arm64.deb` on ARM):
 `sudo apt install ./usagebar-cli_*.deb`. On Fedora, it's
 `usagebar-cli-<version>-1.x86_64.rpm` (`.aarch64.rpm` on ARM):
 `sudo dnf install ./usagebar-cli-*.rpm`. Either one puts the CLI in
-`/usr/lib/usagebar-cli` with `/usr/bin/codexbar` linking to it, and conflicts
+`/usr/lib/usagebar-cli` with `/usr/bin/usagebar` and `/usr/bin/codexbar`
+linking to it, and conflicts
 with other packages that ship a `codexbar` command. You don't need it next to
 the full `usagebar` package, which carries its own copy.
 
 On Arch, [`packaging/aur/`](packaging/aur/) holds the `usagebar-cli-bin`
 PKGBUILD and `.SRCINFO`. It downloads the release tarball with pinned
-checksums, uses the same layout (`/usr/lib/usagebar-cli`, `/usr/bin/codexbar`),
+checksums, uses the same layout (`/usr/lib/usagebar-cli`, `/usr/bin/usagebar`,
+`/usr/bin/codexbar`),
 and conflicts with other `codexbar` packages. It isn't on the AUR yet, and the
 checked-in PKGBUILD targets the last final release, so it only builds once a
 final release of 1.1.0 or later carries the CLI tarball. Then run

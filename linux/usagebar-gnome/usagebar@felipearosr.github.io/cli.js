@@ -8,10 +8,16 @@
 // separate upstream `codexbar` on PATH never shadows it.
 export const PACKAGED_BIN = '/usr/libexec/usagebar/codexbar';
 
+// The command names the CLI is installed under, in lookup order: the fork's
+// own `usagebar`, then `codexbar`, which the fork's older installs use and
+// upstream's CLI uses too (clicompat.js tells the two apart).
+export const COMMAND_NAMES = ['usagebar', 'codexbar'];
+
 // The single definition of CLI lookup. Order: $CODEXBAR_BIN when it names an
 // executable (set but unusable falls through, it never means "missing"), the
-// packaged CLI, PATH, then the usual install directories a GNOME Shell PATH
-// may lack. `env` supplies the GLib lookups (getenv, isExecutable,
+// packaged CLI, then for each command name PATH and the usual install
+// directories a GNOME Shell PATH may lack, so any `usagebar` wins over a
+// `codexbar`. `env` supplies the GLib lookups (getenv, isExecutable,
 // findInPath, home) so the extension and the preferences window resolve the
 // very same binary.
 export function findCodexbar(env) {
@@ -20,14 +26,16 @@ export function findCodexbar(env) {
         return explicit;
     if (env.isExecutable(PACKAGED_BIN))
         return PACKAGED_BIN;
-    const inPath = env.findInPath('codexbar');
-    if (inPath)
-        return inPath;
-    for (const dir of [`${env.home}/.local/bin`,
-        '/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']) {
-        const p = `${dir}/codexbar`;
-        if (env.isExecutable(p))
-            return p;
+    for (const name of COMMAND_NAMES) {
+        const inPath = env.findInPath(name);
+        if (inPath)
+            return inPath;
+        for (const dir of [`${env.home}/.local/bin`,
+            '/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']) {
+            const p = `${dir}/${name}`;
+            if (env.isExecutable(p))
+                return p;
+        }
     }
     return null;
 }
