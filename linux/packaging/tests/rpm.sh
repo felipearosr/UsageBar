@@ -61,8 +61,11 @@ chmod 0755 %{buildroot}/usr/bin/codexbar
 /usr/bin/codexbar
 EOF
 rpmbuild --quiet -bb --define "_topdir /tmp/fake" /tmp/fake/SPECS/codexbar.spec
-rpm -i /tmp/fake/RPMS/noarch/codexbar-1.0-1.noarch.rpm
-if rpm -i "$rpm" >/dev/null 2>&1; then fail "usagebar-cli installed next to codexbar"; fi
+# Neither package is signed, and rpm 6 (Fedora 45+) refuses unsigned ones;
+# the second install must fail on the conflict, not the signature.
+rpm -i --nosignature /tmp/fake/RPMS/noarch/codexbar-1.0-1.noarch.rpm
+if rpm -i --nosignature "$rpm" >/tmp/conflict.err 2>&1; then fail "usagebar-cli installed next to codexbar"; fi
+grep -q conflicts /tmp/conflict.err || fail "usagebar-cli failed for another reason: $(cat /tmp/conflict.err)"
 [ "$(/usr/bin/codexbar)" = upstream ] || fail "the other codexbar was modified"
 rpm -e codexbar
 
