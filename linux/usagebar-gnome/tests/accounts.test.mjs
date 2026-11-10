@@ -184,3 +184,37 @@ test('malformed payloads yield no cards', () => {
     assert.deepEqual(buildCards(null, {accountRows: true}), []);
     assert.deepEqual(buildCards([null, 3], {accountRows: true}), []);
 });
+
+// Managed Codex accounts (#168): serve tags the everyday login `codex-system`
+// (active) and each managed account `codex-managed`, in one Codex card.
+test('managed Codex accounts and the everyday login share one Codex card', () => {
+    const rows = [
+        {provider: 'codex', source: 'oauth', account: 'me@example.com', accountId: 'codex-system:3f9a1c2b7d4e8f60',
+            accountSource: 'codex-system', accountLabel: 'me@example.com', active: true,
+            updatedAt: '2026-11-10T11:59:00Z', usage: {primary: window(18), updatedAt: '2026-11-10T11:59:00Z'}},
+        {provider: 'codex', source: 'oauth', account: 'old@example.com',
+            accountId: 'codex-managed:7a1e2d3c-4b5a-4c6d-8e7f-9a0b1c2d3e4f',
+            accountSource: 'codex-managed', accountLabel: 'old@example.com', active: false,
+            error: {code: 1, kind: 'provider', message: 'Codex OAuth token expired'}},
+        {provider: 'codex', source: 'oauth', account: 'work@example.com',
+            accountId: 'codex-managed:1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7a8b',
+            accountSource: 'codex-managed', accountLabel: 'work@example.com', active: false,
+            updatedAt: '2026-11-10T11:58:00Z', usage: {primary: window(71), updatedAt: '2026-11-10T11:58:00Z'}},
+    ];
+    const cards = buildCards(rows, {accountRows: true, now: NOW});
+    assert.equal(cards.length, 1);
+    const [card] = cards;
+    assert.equal(card.multi, true);
+    assert.deepEqual(card.accounts.map(account => account.source),
+        ['codex-system', 'codex-managed', 'codex-managed']);
+    assert.deepEqual(card.accounts.map(account => account.active), [true, false, false]);
+    assert.deepEqual(card.accounts.map(account => account.error), [null, 'Codex OAuth token expired', null]);
+    assert.equal(card.row.accountLabel, 'me@example.com');
+
+    // Without managed accounts serve sends upstream's untagged row: today's card.
+    const plain = buildCards([{provider: 'codex', source: 'oauth', account: 'me@example.com',
+        usage: {primary: window(18), updatedAt: '2026-11-10T11:59:00Z'}}], {accountRows: true, now: NOW});
+    assert.equal(plain.length, 1);
+    assert.equal(plain[0].multi, false);
+    assert.equal(plain[0].accounts[0].id, null);
+});
