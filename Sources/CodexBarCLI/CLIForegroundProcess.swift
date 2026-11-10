@@ -18,6 +18,10 @@ import Musl
 ///
 /// While the child runs, the caller ignores SIGINT and SIGQUIT and the child gets them back at their defaults
 /// (`POSIX_SPAWN_SETSIGDEF`): Ctrl-C stops the child, and the caller lives on to report it (status 128 + signal).
+/// The child also starts with an empty signal mask (`POSIX_SPAWN_SETSIGMASK`): `posix_spawn` otherwise copies the
+/// calling thread's mask, and Swift concurrency's worker threads on Linux block SIGINT, SIGQUIT, SIGHUP and SIGTERM,
+/// which would leave a child that doesn't reset its own mask (Python's `cswap`) deaf to Ctrl-C and to the terminal
+/// closing.
 /// The child inherits the given environment and the caller's stdin, stdout and stderr. No shell is involved.
 enum CLIForegroundProcess {
     enum LaunchError: Error, Equatable {
@@ -43,8 +47,11 @@ enum CLIForegroundProcess {
         sigaddset(&defaults, SIGINT)
         sigaddset(&defaults, SIGQUIT)
         posix_spawnattr_setsigdefault(&attr, &defaults)
+        var unblocked = sigset_t()
+        sigemptyset(&unblocked)
+        posix_spawnattr_setsigmask(&attr, &unblocked)
         // Deliberately no POSIX_SPAWN_SETPGROUP: the child must stay in the terminal's foreground group.
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF))
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
 
         var cArgs: [UnsafeMutablePointer<CChar>?] = ([executable] + arguments).map { strdup($0) }
         cArgs.append(nil)
