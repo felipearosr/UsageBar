@@ -1372,3 +1372,24 @@
 .usagebar-account-destructive {
   color: #ff7b63;
 }
+
+/* Switching the active Claude account (accountswitch.js). */
+.usagebar-account-switch {
+  margin-left: 6px;
+  padding: 2px 8px;
+}
+
+.usagebar-account-switch:insensitive {
+  opacity: 0.5;
+}
+
+.usagebar-account-switch-progress {
+  font-size: 9pt;
+  margin-top: 2px;
+}
+
+.usagebar-account-switch-error {
+  color: #ff7b63;
+  font-size: 9pt;
+  margin-top: 2px;
+}

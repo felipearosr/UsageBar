@@ -127,6 +127,15 @@ import {
     rowActions,
     wantsKinds,
 } from './accountactions.js';
+import {
+    idleSwitch,
+    rowSwitchView,
+    startSwitch,
+    switchAnswered,
+    switchRefreshed,
+    switchRenderKey,
+    switchRequest,
+} from './accountswitch.js';
 
 // Sizes a container from its first child only and floats the rest at
 // their preferred size in the top-right corner, so an open dropdown
@@ -2042,6 +2051,8 @@ export default class UsageBarExtension extends Extension {
         this._usageRefetchQueued = false;
         this._accountKindsInFlight = false;
         this._accountKinds = null;
+        this._accountSwitch = idleSwitch();
+        this._usageWaiters = [];
         if (this._tickId) {
             GLib.source_remove(this._tickId);
             this._tickId = 0;
@@ -2629,8 +2640,32 @@ export default class UsageBarExtension extends Extension {
             if (this._usageRefetchQueued) {
                 this._usageRefetchQueued = false;
                 this._fetchUsage(true);
+            } else {
+                this._flushUsageWaiters();
             }
         });
+    }
+
+    // Calls `done` once a /usage fetch that started after now has landed
+    // (or failed). A fetch already out may predate the change, so it asks
+    // again when that one lands.
+    _whenUsageRefreshed(done) {
+        (this._usageWaiters ??= []).push(done);
+        if (this._fetchInFlight) {
+            this._usageRefetchQueued = true;
+            return;
+        }
+        this._fetchUsage(true);
+        // No fetch started (no CLI, or still waiting for /health): nothing to wait for.
+        if (!this._fetchInFlight)
+            this._flushUsageWaiters();
+    }
+
+    _flushUsageWaiters() {
+        const waiters = this._usageWaiters ?? [];
+        this._usageWaiters = [];
+        for (const done of waiters)
+            done();
     }
 
     // Cards and the popover's rows from the merged /usage rows. With Hide
@@ -4191,7 +4226,8 @@ export default class UsageBarExtension extends Extension {
                         .filter(actor => actor.style_class === 'usagebar-account-head');
                     const labels = heads.map(head => descendants(head)
                         .filter(actor => actor instanceof St.Label).map(actor => actor.text));
-                    assertions.push(assertion('one block per claude-swap slot', heads.length === 2, {labels}));
+                    const slots = GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWITCH') === '1' ? 3 : 2;
+                    assertions.push(assertion('one block per claude-swap slot', heads.length === slots, {labels}));
                     assertions.push(assertion('the active slot is marked active, the other stale',
                         labels[0]?.includes('active') && !labels[0]?.includes('stale') &&
                         labels[1]?.includes('stale') && !labels[1]?.includes('active'), {labels}));
@@ -4202,8 +4238,74 @@ export default class UsageBarExtension extends Extension {
                     finish(assertions, error);
                     return;
                 }
-                capture('accounts-provider-claude.png', () => finish(assertions));
+                capture('accounts-provider-claude.png', () => {
+                    if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWITCH') === '1')
+                        claudeSwitchSmoke(assertions);
+                    else
+                        finish(assertions);
+                });
             });
+        };
+
+        // With USAGEBAR_UI_SMOKE_CLAUDE_SWITCH=1 and STUB_CODEXBAR_CLAUDE_SWITCH=1,
+        // after the claude-swap card: Switch on the spare slot shows both
+        // progress phases, then spare is the active account; switching back
+        // to work fails, and the error stays on work's row.
+        const claudeSwitchSmoke = assertions => {
+            const hasClass = (actor, name) => String(actor.style_class ?? '').split(/\s+/).includes(name);
+            const box = () => this._indicator._detailBox;
+            const switchButtons = () => descendants(box()).filter(actor => hasClass(actor, 'usagebar-account-switch'));
+            const texts = () => descendants(box()).filter(actor => actor instanceof St.Label).map(actor => actor.text);
+            const activeId = () => this._accountCards?.get('claude')?.accounts.find(a => a.active)?.id ?? null;
+            const idle = () => !this._accountSwitch?.phase;
+            const step = (fileName, check, then) => {
+                try {
+                    check();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                capture(fileName, then);
+            };
+            try {
+                const buttons = switchButtons();
+                assertions.push(assertion('only the switchable inactive slot offers Switch', buttons.length === 1,
+                    {actual: buttons.map(button => button.accessible_name)}));
+                buttons[0].emit('clicked', 1);
+            } catch (error) {
+                finish(assertions, error);
+                return;
+            }
+            waitFor(() => texts().includes('Switching account…'), () => step('claude-switching.png', () => {
+                assertions.push(assertion('the row shows Switching account…',
+                    texts().includes('Switching account…'), {texts: texts()}));
+                assertions.push(assertion('Switch is disabled while switching',
+                    switchButtons().every(button => !button.reactive)));
+            }, () => waitFor(() => texts().includes('Refreshing account status…'), () => step(
+                'claude-refreshing.png', () => {
+                    assertions.push(assertion('the row shows Refreshing account status…',
+                        texts().includes('Refreshing account status…'), {texts: texts()}));
+                }, () => waitFor(() => idle() && activeId() === 'claude-swap:3', () => step(
+                    'claude-switched.png', () => {
+                        assertions.push(assertion('the refreshed rows make spare the active account',
+                            activeId() === 'claude-swap:3', {actual: activeId()}));
+                        assertions.push(assertion('no progress is left once refreshed',
+                            !texts().includes('Switching account…') &&
+                            !texts().includes('Refreshing account status…'), {texts: texts()}));
+                        const buttons = switchButtons();
+                        assertions.push(assertion('work now offers Switch', buttons.length === 1 &&
+                            buttons[0].reactive, {actual: buttons.map(button => button.accessible_name)}));
+                        buttons[0].emit('clicked', 1);
+                    }, () => waitFor(() => idle() && texts().some(text => text.startsWith('Account switch failed')),
+                        () => step('claude-switch-error.png', () => {
+                            const error = descendants(box())
+                                .filter(actor => hasClass(actor, 'usagebar-account-switch-error'));
+                            assertions.push(assertion('the switch error shows on the row', error.length === 1 &&
+                                error[0].text.startsWith('Account switch failed'),
+                            {actual: error.map(label => label.text)}));
+                            assertions.push(assertion('a failed switch leaves the active account alone',
+                                activeId() === 'claude-swap:3', {actual: activeId()}));
+                        }, () => finish(assertions)))))))));
         };
 
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
@@ -5214,6 +5316,7 @@ export default class UsageBarExtension extends Extension {
             this._detailPayloadKey(row),
             accountsRenderKey(accountCard),
             this._accountActionsKey(provider),
+            switchRenderKey(accountCard, this._switchViewOptions()),
             (accountCard?.accounts ?? []).map(account => this._detailPayloadKey(account.row)).join(','),
             this._displayName(provider),
             DISPLAY.absoluteResets,
@@ -7354,8 +7457,78 @@ export default class UsageBarExtension extends Extension {
             head.add_child(this._accountIconButton('user-trash-symbolic', 'Remove',
                 () => this._showRemoveAccountDialog(provider, account)));
         }
+        const switching = actions && provider
+            ? rowSwitchView(account, {...this._switchViewOptions(), provider})
+            : {};
+        if (switching.button) {
+            const button = new St.Button({
+                label: 'Switch',
+                style_class: 'usagebar-issue-btn usagebar-account-switch',
+                can_focus: switching.enabled,
+                reactive: switching.enabled,
+                accessible_name: `Switch Claude Code to ${account.label ?? 'this account'}`,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (!switching.enabled)
+                button.add_style_pseudo_class('insensitive');
+            button.connect('clicked', () => this._switchAccount(provider, account));
+            head.add_child(button);
+        }
         card.add_child(head);
+        if (switching.progress) {
+            card.add_child(new St.Label({
+                text: switching.progress,
+                style_class: 'usagebar-dim usagebar-account-switch-progress',
+            }));
+        }
+        if (switching.error) {
+            const error = new St.Label({text: switching.error, style_class: 'usagebar-account-switch-error'});
+            error.clutter_text.line_wrap = true;
+            error.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            card.add_child(error);
+        }
         this._addRowQuota(card, account.row);
+    }
+
+    // ----- Switching the active Claude account (accountswitch.js) -----
+
+    _switchViewOptions() {
+        return {
+            state: this._accountSwitch ?? idleSwitch(),
+            capabilities: this._accountCapabilities(),
+            hidePersonalInfo: DISPLAY.hidePersonalInfo,
+        };
+    }
+
+    // Switch: POST /accounts/switch ("Switching account…"), then reload the
+    // accounts ("Refreshing account status…"). Only that reload decides
+    // which account is active; a failure stays on the row.
+    _switchAccount(provider, account) {
+        const state = startSwitch(this._accountSwitch ?? idleSwitch(), {provider, accountId: account.id});
+        if (!state)
+            return;
+        const seq = state.seq;
+        this._accountSwitch = state;
+        this._requestRender();
+        const answered = error => {
+            const next = switchAnswered(this._accountSwitch, seq, {error});
+            if (next === this._accountSwitch)
+                return;
+            this._accountSwitch = next;
+            this._requestRender();
+            this._whenUsageRefreshed(() => {
+                this._accountSwitch = switchRefreshed(this._accountSwitch, seq);
+                this._requestRender();
+            });
+        };
+        const actionToken = this._supervisor?.actionToken;
+        if (!actionToken) {
+            answered(actionErrorText(new Error('serve not running')));
+            return;
+        }
+        const request = switchRequest({provider, accountId: account.id});
+        this._get(request.path, (_result, error) => answered(error ? actionErrorText(error) : null),
+            request.method, request.body, {[ACTION_TOKEN_HEADER]: actionToken});
     }
 
     // ----- Provider Account actions (accountactions.js) -----

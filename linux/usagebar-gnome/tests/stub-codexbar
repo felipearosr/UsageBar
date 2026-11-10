@@ -23,6 +23,12 @@ the variable they are refused and /health leaves the account actions out.
 STUB_CODEXBAR_CLAUDE_SWAP=1 (with ACCOUNTS) makes Claude's rows claude-swap's:
 two slots on /usage?accounts=all (work active, personal stale with its
 error), and the active slot's row on plain /usage.
+STUB_CODEXBAR_CLAUDE_SWITCH=1 (with CLAUDE_SWAP) adds a third slot, spare,
+marks the inactive slots claude-swap can activate with canSwitch, advertises
+providerAccountSwitch, and answers POST /accounts/switch in memory after a
+short delay (STUB_CODEXBAR_SWITCH_DELAY seconds, default 1.5); the next
+/usage after a switch takes as long, so both progress phases show. Switching
+back to work fails like a switch result naming the wrong slot.
 STUB_CODEXBAR_CODEX_ACCOUNTS=1 advertises providerAccountRows and answers
 /usage?accounts=all with three Codex Provider Accounts: the everyday login
 (active) and two managed accounts, one of them failing; plain /usage gets the
@@ -48,6 +54,8 @@ ISSUES = os.environ.get("STUB_CODEXBAR_ISSUES") == "1"
 ACCOUNTS = os.environ.get("STUB_CODEXBAR_ACCOUNTS") in ("1", "3")
 SPARE = os.environ.get("STUB_CODEXBAR_ACCOUNTS") == "3"
 CLAUDE_SWAP = ACCOUNTS and os.environ.get("STUB_CODEXBAR_CLAUDE_SWAP") == "1"
+CLAUDE_SWITCH = CLAUDE_SWAP and os.environ.get("STUB_CODEXBAR_CLAUDE_SWITCH") == "1"
+SWITCH_DELAY = float(os.environ.get("STUB_CODEXBAR_SWITCH_DELAY") or 1.5)
 CODEX_ACCOUNTS = os.environ.get("STUB_CODEXBAR_CODEX_ACCOUNTS") == "1"
 HEALTH_FAIL_SECS = float(os.environ.get("STUB_CODEXBAR_HEALTH_FAIL_SECS") or 0)
 STARTED = time.monotonic()
@@ -109,7 +117,7 @@ def iso(offset_secs=0):
 ACTION_TOKEN = (os.environ.get("USAGEBAR_SERVE_ACTION_TOKEN") or "").strip()
 ACCOUNT_CAPABILITIES = ["providerAccountRows"] + (
     ["providerAccountKinds", "providerAccountAddKey", "providerAccountRename", "providerAccountRemove"]
-    if ACTION_TOKEN else [])
+    if ACTION_TOKEN else []) + (["providerAccountSwitch"] if ACTION_TOKEN and CLAUDE_SWITCH else [])
 # The OpenRouter token accounts, in store order. Only ids, labels and which
 # one is active: the stub never keeps a key.
 OPENROUTER = [
@@ -120,6 +128,9 @@ if SPARE:
     OPENROUTER.append({"id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", "label": "Spare", "failing": False,
                        "percent": 12})
 ACTIVE = {"id": "0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70"}
+# claude-swap's active slot (STUB_CODEXBAR_CLAUDE_SWITCH), and whether the
+# next /usage comes after a switch (it then takes SWITCH_DELAY too).
+CLAUDE = {"active": 2, "slow_usage": False}
 LOCK = threading.Lock()
 
 
@@ -204,6 +215,8 @@ def claude_swap_rows(all_accounts, window):
                         "identity": {"providerID": "claude", "accountEmail": "work@example.com",
                                      "accountOrganization": "Example Org", "loginMethod": "Claude Max",
                                      "accountID": "claude-swap:2"}}}
+    if CLAUDE_SWITCH:
+        return claude_switch_rows(all_accounts, window)
     if not all_accounts:
         return [active]
     active.update({"account": "work@example.com", "accountId": "claude-swap:2",
@@ -218,6 +231,58 @@ def claude_swap_rows(all_accounts, window):
              "error": {"code": 1, "kind": "provider",
                        "message": "Token expired. Switch to this account in claude-swap to refresh it."}}
     return [active, stale]
+
+
+def claude_switch_rows(all_accounts, window):
+    # Slot 1's token expired, so it never offers Switch; 2 and 3 do while inactive.
+    with LOCK:
+        active_slot = CLAUDE["active"]
+    slots = [(1, "personal@example.com", 88, False), (2, "work@example.com", 31, True),
+             (3, "spare@example.com", 9, True)]
+    rows = []
+    for slot, email, percent, healthy in slots:
+        row = {"provider": "claude", "source": "claude-swap" if healthy else "claude-swap-stale",
+               "account": email,
+               "usage": {"primary": window(percent, 300, 9000), "secondary": window(percent // 2, 10080, 400000),
+                         "updatedAt": iso(120 if healthy else 5400)}}
+        if not healthy:
+            row["error"] = {"code": 1, "kind": "provider",
+                            "message": "Token expired. Switch to this account in claude-swap to refresh it."}
+        if not all_accounts:
+            if slot == active_slot:
+                row.pop("account")
+                return [row]
+            continue
+        row.update({"accountId": f"claude-swap:{slot}", "accountSource": "claude-swap", "accountLabel": email,
+                    "active": slot == active_slot, "updatedAt": row["usage"]["updatedAt"]})
+        if not healthy:
+            row["stale"] = True
+        if healthy and slot != active_slot:
+            row["canSwitch"] = True
+        rows.append(row)
+    # Like serve: the active slot first, then by slot.
+    return sorted(rows, key=lambda row: not row["active"])
+
+
+def claude_switch(body):
+    """(status, payload) for POST /accounts/switch against the in-memory slots."""
+    if not isinstance(body, dict) or body.get("provider") != "claude":
+        return 400, {"error": "Only Claude accounts can be switched here."}
+    account_id = str(body.get("accountId") or "")
+    target = next((row for row in claude_switch_rows(True, lambda *_: {}) if row["accountId"] == account_id), None)
+    if target is None:
+        return 404, {"error": "No such account."}
+    if not target.get("canSwitch"):
+        return 409, {"error": "This account can't be switched to."}
+    time.sleep(SWITCH_DELAY)
+    with LOCK:
+        CLAUDE["slow_usage"] = True
+        if account_id == "claude-swap:2":
+            return 502, {"error": "Account switch failed: claude-swap reported account slot 3 after "
+                                  "CodexBar requested slot 2."}
+        CLAUDE["active"] = int(account_id.split(":")[1])
+    return 200, {"provider": "claude", "accountId": account_id, "switched": True,
+                 "activeAccountId": account_id, "refreshError": None}
 
 
 def codex_account_rows(all_accounts):
@@ -293,6 +358,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/usage" and CODEX_ACCOUNTS:
             self.send_json(200, codex_account_rows("accounts=all" in parts.query.split("&")))
         elif path == "/usage" and ACCOUNTS:
+            with LOCK:
+                slow, CLAUDE["slow_usage"] = CLAUDE["slow_usage"], False
+            if slow:
+                time.sleep(SWITCH_DELAY)
             self.send_json(200, account_rows("accounts=all" in parts.query.split("&")))
         elif path in ("/usage", "/cost"):
             self.send_json(200, [])
@@ -305,7 +374,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/sync/push" and SYNC:
             self.send_json(200, {"status": "pushed", "uploaded": []})
-        elif path in ("/accounts/add", "/accounts/rename", "/accounts/remove") and ACCOUNTS:
+        elif path in ("/accounts/add", "/accounts/rename", "/accounts/remove") and ACCOUNTS or \
+                path == "/accounts/switch" and CLAUDE_SWITCH:
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 body = json.loads(self.rfile.read(length) or b"null")
@@ -320,6 +390,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
                 self.send_json(400, {"error": "Expected a JSON body."})
+                return
+            if path == "/accounts/switch":
+                self.send_json(*claude_switch(body))
                 return
             self.send_json(*account_action(path, body))
         else:

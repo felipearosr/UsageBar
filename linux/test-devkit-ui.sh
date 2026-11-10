@@ -8,6 +8,8 @@
 # USAGEBAR_UI_SMOKE_ACCOUNTS=1 with STUB_CODEXBAR_ACCOUNTS=1 checks a provider
 # card with two Provider Accounts; add USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and
 # STUB_CODEXBAR_CLAUDE_SWAP=1 to also check Claude's claude-swap slots.
+# Add USAGEBAR_UI_SMOKE_CLAUDE_SWITCH=1 and STUB_CODEXBAR_CLAUDE_SWITCH=1 to
+# switch the active Claude account through its progress phases.
 # USAGEBAR_UI_SMOKE_ICON_SOURCE=1 with STUB_CODEXBAR_ACCOUNTS=3 checks the
 # panel icon source and per-account notifications.
 # USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 with STUB_CODEXBAR_CODEX_ACCOUNTS=1 checks
@@ -153,6 +155,18 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
         USAGEBAR_UI_SMOKE_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/claude-swap-accounts"
+fi
+
+# Switching the active Claude account: Switch on an inactive claude-swap slot
+# shows both progress phases, then the refreshed rows name the new active
+# account; a failing switch leaves its error on the row.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    printf '\nRe-running the UI smoke to switch the active Claude account\n'
+    CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
+        STUB_CODEXBAR_ACCOUNTS=1 STUB_CODEXBAR_CLAUDE_SWAP=1 STUB_CODEXBAR_CLAUDE_SWITCH=1 \
+        USAGEBAR_UI_SMOKE_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 USAGEBAR_UI_SMOKE_CLAUDE_SWITCH=1 \
+        USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
+        "$0" "$artifact_dir/claude-switch"
 fi
 
 # A third account with the most headroom: the panel chip follows the icon

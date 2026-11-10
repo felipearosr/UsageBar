@@ -20,6 +20,9 @@ export const FEATURES = {
     providerAccountAddKey: {label: 'Adding key accounts', minVersion: null},
     providerAccountRename: {label: 'Renaming accounts', minVersion: null},
     providerAccountRemove: {label: 'Removing accounts', minVersion: null},
+    // serve's POST /accounts/switch (accountswitch.js): Switch on inactive
+    // claude-swap rows. A CLI without it shows no Switch.
+    providerAccountSwitch: {label: 'Switching Claude accounts', minVersion: null},
 };
 
 // ---------- versions ----------
