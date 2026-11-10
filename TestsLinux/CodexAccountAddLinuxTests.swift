@@ -59,7 +59,7 @@ struct CodexAccountAddLinuxTests {
     }
 
     @Test
-    func `codex login runs in this process group, so it can own the terminal`() async throws {
+    func `codex login runs in this process group with no signals blocked`() async throws {
         let fixture = try AddFixture()
         defer { fixture.tearDown() }
         let codex = try fixture.installCodex(.recordProcessGroup(email: "pgid@example.com"))
@@ -69,6 +69,9 @@ struct CodexAccountAddLinuxTests {
         // A child in a new group (Foundation's Process on Linux) is stopped by SIGTTIN/SIGTTOU in a real terminal.
         let recorded = try fixture.recorded("pgid").trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(Int32(recorded) == getpgrp())
+        // And with nothing blocked, so Ctrl-C reaches it even though Swift's worker threads block signals.
+        #expect(try fixture.recorded("sigblk").trimmingCharacters(in: .whitespacesAndNewlines)
+            == "SigBlk:0000000000000000")
     }
 
     // MARK: - Failures
@@ -384,6 +387,7 @@ private final class AddFixture {
             try Self.authData(email: email, accountID: "acct-pgid").write(to: source)
             action = """
             { ps -o pgid= -p $$ 2>/dev/null || cut -d' ' -f5 /proc/$$/stat; } > "$FAKE_CODEX_RECORDS/pgid"
+            grep '^SigBlk:' /proc/$$/status | tr -d ' \\t' > "$FAKE_CODEX_RECORDS/sigblk"
             cp '\(source.path)' "$CODEX_HOME/auth.json"
             exit 0
 
