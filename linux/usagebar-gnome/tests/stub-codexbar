@@ -95,7 +95,7 @@ def account_rows(all_accounts):
         return [claude, work]
     personal = {"provider": "openrouter", "source": "api", "account": "Personal",
                 "accountId": "token:6f0c2a9e-1b4d-4c8a-9e2f-0a1b2c3d4e5f", "accountSource": "token",
-                "accountLabel": "Personal", "active": False, "updatedAt": iso(60),
+                "accountLabel": "Personal", "active": False,
                 "error": {"code": 1, "kind": "provider",
                           "message": "OpenRouter API error: 401 Unauthorized (invalid key)"}}
     work.update({"accountId": "token:0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70", "accountSource": "token",

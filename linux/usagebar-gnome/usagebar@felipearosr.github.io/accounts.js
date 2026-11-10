@@ -89,16 +89,20 @@ function primaryAccount(accounts) {
 
 // rows → [{provider, row, multi, accounts: [{id, source, label, active,
 // updatedAt, ageSecs, freshness, error, stale, row}]}], in row order. Without
-// the capability every row is its own card, as before; with it, rows that
-// carry an accountId are grouped into one card per provider.
+// the capability every row is its own card, as before; with it, a provider
+// with any row that carries an accountId gets one card holding all its rows.
+// Serve tags all or nothing per provider; an untagged row of such a provider
+// (an older or odd serve) still joins that card, as an account without an id,
+// so nothing renders twice.
 export function buildCards(rows, {accountRows = false, now = Date.now()} = {}) {
     const list = Array.isArray(rows) ? rows.filter(row => row && typeof row === 'object') : [];
     if (!accountRows)
         return list.map(row => singleCard(row, now));
+    const tagged = new Set(list.filter(hasAccountId).map(row => row.provider));
     const cards = [];
     const grouped = new Map();
     for (const row of list) {
-        if (!hasAccountId(row)) {
+        if (!tagged.has(row.provider)) {
             cards.push(singleCard(row, now));
             continue;
         }
@@ -125,24 +129,44 @@ export function primaryRows(cards) {
 }
 
 // Serve replaces a failing provider's row with a bare error row; carry the
-// last good usage of the same Provider Account forward, marked stale (port
-// of client.rs merge_stale). Another account's Quota is never borrowed. A
-// Claude row answered from an old statusLine capture is stale as served.
+// last good usage of the same Provider Account forward, marked stale and with
+// the time of that usage (port of client.rs merge_stale). Another account's
+// Quota is never borrowed. A Claude row answered from an old statusLine
+// capture is stale as served.
+//
+// An untagged error row for a provider whose previous rows were tagged (an
+// older serve's provider timeout) stands for all of that provider's accounts:
+// it becomes stale copies of their previous rows, each with the error, so
+// the card stays multi-account.
 export function mergeStale(previous, fresh) {
+    const prior = Array.isArray(previous) ? previous : [];
+    const freshTagged = new Set(fresh.filter(hasAccountId).map(row => row.provider));
+    const merged = [];
     for (const row of fresh) {
         if (isStaleSource(row))
             row.stale = true;
+        if (row.error && !hasAccountId(row) && !freshTagged.has(row.provider)) {
+            const accounts = prior.filter(p => p.provider === row.provider && hasAccountId(p));
+            if (accounts.length) {
+                for (const prev of accounts)
+                    merged.push({...prev, error: row.error, stale: true});
+                continue;
+            }
+        }
         if (row.error && windowsOf(row).length === 0) {
             const key = accountKey(row);
-            const prev = previous.find(p => accountKey(p) === key && windowsOf(p).length > 0);
+            const prev = prior.find(p => accountKey(p) === key && windowsOf(p).length > 0);
             if (prev) {
                 row.usage = prev.usage;
                 row.pace = prev.pace;
+                if (prev.updatedAt !== undefined)
+                    row.updatedAt = prev.updatedAt;
                 row.stale = true;
             }
         }
+        merged.push(row);
     }
-    return fresh;
+    return merged;
 }
 
 // What a multi-account card's detail view depends on, for its render cache.

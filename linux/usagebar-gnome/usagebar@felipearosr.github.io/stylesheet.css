@@ -281,6 +281,10 @@
   color: #eeeeec;
 }
 
+.usagebar-account-headlabel {
+  margin-right: 6px;
+}
+
 .usagebar-account-active {
   background-color: rgba(46, 194, 126, 0.22);
   color: #8ff0a4;

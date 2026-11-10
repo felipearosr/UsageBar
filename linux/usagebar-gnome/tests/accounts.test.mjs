@@ -27,7 +27,6 @@ function accountPayload() {
             usage: {primary: window(20), updatedAt: '2026-11-10T11:59:00Z'}},
         {provider: 'openrouter', source: 'api', account: 'Personal', accountId: PERSONAL,
             accountSource: 'token', accountLabel: 'Personal', active: false,
-            updatedAt: '2026-11-10T11:58:00Z',
             error: {code: 1, kind: 'provider', message: 'OpenRouter rejected the key'}},
         {provider: 'openrouter', source: 'api', account: 'Work', accountId: WORK,
             accountSource: 'token', accountLabel: 'Work', active: true,
@@ -66,7 +65,7 @@ test('one card per provider with one row per account, active marking and freshne
     const openrouter = cards[1];
     assert.deepEqual(openrouter.accounts.map(a => ({id: a.id, source: a.source, label: a.label, active: a.active,
         freshness: a.freshness, error: a.error})), [
-        {id: PERSONAL, source: 'token', label: 'Personal', active: false, freshness: 'updated 2m ago',
+        {id: PERSONAL, source: 'token', label: 'Personal', active: false, freshness: null,
             error: 'OpenRouter rejected the key'},
         {id: WORK, source: 'token', label: 'Work', active: true, freshness: 'updated 5m ago', error: null},
     ]);
@@ -114,11 +113,16 @@ test('a stale error row borrows only its own account\'s last Quota', () => {
     const previous = accountPayload().map(row => row.accountId === PERSONAL
         ? {...row, error: undefined, usage: {primary: window(12)}} : row);
     const fresh = accountPayload().map(row => row.accountId === WORK
-        ? {...row, usage: undefined, error: {message: 'timed out'}} : row);
+        ? {...row, usage: undefined, updatedAt: undefined, error: {message: 'timed out'}} : row);
     const merged = mergeStale(previous, fresh);
     const byId = new Map(merged.map(row => [row.accountId ?? row.provider, row]));
     assert.equal(byId.get(WORK).usage.primary.usedPercent, 64);
     assert.equal(byId.get(WORK).stale, true);
+    // The carried Quota keeps the time it was fetched, so the card never says "just now" over old numbers.
+    assert.equal(byId.get(WORK).updatedAt, '2026-11-10T11:55:00Z');
+    const work = buildCards(merged, {accountRows: true, now: NOW})[1].accounts[1];
+    assert.equal(work.freshness, 'updated 5m ago');
+    assert.equal(work.error, 'timed out');
     // Personal had Quota before, but its fresh row was the error row: Work's never moves onto it.
     assert.equal(byId.get(PERSONAL).usage.primary.usedPercent, 12);
 
@@ -126,6 +130,33 @@ test('a stale error row borrows only its own account\'s last Quota', () => {
     const plain = mergeStale(singlePayload(), [{provider: 'claude', source: 'oauth', error: {message: 'x'}}]);
     assert.equal(plain[0].stale, true);
     assert.equal(plain[0].usage.primary.usedPercent, 20);
+});
+
+test('an untagged provider error keeps every account\'s last Quota, stale', () => {
+    const previous = accountPayload();
+    const timeout = {provider: 'openrouter', source: 'auto',
+        error: {code: 1, kind: 'provider', message: 'openrouter usage timed out'}};
+    const merged = mergeStale(previous, [previous[0], timeout]);
+    const openrouter = merged.filter(row => row.provider === 'openrouter');
+    assert.deepEqual(openrouter.map(row => row.accountId), [PERSONAL, WORK]);
+    assert.ok(openrouter.every(row => row.stale && row.error.message === 'openrouter usage timed out'));
+    assert.equal(openrouter[1].usage.primary.usedPercent, 64);
+    assert.equal(openrouter[1].updatedAt, '2026-11-10T11:55:00Z');
+    const cards = buildCards(merged, {accountRows: true, now: NOW});
+    assert.deepEqual(cards.map(card => [card.provider, card.multi]), [['claude', false], ['openrouter', true]]);
+    assert.equal(cards[1].row.accountId, WORK);
+    // Nothing tagged before: the row stays a provider error as it always was.
+    const plain = mergeStale(singlePayload(), [timeout]);
+    assert.equal(plain.length, 1);
+    assert.equal(plain[0].usage.primary.usedPercent, 64);
+});
+
+test('an untagged row joins its provider\'s account card instead of a second card', () => {
+    const rows = [...accountPayload(), {provider: 'openrouter', source: 'api', error: {message: 'odd'}}];
+    const cards = buildCards(rows, {accountRows: true, now: NOW});
+    assert.deepEqual(cards.map(card => card.provider), ['claude', 'openrouter']);
+    assert.deepEqual(cards[1].accounts.map(account => account.id), [PERSONAL, WORK, null]);
+    assert.equal(cards[1].row.accountId, WORK);
 });
 
 test('account keys separate accounts and fall back to the provider', () => {

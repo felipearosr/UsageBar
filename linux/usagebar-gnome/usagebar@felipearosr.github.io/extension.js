@@ -140,6 +140,7 @@ class OverlayLayout extends Clutter.LayoutManager {
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
+const REPORT_WAIT_MS = 2000;       // longest /usage waits for the first /health
 const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
 const COST_HISTORY_DAYS = 90;
@@ -1674,6 +1675,10 @@ export default class UsageBarExtension extends Extension {
             report: null,
             reportChecked: false,
             reportInFlight: false,
+            // /usage calls waiting for the first report (see _fetchUsage),
+            // and whether the wait already timed out for this serve.
+            reportWaiters: [],
+            reportWaitOver: false,
             probe: null,
             requests: 0,         // /sync/* requests sent, for the UI smoke
         };
@@ -1998,6 +2003,10 @@ export default class UsageBarExtension extends Extension {
             GLib.source_remove(this._fetchId);
             this._fetchId = 0;
         }
+        if (this._reportWaitId) {
+            GLib.source_remove(this._reportWaitId);
+            this._reportWaitId = 0;
+        }
         this._fetchInFlight = false;
         this._retryInFlight = false;
         this._costInFlight = false;
@@ -2239,13 +2248,52 @@ export default class UsageBarExtension extends Extension {
         return !!this._sync?.report?.capabilities.has(ACCOUNT_ROWS_CAPABILITY);
     }
 
+    // Serve (re)started: ask /health again. The last report stays in use
+    // until the new one arrives, so a restart doesn't flip the cards.
     _resetSyncSupport() {
         const sync = this._sync;
         if (!sync)
             return;
-        sync.report = null;
         sync.reportChecked = false;
+        sync.reportWaitOver = false;
         sync.probe = null;
+    }
+
+    // /usage waits for /health only while no capability report is known at
+    // all, so the first poll asks for the right rows once instead of plain
+    // rows now and account rows a second later.
+    _usageWaitsForReport() {
+        const sync = this._sync;
+        return !!sync && !sync.reportChecked && !sync.report && !sync.reportWaitOver &&
+            !this._syncFixture && !!this._supervisor?.port;
+    }
+
+    // Runs `callback` once /health answers (or fails), or after
+    // REPORT_WAIT_MS if it hangs.
+    _awaitReport(callback) {
+        const sync = this._sync;
+        sync.reportWaiters.push(callback);
+        if (!sync.reportInFlight)
+            this._fetchCapabilities();
+        if (!this._reportWaitId) {
+            this._reportWaitId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, REPORT_WAIT_MS, () => {
+                this._reportWaitId = 0;
+                if (this._sync === sync) {
+                    sync.reportWaitOver = true;
+                    this._flushReportWaiters(sync);
+                }
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    }
+
+    _flushReportWaiters(sync) {
+        if (this._reportWaitId) {
+            GLib.source_remove(this._reportWaitId);
+            this._reportWaitId = 0;
+        }
+        for (const callback of sync.reportWaiters.splice(0))
+            callback();
     }
 
     // Upstream's CLI has no Machine Sync: drop the tab and stop asking.
@@ -2267,14 +2315,15 @@ export default class UsageBarExtension extends Extension {
             if (this._sync !== sync)
                 return;
             sync.reportInFlight = false;
-            if (error)
-                return; // serve not up yet; the next tick asks again
+            if (error) {
+                // Serve not up yet; the next tick asks again. A waiting /usage
+                // goes ahead (and most likely fails and retries the same way).
+                this._flushReportWaiters(sync);
+                return;
+            }
             sync.reportChecked = true;
             sync.report = readReport(payload);
-            // The first /usage may have gone out before the report: ask again
-            // with accounts=all instead of waiting for the next poll.
-            if (this._accountRowsSupported() && !this._usageAccountRows && !this._fetchInFlight)
-                this._fetchUsage();
+            this._flushReportWaiters(sync);
             if (this._syncSupport() === 'needs-upgrade')
                 this._markSyncUnsupported();
             else
@@ -2466,6 +2515,10 @@ export default class UsageBarExtension extends Extension {
         }
         if (this._fetchInFlight)
             return;
+        if (this._usageWaitsForReport()) {
+            this._awaitReport(() => this._fetchUsage(force));
+            return;
+        }
         const generation = this._generation;
         this._fetchInFlight = true;
         if (force)
@@ -2495,14 +2548,10 @@ export default class UsageBarExtension extends Extension {
                     enrichAntigravityModels(primaryRows(cards)), this._claudeAccountPlan);
                 this._loadClaudeAccountPlan();
                 this._lastFetchAt = Date.now();
-                // Serve answers: read its /health capability report now rather
-                // than at the next poll, so account rows show from the start.
-                if (this._sync && !this._sync.reportChecked)
-                    this._syncTick();
                 this._trackIssueSince(this._rows);
                 this._indicator.setStatus('');
-                // The report came in while this fetch was out: ask again for
-                // account rows right away.
+                // The report only came in after this fetch went out (its
+                // /health outlasted REPORT_WAIT_MS): ask for account rows now.
                 this._scheduleFetch(!accountRows && this._accountRowsSupported() ? 1 : FETCH_OK_SECS);
                 this._maybeNotify();
                 this._publishWindowCatalog();
@@ -3747,8 +3796,14 @@ export default class UsageBarExtension extends Extension {
                         assertions.push(assertion('Work is marked active, Personal is not',
                             labels[1]?.includes('Work') && labels[1]?.includes('active') &&
                             labels[0]?.includes('Personal') && !labels[0]?.includes('active'), {labels}));
-                        assertions.push(assertion('each account shows its freshness',
-                            labels.every(texts => texts.some(text => /^updated /.test(text))), {labels}));
+                        // Personal's key failed: no Quota, so no "updated" time for it.
+                        assertions.push(assertion('only the account with Quota shows its freshness',
+                            labels[1]?.some(text => /^updated /.test(text)) &&
+                            !labels[0]?.some(text => /^updated /.test(text)), {labels}));
+                        const headLabel = descendants(box)
+                            .find(actor => actor.style_class?.includes('usagebar-account-headlabel'));
+                        assertions.push(assertion('the head % names the active account',
+                            headLabel?.text === 'Work', {actual: headLabel?.text ?? null}));
                         const banners = descendants(box)
                             .filter(actor => actor.style_class?.includes('usagebar-provider-issue') &&
                                 actor.style_class.includes('usagebar-issues-banner'));
@@ -6683,6 +6738,19 @@ export default class UsageBarExtension extends Extension {
             }));
         }
         head.add_child(new St.Widget({x_expand: true}));
+        // Several Provider Accounts: the head's plan badge and % are the
+        // account the provider's tools use (the card's row); say which.
+        const accountCard = this._accountCards?.get(row.provider);
+        const headAccount = accountCard?.multi
+            ? accountCard.accounts.find(account => account.row === row || (account.id && account.id === row.accountId))
+            : null;
+        if (headAccount?.label && worst !== null) {
+            head.add_child(new St.Label({
+                text: headAccount.label,
+                style_class: 'usagebar-dim usagebar-account-headlabel',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
         if (worst !== null) {
             head.add_child(new St.Label({
                 text: `${Math.round(worst)}%`,
@@ -6692,9 +6760,8 @@ export default class UsageBarExtension extends Extension {
         }
         card.add_child(head);
 
-        // Several Provider Accounts: one block each, with its own windows,
-        // resets, freshness and error. Otherwise the provider's one row.
-        const accountCard = this._accountCards?.get(row.provider);
+        // One block per Provider Account, with its own windows, resets,
+        // freshness and error. Otherwise the provider's one row.
         if (accountCard?.multi) {
             for (const account of accountCard.accounts)
                 this._addAccountBlock(card, account);
