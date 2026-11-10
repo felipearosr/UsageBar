@@ -13,6 +13,8 @@ STUB_CODEXBAR_ACCOUNTS=1 advertises providerAccountRows on /health and answers
 /usage?accounts=all with two OpenRouter Provider Accounts (Work active, the
 Personal key failing) next to a single-account Claude row; plain /usage gets
 the single-account rows an older CLI would send.
+STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
+seconds after serve starts, like a serve that isn't ready yet.
 """
 
 import json
@@ -28,6 +30,8 @@ REPORT = os.environ.get("STUB_CODEXBAR_REPORT") == "1"
 PAIRED = SYNC and os.environ.get("STUB_CODEXBAR_PAIRED") == "1"
 ISSUES = os.environ.get("STUB_CODEXBAR_ISSUES") == "1"
 ACCOUNTS = os.environ.get("STUB_CODEXBAR_ACCOUNTS") == "1"
+HEALTH_FAIL_SECS = float(os.environ.get("STUB_CODEXBAR_HEALTH_FAIL_SECS") or 0)
+STARTED = time.monotonic()
 VERSION = "0.69.0"
 REPORTING_DAY = {"timeZone": None, "startHour": 0, "effectiveTimeZone": "UTC"}
 
@@ -127,7 +131,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parts = urlsplit(self.path)
         path = parts.path
-        if path == "/health":
+        if path == "/health" and time.monotonic() - STARTED < HEALTH_FAIL_SECS:
+            self.send_json(503, {"error": "starting"})
+        elif path == "/health":
             body = {"status": "ok", "version": VERSION}
             if REPORT or ACCOUNTS:
                 body["capabilities"] = (["machineSync"] if SYNC else []) + \

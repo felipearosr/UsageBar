@@ -40,6 +40,7 @@ import {
 } from './accounts.js';
 import {extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
+import {ReportGate} from './reportgate.js';
 import {PROVIDER_META} from './providermeta.js';
 import {
     claudeAccountConfigPaths,
@@ -140,7 +141,6 @@ class OverlayLayout extends Clutter.LayoutManager {
 const REQUEST_TIMEOUT_SECS = 120;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
-const REPORT_WAIT_MS = 2000;       // longest /usage waits for the first /health
 const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
 const COST_HISTORY_DAYS = 90;
@@ -1675,10 +1675,10 @@ export default class UsageBarExtension extends Extension {
             report: null,
             reportChecked: false,
             reportInFlight: false,
-            // /usage calls waiting for the first report (see _fetchUsage),
-            // and whether the wait already timed out for this serve.
-            reportWaiters: [],
-            reportWaitOver: false,
+            // The first /usage after serve starts waits for /health
+            // (reportgate.js); usageForce remembers a waiting refresh click.
+            reportGate: new ReportGate(),
+            usageForce: false,
             probe: null,
             requests: 0,         // /sync/* requests sent, for the UI smoke
         };
@@ -2003,10 +2003,7 @@ export default class UsageBarExtension extends Extension {
             GLib.source_remove(this._fetchId);
             this._fetchId = 0;
         }
-        if (this._reportWaitId) {
-            GLib.source_remove(this._reportWaitId);
-            this._reportWaitId = 0;
-        }
+        this._clearReportGateTimers();
         this._fetchInFlight = false;
         this._retryInFlight = false;
         this._costInFlight = false;
@@ -2255,45 +2252,64 @@ export default class UsageBarExtension extends Extension {
         if (!sync)
             return;
         sync.reportChecked = false;
-        sync.reportWaitOver = false;
         sync.probe = null;
+        sync.reportGate.reset();
+        this._clearReportGateTimers();
     }
 
-    // /usage waits for /health only while no capability report is known at
-    // all, so the first poll asks for the right rows once instead of plain
-    // rows now and account rows a second later.
-    _usageWaitsForReport() {
+    // /usage goes through the report gate only while no capability report
+    // is known at all, so the first poll asks for the right rows once
+    // instead of plain rows now and account rows a moment later.
+    _usageGated() {
         const sync = this._sync;
-        return !!sync && !sync.reportChecked && !sync.report && !sync.reportWaitOver &&
+        return !!sync && !sync.reportChecked && !sync.report && !sync.reportGate.released &&
             !this._syncFixture && !!this._supervisor?.port;
     }
 
-    // Runs `callback` once /health answers (or fails), or after
-    // REPORT_WAIT_MS if it hangs.
-    _awaitReport(callback) {
-        const sync = this._sync;
-        sync.reportWaiters.push(callback);
-        if (!sync.reportInFlight)
-            this._fetchCapabilities();
-        if (!this._reportWaitId) {
-            this._reportWaitId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, REPORT_WAIT_MS, () => {
-                this._reportWaitId = 0;
-                if (this._sync === sync) {
-                    sync.reportWaitOver = true;
-                    this._flushReportWaiters(sync);
-                }
-                return GLib.SOURCE_REMOVE;
-            });
+    // Runs the report gate's actions (reportgate.js).
+    _runReportGate(sync, actions) {
+        for (const action of actions) {
+            if (this._sync !== sync)
+                return;
+            switch (action.type) {
+            case 'health':
+                if (!sync.reportInFlight)
+                    this._fetchCapabilities();
+                break;
+            case 'window':
+                this._reportWindowId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, action.ms, () => {
+                    this._reportWindowId = 0;
+                    this._runReportGate(sync, sync.reportGate.windowClosed(Date.now()));
+                    return GLib.SOURCE_REMOVE;
+                });
+                break;
+            case 'retry':
+                this._reportRetryId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, action.ms, () => {
+                    this._reportRetryId = 0;
+                    this._runReportGate(sync, sync.reportGate.retryDue(Date.now()));
+                    return GLib.SOURCE_REMOVE;
+                });
+                break;
+            case 'cancelTimers':
+                this._clearReportGateTimers();
+                break;
+            case 'usage': {
+                const force = sync.usageForce;
+                sync.usageForce = false;
+                this._fetchUsage(force);
+                break;
+            }
+            }
         }
     }
 
-    _flushReportWaiters(sync) {
-        if (this._reportWaitId) {
-            GLib.source_remove(this._reportWaitId);
-            this._reportWaitId = 0;
+    _clearReportGateTimers() {
+        for (const key of ['_reportWindowId', '_reportRetryId']) {
+            if (this[key]) {
+                GLib.source_remove(this[key]);
+                this[key] = 0;
+            }
         }
-        for (const callback of sync.reportWaiters.splice(0))
-            callback();
     }
 
     // Upstream's CLI has no Machine Sync: drop the tab and stop asking.
@@ -2316,14 +2332,19 @@ export default class UsageBarExtension extends Extension {
                 return;
             sync.reportInFlight = false;
             if (error) {
-                // Serve not up yet; the next tick asks again. A waiting /usage
-                // goes ahead (and most likely fails and retries the same way).
-                this._flushReportWaiters(sync);
+                // Serve not listening yet: a waiting /usage keeps waiting and
+                // the gate retries; otherwise the next tick asks again.
+                this._runReportGate(sync, sync.reportGate.healthResult(false, Date.now()));
                 return;
             }
             sync.reportChecked = true;
             sync.report = readReport(payload);
-            this._flushReportWaiters(sync);
+            this._runReportGate(sync, sync.reportGate.healthResult(true, Date.now()));
+            // The report landed after a plain /usage went out (the gate's
+            // window closed first): ask for account rows now, not at the next
+            // poll.
+            if (this._accountRowsSupported() && !this._usageAccountRows && !this._fetchInFlight)
+                this._fetchUsage();
             if (this._syncSupport() === 'needs-upgrade')
                 this._markSyncUnsupported();
             else
@@ -2515,8 +2536,9 @@ export default class UsageBarExtension extends Extension {
         }
         if (this._fetchInFlight)
             return;
-        if (this._usageWaitsForReport()) {
-            this._awaitReport(() => this._fetchUsage(force));
+        if (this._usageGated()) {
+            this._sync.usageForce ||= !!force;
+            this._runReportGate(this._sync, this._sync.reportGate.request(Date.now()));
             return;
         }
         const generation = this._generation;
@@ -2550,8 +2572,8 @@ export default class UsageBarExtension extends Extension {
                 this._lastFetchAt = Date.now();
                 this._trackIssueSince(this._rows);
                 this._indicator.setStatus('');
-                // The report only came in after this fetch went out (its
-                // /health outlasted REPORT_WAIT_MS): ask for account rows now.
+                // The report came in while this fetch was out: ask for
+                // account rows now.
                 this._scheduleFetch(!accountRows && this._accountRowsSupported() ? 1 : FETCH_OK_SECS);
                 this._maybeNotify();
                 this._publishWindowCatalog();
