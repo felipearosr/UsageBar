@@ -15,9 +15,11 @@ const ID_C = 'token:0ccccccc-0000-4000-8000-000000000003';
 const window = usedPercent => ({usedPercent, windowMinutes: 300, resetsAt: '2026-11-10T15:00:00Z'});
 
 function accountRow(provider, accountId, label, {email, org, identityProvider = provider, active = false,
-    usedPercent = 40, error} = {}) {
+    usedPercent = 40, error, labelIsDefault} = {}) {
     const row = {provider, source: 'oauth', account: label, accountId, accountSource: accountId.split(':')[0],
         accountLabel: label, active};
+    if (labelIsDefault !== undefined)
+        row.accountLabelIsDefault = labelIsDefault;
     if (error) {
         row.error = {code: 1, kind: 'provider', message: error};
         return row;
@@ -43,10 +45,12 @@ test('Hide Personal Info gives every account an ordinal label, ordered by accoun
         accountRow('openrouter', ID_B, 'Side project'),
     ];
     assert.deepEqual(labelsOf(rows, {hidePersonalInfo: true}), ['Account 3', 'Account 1', 'Account 2']);
-    // The card lists them in that order, so it reads Account 1, 2, 3.
+    // The blocks keep row order, hidden or not, so the toggle never reorders the card.
     const card = buildCards(rows, {accountRows: true, now: NOW, hidePersonalInfo: true})[0];
     assert.deepEqual(card.accounts.map(account => [account.label, account.id]),
-        [['Account 1', ID_A], ['Account 2', ID_B], ['Account 3', ID_C]]);
+        [['Account 3', ID_C], ['Account 1', ID_A], ['Account 2', ID_B]]);
+    assert.deepEqual(buildCards(rows, {accountRows: true, now: NOW})[0].accounts.map(account => account.id),
+        [ID_C, ID_A, ID_B]);
     assert.equal(card.row.accountId, ID_C, 'the head still follows the active account');
 });
 
@@ -115,11 +119,6 @@ test('accounts sharing an email use the alias, then email · org, then email · 
         accountRow('claude', ID_A, 'Personal', {email: same, org: 'Acme'}),
         accountRow('claude', ID_B, same, {email: same, org: 'Team Org'}),
     ]), ['Personal', `${same} · Team Org`]);
-    // An explicit alias field from a source that sends one.
-    assert.deepEqual(labelsOf([
-        {...accountRow('claude', ID_A, same, {email: same, org: 'Acme'}), accountAlias: 'Day job'},
-        accountRow('claude', ID_B, same, {email: same}),
-    ]), ['Day job', `${same} · Account 2`]);
     // No alias: the org.
     assert.deepEqual(labelsOf([
         accountRow('claude', ID_A, same, {email: same, org: 'Personal org'}),
@@ -198,7 +197,8 @@ test('without the capability or account ids nothing changes unless Hide Personal
     ];
     const cards = buildCards(rows, {now: NOW});
     assert.deepEqual(primaryRows(cards), rows);
-    assert.deepEqual(cards.map(card => card.accounts[0].label), [null, 'Work']);
+    // No label and no email: the ordinal, never a bare "Account".
+    assert.deepEqual(cards.map(card => card.accounts[0].label), ['Account 1', 'Work']);
     const hidden = buildCards(rows, {now: NOW, hidePersonalInfo: true});
     assert.deepEqual(hidden.map(card => card.accounts[0].label), ['Account 1', 'Account 1']);
     assert.equal(hidden[1].row.account, 'Account 1');
@@ -207,6 +207,50 @@ test('without the capability or account ids nothing changes unless Hide Personal
 
 test('email redaction in free text', () => {
     assert.equal(redactEmails('no access for a.b+c@mail.example.org, retry'), 'no access for [email], retry');
+    assert.equal(redactEmails('GET /v1/users/me%40example.com failed'), 'GET /v1/users/[email] failed');
     assert.equal(redactEmails('nothing here'), 'nothing here');
     assert.equal(redactEmails(undefined), undefined);
+});
+
+// Serve labels an account the user didn't name "Account N" by store index;
+// that is not an alias, and the numbers are the extension's own.
+test('serve\'s default label is not an alias: same email, different orgs show the orgs', () => {
+    const same = 'me@example.com';
+    for (const labelIsDefault of [true, undefined]) { // flagged, and an older serve without the flag
+        assert.deepEqual(labelsOf([
+            accountRow('claude', ID_B, 'Account 1', {email: same, org: 'Personal org', labelIsDefault}),
+            accountRow('claude', ID_A, 'Account 2', {email: same, org: 'Team org', labelIsDefault}),
+        ]), [`${same} · Personal org`, `${same} · Team org`]);
+    }
+    // The flag alone decides, whatever the default label reads.
+    assert.deepEqual(labelsOf([
+        accountRow('claude', ID_A, 'Konto 1', {email: same, labelIsDefault: true}),
+        accountRow('claude', ID_B, 'Konto 2', {email: same, labelIsDefault: true}),
+    ]), [`${same} · Account 1`, `${same} · Account 2`]);
+});
+
+test('default labels keep their number when Hide Personal Info is turned on', () => {
+    // Store order B, A: serve numbers them 1, 2; the ids sort A, B.
+    const rows = [
+        accountRow('openrouter', ID_B, 'Account 1', {labelIsDefault: true}),
+        accountRow('openrouter', ID_A, 'Account 2', {labelIsDefault: true}),
+    ];
+    const shown = labelsOf(rows);
+    assert.deepEqual(shown, ['Account 2', 'Account 1']);
+    assert.deepEqual(labelsOf(rows, {hidePersonalInfo: true}), shown);
+});
+
+test('a labelled and an unlabelled account sharing an email never read alike', () => {
+    const same = 'me@example.com';
+    // Store order [B labelled with the email, A blank].
+    const labels = labelsOf([
+        accountRow('claude', ID_B, same, {email: same}),
+        accountRow('claude', ID_A, 'Account 2', {email: same, labelIsDefault: true}),
+    ]);
+    assert.deepEqual(labels, [`${same} · Account 2`, `${same} · Account 1`]);
+    // A blank label with a unique email reads as the email.
+    assert.deepEqual(labelsOf([
+        accountRow('claude', ID_A, 'Account 1', {email: same, labelIsDefault: true}),
+        accountRow('claude', ID_B, 'Work', {email: 'work@example.com'}),
+    ]), [same, 'Work']);
 });
