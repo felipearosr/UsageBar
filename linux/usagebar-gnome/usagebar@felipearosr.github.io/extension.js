@@ -129,14 +129,13 @@ import {
     wantsKinds,
 } from './accountactions.js';
 import {
-    POLL_SECS as HELPER_POLL_SECS,
+    POLL_SECS as TERMINAL_POLL_SECS,
+    addExitNotice,
     launchFailureText,
-    pollState,
-    readResult,
-    resultNotice,
-    resultPath,
-    withResultFile,
-} from './helperrun.js';
+    markerPath,
+    readMarker,
+    watchState,
+} from './terminalwatch.js';
 
 // Sizes a container from its first child only and floats the rest at
 // their preferred size in the top-right corner, so an open dropdown
@@ -2078,7 +2077,7 @@ export default class UsageBarExtension extends Extension {
         }
         this._configMonitor?.cancel();
         this._configMonitor = null;
-        this._stopAccountHelperWatches();
+        this._stopTerminalWatches();
         this._cancellable?.cancel();
         this._cancellable = null;
         this._session?.abort();
@@ -7112,23 +7111,13 @@ export default class UsageBarExtension extends Extension {
             this._notify('UsageBar', `\`${argv[0]}\` not found. Install it, then run \`${argv.join(' ')}\` to log in to ${name}.`);
             return;
         }
-        const command = terminalArgv([bin, ...argv.slice(1)], p => GLib.find_program_in_path(p));
-        if (!command) {
-            console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
-            this._notify('UsageBar', `No terminal found. Run \`${argv.join(' ')}\` in a terminal to log in to ${name}.`);
-            return;
-        }
-        this._indicator?.menu.close();
         try {
-            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
-            // Launchers that hand off to a terminal server (gnome-terminal,
-            // ptyxis) exit right away, so this refresh can come early; it
-            // is best-effort.
-            const generation = this._generation;
-            proc.wait_async(null, () => {
-                if (generation === this._generation)
-                    this._fetchUsage(true);
-            });
+            // Refreshes when the login command ends (terminalwatch.js).
+            if (!this._runInTerminal([bin, ...argv.slice(1)], () => this._fetchUsage(true))) {
+                console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+                this._notify('UsageBar',
+                    `No terminal found. Run \`${argv.join(' ')}\` in a terminal to log in to ${name}.`);
+            }
         } catch (e) {
             console.warn(`usagebar: login terminal failed: ${e.message}`);
             this._notify('UsageBar', `Could not open a terminal. Run \`${argv.join(' ')}\` to log in to ${name}.`);
@@ -7509,86 +7498,105 @@ export default class UsageBarExtension extends Extension {
     }
 
     // cli-login (#169): opens `codexbar codex-accounts add` (accountactions.js
-    // CLI_LOGIN_HELPERS) in a terminal; see _runAccountHelper.
+    // CLI_LOGIN_HELPERS) in a terminal and refreshes the cards when it ends;
+    // an add that didn't succeed is also notified (the terminal shows the
+    // failing step). claude-swap's add (#172) does the same with its argv.
     _runCliLoginHelper(action) {
         const name = PROVIDER_META[action.provider]?.name ?? action.provider;
-        this._runAccountHelper(cliLoginArgv(action.provider, this._binary), name);
-    }
-
-    // Opens an account helper (fixed argv) in a terminal through the same
-    // launcher as Sign in, and learns that it finished from the result file
-    // it writes (helperrun.js), not from the terminal's process: launchers
-    // that hand off to a terminal server exit at once. Refreshes the cards
-    // when the helper is done or failed; a failure is also notified. Shared
-    // by every helper kind (cli-login here, claude-swap in #172).
-    _runAccountHelper(argv, name) {
+        const argv = cliLoginArgv(action.provider, this._binary);
         if (!argv) {
             this._notify('UsageBar', launchFailureText(null, name));
             return;
         }
-        const runtimeDir = GLib.get_user_runtime_dir();
-        const path = resultPath(runtimeDir, GLib.uuid_string_random());
-        const command = path ? withResultFile(argv, path) : null;
-        const smokeTerminal = this._smokeTerminal;
-        const terminal = command ? terminalArgv(command, p => smokeTerminal
-            ? (p === 'xdg-terminal-exec' ? smokeTerminal : null)
-            : GLib.find_program_in_path(p)) : null;
-        if (!terminal) {
-            console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
-            this._notify('UsageBar', launchFailureText(argv, name, {noTerminal: true}));
-            return;
-        }
-        this._indicator?.menu.close();
         try {
-            GLib.mkdir_with_parents(GLib.path_get_dirname(path), 0o700);
-            Gio.Subprocess.new(terminal, Gio.SubprocessFlags.NONE);
+            const opened = this._runInTerminal(argv, status => {
+                const notice = addExitNotice(status, name);
+                if (notice)
+                    this._notify('UsageBar', notice);
+                this._refreshAfterAccountChange();
+            });
+            if (!opened) {
+                console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+                this._notify('UsageBar', launchFailureText(argv, name, {noTerminal: true}));
+            }
         } catch (e) {
             console.warn(`usagebar: add-account terminal failed: ${e.message}`);
             this._notify('UsageBar', launchFailureText(argv, name));
-            return;
         }
-        this._watchAccountHelper(path, name);
     }
 
-    _watchAccountHelper(path, name) {
-        this._accountHelperWatches ??= new Map();
+    // Runs `argv` (fixed, no shell) in a terminal through authlogin.js's
+    // launcher and calls onExit(status) once when it ends. The status comes
+    // from a marker the terminal wrapper writes (terminalwatch.js), since
+    // launchers that hand off to a terminal server exit at once; only when
+    // no marker can be made does the launcher's own exit stand in, with
+    // status null. Returns false when no terminal was found; throws when
+    // the terminal can't be started.
+    _runInTerminal(argv, onExit) {
+        const marker = this._newTerminalMarker();
+        const smokeTerminal = this._smokeTerminal;
+        const command = terminalArgv(argv, p => smokeTerminal
+            ? (p === 'xdg-terminal-exec' ? smokeTerminal : null)
+            : GLib.find_program_in_path(p), marker);
+        if (!command)
+            return false;
+        this._indicator?.menu.close();
+        const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
         const generation = this._generation;
+        if (marker) {
+            this._watchTerminalMarker(marker, generation, onExit);
+        } else {
+            proc.wait_async(null, () => {
+                if (generation === this._generation && this._indicator)
+                    onExit(null);
+            });
+        }
+        return true;
+    }
+
+    // A fresh marker path under $XDG_RUNTIME_DIR/usagebar (0700), or null.
+    _newTerminalMarker() {
+        const marker = markerPath(GLib.get_user_runtime_dir(), GLib.uuid_string_random());
+        if (!marker || GLib.mkdir_with_parents(GLib.path_get_dirname(marker), 0o700) !== 0)
+            return null;
+        return marker;
+    }
+
+    _watchTerminalMarker(marker, generation, onExit) {
+        this._terminalWatches ??= new Map();
         const started = GLib.get_monotonic_time();
-        const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, HELPER_POLL_SECS, () => {
-            if (generation !== this._generation || !this._indicator) {
-                this._accountHelperWatches?.delete(path);
-                return GLib.SOURCE_REMOVE;
-            }
-            let result = null;
+        const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, TERMINAL_POLL_SECS, () => {
+            let status = null;
             try {
-                const [ok, bytes] = GLib.file_get_contents(path);
-                result = ok ? readResult(new TextDecoder().decode(bytes)) : null;
+                const [ok, bytes] = GLib.file_get_contents(marker);
+                status = ok ? readMarker(new TextDecoder().decode(bytes)) : null;
             } catch {
                 // not written yet
             }
-            const state = pollState({result, elapsedSecs: (GLib.get_monotonic_time() - started) / 1e6});
+            const state = watchState({
+                status,
+                elapsedSecs: (GLib.get_monotonic_time() - started) / 1e6,
+                stale: generation !== this._generation || !this._indicator,
+            });
             if (state === 'wait')
                 return GLib.SOURCE_CONTINUE;
-            this._accountHelperWatches.delete(path);
+            this._terminalWatches?.delete(marker);
             try {
-                Gio.File.new_for_path(path).delete(null);
+                Gio.File.new_for_path(marker).delete(null);
             } catch {
-                // never written (timeout) or already gone
+                // never written, or already gone
             }
-            const notice = resultNotice(state, result, name);
-            if (notice)
-                this._notify('UsageBar', notice);
-            if (state !== 'timeout')
-                this._refreshAfterAccountChange();
+            if (state === 'exited')
+                onExit(status);
             return GLib.SOURCE_REMOVE;
         });
-        this._accountHelperWatches.set(path, id);
+        this._terminalWatches.set(marker, id);
     }
 
-    _stopAccountHelperWatches() {
-        for (const id of this._accountHelperWatches?.values() ?? [])
+    _stopTerminalWatches() {
+        for (const id of this._terminalWatches?.values() ?? [])
             GLib.source_remove(id);
-        this._accountHelperWatches = null;
+        this._terminalWatches = null;
     }
 
     // A refresh after an account changed. A fetch already out may have read

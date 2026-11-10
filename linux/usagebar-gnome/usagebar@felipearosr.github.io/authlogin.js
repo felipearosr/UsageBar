@@ -96,8 +96,22 @@ export function loginActionFor(row) {
 
 // Keeps the terminal open after the login command exits so its outcome
 // stays readable; `sh -c` gets the command as positional args, no quoting.
-export function holdOpenArgv(argv) {
-    return ['sh', '-c', '"$@"; status=$?; echo; printf "Press Enter to close. "; read _; exit $status',
+// Ctrl-C reaches the whole foreground group: `trap :` keeps this wrapper
+// alive to show the outcome, while the command (a trap with a handler is
+// reset on exec) still gets the default SIGINT and stops.
+// With a `marker` path (terminalwatch.js), the command's exit status is
+// written there as soon as it ends, before the Enter prompt: terminals that
+// hand off to a server exit at once, so the marker is how the extension
+// learns the command finished. It is a positional argument, not an
+// environment variable, since a terminal server may not pass those on.
+export function holdOpenArgv(argv, marker = null) {
+    if (marker) {
+        return ['sh', '-c',
+            'trap : INT QUIT; m=$1; shift; "$@"; status=$?; printf %s "$status" > "$m"; echo; ' +
+            'printf "Press Enter to close. "; read _; exit $status',
+        'usagebar-login', marker, ...argv];
+    }
+    return ['sh', '-c', 'trap : INT QUIT; "$@"; status=$?; echo; printf "Press Enter to close. "; read _; exit $status',
         'usagebar-login', ...argv];
 }
 
@@ -114,12 +128,13 @@ export const TERMINALS = [
 ];
 
 // First launchable terminal argv for `argv`, or null. `findProgram(name)`
-// returns an absolute path or null (GLib.find_program_in_path in GJS).
-export function terminalArgv(argv, findProgram) {
+// returns an absolute path or null (GLib.find_program_in_path in GJS);
+// `marker` goes to holdOpenArgv.
+export function terminalArgv(argv, findProgram, marker = null) {
     for (const [bin, ...prefix] of TERMINALS) {
         const path = findProgram(bin);
         if (path)
-            return [path, ...prefix, ...holdOpenArgv(argv)];
+            return [path, ...prefix, ...holdOpenArgv(argv, marker)];
     }
     return null;
 }

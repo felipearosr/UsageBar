@@ -30,7 +30,7 @@ export const ADD_CAPABILITIES = {
 // cli-login (#169): per provider, the `codexbar` arguments of the helper that
 // signs in to a new account in a terminal. A provider without an entry gets
 // no Add account… even when serve reports cli-login for it. How the extension
-// learns that the helper finished is helperrun.js.
+// learns that the helper finished is terminalwatch.js.
 export const CLI_LOGIN_HELPERS = {
     codex: ['codex-accounts', 'add'],
 };
