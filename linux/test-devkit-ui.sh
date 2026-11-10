@@ -5,6 +5,8 @@
 # CODEXBAR_BIN=linux/usagebar-gnome/tests/stub-codexbar runs against an offline
 # stub CLI; add STUB_CODEXBAR_SYNC=0 for one without Machine Sync (upstream's).
 # USAGEBAR_UI_SMOKE_EXPECT_SYNC=0|1 asserts which of the two the run sees.
+# USAGEBAR_UI_SMOKE_ACCOUNTS=1 with STUB_CODEXBAR_ACCOUNTS=1 checks a provider
+# card with two Provider Accounts.
 # USAGEBAR_UI_SMOKE_LOGOS=1, with USAGEBAR_LOGO_PACK_BASE_URL and
 # USAGEBAR_LOGO_PACK_VERSION, clicks through the offer to download provider
 # logos; the script's own last run serves a pack built from this checkout.
@@ -115,6 +117,16 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
         STUB_CODEXBAR_SYNC=0 USAGEBAR_UI_SMOKE_EXPECT_SYNC=0 \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/no-machine-sync"
+fi
+
+# Two Provider Accounts for one provider: the offline stub advertises account
+# rows, and the OpenRouter card must show one block per account.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    printf '\nRe-running the UI smoke against a CLI with two Provider Accounts\n'
+    CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
+        STUB_CODEXBAR_ACCOUNTS=1 USAGEBAR_UI_SMOKE_ACCOUNTS=1 \
+        USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
+        "$0" "$artifact_dir/provider-accounts"
 fi
 
 # The extensions.gnome.org build offers to download the logos it leaves out:

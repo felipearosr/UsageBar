@@ -29,7 +29,16 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {planNotifications} from './notify.js';
-import {extraWindowsOf, isStaleSource, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
+import {
+    ACCOUNT_ROWS_CAPABILITY,
+    accountsRenderKey,
+    agoText,
+    buildCards,
+    mergeStale,
+    primaryRows,
+    usagePath,
+} from './accounts.js';
+import {extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {PROVIDER_META} from './providermeta.js';
 import {
@@ -247,26 +256,6 @@ function worstPercent(row) {
     return worstWindow(row)?.usedPercent ?? null;
 }
 
-// Serve replaces a failing provider's row with a bare error row; carry the
-// last good usage forward, marked stale (port of client.rs merge_stale).
-// A Claude row answered from an old statusLine capture is stale as served.
-function mergeStale(previous, fresh) {
-    for (const row of fresh) {
-        if (isStaleSource(row))
-            row.stale = true;
-        if (row.error && windowsOf(row).length === 0) {
-            const prev = previous.find(p => p.provider === row.provider &&
-                windowsOf(p).length > 0);
-            if (prev) {
-                row.usage = prev.usage;
-                row.pace = prev.pace;
-                row.stale = true;
-            }
-        }
-    }
-    return fresh;
-}
-
 // Enrich Antigravity rows with the 4 core quota summary bars from the local agy server
 function enrichAntigravityModels(rows) {
     const agRow = rows.find(r => r.provider === 'antigravity');
@@ -474,16 +463,6 @@ function humanizeSecs(secs) {
     if (m > 0)
         return T.dur.m(m);
     return T.dur.under;
-}
-
-function agoText(secs) {
-    if (secs < 10)
-        return 'just now';
-    if (secs < 90)
-        return `${Math.floor(secs)}s ago`;
-    if (secs < 3600)
-        return `${Math.floor(secs / 60)}m ago`;
-    return `${Math.floor(secs / 3600)}h ago`;
 }
 
 // Mutable display preferences, refreshed from GSettings on every settings
@@ -1651,6 +1630,11 @@ export default class UsageBarExtension extends Extension {
         this._generation = (this._generation ?? 0) + 1;
         const generation = this._generation;
         this._rows = [];
+        // Every /usage row as served (one per Provider Account), and the
+        // provider cards built from them (accounts.js). _rows keeps one row
+        // per card for the panel, overview, issues and notifications.
+        this._usageRows = [];
+        this._accountCards = new Map();
         this._names = {};
         this._namesVersion = 0;
         this._selectedProvider = null;
@@ -2050,6 +2034,8 @@ export default class UsageBarExtension extends Extension {
         this._indicator?.destroy();
         this._indicator = null;
         this._rows = [];
+        this._usageRows = [];
+        this._accountCards = new Map();
         this._claudeAccountPlan = null;
         // Keep this plain quota memo (strings and numbers/booleans, no actors,
         // signals or sources) across screen locks. The planner prunes old cycles.
@@ -2247,6 +2233,12 @@ export default class UsageBarExtension extends Extension {
             : 'unknown';
     }
 
+    // Does this serve answer /usage?accounts=all? Only its /health capability
+    // report says so; without one, cards stay single-account.
+    _accountRowsSupported() {
+        return !!this._sync?.report?.capabilities.has(ACCOUNT_ROWS_CAPABILITY);
+    }
+
     _resetSyncSupport() {
         const sync = this._sync;
         if (!sync)
@@ -2279,6 +2271,10 @@ export default class UsageBarExtension extends Extension {
                 return; // serve not up yet; the next tick asks again
             sync.reportChecked = true;
             sync.report = readReport(payload);
+            // The first /usage may have gone out before the report: ask again
+            // with accounts=all instead of waiting for the next poll.
+            if (this._accountRowsSupported() && !this._usageAccountRows && !this._fetchInFlight)
+                this._fetchUsage();
             if (this._syncSupport() === 'needs-upgrade')
                 this._markSyncUnsupported();
             else
@@ -2476,8 +2472,10 @@ export default class UsageBarExtension extends Extension {
             this._indicator?.setRefreshing(true);
         // force asks serve to bypass its response cache (?fresh=1) so the
         // refresh button fetches live data even inside the cache TTL; older
-        // CLIs without the flag just answer from cache as before.
-        this._get(force ? '/usage?fresh=1' : '/usage', (rows, error) => {
+        // CLIs without the flag just answer from cache as before. accounts=all
+        // only once serve's /health advertised Provider Account rows.
+        const accountRows = this._accountRowsSupported();
+        this._get(usagePath({accountRows, fresh: force}), (rows, error) => {
             if (generation !== this._generation || !this._indicator)
                 return;
             this._fetchInFlight = false;
@@ -2488,13 +2486,24 @@ export default class UsageBarExtension extends Extension {
                 this._indicator.setStatus(`usage fetch failed: ${error.detail ?? error.message}`);
                 this._scheduleFetch(FETCH_RETRY_SECS);
             } else {
+                this._usageAccountRows = accountRows;
+                this._usageRows = mergeStale(this._usageRows ?? [], Array.isArray(rows) ? rows : []);
+                const cards = buildCards(this._usageRows, {accountRows});
+                this._accountCards = new Map(cards.filter(card => card.multi)
+                    .map(card => [card.provider, card]));
                 this._rows = applyClaudeAccountPlan(
-                    enrichAntigravityModels(mergeStale(this._rows, rows)), this._claudeAccountPlan);
+                    enrichAntigravityModels(primaryRows(cards)), this._claudeAccountPlan);
                 this._loadClaudeAccountPlan();
                 this._lastFetchAt = Date.now();
+                // Serve answers: read its /health capability report now rather
+                // than at the next poll, so account rows show from the start.
+                if (this._sync && !this._sync.reportChecked)
+                    this._syncTick();
                 this._trackIssueSince(this._rows);
                 this._indicator.setStatus('');
-                this._scheduleFetch(FETCH_OK_SECS);
+                // The report came in while this fetch was out: ask again for
+                // account rows right away.
+                this._scheduleFetch(!accountRows && this._accountRowsSupported() ? 1 : FETCH_OK_SECS);
                 this._maybeNotify();
                 this._publishWindowCatalog();
                 // Warm the cost scan in the background so the chart is
@@ -3702,6 +3711,61 @@ export default class UsageBarExtension extends Extension {
             ready();
         };
 
+        // Run with USAGEBAR_UI_SMOKE_ACCOUNTS=1 against the stub CLI with
+        // STUB_CODEXBAR_ACCOUNTS=1: serve advertises Provider Account rows,
+        // and the OpenRouter card shows two accounts, Work active with its
+        // Quota and Personal with only its own error.
+        const accountsSmoke = assertions => {
+            let waited = 0;
+            const ready = () => {
+                if (!this._accountCards?.get('openrouter')?.multi && waited < 15000) {
+                    waited += 250;
+                    later(250, ready);
+                    return;
+                }
+                try {
+                    assertions.push(assertion('usage was asked for account rows',
+                        this._usageAccountRows === true, {actual: String(this._usageAccountRows)}));
+                    assertions.push(assertion('one overview row per provider',
+                        this._rows.filter(row => row.provider === 'openrouter').length === 1,
+                        {actual: this._rows.map(row => row.provider)}));
+                    this._indicator.menu.open();
+                    this._selectedProvider = 'openrouter';
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => {
+                    try {
+                        const box = this._indicator._detailBox;
+                        const heads = descendants(box)
+                            .filter(actor => actor.style_class === 'usagebar-account-head');
+                        const labels = heads.map(head => descendants(head)
+                            .filter(actor => actor instanceof St.Label).map(actor => actor.text));
+                        assertions.push(assertion('one block per account', heads.length === 2, {labels}));
+                        assertions.push(assertion('Work is marked active, Personal is not',
+                            labels[1]?.includes('Work') && labels[1]?.includes('active') &&
+                            labels[0]?.includes('Personal') && !labels[0]?.includes('active'), {labels}));
+                        assertions.push(assertion('each account shows its freshness',
+                            labels.every(texts => texts.some(text => /^updated /.test(text))), {labels}));
+                        const banners = descendants(box)
+                            .filter(actor => actor.style_class?.includes('usagebar-provider-issue') &&
+                                actor.style_class.includes('usagebar-issues-banner'));
+                        assertions.push(assertion('only the failing account has an error', banners.length === 1,
+                            {actual: banners.length}));
+                        if (heads[0])
+                            assertions.push(painted('first account block is painted', heads[0]));
+                    } catch (error) {
+                        finish(assertions, error);
+                        return;
+                    }
+                    capture('accounts-provider-openrouter.png', () => finish(assertions));
+                });
+            };
+            ready();
+        };
+
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
         // locally (test-devkit-ui.sh): the All tab offers the download, "Not
         // now" hides the offer, and Download installs the logos, which the
@@ -3810,6 +3874,10 @@ export default class UsageBarExtension extends Extension {
             }
             if (GLib.getenv('USAGEBAR_UI_SMOKE_ISSUES') === '1') {
                 issuesSmoke(assertions);
+                return;
+            }
+            if (GLib.getenv('USAGEBAR_UI_SMOKE_ACCOUNTS') === '1') {
+                accountsSmoke(assertions);
                 return;
             }
             steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
@@ -4690,9 +4758,12 @@ export default class UsageBarExtension extends Extension {
         const scope = this._statusScopes?.get(provider) ?? '';
         const costVersion = this._costProviderVersions?.get(provider) ?? 0;
         const timeBucket = Math.floor(Date.now() / 1000 / TICK_SECS);
+        const accountCard = this._accountCards?.get(provider);
         return [
             provider,
             this._detailPayloadKey(row),
+            accountsRenderKey(accountCard),
+            (accountCard?.accounts ?? []).map(account => this._detailPayloadKey(account.row)).join(','),
             this._displayName(provider),
             DISPLAY.absoluteResets,
             DISPLAY.barsShowUsed,
@@ -6621,27 +6692,14 @@ export default class UsageBarExtension extends Extension {
         }
         card.add_child(head);
 
-        if (row.error)
-            this._addErrorBanner(card, row);
-
-        for (const {w, slot} of windowsOf(row)) {
-            if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
-                continue;
-            this._addWindowRow(card, windowLabel(w.windowMinutes, slot), w,
-                row.stale, paceOf(row, slot)?.summary);
-        }
-
-        // Extra named limits (per-model bars like Fable, Daily Routines, Codex Spark, Antigravity models) —
-        // rendered like the standard windows, as in the macOS card. The
-        // show-credits-extras setting hides optional extras, but
-        // provider-core extra quotas (like Antigravity, Codex Spark 5h, Claude Fable) are always shown.
-        const showExtras = DISPLAY.showExtras || row.provider === 'antigravity' || row.provider === 'codex' || row.provider === 'claude';
-        if (showExtras) {
-            for (const x of extraWindowsOf(row)) {
-                if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
-                    continue;
-                this._addWindowRow(card, x.title ?? x.id, x.window, row.stale, null);
-            }
+        // Several Provider Accounts: one block each, with its own windows,
+        // resets, freshness and error. Otherwise the provider's one row.
+        const accountCard = this._accountCards?.get(row.provider);
+        if (accountCard?.multi) {
+            for (const account of accountCard.accounts)
+                this._addAccountBlock(card, account);
+        } else {
+            this._addRowQuota(card, row);
         }
 
         // Following another Machine: its synced spend for this provider (no
@@ -6757,6 +6815,67 @@ export default class UsageBarExtension extends Extension {
         }
 
         return card;
+    }
+
+    // A row's error banner, Quota windows and extra named limits.
+    _addRowQuota(card, row) {
+        if (row.error)
+            this._addErrorBanner(card, row);
+
+        for (const {w, slot} of windowsOf(row)) {
+            if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
+                continue;
+            this._addWindowRow(card, windowLabel(w.windowMinutes, slot), w,
+                row.stale, paceOf(row, slot)?.summary);
+        }
+
+        // Extra named limits (per-model bars like Fable, Daily Routines, Codex Spark, Antigravity models) —
+        // rendered like the standard windows, as in the macOS card. The
+        // show-credits-extras setting hides optional extras, but
+        // provider-core extra quotas (like Antigravity, Codex Spark 5h, Claude Fable) are always shown.
+        const showExtras = DISPLAY.showExtras || row.provider === 'antigravity' || row.provider === 'codex' || row.provider === 'claude';
+        if (showExtras) {
+            for (const x of extraWindowsOf(row)) {
+                if (DISPLAY.hiddenWindows.has(barKey(row.provider, {extra: x})))
+                    continue;
+                this._addWindowRow(card, x.title ?? x.id, x.window, row.stale, null);
+            }
+        }
+    }
+
+    // One Provider Account on a multi-account card: label, active marker and
+    // "updated X ago", then that account's own Quota or error.
+    _addAccountBlock(card, account) {
+        const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-account-head'});
+        head.add_child(new St.Label({
+            text: account.label ?? 'Account',
+            style_class: 'usagebar-account-label',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        if (account.active) {
+            head.add_child(new St.Label({
+                text: 'active',
+                style_class: 'usagebar-badge usagebar-account-active',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        if (account.stale) {
+            head.add_child(new St.Label({
+                text: 'stale',
+                style_class: 'usagebar-badge usagebar-badge-stale',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        head.add_child(new St.Widget({x_expand: true}));
+        if (account.updatedAt !== null) {
+            head.add_child(new St.Label({
+                text: `updated ${agoText(Math.max(0, Date.now() - account.updatedAt) / 1000)}`,
+                style_class: 'usagebar-dim usagebar-account-updated',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        card.add_child(head);
+        this._addRowQuota(card, account.row);
     }
 
     _compactDisplayItems(row) {

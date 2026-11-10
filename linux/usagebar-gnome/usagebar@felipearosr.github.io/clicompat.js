@@ -11,6 +11,9 @@ import {INSTALL_URL} from './onboarding.js';
 // it from here.
 export const FEATURES = {
     machineSync: {label: 'Machine Sync', minVersion: '0.69.0'},
+    // serve's /usage?accounts=all (accounts.js). No version gate: a CLI
+    // without it just keeps single-account cards.
+    providerAccountRows: {label: 'Several accounts per provider', minVersion: null},
 };
 
 // ---------- versions ----------
