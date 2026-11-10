@@ -1,13 +1,6 @@
 import CodexBarCore
 import Commander
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#elseif canImport(Musl)
-import Musl
-#endif
 
 // MARK: - UsageBar: `codexbar codex-accounts add` (#169)
 
@@ -27,18 +20,17 @@ extension CodexBarCLI {
                 name: "add",
                 abstract: "Sign in to another Codex account in a home UsageBar manages",
                 discussion: nil,
-                signature: CommandSignature.describe(CodexAccountAddOptions()).flattened()),
+                signature: CommandSignature.describe(ConfigOptions()).flattened()),
         ]
     }
 
     /// Hook at the top of `runCodexAccounts`: runs the subcommands UsageBar adds and returns true, or false for
     /// upstream's own.
     @MainActor
-    static func forkRunCodexAccounts(path: [String], values: ParsedValues, output: CLIOutputPreferences) async
+    static func forkRunCodexAccounts(path: [String], values _: ParsedValues, output: CLIOutputPreferences) async
         -> Bool
     {
         guard path == ["codex-accounts", "add"] else { return false }
-        let resultPath = AccountHelperResult.path(from: values.options)
         let environment = ProcessInfo.processInfo.environment
         let adder = CodexAccountAdder(
             store: FileManagedCodexAccountStore(),
@@ -51,12 +43,10 @@ extension CodexBarCLI {
         print("")
         do {
             let account = try await adder.add()
-            AccountHelperResult(status: .done, message: "Added a Codex account.").write(to: resultPath)
             print("")
             print("Done. Added \(account.email) to UsageBar.")
         } catch {
             let step = (error as? CodexAccountAddError)?.step ?? "couldn't add the account."
-            AccountHelperResult(status: .failed, message: "Failed: \(step)").write(to: resultPath)
             Self.exit(code: .failure, message: "\nFailed: \(step)", output: output, kind: .runtime)
         }
         return true
@@ -94,14 +84,6 @@ enum CodexAccountAddError: Error, Equatable {
             "couldn't save the account to UsageBar's account list. No account was added."
         }
     }
-}
-
-struct CodexAccountAddOptions: CommanderParsable {
-    @OptionGroup var common: CLICommonOptions
-    @Option(
-        name: .long("result-file"),
-        help: "Write {status, message} JSON to this absolute path when done (for the GNOME extension)")
-    var resultFile: String?
 }
 
 /// One `codex-accounts add`. Every outside effect is injected, so tests run it against a synthetic store, a
@@ -241,68 +223,19 @@ enum CodexLoginExit: Equatable, Sendable {
     case signalled(Int32)
 }
 
-/// Runs `codex login` in the foreground of this terminal: `posix_spawn` with an argument array (no shell), the
-/// terminal's stdin, stdout and stderr, and this process group, so the browser flow and Ctrl-C reach Codex. While
-/// it runs, this process ignores SIGINT, SIGTERM and SIGHUP (the child gets the default actions back), so a
-/// cancelled login still returns here to remove the new home.
+/// Runs `codex login` with the shared foreground runner (CLIForegroundProcess.swift): `posix_spawn` with an argument
+/// array (no shell), the terminal's stdin, stdout and stderr, and this process group, so the browser flow, raw-mode
+/// input and Ctrl-C reach Codex while this process waits to clean up. Off the main actor, since it blocks.
 enum CodexLoginProcess {
-    private static let forwardedSignals: [Int32] = [SIGINT, SIGTERM, SIGHUP]
-
     static func run(executable: String, arguments: [String], environment: [String: String]) async
         -> CodexLoginExit?
     {
-        await Task
-            .detached { self.spawnAndWait(executable: executable, arguments: arguments, environment: environment) }
-            .value
-    }
-
-    private static func spawnAndWait(executable: String, arguments: [String], environment: [String: String])
-        -> CodexLoginExit?
-    {
-        #if canImport(Darwin)
-        var attr: posix_spawnattr_t?
-        #else
-        var attr = posix_spawnattr_t()
-        #endif
-        guard posix_spawnattr_init(&attr) == 0 else { return nil }
-        defer { posix_spawnattr_destroy(&attr) }
-        var defaults = sigset_t()
-        sigemptyset(&defaults)
-        for signal in self.forwardedSignals {
-            sigaddset(&defaults, signal)
-        }
-        var emptyMask = sigset_t()
-        sigemptyset(&emptyMask)
-        guard posix_spawnattr_setsigdefault(&attr, &defaults) == 0,
-              posix_spawnattr_setsigmask(&attr, &emptyMask) == 0,
-              posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)) == 0
-        else { return nil }
-
-        let cArgs: [UnsafeMutablePointer<CChar>?] = ([executable] + arguments).map { strdup($0) } + [nil]
-        let cEnv: [UnsafeMutablePointer<CChar>?] = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer {
-            for pointer in cArgs + cEnv {
-                free(pointer)
+        await Task.detached {
+            guard let code = try? CLIForegroundProcess.run(executable, arguments, environment: environment) else {
+                return nil
             }
-        }
-
-        let previous = self.forwardedSignals.map { ($0, signal($0, SIG_IGN)) }
-        defer {
-            for (number, handler) in previous {
-                signal(number, handler)
-            }
-        }
-        var pid: pid_t = 0
-        let spawned = executable.withCString { path in
-            posix_spawn(&pid, path, nil, &attr, cArgs, cEnv)
-        }
-        guard spawned == 0 else { return nil }
-        var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 {
-            guard errno == EINTR else { return nil }
-        }
-        // WIFEXITED / WEXITSTATUS / WTERMSIG are macros Swift can't import.
-        let terminatingSignal = status & 0x7F
-        return terminatingSignal == 0 ? .exited((status >> 8) & 0xFF) : .signalled(terminatingSignal)
+            // The runner reports a signal as 128 + its number.
+            return code > 128 ? .signalled(code - 128) : .exited(code)
+        }.value
     }
 }

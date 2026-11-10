@@ -58,6 +58,19 @@ struct CodexAccountAddLinuxTests {
         #expect(fixture.baseEnvironment["CODEX_HOME"] == fixture.systemCodexHome.path)
     }
 
+    @Test
+    func `codex login runs in this process group, so it can own the terminal`() async throws {
+        let fixture = try AddFixture()
+        defer { fixture.tearDown() }
+        let codex = try fixture.installCodex(.recordProcessGroup(email: "pgid@example.com"))
+
+        _ = try await fixture.scoped { try await fixture.adder(codex: codex).add() }
+
+        // A child in a new group (Foundation's Process on Linux) is stopped by SIGTTIN/SIGTTOU in a real terminal.
+        let recorded = try fixture.recorded("pgid").trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(Int32(recorded) == getpgrp())
+    }
+
     // MARK: - Failures
 
     @Test
@@ -174,11 +187,7 @@ struct CodexAccountAddLinuxTests {
         var environment = try fixture.childEnvironment(dataHome: dataHome)
         environment["CODEX_CLI_PATH"] = codex.path
 
-        let resultFile = fixture.root.appendingPathComponent("result-added.json")
-        let added = try Self.run(
-            binary,
-            ["codex-accounts", "add", "--result-file", resultFile.path],
-            environment: environment)
+        let added = try Self.run(binary, ["codex-accounts", "add"], environment: environment)
         #expect(added.status == 0, "stderr: \(added.stderr)")
         #expect(added.stdout.contains("Done. Added second@example.com"))
         for secret in ["synthetic-access", "synthetic-refresh"] {
@@ -192,21 +201,9 @@ struct CodexAccountAddLinuxTests {
 
         let failing = try fixture.installCodex(.fail(status: 7), name: "codex-failing")
         environment["CODEX_CLI_PATH"] = failing.path
-        let failedResult = fixture.root.appendingPathComponent("result-failed.json")
-        let failed = try Self.run(
-            binary,
-            ["codex-accounts", "add", "--result-file", failedResult.path],
-            environment: environment)
+        let failed = try Self.run(binary, ["codex-accounts", "add"], environment: environment)
         #expect(failed.status != 0)
         #expect(failed.stderr.contains("Failed: `codex login` exited with status 7"))
-        // The extension waits on the result file, not the terminal's process.
-        #expect(try Self.result(resultFile) == ["status": "done", "message": "Added a Codex account."])
-        #expect(try Self.result(failedResult) == [
-            "status": "failed",
-            "message": "Failed: `codex login` exited with status 7. No account was added.",
-        ])
-        let mode = try FileManager.default.attributesOfItem(atPath: failedResult.path)[.posixPermissions] as? Int
-        #expect(mode == 0o600)
         #expect(try FileManager.default.contentsOfDirectory(atPath: homesRoot.path).count == 1)
         #expect(try fixture.systemHomeUnchanged())
     }
@@ -219,21 +216,6 @@ struct CodexAccountAddLinuxTests {
             $0.appendingPathComponent("CodexBarCLI")
         }
         return try #require(candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) })
-    }
-
-    private static func result(_ url: URL) throws -> [String: String]? {
-        try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: String]
-    }
-
-    @Test
-    func `the result path comes from --result-file and must be absolute`() throws {
-        let program = Program(descriptors: CodexBarCLI.commandDescriptors())
-        func path(_ argv: [String]) throws -> String? {
-            try AccountHelperResult.path(from: program.resolve(argv: argv).parsedValues.options)
-        }
-        #expect(try path(["codex-accounts", "add", "--result-file", "/run/user/1/x.json"]) == "/run/user/1/x.json")
-        #expect(try path(["codex-accounts", "add", "--result-file", "out.json"]) == nil)
-        #expect(try path(["codex-accounts", "add"]) == nil)
     }
 
     private static func run(
@@ -292,6 +274,7 @@ private final class AddFixture {
         case succeedWithoutAuth
         case fail(status: Int32)
         case killed
+        case recordProcessGroup(email: String)
     }
 
     struct HomeFactory: ManagedCodexHomeProducing {
@@ -396,6 +379,15 @@ private final class AddFixture {
             action = "echo 'fake codex: login failed' >&2\nexit \(status)\n"
         case .killed:
             action = "kill -TERM $$\nsleep 5\n"
+        case let .recordProcessGroup(email):
+            let source = self.root.appendingPathComponent("\(name)-auth.json")
+            try Self.authData(email: email, accountID: "acct-pgid").write(to: source)
+            action = """
+            { ps -o pgid= -p $$ 2>/dev/null || cut -d' ' -f5 /proc/$$/stat; } > "$FAKE_CODEX_RECORDS/pgid"
+            cp '\(source.path)' "$CODEX_HOME/auth.json"
+            exit 0
+
+            """
         }
         try FakeExecutable.install(record + action, at: url)
         return url
