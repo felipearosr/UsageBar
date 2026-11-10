@@ -95,6 +95,8 @@ envelope. CodexBar does not need
   When two or more slots share an email, disambiguate with `email · organizationName` or `email · Account N`; a
   user-chosen alias wins. Unique emails stay email-only.
 - Use the source-issued numeric slot for identity (`claude-swap:<slot>`), not email or credential-derived values.
+- UsageBar: `codexbar serve` also reads Claude Code's plain-text account config (`.claude.json`, `oauthAccount` only, never
+  the Keychain or credential files) to find the slot Claude Code is signed in to; the adapter itself is unchanged.
 - The claude-swap usage adapter never reads `claude-swap` storage, Claude Code storage, environment credentials, or Keychain entries. The
   subprocess remains solely responsible for its own credential access. The adapter copies only allow-listed
   usage/identity fields into its model and never logs or persists raw stdout.

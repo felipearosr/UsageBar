@@ -107,19 +107,17 @@ extension CodexBarCLI {
         let command = self.serveUsageCommand(context: context)
         let fetch = fetch ?? self.liveProviderAccountFetch(defaultContext: defaultContext, command: command)
         // claude-swap's slots replace Claude's token accounts and its ambient fetch. They are known only after a
-        // list read, so tagging starts from the last good read's and takes the new read's once it is in.
-        let claudeSwap = providers.contains(.claude)
-            ? claudeSwap ?? ClaudeSwapServeSource.live(
-                config: context.config,
-                providerTimeout: context.providerTimeout,
-                weeklyWorkDays: command.weeklyWorkDays)
-            : nil
+        // list read, so tagging takes the accounts this request's read returned (CLIServeClaudeSwap.swift).
+        let swapProvider = ClaudeSwapServeSource.provider
+        var claudeSwap = claudeSwap
+        if claudeSwap == nil, providers.contains(swapProvider) {
+            claudeSwap = await ClaudeSwapServeSource.live(context: context, weeklyWorkDays: command.weeklyWorkDays)
+        }
+        let swap = claudeSwap
+        let swapBox = ClaudeSwapResultBox()
         var accountsByProvider = Dictionary(
             providers.map { ($0, self.providerAccounts(for: $0, context: defaultContext)) },
             uniquingKeysWith: { first, _ in first })
-        if let claudeSwap {
-            accountsByProvider[.claude] = await claudeSwap.state.accounts(for: claudeSwap.executablePath)
-        }
         let fetchAccounts = accountsByProvider
 
         // The coordinator slot is per provider and shared with upstream's plain /usage. The fingerprint differs, so
@@ -134,8 +132,8 @@ extension CodexBarCLI {
             operations: context.providerOperations)
         { provider in
             await ProviderInteractionContext.$current.withValue(.background) {
-                if provider == .claude, let claudeSwap {
-                    return await self.claudeSwapAccountOutput(claudeSwap) { await fetch(provider, nil) }
+                if provider == swapProvider, let swap {
+                    return await self.claudeSwapAccountOutput(swap, box: swapBox) { await fetch(provider, nil) }
                 }
                 return await self.fetchProviderAccountOutputs(
                     provider: provider,
@@ -144,8 +142,8 @@ extension CodexBarCLI {
             }
         }
 
-        if let claudeSwap {
-            accountsByProvider[.claude] = await claudeSwap.state.accounts(for: claudeSwap.executablePath)
+        if let swap {
+            accountsByProvider[swapProvider] = await self.claudeSwapAccounts(swap, box: swapBox)
         }
         let rows = self.providerAccountRows(output.payload, accountsByProvider: accountsByProvider)
         let json = self.encodeJSON(rows, pretty: false) ?? "[]"
@@ -154,7 +152,7 @@ extension CodexBarCLI {
         return CLILocalHTTPResponse(
             status: .ok,
             body: Data(json.utf8),
-            usageCacheKeys: rows.map { $0.stale ? nil : $0.row.cacheAccountKey })
+            usageCacheKeys: rows.map { $0.account?.stale == true ? nil : $0.row.cacheAccountKey })
     }
 
     /// Upstream's per-provider fetch, with the token-account selection the selector names.
@@ -326,6 +324,11 @@ struct ProviderAccountRowFields: Equatable, Sendable {
     /// `label` is a made-up fallback ("Account N", "email · Account N"), not a name the user chose or the account's
     /// email. Sent as `accountLabelIsDefault: true` (same field and meaning as #177).
     var labelIsDefault = false
+    /// claude-swap holds this slot out of its own rotation; sent as `disabled: true`. The label stays the name.
+    var disabled = false
+    /// The Quota on this account's row is an older one served in place of a current one (claude-swap's last good
+    /// rows after a failed read, or a slot's source-declared last-known usage); sent as `stale: true`.
+    var stale = false
 
     /// `<source>:<opaque id>`, stable across refreshes, renames and reorders. Serve also makes it the row's cache
     /// key, so the per-account last-good merge restores each account on its own.
@@ -349,8 +352,8 @@ struct ProviderAccountRowPayload: Encodable {
     /// The Quota shown is an older one served in place of a current one: claude-swap's last good rows after a
     /// failed read, a slot's source-declared last-known usage, or an old statusLine capture.
     var stale: Bool {
-        self.account != nil && [ClaudeSwapServeSource.staleSource, ClaudeStatusLineFeed.staleSourceLabel]
-            .contains(self.row.source)
+        guard let account else { return false }
+        return account.stale || self.row.source == ClaudeStatusLineFeed.staleSourceLabel
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -361,6 +364,7 @@ struct ProviderAccountRowPayload: Encodable {
         case updatedAt
         case stale
         case accountLabelIsDefault
+        case disabled
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -372,6 +376,9 @@ struct ProviderAccountRowPayload: Encodable {
         try container.encode(account.label, forKey: .accountLabel)
         if account.labelIsDefault {
             try container.encode(true, forKey: .accountLabelIsDefault)
+        }
+        if account.disabled {
+            try container.encode(true, forKey: .disabled)
         }
         try container.encode(account.active, forKey: .active)
         try container.encodeIfPresent(self.updatedAt, forKey: .updatedAt)

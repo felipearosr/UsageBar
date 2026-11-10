@@ -119,7 +119,10 @@ def claude_swap_rows(all_accounts, window):
     # Synthetic slots only: example.com labels, no tokens.
     active = {"provider": "claude", "source": "claude-swap",
               "usage": {"primary": window(31, 300, 9000), "secondary": window(47, 10080, 400000),
-                        "updatedAt": iso(120)}}
+                        "updatedAt": iso(120), "loginMethod": "Claude Max",
+                        "identity": {"providerID": "claude", "accountEmail": "work@example.com",
+                                     "accountOrganization": "Example Org", "loginMethod": "Claude Max",
+                                     "accountID": "claude-swap:2"}}}
     if not all_accounts:
         return [active]
     active.update({"account": "work@example.com", "accountId": "claude-swap:2",

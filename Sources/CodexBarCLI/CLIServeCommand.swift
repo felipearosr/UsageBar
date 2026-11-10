@@ -184,6 +184,8 @@ struct ServeUsageContext: Sendable {
     let providerOperations: CLIServeOperationCoordinator<UsageCommandOutput>
     let includeAllCodexAccounts: Bool
     let persistCLISessions: Bool
+    /// UsageBar: plain `/usage` lets claude-swap answer Claude (CLIServeClaudeSwap.swift); the dashboard doesn't.
+    let claudeSwapRows: Bool
 
     init(
         config: CodexBarConfig,
@@ -193,7 +195,8 @@ struct ServeUsageContext: Sendable {
         providerDeadline: ContinuousClock.Instant?,
         providerOperations: CLIServeOperationCoordinator<UsageCommandOutput>,
         includeAllCodexAccounts: Bool = true,
-        persistCLISessions: Bool = true)
+        persistCLISessions: Bool = true,
+        claudeSwapRows: Bool = false)
     {
         self.config = config
         self.configFingerprint = configFingerprint
@@ -203,6 +206,7 @@ struct ServeUsageContext: Sendable {
         self.providerOperations = providerOperations
         self.includeAllCodexAccounts = includeAllCodexAccounts
         self.persistCLISessions = persistCLISessions
+        self.claudeSwapRows = claudeSwapRows
     }
 }
 
@@ -930,7 +934,8 @@ extension CodexBarCLI {
                             refreshInterval: runtime.refreshInterval,
                             providerTimeout: providerTimeout,
                             providerDeadline: providerDeadline,
-                            providerOperations: runtime.providerOperations))
+                            providerOperations: runtime.providerOperations,
+                            claudeSwapRows: true))
                 }))
         case let .cost(provider, days):
             guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
