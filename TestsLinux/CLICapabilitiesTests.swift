@@ -15,6 +15,23 @@ struct CLICapabilitiesTests {
         "providerAccountRemove",
     ]
 
+    /// `/health` from a serve started with an action token, so the account actions are listed.
+    private static func health(_ runtime: ServeRuntime) async throws -> CLILocalHTTPResponse {
+        try await CLIServeActionGuard.$override.withValue(CLIServeActionGuard(token: "fake-action-token")) {
+            try await CodexBarCLI.handleServeRequest(Self.request("GET", "/health"), runtime: runtime)
+        }
+    }
+
+    @Test
+    func `health leaves the account actions out without an action token`() async throws {
+        let response = try await CLIServeActionGuard.$override.withValue(CLIServeActionGuard(token: nil)) {
+            try await CodexBarCLI.handleServeRequest(
+                Self.request("GET", "/health"),
+                runtime: Self.runtime(healthVersion: nil))
+        }
+        #expect(try Self.object(response.body)["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+    }
+
     private static func object(_ data: Data) throws -> [String: Any] {
         try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
@@ -69,9 +86,7 @@ struct CLICapabilitiesTests {
 
     @Test
     func `health keeps status and version and adds capabilities`() async throws {
-        let response = try await CodexBarCLI.handleServeRequest(
-            Self.request("GET", "/health"),
-            runtime: Self.runtime(healthVersion: Self.releaseVersion))
+        let response = try await Self.health(Self.runtime(healthVersion: Self.releaseVersion))
         #expect(response.status == .ok)
         #expect(!response.extraHeaders.contains { $0.0 == "Cache-Control" })
         let object = try Self.object(response.body)
@@ -84,9 +99,7 @@ struct CLICapabilitiesTests {
 
     @Test
     func `health without a version keeps upstream's shape plus capabilities`() async throws {
-        let response = try await CodexBarCLI.handleServeRequest(
-            Self.request("GET", "/health"),
-            runtime: Self.runtime(healthVersion: nil))
+        let response = try await Self.health(Self.runtime(healthVersion: nil))
         let object = try Self.object(response.body)
         #expect(Set(object.keys) == ["status", "capabilities"])
         #expect(object["capabilities"] as? [String] == Self.wireCapabilities)
@@ -94,9 +107,10 @@ struct CLICapabilitiesTests {
 
     @Test
     func `health stays open on non-loopback binds`() async throws {
-        let response = try await CodexBarCLI.handleServeRequest(
-            Self.request("GET", "/health"),
-            runtime: Self.runtime(healthVersion: Self.releaseVersion, bindHost: "0.0.0.0", token: "secret"))
+        let response = try await Self.health(Self.runtime(
+            healthVersion: Self.releaseVersion,
+            bindHost: "0.0.0.0",
+            token: "secret"))
         #expect(response.status == .ok)
         #expect(try Self.object(response.body)["capabilities"] as? [String] == Self.wireCapabilities)
     }
@@ -122,9 +136,7 @@ struct CLICapabilitiesTests {
                 argv: ["usage", "--version", "--json"],
                 version: version))
             let cli = try Self.object(Data(json.utf8))
-            let response = try await CodexBarCLI.handleServeRequest(
-                Self.request("GET", "/health"),
-                runtime: Self.runtime(healthVersion: version))
+            let response = try await Self.health(Self.runtime(healthVersion: version))
             var health = try Self.object(response.body)
             #expect(health.removeValue(forKey: "status") as? String == "ok")
             #expect(NSDictionary(dictionary: cli).isEqual(to: health))

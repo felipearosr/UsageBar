@@ -9,7 +9,8 @@ import Musl
 
 // MARK: - UsageBar request bodies for serve's fork routes
 
-/// What fork POST routes need from a request beyond upstream's fields: its body, `Content-Type` and `Origin`.
+/// What fork POST routes need from a request beyond upstream's fields: its body, `Content-Type`, `Origin` and
+/// `X-UsageBar-Action-Token` (CLIServeActionGuard.swift).
 /// Upstream's server reads only a request's head; its `readRequest` and `parse` each carry one hook into this file,
 /// so a request with a `Content-Length` arrives here with its body and every other request is unchanged.
 struct CLILocalHTTPRequestForkFields: Equatable, Sendable {
@@ -19,11 +20,14 @@ struct CLILocalHTTPRequestForkFields: Equatable, Sendable {
     var contentType: String?
     /// Browsers send `Origin` on every cross-site POST; fork routes that change state refuse any request with one.
     var origin: String?
+    /// The secret mutating fork routes require; never logged.
+    var actionToken: String?
     var body = Data()
 
-    init(contentType: String? = nil, origin: String? = nil, body: Data = Data()) {
+    init(contentType: String? = nil, origin: String? = nil, actionToken: String? = nil, body: Data = Data()) {
         self.contentType = contentType
         self.origin = origin
+        self.actionToken = actionToken
         self.body = body
     }
 
@@ -33,6 +37,8 @@ struct CLILocalHTTPRequestForkFields: Equatable, Sendable {
         let headers = Self.headers(data[data.startIndex..<headEnd])
         self.contentType = headers.first { $0.name == "content-type" }?.value
         self.origin = headers.first { $0.name == "origin" }?.value
+        let actionHeader = CLIServeActionGuard.headerName.lowercased()
+        self.actionToken = headers.first { $0.name == actionHeader }?.value
         let length = Self.contentLength(headers) ?? 0
         self.body = Data(data[headEnd...].prefix(length))
     }
@@ -87,6 +93,11 @@ extension CLILocalHTTPRequest {
 /// `readRequest`'s hook, once the head is in: reads the rest of the body its `Content-Length` declares, within the
 /// same overall read deadline as the head. False for a malformed or oversized length, or a body that doesn't arrive
 /// in time; the server then answers 400 as it does for a bad head. Without a `Content-Length` it reads nothing.
+///
+/// This changes upstream's behaviour for any request that declares a `Content-Length`, on every route: upstream
+/// answered after the head and ignored the body, while serve now waits for the declared body (within the request's
+/// read deadline) and answers 400 for a malformed, conflicting or over-64 KiB length. Requests without one are
+/// unchanged.
 func forkReadRequestBody(
     _ data: inout Data,
     fd: Int32,
@@ -103,11 +114,14 @@ func forkReadRequestBody(
         let remainingMilliseconds = totalReadTimeoutMilliseconds - elapsedMilliseconds
         guard remainingMilliseconds > 0 else { return false }
         var pollFD = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        guard poll(&pollFD, 1, Int32(min(remainingMilliseconds, 5000))) > 0 else { return false }
+        let ready = poll(&pollFD, 1, Int32(min(remainingMilliseconds, 5000)))
+        if ready < 0, errno == EINTR { continue }
+        guard ready > 0 else { return false }
         let wanted = min(buffer.count, expected - data.count)
         let count = buffer.withUnsafeMutableBytes { rawBuffer in
             recv(fd, rawBuffer.baseAddress, wanted, 0)
         }
+        if count < 0, errno == EINTR { continue }
         guard count > 0 else { return false }
         data.append(buffer, count: count)
     }

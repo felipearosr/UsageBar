@@ -3,8 +3,14 @@ const HEALTHY_SECS = 30;
 const KILL_GRACE_SECS = 3;
 
 export class ServeSupervisor {
-    // deps: pickPort(), spawn(argv) -> {wait(cb), terminate(), kill()},
-    // addTimeout(seconds, cb), removeTimeout(id), now() in milliseconds.
+    // deps: pickPort(), spawn(argv, env) -> {wait(cb), terminate(), kill()},
+    // addTimeout(seconds, cb), removeTimeout(id), now() in milliseconds,
+    // and optionally actionToken() -> a fresh random secret per spawn.
+    //
+    // The action token gates serve's mutating routes (account actions):
+    // each spawn gets a new one in USAGEBAR_SERVE_ACTION_TOKEN, and only
+    // this extension, which sends it back in X-UsageBar-Action-Token, can
+    // use them. It is never logged.
     constructor(binary, interval, onState, deps, requestTimeoutSecs) {
         this._binary = binary;
         this._interval = interval;
@@ -17,6 +23,7 @@ export class ServeSupervisor {
         this._backoff = 2;
         this._killIds = new Map();
         this.port = 0;
+        this.actionToken = null;
     }
 
     restart(interval) {
@@ -34,6 +41,7 @@ export class ServeSupervisor {
 
     _spawn() {
         this.port = 0;
+        this.actionToken = null;
         try {
             this.port = this._deps.pickPort();
         } catch (e) {
@@ -41,6 +49,7 @@ export class ServeSupervisor {
             this._scheduleRestart();
             return;
         }
+        const actionToken = this._deps.actionToken?.() ?? null;
         let proc;
         try {
             proc = this._deps.spawn([
@@ -48,7 +57,7 @@ export class ServeSupervisor {
                 '--port', String(this.port),
                 '--refresh-interval', String(this._interval),
                 '--request-timeout', String(this._requestTimeoutSecs),
-            ]);
+            ], actionToken ? {USAGEBAR_SERVE_ACTION_TOKEN: actionToken} : {});
         } catch (e) {
             this.port = 0;
             this._onState(null, `failed to start codexbar serve: ${e.message}`);
@@ -57,6 +66,7 @@ export class ServeSupervisor {
         }
         const spawnedAt = this._deps.now();
         this._proc = proc;
+        this.actionToken = actionToken;
         proc.wait(() => {
             // Clean up this child's timer even if a restart has replaced it.
             const killId = this._killIds.get(proc);
@@ -68,6 +78,7 @@ export class ServeSupervisor {
                 return;
             this._proc = null;
             this.port = 0;
+            this.actionToken = null;
             if (this._enabled) {
                 if (this._deps.now() - spawnedAt >= HEALTHY_SECS * 1000)
                     this._backoff = 2;
@@ -93,6 +104,7 @@ export class ServeSupervisor {
     stop() {
         this._enabled = false;
         this.port = 0;
+        this.actionToken = null;
         if (this._restartId) {
             this._deps.removeTimeout(this._restartId);
             this._restartId = 0;

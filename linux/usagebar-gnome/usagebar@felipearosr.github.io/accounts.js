@@ -177,3 +177,17 @@ export function accountsRenderKey(card) {
         account.id, account.label, account.active, account.freshness, account.error, account.stale,
     ]));
 }
+
+// After serve removed a Provider Account: drop its row, and when fewer than
+// two tagged rows of that provider remain, drop the provider's tagged rows
+// altogether, since serve now answers it with one untagged row. Otherwise
+// a later provider-level error row would bring the removed account back
+// through mergeStale's expansion of the previous tagged rows.
+export function forgetAccount(rows, provider, accountId) {
+    const list = Array.isArray(rows) ? rows : [];
+    const kept = list.filter(row => !(row.provider === provider && row.accountId === accountId));
+    const tagged = kept.filter(row => row.provider === provider && hasAccountId(row));
+    if (tagged.length >= 2)
+        return kept;
+    return kept.filter(row => !(row.provider === provider && hasAccountId(row)));
+}

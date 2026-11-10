@@ -1,19 +1,27 @@
 import CodexBarCore
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 // MARK: - Provider Account actions on serve
 
 /// serve's account action routes, answered through `forkServeResponse`:
-/// - `GET /accounts/kinds`: which kind of Provider Account each provider can add (`ProviderAccountKind`).
+/// - `GET /accounts/kinds`: per provider, the kind of Provider Account it can add (`ProviderAccountKind`) and
+///   whether its accounts can be renamed and removed here.
 /// - `POST /accounts/add`: store a labelled key or cookie as a new token account (`key` kind).
 /// - `POST /accounts/rename`, `POST /accounts/remove`: change or delete one account, named by the `accountId` its
 ///   `/usage?accounts=all` row carries.
 ///
-/// The POST routes take a JSON body and change the config, so on top of the data-route auth `/sync/push` uses they
-/// refuse any request with an `Origin` header (a browser page, same-site or not) and any body that isn't
-/// `application/json` (which a cross-site form can't send without a preflight). Writes go to the token-account store
-/// (the config's `tokenAccounts`) under the config file's write lock, with the same rules as the macOS app's
-/// Settings (`SettingsStore+TokenAccounts.swift`). No response, error or log line carries a token.
+/// The POST routes change the config, so they go through `refuseUnlessMutatingForkRequestAllowed`
+/// (CLIServeActionGuard.swift: data-route bearer, action token, no `Origin`) and take only an `application/json`
+/// body. Writes go to the token-account store (the config's `tokenAccounts`) under the config file's write lock,
+/// with the same rules as the macOS app's Settings (`SettingsStore+TokenAccounts.swift`). No response, error or log
+/// line carries a token.
 enum CLIServeProviderAccountRoute: Equatable {
     case kinds
     case add
@@ -49,13 +57,20 @@ enum ProviderAccountKind: String, Encodable, Sendable {
 
 /// One provider's entry in `GET /accounts/kinds`.
 struct ProviderAccountKindPayload: Encodable, Equatable {
-    let kind: ProviderAccountKind
+    /// What "Add account…" adds; absent when this provider's accounts can't be added here.
+    let kind: ProviderAccountKind?
     /// The provider's hint for the key field (`key` only), e.g. "Paste API key…".
     let placeholder: String?
+    /// Whether this provider's account rows can be renamed and removed through serve.
+    let rename: Bool
+    let remove: Bool
+    /// The first add takes over from a credential UsageBar uses now and can't keep as an account (a cookie, or an
+    /// API key from the environment); clients warn before adding. A config `apiKey` is kept instead (`add`).
+    let replacesCurrent: Bool
 }
 
 struct ProviderAccountKindsPayload: Encodable, Equatable {
-    /// Keyed by provider id (a `/usage` row's `provider`); providers that can't add an account are left out.
+    /// Keyed by provider id (a `/usage` row's `provider`); providers without multi-account support are left out.
     let providers: [String: ProviderAccountKindPayload]
 }
 
@@ -96,7 +111,7 @@ enum ProviderAccountActionError: Error, Equatable {
         case .unknownAccount: "No such account."
         case .removeNotSupported: "This account can't be removed here."
         case .storeBusy: "The config file is busy. Try again."
-        case .storeFailed: "Couldn't save the config file."
+        case .storeFailed: "Couldn't read or save the config file."
         }
     }
 }
@@ -113,7 +128,7 @@ struct ProviderAccountActionPayload: Encodable, Equatable {
 extension CodexBarCLI {
     static let providerAccountLabelLimit = 100
 
-    /// The kind of Provider Account `provider` can add, or nil when it has no multi-account support here.
+    /// The kind of Provider Account `provider` can add, or nil when it can't add one here.
     static func addableProviderAccountKind(for provider: UsageProvider) -> ProviderAccountKind? {
         switch provider {
         // Provider-specific by design: these accounts come from a login flow, not a pasted key. Codex adds managed
@@ -126,12 +141,31 @@ extension CodexBarCLI {
         }
     }
 
-    static func providerAccountKinds() -> ProviderAccountKindsPayload {
+    /// Whether serve can remove `provider`'s token accounts.
+    static func canRemoveProviderAccount(of provider: UsageProvider) -> Bool {
+        // Provider-specific by design: the macOS app also clears Antigravity's shared OAuth cache on removal.
+        provider != .antigravity
+    }
+
+    /// Every provider with token-account support, with what can be done to its accounts here. `config` and
+    /// `environment` decide `replacesCurrent`.
+    static func providerAccountKinds(
+        config: CodexBarConfig?,
+        environment: [String: String]) -> ProviderAccountKindsPayload
+    {
         var providers: [String: ProviderAccountKindPayload] = [:]
         for provider in UsageProvider.allCases {
-            guard let kind = self.addableProviderAccountKind(for: provider) else { continue }
-            let placeholder = kind == .key ? TokenAccountSupportCatalog.support(for: provider)?.placeholder : nil
-            providers[provider.rawValue] = ProviderAccountKindPayload(kind: kind, placeholder: placeholder)
+            guard let support = TokenAccountSupportCatalog.support(for: provider) else { continue }
+            let kind = self.addableProviderAccountKind(for: provider)
+            providers[provider.rawValue] = ProviderAccountKindPayload(
+                kind: kind,
+                placeholder: kind == .key ? support.placeholder : nil,
+                rename: true,
+                remove: self.canRemoveProviderAccount(of: provider),
+                replacesCurrent: kind == .key && ProviderTokenAccountEditor.firstAddReplacesCurrentCredential(
+                    provider: provider,
+                    entry: config?.providerConfig(for: provider.instanceID),
+                    environment: environment))
         }
         return ProviderAccountKindsPayload(providers: providers)
     }
@@ -139,24 +173,27 @@ extension CodexBarCLI {
     static func serveProviderAccountRoute(
         _ route: CLIServeProviderAccountRoute,
         request: CLILocalHTTPRequest,
-        runtime: ServeRuntime) async -> CLILocalHTTPResponse
+        runtime: ServeRuntime,
+        environment: [String: String] = ProcessInfo.processInfo.environment) async -> CLILocalHTTPResponse
     {
-        guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
-            return self.serveUnauthorizedResponse()
-        }
         if route == .kinds {
-            return self.addingNoStore(self.forkServeJSON(self.providerAccountKinds()))
+            guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
+                return self.serveUnauthorizedResponse()
+            }
+            let config = try? runtime.configStore.load()
+            return self.addingNoStore(self.forkServeJSON(self.providerAccountKinds(
+                config: config,
+                environment: environment)))
         }
-        // A browser sends Origin on every POST; UsageBar's clients (the extension, the CLI, curl) send none.
-        guard request.forkFields.origin == nil else {
-            return self.addingNoStore(self.forkServeError(status: .forbidden, message: "forbidden origin"))
+        if let refusal = self.refuseUnlessMutatingForkRequestAllowed(request, runtime: runtime) {
+            return refusal
         }
         let result: Result<ProviderAccountActionPayload, ProviderAccountActionError>
         do {
             let store = runtime.configStore
             switch route {
             case .kinds:
-                return self.addingNoStore(self.forkServeJSON(self.providerAccountKinds()))
+                return self.forkServeError(status: .methodNotAllowed, message: "method not allowed")
             case .add:
                 let body = try self.decodeProviderAccountBody(AddKeyAccountBody.self, request: request)
                 result = try await .success(self.addKeyAccount(body, store: store))
@@ -212,22 +249,16 @@ extension CodexBarCLI {
         let token = body.token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { throw ProviderAccountActionError.missingToken }
         let label = try self.providerAccountLabel(body.label, required: false)
-        if try store.load() == nil {
-            do {
-                _ = try store.loadOrCreateDefault()
-            } catch {
-                throw ProviderAccountActionError.storeFailed
+        let (account, count) = try await self
+            .editingConfig(store: store, provider: provider, createIfMissing: true) { config in
+                ProviderTokenAccountEditor.add(
+                    to: &config,
+                    provider: provider,
+                    label: label,
+                    token: token,
+                    addedAt: now.timeIntervalSince1970)
             }
-        }
-        let account = try await self.updatingTokenAccounts(store: store) { config in
-            ProviderTokenAccountEditor.add(
-                to: &config,
-                provider: provider,
-                label: label,
-                token: token,
-                addedAt: now.timeIntervalSince1970)
-        }
-        self.logTokenAccountChange("Token account added", provider: provider, store: store)
+        self.logTokenAccountChange("Token account added", provider: provider, count: count)
         return ProviderAccountActionPayload(
             provider: provider.rawValue,
             accountId: account.accountID,
@@ -244,10 +275,11 @@ extension CodexBarCLI {
         guard let label = try self.providerAccountLabel(body.label, required: true) else {
             throw ProviderAccountActionError.missingLabel
         }
-        let account = try await self.updatingTokenAccounts(store: store) { config in
-            try ProviderTokenAccountEditor.rename(in: &config, provider: provider, id: id, label: label)
-        }
-        self.logTokenAccountChange("Token account updated", provider: provider, store: store)
+        let (account, count) = try await self
+            .editingConfig(store: store, provider: provider, createIfMissing: false) { config in
+                try ProviderTokenAccountEditor.rename(in: &config, provider: provider, id: id, label: label)
+            }
+        self.logTokenAccountChange("Token account updated", provider: provider, count: count)
         return ProviderAccountActionPayload(
             provider: provider.rawValue,
             accountId: account.accountID,
@@ -261,12 +293,12 @@ extension CodexBarCLI {
         store: CodexBarConfigStore) async throws -> ProviderAccountActionPayload
     {
         let (provider, id) = try self.tokenAccountTarget(provider: body.provider, accountID: body.accountId)
-        // Provider-specific by design: the macOS app also clears Antigravity's shared OAuth cache on removal.
-        guard provider != .antigravity else { throw ProviderAccountActionError.removeNotSupported }
-        try await self.updatingTokenAccounts(store: store) { config in
-            try ProviderTokenAccountEditor.remove(from: &config, provider: provider, id: id)
-        }
-        self.logTokenAccountChange("Token account removed", provider: provider, store: store)
+        guard self.canRemoveProviderAccount(of: provider) else { throw ProviderAccountActionError.removeNotSupported }
+        let (_, count) = try await self
+            .editingConfig(store: store, provider: provider, createIfMissing: false) { config in
+                try ProviderTokenAccountEditor.remove(from: &config, provider: provider, id: id)
+            }
+        self.logTokenAccountChange("Token account removed", provider: provider, count: count)
         return ProviderAccountActionPayload(
             provider: provider.rawValue,
             accountId: "\(ProviderAccountSource.token.rawValue):\(id.uuidString.lowercased())",
@@ -302,33 +334,72 @@ extension CodexBarCLI {
         return label
     }
 
-    /// Runs `edit` on the config under the config file's write lock, so a concurrent writer (the extension, another
-    /// `codexbar config` call) can't be lost. The store skips a locked file rather than wait, so this retries briefly.
-    private static func updatingTokenAccounts<Value>(
+    /// Reads, edits and writes the config while holding the config file's write lock, so a concurrent writer (the
+    /// extension, a `codexbar config` call, another request) is never lost, including when the file doesn't exist
+    /// yet. Returns `edit`'s value and the provider's token-account count afterwards (for the log line).
+    /// A missing config is created from the default only when `createIfMissing`; otherwise there is no account to
+    /// act on. A config that can't be read is `storeFailed`, never an unknown account.
+    private static func editingConfig<Value>(
         store: CodexBarConfigStore,
-        _ edit: (inout CodexBarConfig) throws -> Value) async throws -> Value
+        provider: UsageProvider,
+        createIfMissing: Bool,
+        _ edit: (inout CodexBarConfig) throws -> Value) async throws -> (Value, Int)
     {
-        guard (try? store.load()) != nil else { throw ProviderAccountActionError.unknownAccount }
+        let descriptor = try await self.lockConfigFile(store)
+        defer {
+            _ = flock(descriptor, LOCK_UN)
+            close(descriptor)
+        }
+        let loaded: CodexBarConfig?
+        do {
+            loaded = try store.load()
+        } catch {
+            throw ProviderAccountActionError.storeFailed
+        }
+        guard var config = loaded ?? (createIfMissing ? CodexBarConfig.makeDefault() : nil) else {
+            throw ProviderAccountActionError.unknownAccount
+        }
+        let value = try edit(&config)
+        do {
+            try CredentialFileWriter.writePrivate(store.encodedData(for: config), to: store.fileURL)
+        } catch {
+            throw ProviderAccountActionError.storeFailed
+        }
+        return (value, config.providerConfig(for: provider.instanceID)?.tokenAccounts?.accounts.count ?? 0)
+    }
+
+    /// The same advisory lock `CodexBarConfigStore` takes for its writes (`<config>.lock`, `flock` exclusive), so
+    /// serve's edits and the store's own writes exclude each other. Waits up to two seconds, then `storeBusy`.
+    private static func lockConfigFile(_ store: CodexBarConfigStore) async throws -> Int32 {
+        do {
+            try FileManager.default.createDirectory(
+                at: store.fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+        } catch {
+            throw ProviderAccountActionError.storeFailed
+        }
+        let descriptor = open(
+            store.fileURL.appendingPathExtension("lock").path,
+            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+            0o600)
+        guard descriptor >= 0 else { throw ProviderAccountActionError.storeFailed }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), metadata.st_uid == geteuid()
+        else {
+            close(descriptor)
+            throw ProviderAccountActionError.storeFailed
+        }
         for _ in 0..<40 {
-            var value: Value?
-            do {
-                try store.updateIfAvailable { config in
-                    value = try edit(&config)
-                    return true
-                }
-            } catch let error as ProviderAccountActionError {
-                throw error
-            } catch {
-                throw ProviderAccountActionError.storeFailed
-            }
-            if let value { return value }
+            if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { return descriptor }
+            guard errno == EWOULDBLOCK || errno == EINTR else { break }
             try? await Task.sleep(for: .milliseconds(50))
         }
+        close(descriptor)
         throw ProviderAccountActionError.storeBusy
     }
 
-    private static func logTokenAccountChange(_ message: String, provider: UsageProvider, store: CodexBarConfigStore) {
-        let count = (try? store.load())?.providerConfig(for: provider.instanceID)?.tokenAccounts?.accounts.count ?? 0
+    private static func logTokenAccountChange(_ message: String, provider: UsageProvider, count: Int) {
         CodexBarLog.logger(LogCategories.tokenAccounts).info(
             message,
             metadata: ["provider": provider.rawValue, "count": "\(count)"])
@@ -355,8 +426,22 @@ struct RemoveAccountBody: Decodable, Equatable {
 /// The token-account edits the macOS app's Settings make (`SettingsStore+TokenAccounts.swift`), on a config value so
 /// serve can run them without the app: the same trimming, "Account N" fallback, active-account rules and
 /// `clearsAPIKeyOnMutation`.
+///
+/// The app also calls `applyTokenAccountCookieSource` after each edit, which sets the provider's cookie source to
+/// manual for `requiresManualCookieSource` providers. That is an AppKit settings write; it is skipped here because
+/// the shared resolver already forces the manual source whenever such a provider has a token account
+/// (`ProviderCookieSettingsResolver`), so serve's fetches read the account's cookie either way.
 enum ProviderTokenAccountEditor {
+    /// The first account's label when an existing config `apiKey` becomes a token account.
+    static let migratedAPIKeyLabel = "Account 1"
+
     /// Appends the account under a new UUID and makes it the active one, as the app's Add does.
+    ///
+    /// The first add for a provider that has a config `apiKey` and no token accounts keeps that key: it becomes the
+    /// first token account ("Account 1") before the new one is added, so the card shows both and a provider that
+    /// clears `apiKey` on mutation (Copilot) loses nothing. Only for providers whose token accounts hold the same
+    /// kind of credential (an API key, injected through the environment); a cookie provider's `apiKey` is never
+    /// moved into a cookie account.
     static func add(
         to config: inout CodexBarConfig,
         provider: UsageProvider,
@@ -366,7 +451,15 @@ enum ProviderTokenAccountEditor {
     {
         var entry = config.providerConfig(for: provider.instanceID) ?? ProviderConfig(id: provider.instanceID)
         let existing = entry.tokenAccounts
-        let accounts = existing?.accounts ?? []
+        var accounts = existing?.accounts ?? []
+        if accounts.isEmpty, let apiKey = self.migratableAPIKey(provider: provider, entry: entry) {
+            accounts.append(ProviderTokenAccount(
+                id: UUID(),
+                label: self.migratedAPIKeyLabel,
+                token: apiKey,
+                addedAt: addedAt,
+                lastUsed: nil))
+        }
         let account = ProviderTokenAccount(
             id: UUID(),
             label: label ?? "Account \(accounts.count + 1)",
@@ -380,6 +473,38 @@ enum ProviderTokenAccountEditor {
         self.clearAPIKeyIfNeeded(&entry, provider: provider)
         config.setProviderConfig(entry)
         return self.fields(account, active: true)
+    }
+
+    /// The config `apiKey` the first add keeps as a token account, or nil.
+    static func migratableAPIKey(provider: UsageProvider, entry: ProviderConfig?) -> String? {
+        guard let support = TokenAccountSupportCatalog.support(for: provider),
+              case .environment = support.injection,
+              entry?.tokenAccounts?.accounts.isEmpty ?? true,
+              let apiKey = entry?.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !apiKey.isEmpty
+        else { return nil }
+        return apiKey
+    }
+
+    /// Whether the first add takes over from a credential UsageBar uses now without keeping it: a cookie provider
+    /// (its browser or manual cookie isn't moved into an account), or an API-key provider whose key comes from the
+    /// environment variable its token accounts override. False once the provider has token accounts, and when a
+    /// config `apiKey` is kept by `add`.
+    static func firstAddReplacesCurrentCredential(
+        provider: UsageProvider,
+        entry: ProviderConfig?,
+        environment: [String: String]) -> Bool
+    {
+        guard let support = TokenAccountSupportCatalog.support(for: provider),
+              entry?.tokenAccounts?.accounts.isEmpty ?? true
+        else { return false }
+        switch support.injection {
+        case .cookieHeader:
+            return true
+        case let .environment(key):
+            guard self.migratableAPIKey(provider: provider, entry: entry) == nil else { return false }
+            return !(environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
     }
 
     static func rename(

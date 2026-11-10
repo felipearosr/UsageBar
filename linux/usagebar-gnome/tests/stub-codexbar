@@ -15,11 +15,15 @@ Personal key failing) next to a single-account Claude row; plain /usage gets
 the single-account rows an older CLI would send. It also advertises the
 account actions: /accounts/kinds offers `key` for OpenRouter, and
 /accounts/add, /accounts/rename and /accounts/remove change the OpenRouter
-accounts in memory (keys are checked for presence and never stored).
+accounts in memory (keys are checked for presence and never stored). Like
+serve, those need the X-UsageBar-Action-Token header to match
+USAGEBAR_SERVE_ACTION_TOKEN (403 otherwise, and for any Origin header); without
+the variable they are refused and /health leaves the account actions out.
 STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
 seconds after serve starts, like a serve that isn't ready yet.
 """
 
+import hmac
 import json
 import os
 import sys
@@ -91,8 +95,10 @@ def iso(offset_secs=0):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - offset_secs))
 
 
-ACCOUNT_CAPABILITIES = ["providerAccountRows", "providerAccountKinds", "providerAccountAddKey",
-                        "providerAccountRename", "providerAccountRemove"]
+ACTION_TOKEN = (os.environ.get("USAGEBAR_SERVE_ACTION_TOKEN") or "").strip()
+ACCOUNT_CAPABILITIES = ["providerAccountRows"] + (
+    ["providerAccountKinds", "providerAccountAddKey", "providerAccountRename", "providerAccountRemove"]
+    if ACTION_TOKEN else [])
 # The OpenRouter token accounts, in store order. Only ids, labels and which
 # one is active: the stub never keeps a key.
 OPENROUTER = [
@@ -208,7 +214,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/usage" and ISSUES:
             self.send_json(200, issue_rows())
         elif path == "/accounts/kinds" and ACCOUNTS:
-            self.send_json(200, {"providers": {"openrouter": {"kind": "key", "placeholder": "sk-or-…"}}})
+            self.send_json(200, {"providers": {
+                "openrouter": {"kind": "key", "placeholder": "sk-or-…", "rename": True, "remove": True,
+                               "replacesCurrent": False},
+                "claude": {"rename": True, "remove": True, "replacesCurrent": False}}})
         elif path == "/usage" and ACCOUNTS:
             self.send_json(200, account_rows("accounts=all" in parts.query.split("&")))
         elif path in ("/usage", "/cost"):
@@ -228,8 +237,14 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length) or b"null")
             except ValueError:
                 body = None
-            if self.headers.get("Origin") or \
-                    (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+            presented = (self.headers.get("X-UsageBar-Action-Token") or "").encode()
+            if not ACTION_TOKEN or not hmac.compare_digest(presented, ACTION_TOKEN.encode()):
+                self.send_json(403, {"error": "missing or wrong action token"})
+                return
+            if self.headers.get("Origin"):
+                self.send_json(403, {"error": "forbidden origin"})
+                return
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
                 self.send_json(400, {"error": "Expected a JSON body."})
                 return
             self.send_json(*account_action(path, body))

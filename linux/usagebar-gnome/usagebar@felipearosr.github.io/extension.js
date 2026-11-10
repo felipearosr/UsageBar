@@ -34,6 +34,7 @@ import {
     accountsRenderKey,
     agoText,
     buildCards,
+    forgetAccount,
     mergeStale,
     primaryRows,
     usagePath,
@@ -108,6 +109,8 @@ import {
 import {findCodexbar, withClaudeOAuth} from './cli.js';
 import {featureState, readReport, syncProbeFromHttpStatus} from './clicompat.js';
 import {
+    ACTION_TOKEN_HEADER,
+    REPLACES_CURRENT_NOTE,
     actionErrorText,
     addAction,
     addKeyRequest,
@@ -1971,9 +1974,26 @@ export default class UsageBarExtension extends Extension {
                         listener.close();
                     }
                 },
-                spawn: argv => {
-                    const proc = Gio.Subprocess.new(argv,
-                        Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+                // 32 random bytes per serve, for its mutating routes
+                // (CLIServeActionGuard.swift). Never logged.
+                actionToken: () => {
+                    const stream = Gio.File.new_for_path('/dev/urandom').read(null);
+                    try {
+                        const bytes = stream.read_bytes(32, null).get_data();
+                        if (bytes.length !== 32)
+                            return null;
+                        return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+                    } finally {
+                        stream.close(null);
+                    }
+                },
+                spawn: (argv, env = {}) => {
+                    const launcher = new Gio.SubprocessLauncher({
+                        flags: Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE,
+                    });
+                    for (const [key, value] of Object.entries(env))
+                        launcher.setenv(key, value, true);
+                    const proc = launcher.spawnv(argv);
                     return {
                         wait: cb => proc.wait_async(null, (p, res) => {
                             try {
@@ -2207,9 +2227,11 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    _fetchJSON(url, cb, method = 'GET', body = null) {
+    _fetchJSON(url, cb, method = 'GET', body = null, headers = null) {
         const generation = this._generation;
         const msg = Soup.Message.new(method, url);
+        for (const [name, value] of Object.entries(headers ?? {}))
+            msg.get_request_headers().append(name, value);
         // Account actions send JSON; it can hold a key, so it goes in the
         // body and is never logged.
         if (body !== null) {
@@ -2239,13 +2261,13 @@ export default class UsageBarExtension extends Extension {
             });
     }
 
-    _get(path, cb, method = 'GET', body = null) {
+    _get(path, cb, method = 'GET', body = null, headers = null) {
         const port = this._supervisor?.port;
         if (!port) {
             cb(null, new Error('serve not running'));
             return;
         }
-        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method, body);
+        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method, body, headers);
     }
 
     // ----- Machine Sync -----
@@ -7101,7 +7123,9 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
-        const allowed = actions && provider ? rowActions(account, this._accountCapabilities()) : {};
+        const allowed = actions && provider
+            ? rowActions(account, {provider, kinds: this._accountKinds, capabilities: this._accountCapabilities()})
+            : {};
         if (allowed.rename) {
             head.add_child(this._accountIconButton('document-edit-symbolic', 'Rename',
                 () => this._showRenameAccountDialog(provider, account)));
@@ -7128,7 +7152,9 @@ export default class UsageBarExtension extends Extension {
     _accountActionsKey(provider) {
         return JSON.stringify([
             this._addAccountAction(provider)?.kind ?? null,
-            rowActions({id: 'token:x'}, this._accountCapabilities()),
+            rowActions({id: 'token:x'},
+                {provider, kinds: this._accountKinds, capabilities: this._accountCapabilities()}),
+            this._addAccountAction(provider)?.replacesCurrent ?? false,
         ]);
     }
 
@@ -7195,7 +7221,8 @@ export default class UsageBarExtension extends Extension {
     // One modal for every account action: title, description, the given
     // fields, an error line, then Cancel and one primary button. `submit`
     // gets {fields, fail, done}; the dialog stays open on failure.
-    _openAccountDialog({title, description, fields = [], confirmLabel, destructive = false, submit}) {
+    _openAccountDialog({title, description, fields = [], confirmLabel, destructive = false, provider = null,
+        submit}) {
         this._accountDialog?.destroy();
         this._indicator?.menu.close();
         const dialog = new ModalDialog.ModalDialog({destroyOnClose: true, styleClass: 'usagebar-account-dialog'});
@@ -7215,8 +7242,10 @@ export default class UsageBarExtension extends Extension {
                 x_expand: true,
                 style_class: 'usagebar-account-entry',
             });
-            if (field.secret)
+            if (field.secret) {
                 entry.clutter_text.set_password_char('●');
+                entry.clutter_text.input_purpose = Clutter.InputContentPurpose.PASSWORD;
+            }
             entries[field.name] = entry;
             form.add_child(entry);
         }
@@ -7241,6 +7270,12 @@ export default class UsageBarExtension extends Extension {
             if (this._accountDialog === dialog)
                 dialog.close();
             this._refreshAfterAccountChange();
+            // Back to the provider the action was for.
+            if (provider && this._indicator) {
+                this._selectedProvider = provider;
+                this._indicator.menu.open();
+                this._requestRender();
+            }
         };
         const run = () => {
             if (busy)
@@ -7251,8 +7286,17 @@ export default class UsageBarExtension extends Extension {
             errorLabel.visible = false;
             submit({fields: values, fail, done});
         };
-        for (const entry of Object.values(entries))
-            entry.clutter_text.connect('activate', run);
+        // Enter moves to the next field, and submits from the last one.
+        const ordered = Object.values(entries);
+        ordered.forEach((entry, index) => {
+            const next = ordered[index + 1];
+            entry.clutter_text.connect('activate', () => {
+                if (next)
+                    next.grab_key_focus();
+                else
+                    run();
+            });
+        });
         dialog.addButton({label: 'Cancel', action: () => dialog.close(), key: Clutter.KEY_Escape});
         confirm = dialog.addButton({label: confirmLabel, action: run, default: true});
         if (destructive)
@@ -7266,20 +7310,29 @@ export default class UsageBarExtension extends Extension {
         return dialog;
     }
 
+    // Serve's account routes need the action token this serve was started
+    // with; without one (serve not running yet) the request isn't sent.
     _sendAccountRequest(request, {fail, done, token = ''}) {
+        const actionToken = this._supervisor?.actionToken;
+        if (!actionToken) {
+            fail(actionErrorText(new Error('serve not running')));
+            return;
+        }
         this._get(request.path, (_result, error) => {
             if (error)
                 fail(actionErrorText(error, token));
             else
                 done();
-        }, request.method, request.body);
+        }, request.method, request.body, {[ACTION_TOKEN_HEADER]: actionToken});
     }
 
     _showAddKeyDialog(action) {
         const name = this._displayName(action.provider);
         return this._openAccountDialog({
             title: `Add ${name} account`,
-            description: `UsageBar saves the key in its config file and sends it only to ${name}.`,
+            description: `UsageBar saves the key in its config file and sends it only to ${name}.` +
+                (action.replacesCurrent ? ` ${REPLACES_CURRENT_NOTE}` : ''),
+            provider: action.provider,
             fields: [
                 {name: 'label', hint: 'Label, for example Work'},
                 {name: 'token', hint: action.placeholder ?? 'API key', secret: true},
@@ -7305,6 +7358,7 @@ export default class UsageBarExtension extends Extension {
             description: 'The new label shows on this account’s row.',
             fields: [{name: 'label', text: account.label ?? '', hint: 'Label'}],
             confirmLabel: 'Rename',
+            provider,
             submit: ({fields, fail, done}) => {
                 const problem = renameFormError(fields);
                 if (problem) {
@@ -7325,8 +7379,16 @@ export default class UsageBarExtension extends Extension {
                 'account. The key itself stays valid with the provider.',
             confirmLabel: 'Remove',
             destructive: true,
+            provider,
             submit: ({fail, done}) => {
-                this._sendAccountRequest(removeRequest({provider, accountId: account.id}), {fail, done});
+                this._sendAccountRequest(removeRequest({provider, accountId: account.id}), {
+                    fail,
+                    done: () => {
+                        // Never let a later provider error bring it back.
+                        this._usageRows = forgetAccount(this._usageRows, provider, account.id);
+                        done();
+                    },
+                });
             },
         });
     }

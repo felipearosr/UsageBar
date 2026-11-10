@@ -21,26 +21,38 @@ const ALL = readReport({capabilities: [
 ]}).capabilities;
 
 const KINDS = readKinds({providers: {
-    openrouter: {kind: 'key', placeholder: 'Paste API key…'},
-    copilot: {kind: 'key'},
-    codex: {kind: 'cli-login'},
-    claude: {kind: 'claude-swap'},
-    broken: {placeholder: 'x'},
+    openrouter: {kind: 'key', placeholder: 'Paste API key…', rename: true, remove: true, replacesCurrent: false},
+    copilot: {kind: 'key', rename: true, remove: true, replacesCurrent: true},
+    codex: {kind: 'cli-login', rename: true, remove: true},
+    claude: {rename: true, remove: true},
+    antigravity: {rename: true, remove: false},
+    broken: 'x',
 }});
 
 const FAKE_TOKEN = 'fake-token-for-tests';
 
-test('readKinds keeps the kinds this extension can add', () => {
-    assert.deepEqual([...KINDS.keys()], ['openrouter', 'copilot']);
-    assert.deepEqual(KINDS.get('openrouter'), {kind: 'key', placeholder: 'Paste API key…'});
-    assert.deepEqual(KINDS.get('copilot'), {kind: 'key', placeholder: null});
+test('readKinds keeps each provider\'s kind and actions', () => {
+    assert.deepEqual([...KINDS.keys()], ['openrouter', 'copilot', 'codex', 'claude', 'antigravity']);
+    assert.deepEqual(KINDS.get('openrouter'),
+        {kind: 'key', placeholder: 'Paste API key…', rename: true, remove: true, replacesCurrent: false});
+    assert.deepEqual(KINDS.get('copilot'),
+        {kind: 'key', placeholder: null, rename: true, remove: true, replacesCurrent: true});
+    // A kind without a handler here, and no kind at all, both read as null.
+    assert.equal(KINDS.get('codex').kind, null);
+    assert.deepEqual(KINDS.get('antigravity'),
+        {kind: null, placeholder: null, rename: true, remove: false, replacesCurrent: false});
+    // Missing fields never turn an action on.
+    assert.deepEqual(readKinds({providers: {x: {kind: 'key'}}}).get('x'),
+        {kind: 'key', placeholder: null, rename: false, remove: false, replacesCurrent: false});
     assert.equal(readKinds(null).size, 0);
     assert.equal(readKinds({providers: 'openrouter'}).size, 0);
 });
 
 test('Add account… shows only where the kind and its action are advertised', () => {
     assert.deepEqual(addAction('openrouter', {kinds: KINDS, capabilities: ALL}),
-        {provider: 'openrouter', kind: 'key', placeholder: 'Paste API key…'});
+        {provider: 'openrouter', kind: 'key', placeholder: 'Paste API key…', replacesCurrent: false});
+    assert.equal(addAction('copilot', {kinds: KINDS, capabilities: ALL}).replacesCurrent, true);
+    assert.equal(addAction('claude', {kinds: KINDS, capabilities: ALL}), null);
     // No kind for the provider (no multi-account support, or a kind this
     // extension has no handler for).
     assert.equal(addAction('gemini', {kinds: KINDS, capabilities: ALL}), null);
@@ -60,12 +72,21 @@ test('Add account… shows only where the kind and its action are advertised', (
 
 test('rename and remove are offered on token account rows only', () => {
     const token = {id: 'token:6f0c2a9e-1b4d-4c8a-9e2f-0a1b2c3d4e5f'};
-    assert.deepEqual(rowActions(token, ALL), {rename: true, remove: true});
-    assert.deepEqual(rowActions({id: 'codex-home:abc'}, ALL), {rename: false, remove: false});
-    assert.deepEqual(rowActions({id: null}, ALL), {rename: false, remove: false});
-    assert.deepEqual(rowActions({id: 'token:'}, ALL), {rename: false, remove: false});
-    assert.deepEqual(rowActions(token, new Set(['providerAccountRename'])), {rename: true, remove: false});
-    assert.deepEqual(rowActions(token, null), {rename: false, remove: false});
+    const on = (account, provider = 'openrouter', capabilities = ALL) =>
+        rowActions(account, {provider, kinds: KINDS, capabilities});
+    assert.deepEqual(on(token), {rename: true, remove: true});
+    assert.deepEqual(on({id: 'codex-home:abc'}), {rename: false, remove: false});
+    assert.deepEqual(on({id: null}), {rename: false, remove: false});
+    assert.deepEqual(on({id: 'token:'}), {rename: false, remove: false});
+    assert.deepEqual(on(token, 'openrouter', new Set(['providerAccountRename'])), {rename: true, remove: false});
+    assert.deepEqual(on(token, 'openrouter', null), {rename: false, remove: false});
+    // Claude's token rows: no Add account… here, but rename and remove work.
+    assert.deepEqual(on(token, 'claude'), {rename: true, remove: true});
+    // Antigravity: serve can't remove its accounts (409), so no Remove.
+    assert.deepEqual(on(token, 'antigravity'), {rename: true, remove: false});
+    // No kinds entry (not fetched yet, or not a token-account provider).
+    assert.deepEqual(on(token, 'gemini'), {rename: false, remove: false});
+    assert.deepEqual(rowActions(token, {capabilities: ALL}), {rename: false, remove: false});
 });
 
 test('form checks', () => {

@@ -16,7 +16,9 @@ extension CodexBarCLI {
         // `/health` gains the version halves and capabilities (CLICapabilities.swift). A wrong method falls
         // through to upstream's router and its 405.
         if request.method.uppercased() == "GET", request.path == "/health" {
-            return self.forkServeJSON(CLICapabilitiesPayload.health(version: runtime.healthVersion))
+            return self.forkServeJSON(CLICapabilitiesPayload.health(
+                version: runtime.healthVersion,
+                accountActions: CLIServeActionGuard.current.isConfigured))
         }
         // `/usage?accounts=all`: one row per Provider Account (CLIServeProviderAccounts.swift). Plain `/usage`
         // falls through to upstream unchanged.

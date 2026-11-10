@@ -16,6 +16,9 @@ struct CLIServeProviderAccountActionsTests {
     private static let workAccountID = "token:0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70"
     /// A token no response or failure message may ever contain. Tests compare bytes against it and never print it.
     private static let secret = "fake-secret-0123456789abcdef"
+    /// The action token the tests' serve was "started" with (`send` installs it as the guard).
+    private static let actionToken = "fake-action-token-for-tests"
+    private static let actionHeader = "X-UsageBar-Action-Token: \(actionToken)"
 
     private static func account(_ id: UUID, _ label: String, token: String? = nil) -> ProviderTokenAccount {
         ProviderTokenAccount(id: id, label: label, token: token ?? "fake-\(label)", addedAt: 0, lastUsed: nil)
@@ -63,7 +66,7 @@ struct CLIServeProviderAccountActionsTests {
         json: [String: Any]? = nil,
         rawBody: String? = nil,
         contentType: String? = "application/json",
-        extraHeaders: [String] = []) throws -> CLILocalHTTPRequest
+        extraHeaders: [String] = [actionHeader]) throws -> CLILocalHTTPRequest
     {
         let body = try rawBody ?? json.map { try String(
             decoding: JSONSerialization.data(withJSONObject: $0),
@@ -77,11 +80,29 @@ struct CLIServeProviderAccountActionsTests {
         return try CLILocalHTTPRequest.parse(Data((head + "\r\n" + (body ?? "")).utf8)).get()
     }
 
-    private static func send(_ request: CLILocalHTTPRequest, _ runtime: ServeRuntime) async throws
-        -> CLILocalHTTPResponse
+    /// The request through serve's fork routes, with serve holding `actionToken` (nil: started without one).
+    private static func send(
+        _ request: CLILocalHTTPRequest,
+        _ runtime: ServeRuntime,
+        actionToken: String? = actionToken) async throws -> CLILocalHTTPResponse
     {
-        let response = await CodexBarCLI.forkServeResponse(request, runtime: runtime)
+        let response = await CLIServeActionGuard.$override.withValue(CLIServeActionGuard(token: actionToken)) {
+            await CodexBarCLI.forkServeResponse(request, runtime: runtime)
+        }
         return try #require(response)
+    }
+
+    private static func kinds(
+        _ runtime: ServeRuntime,
+        environment: [String: String] = [:]) async throws -> [String: [String: Any]]
+    {
+        let response = try await CodexBarCLI.serveProviderAccountRoute(
+            .kinds,
+            request: Self.request("/accounts/kinds", method: "GET"),
+            runtime: runtime,
+            environment: environment)
+        #expect(response.status == .ok)
+        return try #require(Self.object(response)["providers"] as? [String: [String: Any]])
     }
 
     private static func object(_ response: CLILocalHTTPResponse) throws -> [String: Any] {
@@ -119,18 +140,60 @@ struct CLIServeProviderAccountActionsTests {
         let response = try await Self.send(Self.request("/accounts/kinds", method: "GET"), Self.runtime())
         #expect(response.status == .ok)
         #expect(response.extraHeaders.contains { $0 == ("Cache-Control", "no-store") })
-        let providers = try #require(Self.object(response)["providers"] as? [String: [String: Any]])
+        let providers = try await Self.kinds(Self.runtime())
         let openrouter = try #require(providers["openrouter"])
         #expect(openrouter["kind"] as? String == "key")
         #expect((openrouter["placeholder"] as? String)?.isEmpty == false)
+        #expect(openrouter["rename"] as? Bool == true)
+        #expect(openrouter["remove"] as? Bool == true)
         #expect(providers["copilot"]?["kind"] as? String == "key")
-        // No token accounts at all, and the providers whose accounts come from a login flow.
-        for provider in ["gemini", "codex", "claude", "antigravity"] {
-            #expect(providers[provider] == nil, "\(provider)")
+        // Providers whose accounts come from a login flow: no kind to add, but their token rows stay editable,
+        // except that Antigravity's can't be removed here.
+        for provider in ["claude", "antigravity"] {
+            #expect(providers[provider]?["kind"] == nil, "\(provider)")
+            #expect(providers[provider]?["rename"] as? Bool == true, "\(provider)")
         }
+        #expect(providers["claude"]?["remove"] as? Bool == true)
+        #expect(providers["antigravity"]?["remove"] as? Bool == false)
+        // No token accounts at all: nothing.
+        #expect(providers["gemini"] == nil)
+        #expect(providers["codex"] == nil)
         for provider in UsageProvider.allCases where TokenAccountSupportCatalog.support(for: provider) == nil {
             #expect(providers[provider.rawValue] == nil, "\(provider.rawValue)")
         }
+    }
+
+    @Test
+    func `kinds warn when the first add replaces a credential it can't keep`() async throws {
+        // An API key in the environment: the token account overrides it.
+        let fromEnvironment = try await Self.kinds(Self.runtime(), environment: ["OPENROUTER_API_KEY": "fake-env"])
+        #expect(fromEnvironment["openrouter"]?["replacesCurrent"] as? Bool == true)
+        // No key anywhere: nothing to replace.
+        #expect(try await Self.kinds(Self.runtime())["openrouter"]?["replacesCurrent"] as? Bool == false)
+        // A config apiKey is kept as Account 1, so no warning even with the variable set.
+        let configured = try Self.runtime(config: CodexBarConfig(providers: [ProviderConfig(
+            id: UsageProvider.openrouter.instanceID,
+            apiKey: "fake-config-key")]))
+        let kept = try await Self.kinds(configured, environment: ["OPENROUTER_API_KEY": "fake-env"])
+        #expect(kept["openrouter"]?["replacesCurrent"] as? Bool == false)
+        // Accounts already exist: adding another replaces nothing.
+        let existing = try await Self.kinds(
+            Self.runtime(config: Self.config(Self.twoAccounts)),
+            environment: ["OPENROUTER_API_KEY": "fake-env"])
+        #expect(existing["openrouter"]?["replacesCurrent"] as? Bool == false)
+        // A cookie provider's browser or manual cookie never moves into an account.
+        let cookies = try await Self.kinds(Self.runtime())
+        let cookieProvider = try #require(UsageProvider.allCases.first { provider in
+            guard Self.addable(provider),
+                  case .cookieHeader = TokenAccountSupportCatalog.support(for: provider)?.injection
+            else { return false }
+            return true
+        })
+        #expect(cookies[cookieProvider.rawValue]?["replacesCurrent"] as? Bool == true)
+    }
+
+    private static func addable(_ provider: UsageProvider) -> Bool {
+        CodexBarCLI.addableProviderAccountKind(for: provider) == .key
     }
 
     // MARK: Add
@@ -151,7 +214,9 @@ struct CLIServeProviderAccountActionsTests {
 
         let stored = try #require(try Self.accounts(runtime))
         #expect(stored.accounts.map(\.label) == ["Personal", "Work"])
-        #expect(stored.accounts.last?.token == Self.secret)
+        // Compared into a Bool first, so a failure never prints the token.
+        let storedSecret = stored.accounts.last?.token == Self.secret
+        #expect(storedSecret)
         #expect(stored.activeIndex == 1)
         let newID = try #require(stored.accounts.last?.id)
         #expect(object["accountId"] as? String == "token:\(newID.uuidString.lowercased())")
@@ -232,7 +297,7 @@ struct CLIServeProviderAccountActionsTests {
             (Self.request(
                 "/accounts/add",
                 json: ["provider": "openrouter", "token": Self.secret],
-                extraHeaders: ["Origin: http://127.0.0.1:8080"]), .forbidden),
+                extraHeaders: ["Origin: http://127.0.0.1:8080", Self.actionHeader]), .forbidden),
         ]
         for (request, status) in cases {
             let response = try await Self.send(request, runtime)
@@ -260,7 +325,7 @@ struct CLIServeProviderAccountActionsTests {
         let authorized = try await Self.send(Self.request(
             "/accounts/rename",
             json: ["provider": "openrouter", "accountId": Self.workAccountID, "label": "Job"],
-            extraHeaders: ["Authorization: Bearer secret"]), runtime)
+            extraHeaders: ["Authorization: Bearer secret", Self.actionHeader]), runtime)
         #expect(authorized.status == .ok)
         #expect(try Self.accounts(runtime)?.accounts.map(\.label) == ["Personal", "Job"])
     }
@@ -359,9 +424,7 @@ struct CLIServeProviderAccountActionsTests {
 
     @Test
     func `health advertises each account action`() async throws {
-        let response = try await CodexBarCLI.handleServeRequest(
-            Self.request("/health", method: "GET"),
-            runtime: Self.runtime())
+        let response = try await Self.send(Self.request("/health", method: "GET"), Self.runtime())
         let object = try Self.object(response)
         let capabilities = try #require(object["capabilities"] as? [String])
         for name in [
@@ -372,6 +435,129 @@ struct CLIServeProviderAccountActionsTests {
         ] {
             #expect(capabilities.contains(name), "\(name)")
         }
+    }
+
+    // MARK: Action token
+
+    @Test
+    func `mutating routes need serve's action token`() async throws {
+        let runtime = try Self.runtime(config: Self.config(Self.twoAccounts))
+        let rename = ["provider": "openrouter", "accountId": Self.workAccountID, "label": "Job"]
+        let missing = try await Self.send(Self.request("/accounts/rename", json: rename, extraHeaders: []), runtime)
+        #expect(missing.status == .forbidden)
+        let wrong = try await Self.send(Self.request(
+            "/accounts/rename",
+            json: rename,
+            extraHeaders: ["X-UsageBar-Action-Token: fake-wrong-token"]), runtime)
+        #expect(wrong.status == .forbidden)
+        let add = try await Self.send(Self.request(
+            "/accounts/add",
+            json: ["provider": "openrouter", "token": Self.secret],
+            extraHeaders: []), runtime)
+        #expect(add.status == .forbidden)
+        #expect(!Self.leaks(add.body))
+        #expect(try Self.accounts(runtime)?.accounts.map(\.label) == ["Personal", "Work"])
+
+        let right = try await Self.send(Self.request("/accounts/rename", json: rename), runtime)
+        #expect(right.status == .ok)
+        #expect(try Self.accounts(runtime)?.accounts.map(\.label) == ["Personal", "Job"])
+    }
+
+    @Test
+    func `a serve started without an action token refuses every action and hides them`() async throws {
+        let runtime = try Self.runtime(config: Self.config(Self.twoAccounts))
+        for request in try [
+            Self.request("/accounts/add", json: ["provider": "openrouter", "token": Self.secret]),
+            Self.request("/accounts/rename", json: [
+                "provider": "openrouter", "accountId": Self.workAccountID, "label": "Job",
+            ]),
+            Self.request("/accounts/remove", json: ["provider": "openrouter", "accountId": Self.workAccountID]),
+        ] {
+            #expect(try await Self.send(request, runtime, actionToken: nil).status == .forbidden)
+        }
+        #expect(try Self.accounts(runtime)?.accounts.map(\.label) == ["Personal", "Work"])
+        let health = try await Self.send(Self.request("/health", method: "GET"), runtime, actionToken: nil)
+        let capabilities = try #require(Self.object(health)["capabilities"] as? [String])
+        #expect(capabilities.contains("providerAccountRows"))
+        for name in [
+            "providerAccountKinds",
+            "providerAccountAddKey",
+            "providerAccountRename",
+            "providerAccountRemove",
+        ] {
+            #expect(!capabilities.contains(name), "\(name)")
+        }
+    }
+
+    @Test
+    func `the action token compares exactly`() throws {
+        let guardian = CLIServeActionGuard(token: "fake-action-token-for-tests")
+        #expect(guardian.isConfigured)
+        #expect(try guardian.authorize(Self.request("/accounts/add")))
+        #expect(try !guardian.authorize(Self.request("/accounts/add", extraHeaders: [
+            "X-UsageBar-Action-Token: fake-action-token-for-test",
+        ])))
+        #expect(try !guardian.authorize(Self.request("/accounts/add", extraHeaders: [])))
+        #expect(!CLIServeActionGuard(token: "  ").isConfigured)
+        #expect(try !CLIServeActionGuard(token: nil).authorize(Self.request("/accounts/add")))
+    }
+
+    // MARK: Existing keys and the store
+
+    @Test
+    func `the first add keeps a config api key as Account 1`() async throws {
+        // Copilot clears its apiKey on every token-account change; the key must survive as an account.
+        let runtime = try Self.runtime(config: CodexBarConfig(providers: [ProviderConfig(
+            id: UsageProvider.copilot.instanceID,
+            enabled: true,
+            apiKey: "fake-copilot-key")]))
+        let response = try await Self.send(Self.request("/accounts/add", json: [
+            "provider": "copilot", "label": "Work", "token": Self.secret,
+        ]), runtime)
+        #expect(response.status == .ok)
+        let stored = try #require(try Self.accounts(runtime, .copilot))
+        #expect(stored.accounts.map(\.label) == ["Account 1", "Work"])
+        let keptKey = stored.accounts.first?.token == "fake-copilot-key"
+        #expect(keptKey)
+        #expect(stored.activeIndex == 1)
+        let entry = try runtime.configStore.load()?.providerConfig(for: UsageProvider.copilot.instanceID)
+        #expect(entry?.apiKey == nil)
+
+        // Only the first add migrates: the next one just appends.
+        _ = try await Self.send(Self.request("/accounts/add", json: [
+            "provider": "copilot", "label": "Side", "token": "fake-side",
+        ]), runtime)
+        #expect(try Self.accounts(runtime, .copilot)?.accounts.map(\.label) == ["Account 1", "Work", "Side"])
+    }
+
+    @Test
+    func `a cookie provider's api key is never moved into a cookie account`() throws {
+        let provider = try #require(UsageProvider.allCases.first { provider in
+            guard Self.addable(provider),
+                  case .cookieHeader = TokenAccountSupportCatalog.support(for: provider)?.injection
+            else { return false }
+            return true
+        })
+        var config = CodexBarConfig(providers: [ProviderConfig(id: provider.instanceID, apiKey: "fake-other-kind")])
+        _ = ProviderTokenAccountEditor.add(to: &config, provider: provider, label: "Work", token: "fake-c", addedAt: 0)
+        let data = try #require(config.providerConfig(for: provider.instanceID)?.tokenAccounts)
+        #expect(data.accounts.map(\.label) == ["Work"])
+    }
+
+    @Test
+    func `a config that can't be read fails the action instead of looking empty`() async throws {
+        let runtime = try Self.runtime()
+        try Data("{not json".utf8).write(to: runtime.configStore.fileURL)
+        let response = try await Self.send(Self.request("/accounts/remove", json: [
+            "provider": "openrouter", "accountId": Self.workAccountID,
+        ]), runtime)
+        #expect(response.status == .internalServerError)
+        let add = try await Self.send(Self.request("/accounts/add", json: [
+            "provider": "openrouter", "token": Self.secret,
+        ]), runtime)
+        #expect(add.status == .internalServerError)
+        // The unreadable file is left as it was.
+        #expect(try Data(contentsOf: runtime.configStore.fileURL) == Data("{not json".utf8))
     }
 
     // MARK: Editor

@@ -7,6 +7,7 @@ import {
     accountsRenderKey,
     agoText,
     buildCards,
+    forgetAccount,
     mergeStale,
     primaryRows,
     usagePath,
@@ -183,4 +184,28 @@ test('freshness text', () => {
 test('malformed payloads yield no cards', () => {
     assert.deepEqual(buildCards(null, {accountRows: true}), []);
     assert.deepEqual(buildCards([null, 3], {accountRows: true}), []);
+});
+
+test('forgetAccount keeps a removed account from coming back as a stale row', () => {
+    const window = {usedPercent: 40, windowMinutes: 300};
+    const tagged = (id, label) => ({provider: 'openrouter', accountId: `token:${id}`, accountLabel: label,
+        usage: {primary: window, updatedAt: '2026-11-10T10:00:00Z'}});
+    const rows = [{provider: 'claude', usage: {primary: window}}, tagged('a', 'Personal'), tagged('b', 'Work')];
+
+    // Two accounts left after removing one of three: only that one goes.
+    const three = [...rows, tagged('c', 'Side')];
+    assert.deepEqual(forgetAccount(three, 'openrouter', 'token:c').map(r => r.accountLabel ?? r.provider),
+        ['claude', 'Personal', 'Work']);
+
+    // One left: serve now answers the provider untagged, so its tagged rows go.
+    const pruned = forgetAccount(rows, 'openrouter', 'token:a');
+    assert.deepEqual(pruned.map(r => r.provider), ['claude']);
+    // A provider-level error on the next poll no longer expands into the old accounts.
+    const fresh = () => [{provider: 'claude', usage: {primary: window}},
+        {provider: 'openrouter', error: {message: 'timed out'}}];
+    const merged = mergeStale(pruned, fresh());
+    assert.equal(merged.filter(r => r.provider === 'openrouter').length, 1);
+    assert.ok(!merged.some(r => r.accountLabel === 'Personal'));
+    // Without forgetting, the removed account would come back.
+    assert.ok(mergeStale(rows, fresh()).some(r => r.accountLabel === 'Personal'));
 });
