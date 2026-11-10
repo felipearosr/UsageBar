@@ -27,7 +27,7 @@ extension CodexBarCLI {
     @MainActor
     static func runCodexAccounts(path: [String], values: ParsedValues) async {
         let output = CLIOutputPreferences.from(values: values)
-        #if os(macOS)
+        Self.forkRequireCodexAccountsPlatformSupport(path: path, output: output)
         do {
             let store = FileManagedCodexAccountStore()
             let liveHome = CodexHomeScope.ambientHomeURL(env: ProcessInfo.processInfo.environment)
@@ -68,13 +68,6 @@ extension CodexBarCLI {
         } catch {
             Self.exit(code: .failure, message: error.localizedDescription, output: output, kind: .runtime)
         }
-        #else
-        Self.exit(
-            code: .failure,
-            message: "Managed Codex account commands are only available on macOS.",
-            output: output,
-            kind: .args)
-        #endif
     }
 
     static func resolveCodexAccount(selector: String, accounts: [ManagedCodexAccount]) throws -> ManagedCodexAccount {
