@@ -17,6 +17,10 @@ a third OpenRouter account, Spare, at 12% (the most headroom).
 STUB_CODEXBAR_CLAUDE_SWAP=1 (with ACCOUNTS) makes Claude's rows claude-swap's:
 two slots on /usage?accounts=all (work active, personal stale with its
 error), and the active slot's row on plain /usage.
+STUB_CODEXBAR_CODEX_ACCOUNTS=1 advertises providerAccountRows and answers
+/usage?accounts=all with three Codex Provider Accounts: the everyday login
+(active) and two managed accounts, one of them failing; plain /usage gets the
+same three rows untagged, as serve sends them.
 STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
 seconds after serve starts, like a serve that isn't ready yet.
 """
@@ -36,6 +40,7 @@ ISSUES = os.environ.get("STUB_CODEXBAR_ISSUES") == "1"
 ACCOUNTS = os.environ.get("STUB_CODEXBAR_ACCOUNTS") in ("1", "3")
 SPARE = os.environ.get("STUB_CODEXBAR_ACCOUNTS") == "3"
 CLAUDE_SWAP = ACCOUNTS and os.environ.get("STUB_CODEXBAR_CLAUDE_SWAP") == "1"
+CODEX_ACCOUNTS = os.environ.get("STUB_CODEXBAR_CODEX_ACCOUNTS") == "1"
 HEALTH_FAIL_SECS = float(os.environ.get("STUB_CODEXBAR_HEALTH_FAIL_SECS") or 0)
 STARTED = time.monotonic()
 VERSION = "0.69.0"
@@ -147,6 +152,34 @@ def claude_swap_rows(all_accounts, window):
     return [active, stale]
 
 
+def codex_account_rows(all_accounts):
+    def window(percent, minutes, reset_secs):
+        return {"usedPercent": percent, "windowMinutes": minutes, "resetsAt": iso(-reset_secs)}
+
+    def row(email, source, account_id, active, usage=None, error=None):
+        body = {"provider": "codex", "source": "oauth", "account": email}
+        if usage:
+            body["usage"] = usage
+        if error:
+            body["error"] = {"code": 1, "kind": "provider", "message": error}
+        if all_accounts:
+            body.update({"accountId": f"{source}:{account_id}", "accountSource": source,
+                         "accountLabel": email, "active": active})
+            if usage:
+                body["updatedAt"] = usage["updatedAt"]
+        return body
+    return [
+        row("me@example.com", "codex-system", "3f9a1c2b7d4e8f60", True,
+            usage={"primary": window(18, 300, 9000), "secondary": window(52, 10080, 400000),
+                   "updatedAt": iso(20)}),
+        row("old@example.com", "codex-managed", "7a1e2d3c-4b5a-4c6d-8e7f-9a0b1c2d3e4f", False,
+            error="Codex OAuth token expired. Run `codex login` in this account's home."),
+        row("work@example.com", "codex-managed", "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7a8b", False,
+            usage={"primary": window(71, 300, 3600), "secondary": window(33, 10080, 500000),
+                   "updatedAt": iso(90)}),
+    ]
+
+
 def unknown_command(name):
     if "--json-only" in sys.argv:
         print(json.dumps([{"provider": "cli", "source": "cli", "error": {
@@ -175,14 +208,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {"error": "starting"})
         elif path == "/health":
             body = {"status": "ok", "version": VERSION}
-            if REPORT or ACCOUNTS:
+            if REPORT or ACCOUNTS or CODEX_ACCOUNTS:
                 body["capabilities"] = (["machineSync"] if SYNC else []) + \
-                    (["providerAccountRows"] if ACCOUNTS else [])
+                    (["providerAccountRows"] if ACCOUNTS or CODEX_ACCOUNTS else [])
                 body["usagebarVersion"] = VERSION
                 body["upstreamVersion"] = VERSION
             self.send_json(200, body)
         elif path == "/usage" and ISSUES:
             self.send_json(200, issue_rows())
+        elif path == "/usage" and CODEX_ACCOUNTS:
+            self.send_json(200, codex_account_rows("accounts=all" in parts.query.split("&")))
         elif path == "/usage" and ACCOUNTS:
             self.send_json(200, account_rows("accounts=all" in parts.query.split("&")))
         elif path in ("/usage", "/cost"):

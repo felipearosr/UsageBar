@@ -10,8 +10,9 @@ import Foundation
 /// A provider with two or more token accounts (and a source mode that uses them) gets one row per account, fetched
 /// one after another through upstream's own per-account fetch, each carrying `ProviderAccountRowFields`. With
 /// claude-swap enabled, Claude gets one row per claude-swap slot from a single list read (CLIServeClaudeSwap.swift)
-/// instead. Every other provider, including one with a single account, gets exactly the row plain `/usage` gives
-/// it. Managed Codex accounts are a later source of the same row shape; Codex keeps upstream's rows for now.
+/// instead. Codex gets one row per reconciled account once it has a managed account of its own
+/// (`CLIServeCodexAccounts.swift`). Every other provider, including one with a single account, gets exactly the row
+/// plain `/usage` gives it.
 ///
 /// Tagging is all or nothing per provider: once a provider has Provider Accounts, every row it returns carries one
 /// account's fields, including a provider-level timeout, which becomes one error row per account. Clients can rely
@@ -89,15 +90,17 @@ extension CodexBarCLI {
         provider rawProvider: String?,
         context: ServeUsageContext,
         fetch: ProviderAccountUsageFetch? = nil,
-        claudeSwap: ClaudeSwapServeSource? = nil) async -> CLILocalHTTPResponse
+        claudeSwap: ClaudeSwapServeSource? = nil,
+        accountContext: TokenAccountCLIContext? = nil) async -> CLILocalHTTPResponse
     {
         guard let providers = self.serveProviderAccountSelection(rawProvider: rawProvider, config: context.config)
         else {
             return self.forkServeError(status: .badRequest, message: "Unknown provider: \(rawProvider ?? "")")
         }
+        // Tests pass a context over a synthetic managed-account store and Codex home.
         let defaultContext: TokenAccountCLIContext
         do {
-            defaultContext = try TokenAccountCLIContext(
+            defaultContext = try accountContext ?? TokenAccountCLIContext(
                 selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
                 config: context.config,
                 verbose: false)
@@ -164,6 +167,11 @@ extension CodexBarCLI {
             let tokenContext: TokenAccountCLIContext
             switch selector {
             case nil:
+                // Provider-specific by design: Codex without Provider Account rows still keeps every managed home
+                // away from the everyday login's PAT (CLIServeCodexAccounts.swift).
+                if provider == .codex {
+                    return await self.fetchCodexUntagged(tokenContext: defaultContext, command: command)
+                }
                 tokenContext = defaultContext
             case let .tokenIndex(index):
                 // Upstream's index selection reads exactly that stored account's token.
@@ -173,6 +181,8 @@ extension CodexBarCLI {
                     verbose: false)
                 else { return UsageCommandOutput() }
                 tokenContext = selected
+            case let .codexAccount(account):
+                return await self.fetchCodexProviderAccount(account, tokenContext: defaultContext, command: command)
             case .claudeSwapSlot:
                 // claude-swap rows come from one list read (CLIServeClaudeSwap.swift), never a per-slot fetch.
                 return UsageCommandOutput()
@@ -186,15 +196,18 @@ extension CodexBarCLI {
     }
 
     /// The Provider Accounts `provider` shows as separate rows: its token accounts when it has two or more and the
-    /// source mode in use reads them. Empty means the provider keeps upstream's single-account row.
+    /// source mode in use reads them, or for Codex its reconciled accounts once one is managed. Empty means the
+    /// provider keeps upstream's rows.
     static func providerAccounts(
         for provider: UsageProvider,
         context: TokenAccountCLIContext) -> [ProviderAccount]
     {
-        // Provider-specific by design: managed Codex accounts are their own source (#168); Codex keeps upstream's
-        // reconciled-account rows until then.
-        guard provider != .codex,
-              let data = context.accountsByProvider[provider],
+        // Provider-specific by design: managed Codex accounts are separate Codex homes, not token accounts; they come
+        // from Codex's reconciled account list (#168).
+        if provider == .codex {
+            return self.codexProviderAccounts(context.visibleCodexAccounts())
+        }
+        guard let data = context.accountsByProvider[provider],
               data.accounts.count >= 2,
               // Upstream's default selection reads token accounts only in an active source mode, and then
               // exactly one; an empty answer (a passive mode) means the provider doesn't use them.
@@ -303,14 +316,22 @@ extension CodexBarCLI {
 enum ProviderAccountSource: String, Encodable, Sendable {
     /// A labelled key or cookie in the token-account store; the id is the account's UUID.
     case token
+    /// The everyday Codex login (`~/.codex` or `CODEX_HOME`); the id is a hash of its workspace identity.
+    case codexSystem = "codex-system"
+    /// A managed Codex account with its own Codex home; the id is its managed-account UUID.
+    case codexManaged = "codex-managed"
+    /// A configured Codex profile home; the id is a hash of its path.
+    case codexProfile = "codex-profile"
     /// A claude-swap slot; the id is the slot number claude-swap issued.
     case claudeSwap = "claude-swap"
 }
 
-/// How serve fetches one Provider Account. Source-specific and never sent; managed Codex homes add their own case.
+/// How serve fetches one Provider Account. Source-specific and never sent.
 enum ProviderAccountSelector: Equatable, Sendable {
     /// The account at this position in the provider's token-account store.
     case tokenIndex(Int)
+    /// One reconciled Codex account, fetched in its own Codex home.
+    case codexAccount(CodexVisibleAccount)
     /// A claude-swap slot. All slots are read together; the slot is what an explicit switch targets.
     case claudeSwapSlot(Int)
 }
@@ -327,9 +348,9 @@ struct ProviderAccountRowFields: Equatable, Sendable {
     let id: String
     let label: String
     let active: Bool
-    /// The user chose no label, so `label` is made up: a token account's "Account N" (by store position), or a
-    /// claude-swap slot's "Account N" / "email · Account N". Sent as `accountLabelIsDefault: true`, so clients make
-    /// their own label instead of treating it as the user's alias; older clients still render `label`.
+    /// The account has no name of its own, so `label` is made up: a token or Codex account's "Account N" (by
+    /// position), or a claude-swap slot's "Account N" / "email · Account N". Sent as `accountLabelIsDefault: true`,
+    /// so clients make their own label instead of treating it as the user's alias; older clients still render `label`.
     var labelIsDefault = false
     /// claude-swap holds this slot out of its own rotation; sent as `disabled: true`. The label stays the name.
     var disabled = false

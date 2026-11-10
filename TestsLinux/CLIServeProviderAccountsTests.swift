@@ -118,6 +118,8 @@ struct CLIServeProviderAccountsTests {
                     label: account.label,
                     cacheAccountKey: "upstream-\(index)",
                     usedPercent: failing.contains(account.label) ? nil : 40))
+            case .codexAccount:
+                Issue.record("a token-account provider was fetched as a Codex account")
             case .claudeSwapSlot:
                 // claude-swap slots are never fetched one by one (CLIServeClaudeSwapTests).
                 await calls.record("claude-swap slot")
@@ -305,7 +307,7 @@ struct CLIServeProviderAccountsTests {
     }
 
     @Test
-    func `blank labels read Account N and codex keeps upstream rows`() throws {
+    func `blank labels read Account N and codex ignores token accounts`() throws {
         let accounts = [Self.account(Self.personalID, "  "), Self.account(Self.workID, "Work")]
         let context = try TokenAccountCLIContext(
             selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
@@ -318,13 +320,17 @@ struct CLIServeProviderAccountsTests {
         #expect(found.map(\.fields.active) == [true, false])
         #expect(found.map(\.selector) == [.tokenIndex(0), .tokenIndex(1)])
 
+        // Codex's accounts are its managed homes (#168), never its token accounts; with none it keeps upstream's rows.
+        let empty = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CLIServeProviderAccountsTests-\(UUID().uuidString)", isDirectory: true)
         let codex = try TokenAccountCLIContext(
             selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
             config: CodexBarConfig(providers: [ProviderConfig(
                 id: UsageProvider.codex.instanceID,
                 tokenAccounts: ProviderTokenAccountData(version: 1, accounts: accounts, activeIndex: 0))]),
             verbose: false,
-            baseEnvironment: [:])
+            baseEnvironment: ["HOME": empty.path, "CODEX_HOME": empty.appendingPathComponent(".codex").path],
+            managedCodexAccountStoreURL: empty.appendingPathComponent("managed-codex-accounts.json"))
         #expect(CodexBarCLI.providerAccounts(for: .codex, context: codex).isEmpty)
     }
 

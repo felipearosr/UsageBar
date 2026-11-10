@@ -3893,6 +3893,64 @@ export default class UsageBarExtension extends Extension {
             ready();
         };
 
+        // Run with USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 against the stub CLI with
+        // STUB_CODEXBAR_CODEX_ACCOUNTS=1: the Codex card shows the everyday
+        // login (active) and two managed accounts, one of them failing with
+        // only its own error.
+        const codexAccountsSmoke = assertions => {
+            let waited = 0;
+            const ready = () => {
+                if (!this._accountCards?.get('codex')?.multi && waited < 15000) {
+                    waited += 250;
+                    later(250, ready);
+                    return;
+                }
+                try {
+                    assertions.push(assertion('one Codex overview row',
+                        this._rows.filter(row => row.provider === 'codex').length === 1,
+                        {actual: this._rows.map(row => row.provider)}));
+                    this._indicator.menu.open();
+                    this._selectedProvider = 'codex';
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => {
+                    try {
+                        const box = this._indicator._detailBox;
+                        const heads = descendants(box)
+                            .filter(actor => actor.style_class === 'usagebar-account-head');
+                        const labels = heads.map(head => descendants(head)
+                            .filter(actor => actor instanceof St.Label).map(actor => actor.text));
+                        const block = email => labels.find(texts => texts.includes(email)) ?? [];
+                        assertions.push(assertion('one block per Codex account', heads.length === 3, {labels}));
+                        assertions.push(assertion('the everyday login is the active account',
+                            block('me@example.com').includes('active') &&
+                            !block('work@example.com').includes('active') &&
+                            !block('old@example.com').includes('active'), {labels}));
+                        assertions.push(assertion('the failing managed account shows no freshness',
+                            block('work@example.com').some(text => /^updated /.test(text)) &&
+                            !block('old@example.com').some(text => /^updated /.test(text)), {labels}));
+                        const headLabel = descendants(box)
+                            .find(actor => actor.style_class?.includes('usagebar-account-headlabel'));
+                        assertions.push(assertion('the head % names the everyday login',
+                            headLabel?.text === 'me@example.com', {actual: headLabel?.text ?? null}));
+                        const banners = descendants(box)
+                            .filter(actor => actor.style_class?.includes('usagebar-provider-issue') &&
+                                actor.style_class.includes('usagebar-issues-banner'));
+                        assertions.push(assertion('only the failing managed account has an error',
+                            banners.length === 1, {actual: banners.length}));
+                    } catch (error) {
+                        finish(assertions, error);
+                        return;
+                    }
+                    capture('accounts-provider-codex.png', () => finish(assertions));
+                });
+            };
+            ready();
+        };
+
         // Run with USAGEBAR_UI_SMOKE_ICON_SOURCE=1 against the stub CLI with
         // STUB_CODEXBAR_ACCOUNTS=3: OpenRouter has Work (active, 64%),
         // Personal (failing key) and Spare (12%). The panel chip follows the
@@ -4107,6 +4165,10 @@ export default class UsageBarExtension extends Extension {
             }
             if (GLib.getenv('USAGEBAR_UI_SMOKE_ACCOUNTS') === '1') {
                 accountsSmoke(assertions);
+                return;
+            }
+            if (GLib.getenv('USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS') === '1') {
+                codexAccountsSmoke(assertions);
                 return;
             }
             if (GLib.getenv('USAGEBAR_UI_SMOKE_ICON_SOURCE') === '1') {
