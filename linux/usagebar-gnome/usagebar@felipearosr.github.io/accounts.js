@@ -78,7 +78,8 @@ function accountOf(row, now, {single = false} = {}) {
 // apart when two share an email). With Hide Personal Info each account's row
 // becomes a scrubbed copy, so nothing that renders a row (card head, account
 // blocks, panel chips, issues, notifications) sees the raw label or an email
-// in an error, and the accounts read Account 1, Account 2 in that order.
+// in an error. The blocks keep row order either way, so toggling the setting
+// never reorders the card (see accountlabels.js on the numbering).
 function labelAccounts(card, hidePersonalInfo) {
     const labels = accountLabels(card.accounts.map(account => account.row), {hidePersonalInfo});
     card.accounts.forEach((account, index) => {
@@ -89,8 +90,6 @@ function labelAccounts(card, hidePersonalInfo) {
             account.error = errorText(account.row);
         }
     });
-    if (hidePersonalInfo)
-        card.accounts.sort((a, b) => a.ordinal - b.ordinal);
 }
 
 function singleCard(row, now, hidePersonalInfo) {

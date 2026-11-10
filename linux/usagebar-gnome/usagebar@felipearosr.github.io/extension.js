@@ -40,6 +40,7 @@ import {
     primaryRows,
     usagePath,
 } from './accounts.js';
+import {ordinalLabel} from './accountlabels.js';
 import {
     extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf, worstPercent, worstWindow,
 } from './payload.js';
@@ -3844,13 +3845,16 @@ export default class UsageBarExtension extends Extension {
                     capture('accounts-provider-openrouter.png', () => privateLabels());
                 });
             };
-            // Hide Personal Info: the blocks read Account 1, Account 2 by
-            // account id (Work's sorts first), and no raw label is left.
+            // Hide Personal Info: ordinals by account id (Work's sorts
+            // first), blocks still in row order, and no raw label is left.
             const privateLabels = () => {
+                const wasHidden = this._settings.get_boolean('hide-personal-info');
+                const restore = () => this._settings.set_boolean('hide-personal-info', wasHidden);
                 try {
                     this._settings.set_boolean('hide-personal-info', true);
                     this._render();
                 } catch (error) {
+                    restore();
                     finish(assertions, error);
                     return;
                 }
@@ -3863,9 +3867,9 @@ export default class UsageBarExtension extends Extension {
                             .filter(actor => actor.style_class === 'usagebar-account-head')
                             .map(head => descendants(head).filter(actor => actor instanceof St.Label)
                                 .map(actor => actor.text));
-                        assertions.push(assertion('Hide Personal Info shows ordinal labels in order',
-                            labels[0]?.includes('Account 1') && labels[0]?.includes('active') &&
-                            labels[1]?.includes('Account 2'), {labels}));
+                        assertions.push(assertion('Hide Personal Info shows ordinal labels in row order',
+                            labels[0]?.includes('Account 2') && !labels[0]?.includes('active') &&
+                            labels[1]?.includes('Account 1') && labels[1]?.includes('active'), {labels}));
                         assertions.push(assertion('no raw account label is rendered',
                             !texts.some(text => /\b(Work|Personal)\b/.test(text)), {texts}));
                         const headLabel = descendants(box)
@@ -3873,12 +3877,12 @@ export default class UsageBarExtension extends Extension {
                         assertions.push(assertion('the head names the active account by ordinal',
                             headLabel?.text === 'Account 1', {actual: headLabel?.text ?? null}));
                     } catch (error) {
-                        this._settings.reset('hide-personal-info');
+                        restore();
                         finish(assertions, error);
                         return;
                     }
                     capture('accounts-private-openrouter.png', () => {
-                        this._settings.reset('hide-personal-info');
+                        restore();
                         finish(assertions);
                     });
                 });
@@ -7055,7 +7059,7 @@ export default class UsageBarExtension extends Extension {
     _addAccountBlock(card, account) {
         const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-account-head'});
         head.add_child(new St.Label({
-            text: account.label ?? 'Account',
+            text: account.label ?? ordinalLabel(account.ordinal ?? 1),
             style_class: 'usagebar-account-label',
             y_align: Clutter.ActorAlign.CENTER,
         }));

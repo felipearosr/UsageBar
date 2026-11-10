@@ -2,21 +2,32 @@
 // ambiguous otherwise. Dependency-free so the Node tests can exercise it
 // without GJS; accounts.js applies it to every card it builds.
 //
-// Each account has a stable ordinal N (1-based): accounts with an accountId
-// sort by that id, which serve keeps across refreshes, renames and reorders;
-// accounts without one follow in row order. Response order is never used,
-// so "Account 2" stays the same account from one refresh to the next.
+// Each account has an ordinal N (1-based): accounts with an accountId sort
+// by that id, which serve keeps across refreshes, renames and store
+// reorders; accounts without one follow in row order. Response order is
+// never used, because it can change between refreshes and "Account 2" must
+// stay the same account. The cost: the id is opaque, so N needn't match the
+// order the blocks are listed in (row order, which the card keeps whether
+// labels are hidden or not), and adding or removing an account can renumber
+// the accounts whose ids sort after it.
 //
 // - Hide Personal Info: every label is "Account N".
 // - Otherwise the label serve sent is kept, except when two accounts of the
 //   card share an email: then the user's alias, else "email · org", else
 //   "email · Account N". Labels that still collide get " · Account N".
+// - An account the user gave no label (serve's made-up "Account N", flagged
+//   accountLabelIsDefault) has no alias: it reads as its email, else as the
+//   extension's own "Account N", so the numbers match Hide Personal Info.
 //
 // Identity (email, org) comes only from the row's own usage.identity, and
 // only when that identity names the row's provider: another provider's
 // identity never labels an account.
 
-const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+// Plain and URL-encoded (%40) addresses.
+const EMAIL = /[A-Z0-9._%+-]+(?:@|%40)[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+// What serve sends for an account without a label. Older serves don't send
+// accountLabelIsDefault, so the shape is the fallback.
+const DEFAULT_LABEL = /^Account \d+$/;
 
 function text(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -33,6 +44,14 @@ export function ordinalLabel(n) {
 // The label serve sent for the row: accountLabel, else the older `account`.
 export function rawLabel(row) {
     return text(row?.accountLabel) ?? text(row?.account);
+}
+
+// The label the user chose, or null when serve made the label up.
+export function userLabel(row) {
+    const raw = rawLabel(row);
+    if (!raw || row?.accountLabelIsDefault === true || DEFAULT_LABEL.test(raw))
+        return null;
+    return raw;
 }
 
 // {email, org} from the row's own provider identity only. An identity whose
@@ -83,13 +102,11 @@ export function accountLabels(rows, {hidePersonalInfo = false} = {}) {
         return ordinals.map(ordinal => ({label: ordinalLabel(ordinal), ordinal}));
 
     const facts = rows.map((row, index) => {
-        const raw = rawLabel(row);
+        const raw = userLabel(row);
         const identity = accountIdentity(row);
         const email = identity.email ?? (looksLikeEmail(raw) ? raw : null);
-        const explicitAlias = text(row?.accountAlias);
         // A label that is just the email isn't an alias the user chose.
-        const alias = explicitAlias ??
-            (raw && (!email || raw.toLowerCase() !== email.toLowerCase()) ? raw : null);
+        const alias = raw && (!email || raw.toLowerCase() !== email.toLowerCase()) ? raw : null;
         return {raw, email, org: identity.org, alias, ordinal: ordinals[index]};
     });
 
@@ -102,7 +119,7 @@ export function accountLabels(rows, {hidePersonalInfo = false} = {}) {
     }
     const labels = facts.map(fact => {
         if (!fact.email || byEmail.get(fact.email.toLowerCase()) < 2)
-            return fact.raw ?? fact.email;
+            return fact.raw ?? fact.email ?? ordinalLabel(fact.ordinal);
         if (fact.alias)
             return fact.alias;
         if (fact.org)
@@ -134,8 +151,6 @@ export function scrubRow(row, label) {
         copy.account = label;
     if ('accountLabel' in copy)
         copy.accountLabel = label;
-    if ('accountAlias' in copy)
-        copy.accountAlias = label;
     if (typeof copy.error === 'string')
         copy.error = redactEmails(copy.error);
     else if (copy.error && typeof copy.error === 'object' && typeof copy.error.message === 'string')
