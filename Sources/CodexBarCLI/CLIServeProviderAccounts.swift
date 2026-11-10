@@ -38,7 +38,8 @@ extension CodexBarCLI {
         _ request: CLILocalHTTPRequest,
         runtime: ServeRuntime,
         fetch: ProviderAccountUsageFetch? = nil,
-        claudeSwap: ClaudeSwapServeSource? = nil) async -> CLILocalHTTPResponse
+        claudeSwap: ClaudeSwapServeSource? = nil,
+        switchGeneration: ClaudeSwapSwitchGeneration = .shared) async -> CLILocalHTTPResponse
     {
         guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
             return self.serveUnauthorizedResponse()
@@ -62,9 +63,14 @@ extension CodexBarCLI {
         } catch {
             return self.addingNoStore(self.forkServeError(status: .badRequest, message: error.localizedDescription))
         }
+        // With Claude selected, each claude-swap switch gives the request new cache, merge and operation keys
+        // (CLIServeClaudeSwapSwitch.swift), so nothing fetched before a switch answers a request made after it.
+        let fingerprint = switchGeneration.fingerprint(
+            snapshot.cacheToken,
+            providers: self.serveProviderAccountSelection(rawProvider: normalizedProvider, config: snapshot.config))
         let context = ServeUsageContext(
             config: snapshot.config,
-            configFingerprint: snapshot.cacheToken,
+            configFingerprint: fingerprint,
             refreshInterval: runtime.refreshInterval,
             providerTimeout: self.serveProviderTimeout(requestTimeout: runtime.requestTimeout),
             providerDeadline: self.serveProviderDeadline(startedAt: startedAt, requestTimeout: runtime.requestTimeout),
@@ -74,7 +80,7 @@ extension CodexBarCLI {
             cache: runtime.cache,
             refreshInterval: runtime.refreshInterval,
             requestTimeout: runtime.requestTimeout,
-            configFingerprint: snapshot.cacheToken,
+            configFingerprint: fingerprint,
             staleWhileRevalidate: true)
         {
             await self.serveProviderAccountUsage(

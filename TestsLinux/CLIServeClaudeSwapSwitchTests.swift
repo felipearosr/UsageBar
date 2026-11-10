@@ -12,9 +12,15 @@ struct CLIServeClaudeSwapSwitchTests {
 
     /// Four slots with `active` on `activeSlot`: 1 ok, 2 ok, 3 with an expired token, 4 disabled (claude-swap keeps
     /// it out of its own rotation, but it stays an explicit switch target).
-    private static func list(activeSlot: Int) -> String {
+    private static func list(activeSlot: Int, unavailable: Set<Int> = []) -> String {
         func slot(_ number: Int, _ status: String, disabled: Bool = false) -> String {
-            """
+            if unavailable.contains(number) {
+                return """
+                {"number":\(number),"email":"slot\(number)@example.com","organizationName":"",
+                 "active":\(number == activeSlot),"usageStatus":"unavailable","disabled":\(disabled)}
+                """
+            }
+            return """
             {"number":\(number),"email":"slot\(number)@example.com","organizationName":"",
              "active":\(number == activeSlot),"usageStatus":"\(status)","disabled":\(disabled),
              "usage":{"fiveHour":{"pct":\(number * 10),"resetsAt":"2026-09-21T18:00:00Z"}},
@@ -29,9 +35,24 @@ struct CLIServeClaudeSwapSwitchTests {
 
     // MARK: Fixtures
 
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Bool
+
+        init(_ value: Bool) {
+            self.stored = value
+        }
+
+        var value: Bool {
+            get { self.lock.withLock { self.stored } }
+            set { self.lock.withLock { self.stored = newValue } }
+        }
+    }
+
     /// The fake `cswap`. `<path>.args` gets one line per run (its arguments), `<path>.log` "start N" / "end N"
     /// around each switch. A switch copies `<path>.list.<slot>` (if any) over the list it answers, the way a real
-    /// switch changes which slot is active.
+    /// switch changes which slot is active. With `<path>.gate`, a switch waits for `<path>.release` after "start N";
+    /// with `<path>.listdelay`, list reads after the first switch take that many seconds.
     private struct FakeCSwap {
         let executable: URL
 
@@ -45,11 +66,15 @@ struct CLIServeClaudeSwapSwitchTests {
             base="${0%.sh}"
             printf '%s\n' "$*" >> "$base.args"
             if [ "$#" -eq 2 ] && [ "$1" = "--list" ] && [ "$2" = "--json" ]; then
+              if [ -f "$base.log" ] && [ -f "$base.listdelay" ]; then sleep "$(cat "$base.listdelay")"; fi
               exec /bin/cat "$base.list"
             fi
             if [ "$#" -eq 3 ] && [ "$1" = "--switch-to" ] && [ "$3" = "--json" ]; then
               slot="$2"
               echo "start $slot" >> "$base.log"
+              if [ -f "$base.gate" ]; then
+                while [ ! -f "$base.release" ]; do sleep 0.05; done
+              fi
               if [ -f "$base.delay" ]; then sleep "$(cat "$base.delay")"; fi
               mode=ok
               if [ -f "$base.mode" ]; then mode="$(cat "$base.mode")"; fi
@@ -151,20 +176,48 @@ struct CLIServeClaudeSwapSwitchTests {
         return try CLILocalHTTPRequest.parse(Data((head + "\r\n" + body).utf8)).get()
     }
 
-    /// The request through the switch route, with serve holding the action token and `source` as claude-swap.
+    /// The request through the switch route, with serve holding the action token and `source` as claude-swap. The
+    /// route answers once the command exits; with `drain`, this also waits for the refresh queued after it.
     private static func send(
         _ request: CLILocalHTTPRequest,
         runtime: ServeRuntime,
         source: ClaudeSwapServeSource?,
-        queue: ClaudeSwapSwitchQueue = ClaudeSwapSwitchQueue()) async -> CLILocalHTTPResponse
+        queue: ClaudeSwapSwitchQueue = ClaudeSwapSwitchQueue(),
+        generation: ClaudeSwapSwitchGeneration = ClaudeSwapSwitchGeneration(),
+        drain: Bool = true) async -> CLILocalHTTPResponse
     {
-        await CLIServeActionGuard.$override.withValue(CLIServeActionGuard(token: self.actionToken)) {
+        let response = await CLIServeActionGuard.$override.withValue(CLIServeActionGuard(token: self.actionToken)) {
             await CodexBarCLI.serveClaudeSwapSwitchRoute(
                 request,
                 runtime: runtime,
                 resolveSource: { _ in source },
-                queue: queue)
+                queue: queue,
+                generation: generation)
         }
+        if drain { await queue.drain() }
+        return response
+    }
+
+    /// `GET /usage?accounts=all&provider=claude` through serve's route, with `source` as claude-swap.
+    private static func accountRows(
+        runtime: ServeRuntime,
+        source: ClaudeSwapServeSource,
+        generation: ClaudeSwapSwitchGeneration) async throws -> [[String: Any]]
+    {
+        let request = try CLILocalHTTPRequest.parse(Data(
+            "GET /usage?accounts=all&provider=claude HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8)).get()
+        let response = await CodexBarCLI.serveProviderAccountUsageRoute(
+            request,
+            runtime: runtime,
+            fetch: { _, _ in UsageCommandOutput() },
+            claudeSwap: source,
+            switchGeneration: generation)
+        #expect(response.status == .ok)
+        return try #require(JSONSerialization.jsonObject(with: response.body) as? [[String: Any]])
+    }
+
+    private static func activeIDs(_ rows: [[String: Any]]) -> [String] {
+        rows.filter { $0["active"] as? Bool == true }.compactMap { $0["accountId"] as? String }.sorted()
     }
 
     private static func object(_ response: CLILocalHTTPResponse) throws -> [String: Any] {
@@ -179,7 +232,7 @@ struct CLIServeClaudeSwapSwitchTests {
     // MARK: Exact command
 
     @Test
-    func `switch runs exactly cswap --switch-to slot --json and reports the refreshed active account`() async throws {
+    func `switch runs exactly cswap --switch-to slot --json and the refreshed list sets active`() async throws {
         let cswap = try FakeCSwap()
         let source = Self.source(cswap)
         let response = try await Self.send(
@@ -192,8 +245,7 @@ struct CLIServeClaudeSwapSwitchTests {
         let body = try Self.object(response)
         #expect(body["accountId"] as? String == "claude-swap:1")
         #expect(body["switched"] as? Bool == true)
-        #expect(body["activeAccountId"] as? String == "claude-swap:1")
-        #expect(body["refreshError"] == nil)
+        #expect(Set(body.keys) == ["provider", "accountId", "switched"])
         // Validate (list), switch, refresh (list): nothing else, and the slot exactly as the list issued it.
         #expect(cswap.invocations == ["--list --json", "--switch-to 1 --json", "--list --json"])
         #expect(response.body.range(of: Data("example.com".utf8)) == nil)
@@ -334,9 +386,6 @@ struct CLIServeClaudeSwapSwitchTests {
             source: source)
 
         #expect(response.status == .ok)
-        let body = try Self.object(response)
-        #expect(body["activeAccountId"] == nil || body["activeAccountId"] is NSNull)
-        #expect(body["refreshError"] is String)
         let stale = await source.fetch()
         #expect(stale.rows.count == 4)
         let allStale = stale.rows.allSatisfy(\.account.fields.stale)
@@ -349,21 +398,23 @@ struct CLIServeClaudeSwapSwitchTests {
     @Test
     func `two concurrent switches run one after the other`() async throws {
         let cswap = try FakeCSwap()
-        try cswap.write("0.4", "delay")
+        try cswap.write("", "gate")
         let source = Self.source(cswap)
         let runtime = try Self.runtime()
         let queue = ClaudeSwapSwitchQueue()
-        async let first = Self.send(
-            Self.request(accountId: "claude-swap:1"),
-            runtime: runtime,
-            source: source,
-            queue: queue)
-        async let second = Self.send(
-            Self.request(accountId: "claude-swap:4"),
-            runtime: runtime,
-            source: source,
-            queue: queue)
-        let responses = try await [first, second]
+        let firstRequest = try Self.request(accountId: "claude-swap:1")
+        let secondRequest = try Self.request(accountId: "claude-swap:4")
+        let first = Task { await Self.send(firstRequest, runtime: runtime, source: source, queue: queue) }
+        let second = Task { await Self.send(secondRequest, runtime: runtime, source: source, queue: queue) }
+        // One switch is held at the gate; the other must not start until it is released.
+        for _ in 0..<250 where cswap.switchLog.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(cswap.switchLog.count == 1)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(cswap.switchLog.count == 1)
+        try cswap.write("", "release")
+        let responses = await [first.value, second.value]
 
         #expect(responses.allSatisfy { $0.status == .ok })
         let log = cswap.switchLog
@@ -390,9 +441,10 @@ struct CLIServeClaudeSwapSwitchTests {
             await Self.send(request, runtime: runtime, source: source, queue: queue)
         }
         // Wait for the switch to start, then drop the caller.
-        for _ in 0..<100 where cswap.switchLog.isEmpty {
+        for _ in 0..<250 where cswap.switchLog.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
+        try #require(!cswap.switchLog.isEmpty)
         caller.cancel()
         // The next transaction waits for the cancelled one, which still ran to its end.
         let next = try await Self.send(
@@ -440,6 +492,123 @@ struct CLIServeClaudeSwapSwitchTests {
             kept.append(key)
         }
         #expect(kept == ["usage:codex:abc", "cost:claude:30d:abc"])
+    }
+
+    // MARK: Answer before refresh
+
+    @Test(arguments: ["ok", "fail"])
+    func `the answer goes out when the command exits, before the refresh`(mode: String) async throws {
+        let cswap = try FakeCSwap()
+        try cswap.write(mode, "mode")
+        try cswap.write("1.5", "listdelay")
+        let source = Self.source(cswap)
+        let queue = ClaudeSwapSwitchQueue()
+        let started = ContinuousClock.now
+        let response = try await Self.send(
+            Self.request(accountId: "claude-swap:1"),
+            runtime: Self.runtime(),
+            source: source,
+            queue: queue,
+            drain: false)
+        #expect(ContinuousClock.now - started < .milliseconds(1200))
+        #expect(response.status == (mode == "ok" ? .ok : .badGateway))
+        // The refresh hasn't landed: the rows still have the old active slot.
+        #expect(await Self.rows(source)["claude-swap:2"]?.active == true)
+        await queue.drain()
+        #expect(cswap.invocations.last == "--list --json")
+        #expect(await Self.rows(source)["claude-swap:1"]?.active == (mode == "ok"))
+    }
+
+    @Test
+    func `the refresh is dropped when claude-swap's configuration changed meanwhile`() async throws {
+        let cswap = try FakeCSwap()
+        let source = Self.source(cswap)
+        let enabled = Flag(true)
+        let queue = ClaudeSwapSwitchQueue()
+        let result = await CodexBarCLI.runClaudeSwapSwitch(
+            ClaudeSwapSwitchJob(
+                slot: 1,
+                currentSource: {
+                    enabled.value ? .success(source) : .failure(.notEnabled)
+                },
+                switcher: { path, slot in
+                    // claude-swap is turned off while its switch runs.
+                    defer { enabled.value = false }
+                    return try await ClaudeSwapAccountReader.switchAccount(executablePath: path, accountNumber: slot)
+                },
+                generation: ClaudeSwapSwitchGeneration(),
+                invalidate: {}),
+            queue: queue)
+        await queue.drain()
+        #expect((try? result.get())?.switched == true)
+        // Validation read and switch only: no refresh against a configuration that is gone.
+        #expect(cswap.invocations == ["--list --json", "--switch-to 1 --json"])
+    }
+
+    // MARK: Accounts after a switch
+
+    @Test
+    func `after a switch only the new account is active even when the old one errors`() async throws {
+        let cswap = try FakeCSwap()
+        try cswap.write(Self.list(activeSlot: 1), "list")
+        // After switching to 2, slot 1 reports unavailable with no usage.
+        try cswap.write(Self.list(activeSlot: 2, unavailable: [1]), "list.2")
+        let source = Self.source(cswap)
+        let runtime = try Self.runtime()
+        let generation = ClaudeSwapSwitchGeneration()
+
+        let before = try await Self.accountRows(runtime: runtime, source: source, generation: generation)
+        #expect(Self.activeIDs(before) == ["claude-swap:1"])
+        let response = try await Self.send(
+            Self.request(accountId: "claude-swap:2"),
+            runtime: runtime,
+            source: source,
+            generation: generation)
+        #expect(response.status == .ok)
+        let after = try await Self.accountRows(runtime: runtime, source: source, generation: generation)
+        let slot1 = try #require(after.first { $0["accountId"] as? String == "claude-swap:1" })
+        #expect(slot1["error"] != nil)
+        #expect(Self.activeIDs(after) == ["claude-swap:2"])
+    }
+
+    @Test
+    func `a fetch from before the switch that commits late never answers after it`() async throws {
+        let cswap = try FakeCSwap()
+        let source = Self.source(cswap)
+        let runtime = try Self.runtime()
+        let generation = ClaudeSwapSwitchGeneration()
+        let token = try CodexBarCLI.loadServeConfigSnapshot(configStore: runtime.configStore).cacheToken
+        let oldKey = "usage:claude:accounts:\(generation.fingerprint(token, providers: [.claude]))"
+
+        let before = try await Self.accountRows(runtime: runtime, source: source, generation: generation)
+        #expect(Self.activeIDs(before) == ["claude-swap:2"])
+        let response = try await Self.send(
+            Self.request(accountId: "claude-swap:1"),
+            runtime: runtime,
+            source: source,
+            generation: generation)
+        #expect(response.status == .ok)
+        // A fetch that started before the switch lands now, with the old rows.
+        let stale = try JSONSerialization.data(withJSONObject: before)
+        _ = await runtime.cache.completeFetch(
+            CLILocalHTTPResponse(status: .ok, body: stale),
+            for: oldKey,
+            policy: CLIServeResponseCache.CachePolicy(ttl: 600, staleTTL: 600),
+            now: Date(),
+            shouldCache: true)
+        #expect(await runtime.cache.cachedResponse(for: oldKey, now: Date()) != nil)
+        let after = try await Self.accountRows(runtime: runtime, source: source, generation: generation)
+        #expect(Self.activeIDs(after) == ["claude-swap:1"])
+    }
+
+    @Test
+    func `the switch generation keys only requests that include Claude`() {
+        let generation = ClaudeSwapSwitchGeneration()
+        let before = generation.fingerprint("abc", providers: [.codex, .claude])
+        generation.advance()
+        #expect(generation.fingerprint("abc", providers: [.codex, .claude]) != before)
+        #expect(generation.fingerprint("abc", providers: [.codex]) == "abc")
+        #expect(generation.fingerprint("abc", providers: nil) == "abc")
     }
 
     // MARK: Rows
