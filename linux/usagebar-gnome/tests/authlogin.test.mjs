@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
 
 import {
     holdOpenArgv,
@@ -94,4 +95,15 @@ test('holdOpenArgv passes the command as positional args, not interpolated text'
     assert.equal(held[1], '-c');
     assert.match(held[2], /"\$@"/);
     assert.deepEqual(held.slice(-2), ['/opt/my tools/codex', 'login']);
+});
+
+test('Ctrl-C stops the held command but not the wrapper, which shows the outcome', () => {
+    // The command sends SIGINT to its whole process group, as a terminal's
+    // Ctrl-C does. The wrapper must survive it and exit with the command's
+    // status (130) after Enter; detached keeps the test runner out of it.
+    const [sh, ...rest] = holdOpenArgv(['/bin/sh', '-c', 'kill -INT 0; sleep 2; exit 0']);
+    const result = spawnSync(sh, rest, {input: '\n', detached: true, encoding: 'utf8', timeout: 10000});
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 130);
+    assert.match(result.stdout, /Press Enter to close/);
 });

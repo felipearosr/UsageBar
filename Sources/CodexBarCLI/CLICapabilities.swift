@@ -16,10 +16,16 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     case providerAccountKinds
     /// serve's `POST /accounts/add`: store a labelled key or cookie as a new Provider Account.
     case providerAccountAddKey
+    /// `/accounts/kinds` may report `cli-login` (Codex), which clients add by running `codexbar codex-accounts add`
+    /// in a terminal (CLICodexAccountsAdd.swift, #169).
+    case providerAccountAddCliLogin
     /// serve's `POST /accounts/rename`: relabel one Provider Account by its `accountId`.
     case providerAccountRename
     /// serve's `POST /accounts/remove`: delete one Provider Account by its `accountId`.
     case providerAccountRemove
+    /// serve's `POST /accounts/claude-swap/detect` and `codexbar claude add-account`: add a Claude account through
+    /// claude-swap (`claude-swap` kind, CLIServeClaudeSwapSetup.swift and CLIClaudeSwapAddAccount.swift).
+    case providerAccountAddClaudeSwap
     /// serve's `POST /accounts/switch`: make a claude-swap slot Claude Code's active account
     /// (CLIServeClaudeSwapSwitch.swift). Rows it can target carry `canSwitch: true`.
     case providerAccountSwitch
@@ -29,8 +35,10 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     static let accountActions: Set<CLICapability> = [
         .providerAccountKinds,
         .providerAccountAddKey,
+        .providerAccountAddCliLogin,
         .providerAccountRename,
         .providerAccountRemove,
+        .providerAccountAddClaudeSwap,
         .providerAccountSwitch,
     ]
 }

@@ -38,6 +38,14 @@ extension CodexBarCLI {
         } catch {
             return self.forkServeError(status: .methodNotAllowed, message: "method not allowed")
         }
+        // `/accounts/claude-swap/detect`: find claude-swap and turn it on (CLIServeClaudeSwapSetup.swift, #172).
+        do {
+            if let setupRoute = try CLIServeClaudeSwapSetupRoute.route(method: request.method, path: request.path) {
+                return await self.serveClaudeSwapSetupRoute(setupRoute, request: request, runtime: runtime)
+            }
+        } catch {
+            return self.forkServeError(status: .methodNotAllowed, message: "method not allowed")
+        }
         let route: CLIServeSyncRoute?
         do {
             route = try CLIServeSyncRoute.route(

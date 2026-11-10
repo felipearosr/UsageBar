@@ -1,0 +1,23 @@
+#!/bin/sh
+# Fake `codex` for the UI smoke of "Add account…" on the Codex card (#169):
+# never signs in to anything, never touches the network. stub-codexbar's
+# `codex-accounts add` runs it as `<this file> login` (STUB_CODEX_BIN). It
+# refuses any other argv and any CODEX_HOME outside the run's own managed
+# homes, then writes a synthetic auth.json (an email, no tokens).
+log="${STUB_CODEX_LOG:-/dev/null}"
+printf 'argv=%s|%s\nCODEX_HOME=%s\n' "$#" "$*" "$CODEX_HOME" >> "$log"
+if [ "$#" -ne 1 ] || [ "$1" != login ]; then
+  echo "stub codex: expected exactly 'login'" >&2
+  exit 64
+fi
+case "$CODEX_HOME" in
+  "$XDG_DATA_HOME"/CodexBar/managed-codex-homes/*) ;;
+  *) echo "stub codex: CODEX_HOME is not a managed home" >&2; exit 65 ;;
+esac
+if [ -n "$STUB_CODEX_FAIL" ]; then
+  echo "stub codex: failing on purpose" >&2
+  exit 3
+fi
+echo "stub codex: pretending to sign in (no browser, no network)"
+sleep "${STUB_CODEX_SLEEP:-1}"
+printf '{"email": "%s"}\n' "${STUB_CODEX_EMAIL:-added@example.com}" > "$CODEX_HOME/auth.json"

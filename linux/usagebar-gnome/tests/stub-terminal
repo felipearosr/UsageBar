@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stand-in for xdg-terminal-exec in the UI smoke (USAGEBAR_UI_SMOKE_TERMINAL).
+# Acts like gnome-terminal or ptyxis handing the window to their server: it
+# starts the command in the background, with no window and no input, and
+# exits at once, before the command finishes. The extension must learn that
+# the command finished from the marker its wrapper writes, not from this
+# process.
+setsid "$@" </dev/null >/dev/null 2>&1 &
+exit 0

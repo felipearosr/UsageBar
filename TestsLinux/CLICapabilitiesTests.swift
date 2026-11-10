@@ -11,8 +11,10 @@ struct CLICapabilitiesTests {
         "providerAccountRows",
         "providerAccountKinds",
         "providerAccountAddKey",
+        "providerAccountAddCliLogin",
         "providerAccountRename",
         "providerAccountRemove",
+        "providerAccountAddClaudeSwap",
         "providerAccountSwitch",
     ]
 

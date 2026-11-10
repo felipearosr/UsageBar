@@ -18,8 +18,12 @@ export const FEATURES = {
     // without them just shows no Add account…, Rename or Remove.
     providerAccountKinds: {label: 'Adding accounts', minVersion: null},
     providerAccountAddKey: {label: 'Adding key accounts', minVersion: null},
+    providerAccountAddCliLogin: {label: 'Adding Codex accounts', minVersion: null},
     providerAccountRename: {label: 'Renaming accounts', minVersion: null},
     providerAccountRemove: {label: 'Removing accounts', minVersion: null},
+    // serve's /accounts/claude-swap/detect and `codexbar claude add-account`
+    // (claudeswapadd.js).
+    providerAccountAddClaudeSwap: {label: 'Adding Claude accounts', minVersion: null},
     // serve's POST /accounts/switch (accountswitch.js): Switch on inactive
     // claude-swap rows. A CLI without it shows no Switch.
     providerAccountSwitch: {label: 'Switching Claude accounts', minVersion: null},

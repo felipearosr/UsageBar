@@ -8,10 +8,12 @@ extension CodexBarCLI {
 
         Usage:
           codexbar codex-accounts list [--json] [--pretty]
+          codexbar codex-accounts add
           codexbar codex-accounts promote <exact-uuid-or-email> [--json] [--pretty]
 
         Description:
           List CodexBar managed accounts without credential contents.
+          Add runs `codex login` in a new managed home and records the account; the system login is unchanged.
           Promote (macOS only) explicitly replaces system Codex authentication after preserving its account.
           Ambiguous emails require an exact UUID. Concurrent account changes fail without overwriting.
           Existing Codex processes may retain their current account; restart them to use the promoted account.
@@ -499,7 +501,7 @@ extension CodexBarCLI {
                        [--period month-to-date|all] [--days <days>] [--group-by project|session]
           codexbar sessions [--json|--json-v2] [--pretty]
           codexbar sessions focus <id>
-          codexbar codex-accounts <list|promote> [--json] [--pretty]
+          codexbar codex-accounts <list|add|promote> [--json] [--pretty]
           codexbar dashboard [--pretty] [--timeout <seconds>] [--output <path>]
           codexbar serve [--host <host>] [--port <port>] [--refresh-interval <seconds>]
                        [--request-timeout <seconds>]
