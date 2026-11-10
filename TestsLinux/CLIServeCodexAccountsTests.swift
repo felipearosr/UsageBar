@@ -268,6 +268,47 @@ struct CLIServeCodexAccountsTests {
     }
 
     @Test
+    func `a profile home keeps its own PAT and is forced to OAuth without one`() throws {
+        let fixture = try CodexFixture()
+        defer { fixture.tearDown() }
+        try fixture.writeLiveAuth(email: "system@example.com", accountID: "acct-system", pat: "synthetic-system-pat")
+        let withPAT = try fixture.addProfileHome(
+            "with-pat", email: "profile-pat@example.com", accountID: "acct-pat", pat: "synthetic-profile-pat")
+        let withoutPAT = try fixture.addProfileHome(
+            "without-pat", email: "profile-oauth@example.com", accountID: "acct-oauth")
+
+        // Profile homes only: upstream's own loop, exactly as plain /usage runs it.
+        let profilesOnly = try fixture.tokenContext(profileHomes: [withPAT, withoutPAT])
+        let command = Self.serveCommand(profilesOnly)
+        try fixture.scoped {
+            let projection = profilesOnly.visibleCodexAccounts()
+            #expect(projection.visibleAccounts.count == 3)
+            #expect(CodexBarCLI.codexProviderAccounts(projection).isEmpty)
+            let fetches = CodexBarCLI.codexUntaggedFetches(projection, tokenContext: profilesOnly, command: command)
+            #expect(fetches.count == 1)
+            #expect(fetches.first?.account == nil)
+            #expect(fetches.first?.command.sourceModeOverride == nil)
+        }
+
+        // Next to a managed account each home is fetched on its own: the profile with its own PAT keeps the
+        // configured source (its PAT strategy reads that PAT in place), the one without is forced to OAuth.
+        try fixture.addAccount(email: "other@example.com", accountID: "acct-other")
+        let context = try fixture.tokenContext(profileHomes: [withPAT, withoutPAT])
+        try fixture.scoped {
+            let accounts = context.visibleCodexAccounts().visibleAccounts
+            let profile = { (path: String) in
+                try #require(accounts.first { $0.selectionSource == .profileHome(path: path) })
+            }
+            let patCommand = try CodexBarCLI.codexProviderAccountCommand(
+                account: profile(withPAT), tokenContext: context, command: command, base: fixture.baseEnvironment)
+            #expect(patCommand.sourceModeOverride == nil)
+            let oauthCommand = try CodexBarCLI.codexProviderAccountCommand(
+                account: profile(withoutPAT), tokenContext: context, command: command, base: fixture.baseEnvironment)
+            #expect(oauthCommand.sourceModeOverride == .oauth)
+        }
+    }
+
+    @Test
     func `a managed account removed mid fetch never falls back to the everyday login's home`() throws {
         let fixture = try CodexFixture()
         defer { fixture.tearDown() }
@@ -464,13 +505,15 @@ private final class CodexFixture {
         try CodexCredentialFileAccess.withFixtureScope(self.scope, operation: operation)
     }
 
-    func tokenContext(source: ProviderSourceMode? = nil) throws -> TokenAccountCLIContext {
-        try TokenAccountCLIContext(
+    func tokenContext(
+        source: ProviderSourceMode? = nil,
+        profileHomes: [String] = []) throws -> TokenAccountCLIContext
+    {
+        var provider = ProviderConfig(id: UsageProvider.codex.instanceID, enabled: true, source: source)
+        if !profileHomes.isEmpty { provider.codexProfileHomePaths = profileHomes }
+        return try TokenAccountCLIContext(
             selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
-            config: CodexBarConfig(providers: [ProviderConfig(
-                id: UsageProvider.codex.instanceID,
-                enabled: true,
-                source: source)]),
+            config: CodexBarConfig(providers: [provider]),
             verbose: false,
             baseEnvironment: self.baseEnvironment,
             managedCodexAccountStoreURL: self.storeURL)
@@ -500,6 +543,15 @@ private final class CodexFixture {
                 accounts: existing + [account]))
         }
         return account
+    }
+
+    /// A configured profile home at `root/profiles/<name>`; returns its path.
+    func addProfileHome(_ name: String, email: String, accountID: String, pat: String? = nil) throws -> String {
+        let home = self.root.appendingPathComponent("profiles/\(name)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try Self.authData(email: email, accountID: accountID, pat: pat)
+            .write(to: home.appendingPathComponent("auth.json"))
+        return home.path
     }
 
     func removeAccount(_ id: UUID) throws {

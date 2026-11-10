@@ -58,23 +58,32 @@ extension CodexBarCLI {
     /// Codex's PAT strategy reads its token from `$HOME/.codex` whenever `CODEX_HOME` is a managed home (and from
     /// there too for a profile home without a PAT of its own), so under `.auto` or `.api` a managed account's row
     /// would show the everyday login's workspace. Every account other than the everyday login therefore reads its
-    /// own home through OAuth. The Codex CLI stays when it is the configured source and no managed workspace is
-    /// selected: its app-server can't carry the workspace header, so with one it would report the auth file's
-    /// workspace instead.
+    /// own home through OAuth, except a profile home holding its own PAT, which the PAT strategy reads in place and
+    /// so keeps the configured source, as upstream's loop does. The Codex CLI stays when it is the configured source
+    /// and no managed workspace is selected: its app-server can't carry the workspace header, so with one it would
+    /// report the auth file's workspace instead.
     static func codexProviderAccountSourceMode(
         _ account: CodexVisibleAccount,
         configured: ProviderSourceMode,
-        workspaceSelected: Bool) -> ProviderSourceMode?
+        workspaceSelected: Bool,
+        homeHasOwnPAT: Bool = false) -> ProviderSourceMode?
     {
-        guard account.selectionSource != .liveSystem else { return nil }
-        return configured == .cli && !workspaceSelected ? .cli : .oauth
+        switch account.selectionSource {
+        case .liveSystem:
+            nil
+        case .profileHome where homeHasOwnPAT:
+            nil
+        case .managedAccount, .profileHome:
+            configured == .cli && !workspaceSelected ? .cli : .oauth
+        }
     }
 
     /// The usage command one Codex account is fetched with: serve's, with `codexProviderAccountSourceMode` applied.
     static func codexProviderAccountCommand(
         account: CodexVisibleAccount,
         tokenContext: TokenAccountCLIContext,
-        command: UsageCommandContext) -> UsageCommandContext
+        command: UsageCommandContext,
+        base: [String: String] = ProcessInfo.processInfo.environment) -> UsageCommandContext
     {
         var command = command
         // Provider-specific by design: Codex's source mode decides whether its PAT strategy (which ignores managed
@@ -84,10 +93,23 @@ extension CodexBarCLI {
             for: .codex,
             account: nil,
             codexActiveSourceOverride: account.selectionSource)?.codex?.managedWorkspaceAccountID != nil
+        // A profile home's own PAT is what upstream's PAT strategy reads there (it never swaps a profile home that
+        // has one for $HOME/.codex); `loadPAT` reads only the scoped home.
+        var homeHasOwnPAT = false
+        if case .profileHome = account.selectionSource {
+            let env = tokenContext.environment(
+                base: base,
+                provider: .codex,
+                account: nil,
+                codexActiveSourceOverride: account.selectionSource)
+            homeHasOwnPAT = Self.codexAccountHomeIsOwn(account, env: env, base: base)
+                && (try? CodexOAuthCredentialsStore.loadPAT(env: env)) != nil
+        }
         if let forced = Self.codexProviderAccountSourceMode(
             account,
             configured: configured,
-            workspaceSelected: workspaceSelected)
+            workspaceSelected: workspaceSelected,
+            homeHasOwnPAT: homeHasOwnPAT)
         {
             command.sourceModeOverride = forced
         }
@@ -101,11 +123,11 @@ extension CodexBarCLI {
         let command: UsageCommandContext
     }
 
-    /// Codex's fetches when it has no Provider Account rows. Upstream's loop when every account is the everyday
-    /// login (or there is none), so those rows are exactly today's. Otherwise, for example a managed account next to
-    /// an everyday login that is only a PAT or API key (which reconciliation doesn't list), each account is fetched
-    /// on its own with `codexProviderAccountCommand`, so no managed home ever reads the everyday login's PAT. Rows
-    /// stay untagged and otherwise identical to upstream's: it is upstream's per-account fetch either way.
+    /// Codex's fetches when it has no Provider Account rows. Upstream's loop when no account is managed (the everyday
+    /// login, profile homes, or none), so those rows are exactly today's. Otherwise, for example a managed account
+    /// next to an everyday login that is only a PAT or API key (which reconciliation doesn't list), each account is
+    /// fetched on its own with `codexProviderAccountCommand`, so no managed home ever reads the everyday login's PAT.
+    /// Rows stay untagged and otherwise identical to upstream's: it is upstream's per-account fetch either way.
     static func codexUntaggedFetches(
         _ projection: CodexVisibleAccountProjection,
         tokenContext: TokenAccountCLIContext,
@@ -113,7 +135,7 @@ extension CodexBarCLI {
     {
         let accounts = projection.visibleAccounts
         guard command.includeAllCodexAccounts,
-              accounts.contains(where: { $0.selectionSource != .liveSystem })
+              accounts.contains(where: { $0.providerAccountSource == .codexManaged })
         else { return [CodexAccountFetch(account: nil, command: command)] }
         return accounts.map { account in
             CodexAccountFetch(
