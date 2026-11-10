@@ -23,6 +23,9 @@ extension CodexBarCLI {
         // Capture must never print or fail loudly: Claude Code renders its stdout.
         case "claude" where path == ["claude", "statusline", "capture"]:
             self.runClaudeStatusLineCapture()
+        // Provider-specific by design: claude-swap's add flow is Claude's only interactive account add (#172).
+        case "claude" where path == ["claude", "add-account"]:
+            self.runClaudeAddAccount()
         default:
             self.exit(code: .failure, message: "Unknown command", output: output, kind: .args)
         }
@@ -32,7 +35,12 @@ extension CodexBarCLI {
         switch command {
         case "sync":
             self.syncHelp(version: version)
-        case "claude", "statusline", "capture":
+        case "add-account":
+            self.claudeAddAccountHelp(version: version)
+        // Provider-specific by design: `codexbar claude` holds the statusLine hook and the claude-swap add helper.
+        case "claude":
+            self.claudeStatusLineHelp(version: version) + "\n\n" + self.claudeAddAccountHelp(version: version)
+        case "statusline", "capture":
             self.claudeStatusLineHelp(version: version)
         default:
             nil
@@ -50,6 +58,7 @@ extension CodexBarCLI {
         codexbar sync install-timer [--uninstall]
         codexbar sync link | rename <display-name> | retire <machine> | forget <machine> [--yes] | leave [--yes]
         codexbar claude statusline capture
+        codexbar claude add-account
         codexbar --version --json
         """
             .replacingOccurrences(of: "\n", with: "\n  ")

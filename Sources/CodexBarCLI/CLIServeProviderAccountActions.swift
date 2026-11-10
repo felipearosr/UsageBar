@@ -134,7 +134,9 @@ extension CodexBarCLI {
         // Provider-specific by design: these accounts come from a login flow, not a pasted key. Codex adds managed
         // homes (cli-login, #169) and Claude adds claude-swap slots (#172). Antigravity's token accounts are OAuth
         // credentials from its own sign-in, and removing one must also clear its shared credential cache.
-        case .codex, .claude, .antigravity:
+        case .claude:
+            .claudeSwap
+        case .codex, .antigravity:
             nil
         default:
             TokenAccountSupportCatalog.support(for: provider) == nil ? nil : .key
@@ -332,7 +334,7 @@ extension CodexBarCLI {
     /// yet. Returns `edit`'s value and the provider's token-account count afterwards (for the log line).
     /// A missing config is created from the default only when `createIfMissing`; otherwise there is no account to
     /// act on. A config that can't be read is `storeFailed`, never an unknown account.
-    private static func editingConfig<Value>(
+    static func editingConfig<Value>(
         store: CodexBarConfigStore,
         provider: UsageProvider,
         createIfMissing: Bool,
