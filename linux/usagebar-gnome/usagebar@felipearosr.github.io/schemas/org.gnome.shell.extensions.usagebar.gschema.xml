@@ -37,6 +37,15 @@
       <summary>Panel chip display mode</summary>
       <description>What each panel chip shows: icon and progress ring, icon with ring and percent, icon with percent, name with ring and percent, or severity dot only.</description>
     </key>
+    <key name="panel-icon-source" type="s">
+      <choices>
+        <choice value="active"/>
+        <choice value="most-headroom"/>
+      </choices>
+      <default>'active'</default>
+      <summary>Panel icon source</summary>
+      <description>Which Provider Account a provider's panel chip reflects when it has several: the active account, or the account with the most headroom (the lowest used percent in its most-used window).</description>
+    </key>
     <key name="merge-chips" type="b">
       <default>false</default>
       <summary>Merge panel chips</summary>

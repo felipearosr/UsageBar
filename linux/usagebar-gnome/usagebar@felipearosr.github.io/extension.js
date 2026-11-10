@@ -28,18 +28,22 @@ import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import {planNotifications} from './notify.js';
+import {notificationTitle, planNotifications} from './notify.js';
 import {
     ACCOUNT_ROWS_CAPABILITY,
     accountsRenderKey,
     agoText,
     buildCards,
     mergeStale,
+    notificationRows,
+    panelRows,
     primaryRows,
     usagePath,
 } from './accounts.js';
 import {ordinalLabel} from './accountlabels.js';
-import {extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
+import {
+    extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf, worstPercent, worstWindow,
+} from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {ReportGate} from './reportgate.js';
 import {PROVIDER_META} from './providermeta.js';
@@ -241,21 +245,6 @@ function compactWindowLabel(label) {
     if (firstWord.length <= 8)
         return firstWord;
     return trimmed.slice(0, 7);
-}
-
-// The row's most-used window (standard slots and extras alike), or null.
-// windowsOf already drops unknown percents; extras need the same filter.
-function worstWindow(row) {
-    const wins = [
-        ...windowsOf(row).map(({w}) => w),
-        ...extraWindowsOf(row).map(x => x.window)
-            .filter(w => w.usedPercent !== null && w.usedPercent !== undefined),
-    ];
-    return wins.reduce((a, b) => !a || b.usedPercent > a.usedPercent ? b : a, null);
-}
-
-function worstPercent(row) {
-    return worstWindow(row)?.usedPercent ?? null;
 }
 
 // Enrich Antigravity rows with the 4 core quota summary bars from the local agy server
@@ -478,6 +467,7 @@ const DISPLAY = {
     mergeChips: false,
     resetWhenExhausted: false,
     chipMode: 'ring',
+    panelIconSource: 'active',
     showExtras: true,
     // Provider Account labels become "Account 1", "Account 2" (accountlabels.js).
     hidePersonalInfo: false,
@@ -1730,6 +1720,7 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.mergeChips = this._settings.get_boolean('merge-chips');
             DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
             DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
+            DISPLAY.panelIconSource = this._settings.get_string('panel-icon-source');
             DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
             DISPLAY.hidePersonalInfo = this._settings.get_boolean('hide-personal-info');
             DISPLAY.antigravityOverviewGemini = this._settings.get_boolean('antigravity-overview-gemini');
@@ -1750,7 +1741,7 @@ export default class UsageBarExtension extends Extension {
         const DISPLAY_KEYS = new Set([
             'warn-threshold', 'crit-threshold', 'absolute-reset-times',
             'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
-            'show-reset-when-exhausted', 'chip-display-mode',
+            'show-reset-when-exhausted', 'chip-display-mode', 'panel-icon-source',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
             'machine-colors', 'hide-personal-info',
@@ -2661,7 +2652,7 @@ export default class UsageBarExtension extends Extension {
         if (!this._settings.get_boolean('notify-enabled'))
             return;
         const result = planNotifications({
-            rows: this._rows,
+            rows: notificationRows(this._rows, this._accountCards),
             memo: this._notified,
             muted: new Set(this._settings.get_strv('notify-muted-providers')),
             sessionThresholds: this._settings.get_value('notify-session-thresholds').deepUnpack(),
@@ -2670,14 +2661,11 @@ export default class UsageBarExtension extends Extension {
             now: Date.now(),
             displayName: p => this._displayName(p),
         });
-        for (const {kind, name, label, w, percent, pace} of result.notifications) {
-            if (kind === 'threshold') {
-                this._notify(`${name} ${label} at ${percent}%`,
-                    resetText(w) || 'usage limit approaching');
-            } else {
-                this._notify(`${name} ${label} won't last to reset`,
-                    pace.summary ?? 'current pace exceeds the window');
-            }
+        for (const notification of result.notifications) {
+            const {kind, w, pace} = notification;
+            this._notify(notificationTitle(notification), kind === 'threshold'
+                ? resetText(w) || 'usage limit approaching'
+                : pace.summary ?? 'current pace exceeds the window');
         }
         this._notified = result.memo;
     }
@@ -3902,6 +3890,75 @@ export default class UsageBarExtension extends Extension {
             ready();
         };
 
+        // Run with USAGEBAR_UI_SMOKE_ICON_SOURCE=1 against the stub CLI with
+        // STUB_CODEXBAR_ACCOUNTS=3: OpenRouter has Work (active, 64%),
+        // Personal (failing key) and Spare (12%). The panel chip follows the
+        // active account, then the one with most headroom; notifications
+        // name each account (by ordinal with Hide Personal Info) and don't
+        // repeat. Notifications are recorded, not shown.
+        const iconSourceSmoke = assertions => {
+            const chipPercent = () => this._indicator._panelEntries.get('openrouter')?.state.percent ?? null;
+            const titles = [];
+            const notify = this._notify;
+            const restore = () => {
+                this._notify = notify;
+                for (const key of ['panel-icon-source', 'hide-personal-info',
+                    'notify-session-thresholds', 'notify-weekly-thresholds'])
+                    this._settings.reset(key);
+            };
+            const done = (error = null) => {
+                restore();
+                finish(assertions, error);
+            };
+            let waited = 0;
+            const ready = () => {
+                if ((this._accountCards?.get('openrouter')?.accounts.length ?? 0) < 3 && waited < 15000) {
+                    waited += 250;
+                    later(250, ready);
+                    return;
+                }
+                try {
+                    this._render();
+                    assertions.push(assertion('the chip follows the active account by default',
+                        chipPercent() === 64, {actual: chipPercent()}));
+                    this._settings.set_string('panel-icon-source', 'most-headroom');
+                } catch (error) {
+                    done(error);
+                    return;
+                }
+                later(400, () => {
+                    try {
+                        assertions.push(assertion('most headroom picks the account with the lowest percent',
+                            chipPercent() === 12, {actual: chipPercent()}));
+                        this._notify = title => titles.push(title);
+                        this._settings.set_boolean('hide-personal-info', true);
+                        this._settings.set_value('notify-session-thresholds', new GLib.Variant('ai', [10]));
+                        this._settings.set_value('notify-weekly-thresholds', new GLib.Variant('ai', [10]));
+                        this._notified = new Map();
+                        this._maybeNotify();
+                        const first = [...titles];
+                        this._maybeNotify();
+                        const openrouter = first.filter(title => title.startsWith('OpenRouter'));
+                        assertions.push(assertion('each account crossing notifies once, by ordinal',
+                            openrouter.length === 2 &&
+                            openrouter.some(title => title.startsWith('OpenRouter (Account 1) ')) &&
+                            openrouter.some(title => title.startsWith('OpenRouter (Account 3) ')), {titles: first}));
+                        assertions.push(assertion('a single-account provider keeps its title',
+                            first.some(title => /^Claude Session \(5h\) at \d+%$/.test(title)), {titles: first}));
+                        assertions.push(assertion('repeats stay suppressed', titles.length === first.length,
+                            {titles}));
+                        assertions.push(assertion('no raw label in a notification',
+                            !first.some(title => /\b(Work|Personal|Spare)\b/.test(title)), {titles: first}));
+                    } catch (error) {
+                        done(error);
+                        return;
+                    }
+                    capture('icon-source-headroom.png', () => done());
+                });
+            };
+            ready();
+        };
+
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
         // locally (test-devkit-ui.sh): the All tab offers the download, "Not
         // now" hides the offer, and Download installs the logos, which the
@@ -4014,6 +4071,10 @@ export default class UsageBarExtension extends Extension {
             }
             if (GLib.getenv('USAGEBAR_UI_SMOKE_ACCOUNTS') === '1') {
                 accountsSmoke(assertions);
+                return;
+            }
+            if (GLib.getenv('USAGEBAR_UI_SMOKE_ICON_SOURCE') === '1') {
+                iconSourceSmoke(assertions);
                 return;
             }
             steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
@@ -4251,7 +4312,9 @@ export default class UsageBarExtension extends Extension {
 
         // Panel chips (minus providers hidden in prefs). Merged mode shows a
         // single chip for the provider with the highest worst-window percent.
-        let chipRows = rows.filter(row => !DISPLAY.hiddenChips.has(row.provider));
+        // A multi-account card's chip follows the panel icon source.
+        let chipRows = panelRows(rows, this._accountCards, DISPLAY.panelIconSource)
+            .filter(row => !DISPLAY.hiddenChips.has(row.provider));
         if (DISPLAY.mergeChips && chipRows.length > 1) {
             chipRows = [chipRows.reduce((best, row) =>
                 (worstPercent(row) ?? -1) > (worstPercent(best) ?? -1) ? row : best)];

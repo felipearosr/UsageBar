@@ -19,6 +19,7 @@ import {
     modelKey,
     providerModels,
 } from './modelprefs.js';
+import {ICON_SOURCES} from './accounts.js';
 import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
@@ -614,6 +615,16 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             settings.set_string('chip-display-mode', MODES[modeRow.selected]);
         });
         panel.add(modeRow);
+        const sourceRow = new Adw.ComboRow({
+            title: 'With several accounts, show',
+            subtitle: 'What a provider\'s chip reflects when it has more than one account',
+            model: Gtk.StringList.new(['Active account', 'Account with most headroom']),
+        });
+        sourceRow.selected = Math.max(0, ICON_SOURCES.indexOf(settings.get_string('panel-icon-source')));
+        sourceRow.connect('notify::selected', () => {
+            settings.set_string('panel-icon-source', ICON_SOURCES[sourceRow.selected]);
+        });
+        panel.add(sourceRow);
         panel.add(switchRow(settings, 'merge-chips', 'Single merged chip',
             'One chip for the provider closest to its limit'));
         panel.add(switchRow(settings, 'show-reset-when-exhausted',
