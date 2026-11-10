@@ -11,8 +11,8 @@ extension CodexBarCLI {
           codexbar codex-accounts promote <exact-uuid-or-email> [--json] [--pretty]
 
         Description:
-          macOS only. List CodexBar managed accounts without credential contents.
-          Promote explicitly replaces system Codex authentication after preserving its account.
+          List CodexBar managed accounts without credential contents.
+          Promote (macOS only) explicitly replaces system Codex authentication after preserving its account.
           Ambiguous emails require an exact UUID. Concurrent account changes fail without overwriting.
           Existing Codex processes may retain their current account; restart them to use the promoted account.
         """

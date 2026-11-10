@@ -5,9 +5,9 @@
 
 # Machine Sync: `codexbar sync` registration and help via the CLI extension hook in CLIForkCommands.swift (#57)
 Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	CLI extension hook: forkCommandDescriptors() append and runForkCommand in the dispatch default case (CLIForkCommands.swift); also forkPrintVersionJSONIfRequested in the --version fast path (CLICapabilities.swift, #37); #57
-Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	CLI extension hook: forkRootHelpUsage() in rootHelp's usage list; also the /cost?days help example (#54); #57
+Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	CLI extension hook: forkRootHelpUsage() in rootHelp's usage list; also the /cost?days help example (#54) and codex-accounts list on Linux (#167); #57
 Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	CLI extension hook: forkHelp(for:) in printHelp's default case; #57
-docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54), /health capabilities and --version --json (#37), /usage?accounts=all (#163); #56
+docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54), /health capabilities and --version --json (#37), codex-accounts list on Linux (#167), /usage?accounts=all (#163); #56
 
 # Machine Sync: serve /sync/status and /sync/push via the route-extension hook in CLIServeForkRoutes.swift (#58)
 Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	Route-extension hook: forkServeResponse(_:runtime:) first in handleServeRequest (CLIServeForkRoutes.swift); also /cost?days (#54); serveUsageCommand(context:) split out of serveUsageOutput so /usage?accounts=all reuses the usage command (CLIServeProviderAccounts.swift, #163); #58
@@ -43,6 +43,10 @@ Tests/CodexBarTests/CostUsageScannerClaudeCacheUpgradeTests.swift	Spend Buckets	
 Sources/CodexBarCore/Providers/OpenCode/OpenCodeProviderDescriptor.swift	OpenCode on Linux	Auto-mode local-history fallback and web-support exemption; #53
 Tests/CodexBarTests/CLIEntryTests.swift	OpenCode on Linux	Auto-mode web-support exemption assertions; #53
 docs/opencode.md	OpenCode on Linux	local-history source and Auto-mode order; #53
+
+# Managed Codex accounts on Linux (#167): `codex-accounts list` runs on Linux, promote stays macOS-only.
+# The platform rule is fork-owned in CLICodexAccountsCommand+UsageBar.swift.
+Sources/CodexBarCLI/CLICodexAccountsCommand.swift	Managed Codex accounts on Linux	Hook: forkRequireCodexAccountsPlatformSupport(path:output:) replaces the #if os(macOS) wrapper around runCodexAccounts (CLICodexAccountsCommand+UsageBar.swift); #167
 
 # Codex app-server exit diagnostics (upstream candidate, no ticket yet)
 Sources/CodexBarCore/UsageFetcher.swift	Codex app-server exit diagnostics	RPCWireError.processExited with exit status and stderr tail

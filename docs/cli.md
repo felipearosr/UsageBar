@@ -467,6 +467,7 @@ non-zero only when it cannot produce a valid snapshot document.
 
 `codexbar codex-accounts list --json` lists managed account UUIDs, emails, and whether each readable
 saved identity matches the current system authentication. It never emits tokens or private home paths.
+Listing also works on Linux (UsageBar); `promote` stays macOS only.
 
 `codexbar codex-accounts promote <uuid-or-email>` explicitly promotes one managed account to system
 authentication. Use the exact UUID when several accounts share an email. Promotion preserves the
