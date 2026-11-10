@@ -9,8 +9,9 @@ import Foundation
 ///
 /// A provider with two or more token accounts (and a source mode that uses them) gets one row per account, fetched
 /// one after another through upstream's own per-account fetch, each carrying `ProviderAccountRowFields`. Every
-/// other provider, including one with a single account, gets exactly the row plain `/usage` gives it. Managed Codex
-/// accounts and claude-swap slots are later sources of the same row shape; Codex keeps upstream's rows for now.
+/// other provider, including one with a single account, gets exactly the row plain `/usage` gives it. Codex gets one
+/// row per reconciled account once it has a managed account of its own (`CLIServeCodexAccounts.swift`); claude-swap
+/// slots are a later source of the same row shape.
 ///
 /// Tagging is all or nothing per provider: once a provider has Provider Accounts, every row it returns carries one
 /// account's fields, including a provider-level timeout, which becomes one error row per account. Clients can rely
@@ -81,15 +82,17 @@ extension CodexBarCLI {
     static func serveProviderAccountUsage(
         provider rawProvider: String?,
         context: ServeUsageContext,
-        fetch: ProviderAccountUsageFetch? = nil) async -> CLILocalHTTPResponse
+        fetch: ProviderAccountUsageFetch? = nil,
+        accountContext: TokenAccountCLIContext? = nil) async -> CLILocalHTTPResponse
     {
         guard let providers = self.serveProviderAccountSelection(rawProvider: rawProvider, config: context.config)
         else {
             return self.forkServeError(status: .badRequest, message: "Unknown provider: \(rawProvider ?? "")")
         }
+        // Tests pass a context over a synthetic managed-account store and Codex home.
         let defaultContext: TokenAccountCLIContext
         do {
-            defaultContext = try TokenAccountCLIContext(
+            defaultContext = try accountContext ?? TokenAccountCLIContext(
                 selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
                 config: context.config,
                 verbose: false)
@@ -148,6 +151,8 @@ extension CodexBarCLI {
                     verbose: false)
                 else { return UsageCommandOutput() }
                 tokenContext = selected
+            case let .codexAccount(account):
+                return await self.fetchCodexProviderAccount(account, tokenContext: defaultContext, command: command)
             }
             return await self.fetchUsageOutputs(
                 provider: provider,
@@ -158,15 +163,18 @@ extension CodexBarCLI {
     }
 
     /// The Provider Accounts `provider` shows as separate rows: its token accounts when it has two or more and the
-    /// source mode in use reads them. Empty means the provider keeps upstream's single-account row.
+    /// source mode in use reads them, or for Codex its reconciled accounts once one is managed. Empty means the
+    /// provider keeps upstream's rows.
     static func providerAccounts(
         for provider: UsageProvider,
         context: TokenAccountCLIContext) -> [ProviderAccount]
     {
-        // Provider-specific by design: managed Codex accounts are their own source (#168); Codex keeps upstream's
-        // reconciled-account rows until then.
-        guard provider != .codex,
-              let data = context.accountsByProvider[provider],
+        // Provider-specific by design: managed Codex accounts are separate Codex homes, not token accounts; they come
+        // from Codex's reconciled account list (#168).
+        if provider == .codex {
+            return self.codexProviderAccounts(context.visibleCodexAccounts())
+        }
+        guard let data = context.accountsByProvider[provider],
               data.accounts.count >= 2,
               // Upstream's default selection reads token accounts only in an active source mode, and then
               // exactly one; an empty answer (a passive mode) means the provider doesn't use them.
@@ -269,6 +277,12 @@ extension CodexBarCLI {
 enum ProviderAccountSource: String, Encodable, Sendable {
     /// A labelled key or cookie in the token-account store; the id is the account's UUID.
     case token
+    /// The everyday Codex login (`~/.codex` or `CODEX_HOME`); the id is a hash of its workspace identity.
+    case codexSystem = "codex-system"
+    /// A managed Codex account with its own Codex home; the id is its managed-account UUID.
+    case codexManaged = "codex-managed"
+    /// A configured Codex profile home; the id is a hash of its path.
+    case codexProfile = "codex-profile"
 }
 
 /// How serve fetches one Provider Account. Source-specific and never sent; managed Codex homes and claude-swap slots
@@ -276,6 +290,8 @@ enum ProviderAccountSource: String, Encodable, Sendable {
 enum ProviderAccountSelector: Equatable, Sendable {
     /// The account at this position in the provider's token-account store.
     case tokenIndex(Int)
+    /// One reconciled Codex account, fetched in its own Codex home.
+    case codexAccount(CodexVisibleAccount)
 }
 
 /// One Provider Account serve shows as its own row: what the row says about it, and how to fetch it.
@@ -290,6 +306,9 @@ struct ProviderAccountRowFields: Equatable, Sendable {
     let id: String
     let label: String
     let active: Bool
+    /// The account has no name of its own and `label` is serve's "Account N". Clients then make their own label
+    /// instead of treating it as the user's alias; older clients still render `label`.
+    var labelIsDefault: Bool = false
 
     /// `<source>:<opaque id>`, stable across refreshes, renames and reorders. Serve also makes it the row's cache
     /// key, so the per-account last-good merge restores each account on its own.
@@ -314,6 +333,7 @@ struct ProviderAccountRowPayload: Encodable {
         case accountId
         case accountSource
         case accountLabel
+        case accountLabelIsDefault
         case active
         case updatedAt
     }
@@ -325,6 +345,9 @@ struct ProviderAccountRowPayload: Encodable {
         try container.encode(account.accountID, forKey: .accountId)
         try container.encode(account.source, forKey: .accountSource)
         try container.encode(account.label, forKey: .accountLabel)
+        if account.labelIsDefault {
+            try container.encode(true, forKey: .accountLabelIsDefault)
+        }
         try container.encode(account.active, forKey: .active)
         try container.encodeIfPresent(self.updatedAt, forKey: .updatedAt)
     }
