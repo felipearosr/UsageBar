@@ -5,6 +5,15 @@ import Testing
 
 struct CLICapabilitiesTests {
     private static let releaseVersion = "0.73.0+usagebar.1.1.0-rc.2"
+    /// The capability names on the wire, in order. Spelled out so a renamed case fails here.
+    private static let wireCapabilities = [
+        "machineSync",
+        "providerAccountRows",
+        "providerAccountKinds",
+        "providerAccountAddKey",
+        "providerAccountRename",
+        "providerAccountRemove",
+    ]
 
     private static func object(_ data: Data) throws -> [String: Any] {
         try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -70,7 +79,7 @@ struct CLICapabilitiesTests {
         #expect(object["version"] as? String == Self.releaseVersion)
         #expect(object["upstreamBase"] as? String == "0.73.0")
         #expect(object["usagebarVersion"] as? String == "1.1.0-rc.2")
-        #expect(object["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+        #expect(object["capabilities"] as? [String] == Self.wireCapabilities)
     }
 
     @Test
@@ -80,7 +89,7 @@ struct CLICapabilitiesTests {
             runtime: Self.runtime(healthVersion: nil))
         let object = try Self.object(response.body)
         #expect(Set(object.keys) == ["status", "capabilities"])
-        #expect(object["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+        #expect(object["capabilities"] as? [String] == Self.wireCapabilities)
     }
 
     @Test
@@ -89,7 +98,7 @@ struct CLICapabilitiesTests {
             Self.request("GET", "/health"),
             runtime: Self.runtime(healthVersion: Self.releaseVersion, bindHost: "0.0.0.0", token: "secret"))
         #expect(response.status == .ok)
-        #expect(try Self.object(response.body)["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+        #expect(try Self.object(response.body)["capabilities"] as? [String] == Self.wireCapabilities)
     }
 
     @Test

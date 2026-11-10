@@ -11,6 +11,15 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     /// serve's `GET /usage?accounts=all`: one row per Provider Account, each with `accountId`, `accountSource`,
     /// `accountLabel`, `active` and `updatedAt` (CLIServeProviderAccounts.swift).
     case providerAccountRows
+    /// serve's `GET /accounts/kinds`: the kind of Provider Account each provider can add
+    /// (CLIServeProviderAccountActions.swift).
+    case providerAccountKinds
+    /// serve's `POST /accounts/add`: store a labelled key or cookie as a new Provider Account.
+    case providerAccountAddKey
+    /// serve's `POST /accounts/rename`: relabel one Provider Account by its `accountId`.
+    case providerAccountRename
+    /// serve's `POST /accounts/remove`: delete one Provider Account by its `accountId`.
+    case providerAccountRemove
 }
 
 /// The version and capability fields shared by `codexbar --version --json` and serve's `GET /health`.

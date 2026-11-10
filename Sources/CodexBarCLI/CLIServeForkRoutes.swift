@@ -23,6 +23,14 @@ extension CodexBarCLI {
         if self.isProviderAccountUsageRequest(request) {
             return await self.serveProviderAccountUsageRoute(request, runtime: runtime)
         }
+        // `/accounts/*`: add, rename and remove Provider Accounts (CLIServeProviderAccountActions.swift).
+        do {
+            if let accountRoute = try CLIServeProviderAccountRoute.route(method: request.method, path: request.path) {
+                return await self.serveProviderAccountRoute(accountRoute, request: request, runtime: runtime)
+            }
+        } catch {
+            return self.forkServeError(status: .methodNotAllowed, message: "method not allowed")
+        }
         let route: CLIServeSyncRoute?
         do {
             route = try CLIServeSyncRoute.route(
