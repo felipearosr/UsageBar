@@ -1364,11 +1364,12 @@ extension CodexBarCLI {
             operations: context.providerOperations)
         { provider in
             await ProviderInteractionContext.$current.withValue(.background) {
-                await Self.fetchUsageOutputs(
+                // UsageBar: claude-swap's active slot answers Claude when enabled (CLIServeClaudeSwap.swift, #170).
+                await Self.forkServeFetchUsageOutputs(
                     provider: provider,
-                    status: nil,
                     tokenContext: tokenContext,
-                    command: command)
+                    command: command,
+                    context: context)
             }
         }
     }

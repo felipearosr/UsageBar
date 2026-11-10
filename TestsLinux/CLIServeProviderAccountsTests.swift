@@ -118,6 +118,9 @@ struct CLIServeProviderAccountsTests {
                     label: account.label,
                     cacheAccountKey: "upstream-\(index)",
                     usedPercent: failing.contains(account.label) ? nil : 40))
+            case .claudeSwapSlot:
+                // claude-swap slots are never fetched one by one (CLIServeClaudeSwapTests).
+                await calls.record("claude-swap slot")
             }
             return output
         }

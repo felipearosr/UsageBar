@@ -7,10 +7,10 @@
 Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	CLI extension hook: forkCommandDescriptors() append and runForkCommand in the dispatch default case (CLIForkCommands.swift); also forkPrintVersionJSONIfRequested in the --version fast path (CLICapabilities.swift, #37); #57
 Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	CLI extension hook: forkRootHelpUsage() in rootHelp's usage list; also the /cost?days help example (#54) and codex-accounts list on Linux (#167); #57
 Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	CLI extension hook: forkHelp(for:) in printHelp's default case; #57
-docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54), /health capabilities and --version --json (#37), codex-accounts list on Linux (#167), /usage?accounts=all (#163); #56
+docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54), /health capabilities and --version --json (#37), codex-accounts list on Linux (#167), /usage?accounts=all (#163), claude-swap rows (#170); #56
 
 # Machine Sync: serve /sync/status and /sync/push via the route-extension hook in CLIServeForkRoutes.swift (#58)
-Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	Route-extension hook: forkServeResponse(_:runtime:) first in handleServeRequest (CLIServeForkRoutes.swift); also /cost?days (#54); serveUsageCommand(context:) split out of serveUsageOutput so /usage?accounts=all reuses the usage command (CLIServeProviderAccounts.swift, #163); #58
+Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	Route-extension hook: forkServeResponse(_:runtime:) first in handleServeRequest (CLIServeForkRoutes.swift); also /cost?days (#54); serveUsageCommand(context:) split out of serveUsageOutput so /usage?accounts=all reuses the usage command (CLIServeProviderAccounts.swift, #163); serveUsageOutput calls forkServeFetchUsageOutputs so claude-swap's active slot answers plain /usage for Claude (CLIServeClaudeSwap.swift, #170); #58
 Sources/CodexBarCLI/CLILocalHTTPServer.swift	Machine Sync: serve /sync routes	409 and 502 CLIHTTPStatus cases (POST /sync/push: not paired, push failed); a closed enum can't gain cases from fork code; #58
 
 # serve /cost?days=N rolling window (upstream candidate: #54)
