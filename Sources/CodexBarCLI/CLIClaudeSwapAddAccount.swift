@@ -133,6 +133,12 @@ struct ClaudeSwapAddAccountFlow {
         case done
         /// `index` is 1-based.
         case failed(index: Int, step: Step, reason: String)
+
+        /// The helper's own exit status: 0 when done, 130 when a step was stopped by Ctrl-C (so the extension can
+        /// say "cancelled"), else 1.
+        static func exitCode(forStepStatus status: Int32?) -> Int32 {
+            status == 130 ? 130 : ExitCode.failure.rawValue
+        }
     }
 
     /// Runs one step to completion and returns its exit status; throws when it can't start.
@@ -149,6 +155,14 @@ struct ClaudeSwapAddAccountFlow {
     }
 
     func run(announce: (String) -> Void = { _ in }, runner: Runner = Self.runInForeground) -> Outcome {
+        self.runWithStatus(announce: announce, runner: runner).outcome
+    }
+
+    /// `run`, plus the failing step's exit status (nil when it couldn't start or nothing failed).
+    func runWithStatus(
+        announce: (String) -> Void = { _ in },
+        runner: Runner = Self.runInForeground) -> (outcome: Outcome, failedStatus: Int32?)
+    {
         for (offset, step) in self.steps.enumerated() {
             let index = offset + 1
             announce("Step \(index) of \(self.steps.count): \(step.title) (\(step.commandLine))")
@@ -156,13 +170,13 @@ struct ClaudeSwapAddAccountFlow {
             do {
                 status = try runner(step.executable, step.arguments)
             } catch {
-                return .failed(index: index, step: step, reason: "it could not start")
+                return (.failed(index: index, step: step, reason: "it could not start"), nil)
             }
             guard status == 0 else {
-                return .failed(index: index, step: step, reason: "it exited with status \(status)")
+                return (.failed(index: index, step: step, reason: "it exited with status \(status)"), status)
             }
         }
-        return .done
+        return (.done, nil)
     }
 
     static let nothingAddedWarning =
@@ -253,7 +267,7 @@ extension CodexBarCLI {
                 in: $0,
                 account: ClaudeCodeSignedInAccount.load(environment: environment))
         }
-        let outcome = flow.run(announce: { line in self.writeUnbuffered("\n\(line)\n") })
+        let (outcome, failedStatus) = flow.runWithStatus(announce: { line in self.writeUnbuffered("\n\(line)\n") })
         let after = outcome == .done ? await self.claudeSwapList(cswap) : nil
         self.writeUnbuffered("\n" + ClaudeSwapAddAccountFlow.message(
             for: outcome,
@@ -261,7 +275,7 @@ extension CodexBarCLI {
             slotsBefore: before?.accounts.count,
             slotsAfter: after?.accounts.count,
             currentAlreadySaved: currentAlreadySaved) + "\n")
-        self.platformExit(outcome == .done ? 0 : ExitCode.failure.rawValue)
+        self.platformExit(outcome == .done ? 0 : ClaudeSwapAddAccountFlow.Outcome.exitCode(forStepStatus: failedStatus))
     }
 
     /// claude-swap's accounts, through the adapter's own exact `cswap --list --json` read; nil when the read fails

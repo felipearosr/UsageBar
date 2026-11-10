@@ -8,12 +8,16 @@
 # USAGEBAR_UI_SMOKE_ACCOUNTS=1 with STUB_CODEXBAR_ACCOUNTS=1 checks a provider
 # card with two Provider Accounts; add USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and
 # STUB_CODEXBAR_CLAUDE_SWAP=1 to also check Claude's claude-swap slots, and
-# USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 with STUB_CODEXBAR_CLAUDE_SWAP_ADD=1 to
-# then add a Claude account through the install offer and the add helper.
+# USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 with STUB_CODEXBAR_CLAUDE_SWAP_ADD=1,
+# USAGEBAR_UI_SMOKE_TERMINAL=tests/stub-terminal and USAGEBAR_UI_SMOKE_UV=tests/stub-uv
+# to then add a Claude account through the install offer and the add helper.
 # USAGEBAR_UI_SMOKE_ICON_SOURCE=1 with STUB_CODEXBAR_ACCOUNTS=3 checks the
 # panel icon source and per-account notifications.
 # USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 with STUB_CODEXBAR_CODEX_ACCOUNTS=1 checks
-# the Codex card with the everyday login and two managed accounts.
+# the Codex card with the everyday login and two managed accounts; with
+# USAGEBAR_UI_SMOKE_CODEX_ADD=1, STUB_CODEX_BIN=tests/stub-codex and
+# USAGEBAR_UI_SMOKE_TERMINAL=tests/stub-terminal it then adds one through
+# Add account… (cli-login) and checks the card refreshes.
 # USAGEBAR_UI_SMOKE_LOGOS=1, with USAGEBAR_LOGO_PACK_BASE_URL and
 # USAGEBAR_LOGO_PACK_VERSION, clicks through the offer to download provider
 # logos; the script's own last run serves a pack built from this checkout.
@@ -142,6 +146,8 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
     printf '\nRe-running the UI smoke against a CLI with managed Codex accounts\n'
     CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
         STUB_CODEXBAR_CODEX_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 \
+        USAGEBAR_UI_SMOKE_CODEX_ADD=1 STUB_CODEX_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codex" \
+        USAGEBAR_UI_SMOKE_TERMINAL="$repo_dir/linux/usagebar-gnome/tests/stub-terminal" \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/codex-accounts"
 fi
@@ -158,12 +164,15 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
 fi
 
 # Add account… on Claude (#172): detect, the install offer, then the add
-# helper. The smoke records the terminals instead of opening them.
+# helper, through a stand-in terminal that exits at once (so only the marker
+# can say when each run ended) and a stand-in uv that installs nothing.
 if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
     printf '\nRe-running the UI smoke to add a Claude account through claude-swap\n'
     CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
         STUB_CODEXBAR_ACCOUNTS=1 STUB_CODEXBAR_CLAUDE_SWAP=1 STUB_CODEXBAR_CLAUDE_SWAP_ADD=1 \
         USAGEBAR_UI_SMOKE_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 \
+        USAGEBAR_UI_SMOKE_TERMINAL="$repo_dir/linux/usagebar-gnome/tests/stub-terminal" \
+        USAGEBAR_UI_SMOKE_UV="$repo_dir/linux/usagebar-gnome/tests/stub-uv" \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/claude-swap-add"
 fi

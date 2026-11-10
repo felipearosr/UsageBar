@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stand-in for uv in the UI smoke (USAGEBAR_UI_SMOKE_UV): the claude-swap
+# install offer runs it instead of the real uv. It installs nothing.
+printf 'stub uv: %s (nothing installed)\n' "$*"
+exit 0

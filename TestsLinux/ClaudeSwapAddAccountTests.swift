@@ -173,6 +173,13 @@ struct ClaudeSwapAddAccountTests {
         let message = ClaudeSwapAddAccountFlow.message(for: outcome)
         #expect(message.hasPrefix("Step 2 of 3 failed"))
         #expect(message.contains("status 130"))
+        // The helper then exits 130 itself, so the extension says "cancelled".
+        let (_, failedStatus) = ClaudeSwapAddAccountFlow(cswapPath: cswap, claudePath: claude)
+            .runWithStatus(runner: { _, arguments in arguments == ["add"] ? 0 : 130 })
+        #expect(failedStatus == 130)
+        #expect(ClaudeSwapAddAccountFlow.Outcome.exitCode(forStepStatus: failedStatus) == 130)
+        #expect(ClaudeSwapAddAccountFlow.Outcome.exitCode(forStepStatus: 3) == 1)
+        #expect(ClaudeSwapAddAccountFlow.Outcome.exitCode(forStepStatus: nil) == 1)
         #expect(home.invocations == ["cswap add", "claude auth login"])
     }
 

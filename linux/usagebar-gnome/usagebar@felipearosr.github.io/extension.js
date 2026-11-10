@@ -119,6 +119,7 @@ import {
     actionErrorText,
     addAction,
     addKeyRequest,
+    cliLoginArgv,
     keyFormError,
     readKinds,
     removeRequest,
@@ -130,6 +131,7 @@ import {
 import {
     CLAUDE_SWAP_KIND,
     addHelperArgv,
+    afterTerminal,
     detectRequest,
     installArgv,
     installConfirmLabel,
@@ -137,6 +139,14 @@ import {
     nextStep,
     readDetect,
 } from './claudeswapadd.js';
+import {
+    POLL_SECS as TERMINAL_POLL_SECS,
+    addExitNotice,
+    launchFailureText,
+    markerPath,
+    readMarker,
+    watchState,
+} from './terminalwatch.js';
 
 // Sizes a container from its first child only and floats the rest at
 // their preferred size in the top-right corner, so an open dropdown
@@ -1869,6 +1879,13 @@ export default class UsageBarExtension extends Extension {
         // that has a CLI. Ignored outside a smoke run.
         this._smokeNoCli = Boolean(uiSmokeResult) &&
             GLib.getenv('USAGEBAR_UI_SMOKE_NO_CLI') === '1';
+        // Test-only: a stand-in for xdg-terminal-exec, so the UI smoke runs
+        // the add helper without opening a real terminal. Smoke runs only.
+        this._smokeTerminal = uiSmokeResult ? GLib.getenv('USAGEBAR_UI_SMOKE_TERMINAL') : null;
+        // Test-only: in a smoke run the claude-swap install offer never finds
+        // the real uv or pipx, only this stand-in uv (#172).
+        this._uiSmoke = Boolean(uiSmokeResult);
+        this._smokeInstaller = uiSmokeResult ? GLib.getenv('USAGEBAR_UI_SMOKE_UV') : null;
 
         const binary = this._findBinary();
         if (binary)
@@ -2075,6 +2092,7 @@ export default class UsageBarExtension extends Extension {
         }
         this._configMonitor?.cancel();
         this._configMonitor = null;
+        this._stopTerminalWatches();
         this._cancellable?.cancel();
         this._cancellable = null;
         this._session?.abort();
@@ -4108,10 +4126,72 @@ export default class UsageBarExtension extends Extension {
                         finish(assertions, error);
                         return;
                     }
-                    capture('accounts-provider-codex.png', () => finish(assertions));
+                    capture('accounts-provider-codex.png', () => {
+                        if (GLib.getenv('USAGEBAR_UI_SMOKE_CODEX_ADD') === '1')
+                            codexAddSmoke(assertions);
+                        else
+                            finish(assertions);
+                    });
                 });
             };
             ready();
+        };
+
+        // USAGEBAR_UI_SMOKE_CODEX_ADD=1 (after the Codex accounts smoke), with
+        // the stub serve started with an action token, STUB_CODEX_BIN naming a
+        // fake codex and USAGEBAR_UI_SMOKE_TERMINAL a stand-in terminal: Add
+        // account… on the Codex card runs `codexbar codex-accounts add`
+        // (cli-login), and the card refreshes with the new managed account
+        // once the helper exits.
+        const codexAddSmoke = assertions => {
+            const codexLabels = () => this._accountCards?.get('codex')?.accounts.map(a => a.label) ?? [];
+            const before = codexLabels().length;
+            const added = () => {
+                assertions.push(assertion('the card refreshes with the added Codex account',
+                    codexLabels().length === before + 1 && codexLabels().includes('added@example.com'),
+                    {labels: codexLabels()}));
+                try {
+                    this._indicator.menu.open();
+                    this._selectedProvider = 'codex';
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => capture('accounts-codex-added.png', () => finish(assertions)));
+            };
+            const clickAdd = () => {
+                try {
+                    const action = this._addAccountAction('codex');
+                    assertions.push(assertion('Add account… on the Codex card is cli-login',
+                        action?.kind === 'cli-login', {actual: action?.kind ?? null}));
+                    const addButtons = descendants(this._indicator._detailBox)
+                        .filter(actor => actor.style_class?.includes('usagebar-account-add'));
+                    assertions.push(assertion('the Codex card shows Add account…', addButtons.length === 1,
+                        {actual: addButtons.length}));
+                    if (!addButtons.length) {
+                        finish(assertions);
+                        return;
+                    }
+                    addButtons[0].emit('clicked', 1);
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                waitFor(() => codexLabels().includes('added@example.com'), added);
+            };
+            // The kinds arrive after the capability report.
+            waitFor(() => this._addAccountAction('codex'), () => {
+                try {
+                    this._indicator.menu.open();
+                    this._selectedProvider = 'codex';
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, clickAdd);
+            });
         };
 
         // Run with USAGEBAR_UI_SMOKE_ICON_SOURCE=1 against the stub CLI with
@@ -4222,19 +4302,32 @@ export default class UsageBarExtension extends Extension {
         };
 
         // With USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 and STUB_CODEXBAR_CLAUDE_SWAP_ADD=1,
-        // after the Claude card: Add account… detects claude-swap, which the
+        // after the Claude card, through the stand-in terminal
+        // (USAGEBAR_UI_SMOKE_TERMINAL, which exits at once) and stand-in uv
+        // (USAGEBAR_UI_SMOKE_UV): Add account… detects claude-swap, which the
         // stub reports missing the first time, so the install offer shows.
-        // Install opens the installer and its exit detects again; the next
-        // Add account… opens the add helper. Terminals are recorded here,
-        // never opened, so no installer or helper ever runs.
+        // Install runs the stand-in uv; its marker's status 0 detects again.
+        // The next Add account… runs the stub's `claude add-account`, which
+        // adds a third slot, and its marker refreshes the card.
         const claudeSwapAddSmoke = assertions => {
             const launched = [];
+            let detects = 0;
             const runInTerminal = this._runInTerminal;
-            this._runInTerminal = (argv, options) => launched.push({argv, options});
+            const detectClaudeSwap = this._detectClaudeSwap;
+            this._runInTerminal = (argv, onExit) => {
+                launched.push(argv);
+                return runInTerminal.call(this, argv, onExit);
+            };
+            this._detectClaudeSwap = cb => {
+                detects += 1;
+                return detectClaudeSwap.call(this, cb);
+            };
             const done = (error = null) => {
                 this._runInTerminal = runInTerminal;
+                this._detectClaudeSwap = detectClaudeSwap;
                 finish(assertions, error);
             };
+            const slots = () => this._accountCards?.get('claude')?.accounts.length ?? 0;
             let action;
             try {
                 action = this._addAccountAction('claude');
@@ -4254,6 +4347,9 @@ export default class UsageBarExtension extends Extension {
                     : [];
                 assertions.push(assertion('not installed opens the install offer',
                     texts.includes('Install claude-swap'), {texts}));
+                assertions.push(assertion('the offer can install with the uv it found',
+                    this._accountDialog?.usagebarConfirm?.label === 'Install',
+                    {actual: this._accountDialog?.usagebarConfirm?.label ?? null}));
                 capture('claude-swap-install-offer.png', () => {
                     try {
                         this._accountDialog?.usagebarConfirm?.emit('clicked', 1);
@@ -4261,37 +4357,41 @@ export default class UsageBarExtension extends Extension {
                         done(error);
                         return;
                     }
-                    waitFor(() => launched.length >= 1, () => {
-                        const install = launched[0]?.argv ?? [];
-                        const tail = install.slice(1).join(' ');
-                        assertions.push(assertion('Install opens uv, or pipx without uv, as a fixed argv',
-                            install[0]?.startsWith('/') &&
-                            (tail === 'tool install claude-swap' || tail === 'install claude-swap'),
-                            {argv: install}));
-                        try {
-                            launched[0].options.onExit();
-                        } catch (error) {
-                            done(error);
-                            return;
-                        }
+                    // Detect #1 chose the offer; #2 comes from the installer's marker.
+                    waitFor(() => detects >= 2, () => {
+                        const install = launched[0] ?? [];
+                        assertions.push(assertion('Install runs uv as a fixed argv',
+                            install[0] === GLib.getenv('USAGEBAR_UI_SMOKE_UV') &&
+                            install.slice(1).join(' ') === 'tool install claude-swap', {argv: install}));
+                        assertions.push(assertion('the installer\'s marker runs detect again', detects >= 2,
+                            {detects}));
+                        assertions.push(assertion('the offer closed', !this._accountDialog));
+                        const before = slots();
                         later(500, () => {
-                            assertions.push(assertion('the offer closed', !this._accountDialog));
                             try {
                                 this._addAccount(action);
                             } catch (error) {
                                 done(error);
                                 return;
                             }
-                            waitFor(() => launched.length >= 2, () => {
-                                const helper = launched[1]?.argv ?? [];
+                            waitFor(() => slots() > before, () => {
+                                const helper = launched[1] ?? [];
                                 assertions.push(assertion('installed opens codexbar claude add-account',
-                                    helper[0] === findBinary() && helper.slice(1).join(' ') === 'claude add-account',
+                                    helper[0] === this._binary && helper.slice(1).join(' ') === 'claude add-account',
                                     {argv: helper}));
-                                assertions.push(assertion('the add helper refreshes when its terminal exits',
-                                    typeof launched[1]?.options?.onExit === 'function'));
+                                assertions.push(assertion('the helper\'s marker refreshes the card with the new slot',
+                                    slots() === before + 1, {before, after: slots()}));
                                 assertions.push(assertion('nothing logs out',
-                                    !launched.some(entry => entry.argv.some(part => /logout/i.test(part)))));
-                                done();
+                                    !launched.some(argv => argv.some(part => /logout/i.test(part)))));
+                                try {
+                                    this._indicator.menu.open();
+                                    this._selectedProvider = 'claude';
+                                    this._render();
+                                } catch (error) {
+                                    done(error);
+                                    return;
+                                }
+                                later(600, () => capture('claude-swap-added.png', () => done()));
                             });
                         });
                     });
@@ -7129,23 +7229,13 @@ export default class UsageBarExtension extends Extension {
             this._notify('UsageBar', `\`${argv[0]}\` not found. Install it, then run \`${argv.join(' ')}\` to log in to ${name}.`);
             return;
         }
-        const command = terminalArgv([bin, ...argv.slice(1)], p => GLib.find_program_in_path(p));
-        if (!command) {
-            console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
-            this._notify('UsageBar', `No terminal found. Run \`${argv.join(' ')}\` in a terminal to log in to ${name}.`);
-            return;
-        }
-        this._indicator?.menu.close();
         try {
-            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
-            // Launchers that hand off to a terminal server (gnome-terminal,
-            // ptyxis) exit right away, so this refresh can come early; it
-            // is best-effort.
-            const generation = this._generation;
-            proc.wait_async(null, () => {
-                if (generation === this._generation)
-                    this._fetchUsage(true);
-            });
+            // Refreshes when the login command ends (terminalwatch.js).
+            if (!this._runInTerminal([bin, ...argv.slice(1)], () => this._fetchUsage(true))) {
+                console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+                this._notify('UsageBar',
+                    `No terminal found. Run \`${argv.join(' ')}\` in a terminal to log in to ${name}.`);
+            }
         } catch (e) {
             console.warn(`usagebar: login terminal failed: ${e.message}`);
             this._notify('UsageBar', `Could not open a terminal. Run \`${argv.join(' ')}\` to log in to ${name}.`);
@@ -7520,6 +7610,9 @@ export default class UsageBarExtension extends Extension {
         case CLAUDE_SWAP_KIND:
             this._addClaudeSwapAccount(action);
             break;
+        case 'cli-login':
+            this._runCliLoginHelper(action);
+            break;
         default:
             console.warn(`usagebar: no handler for account kind ${action.kind}`);
         }
@@ -7554,20 +7647,51 @@ export default class UsageBarExtension extends Extension {
             request.method, request.body, {[ACTION_TOKEN_HEADER]: actionToken});
     }
 
+    // What the claude-swap terminal runs do once the marker reports their
+    // exit status (claudeswapadd.js afterTerminal).
+    _afterClaudeSwapTerminal(run, status) {
+        const next = afterTerminal(run, status);
+        if (next.notice)
+            this._notify('UsageBar', next.notice);
+        if (next.detect)
+            this._detectClaudeSwap(() => this._refreshAfterAccountChange());
+        else if (next.refresh)
+            this._refreshAfterAccountChange();
+    }
+
+    // Runs a claude-swap argv in a terminal through _runInTerminal (marker
+    // watched, terminalwatch.js) and reports when it can't open one.
+    _runClaudeSwapTerminal(run, argv, what) {
+        try {
+            if (!this._runInTerminal(argv, status => this._afterClaudeSwapTerminal(run, status))) {
+                console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+                this._notify('UsageBar', `No terminal found. Run \`${argv.join(' ')}\` in a terminal to ${what}.`);
+            }
+        } catch (e) {
+            console.warn(`usagebar: terminal failed: ${e.message}`);
+            this._notify('UsageBar', `Could not open a terminal. Run \`${argv.join(' ')}\` to ${what}.`);
+        }
+    }
+
     _openClaudeSwapAddHelper() {
-        const argv = addHelperArgv(findBinary());
+        const argv = addHelperArgv(this._binary ?? findBinary());
         if (!argv) {
             this._notify('UsageBar', 'The UsageBar CLI wasn’t found, so the Claude add helper can’t start.');
             return;
         }
-        this._runInTerminal(argv, {
-            what: 'add a Claude account',
-            onExit: () => this._refreshAfterAccountChange(),
-        });
+        this._runClaudeSwapTerminal('add', argv, 'add a Claude account');
+    }
+
+    // uv or pipx as found on this machine. The UI smoke never finds the real
+    // ones: it names a stand-in uv (USAGEBAR_UI_SMOKE_UV) or finds none.
+    _findInstaller(name) {
+        if (this._uiSmoke)
+            return name === 'uv' ? this._smokeInstaller || null : null;
+        return findLoginBinary(name);
     }
 
     _offerClaudeSwapInstall(action) {
-        const argv = installArgv(name => findLoginBinary(name));
+        const argv = installArgv(name => this._findInstaller(name));
         const dialog = this._openAccountDialog({
             title: 'Install claude-swap',
             description: installOfferText(argv),
@@ -7577,40 +7701,121 @@ export default class UsageBarExtension extends Extension {
             provider: action.provider,
             submit: () => {
                 dialog.close();
-                if (!argv)
-                    return;
-                // Detect again once the installer's terminal exits; the next
-                // Add account… detects again too, for terminals that hand off
-                // to a server and exit early.
-                this._runInTerminal(argv, {
-                    what: 'install claude-swap',
-                    onExit: () => this._detectClaudeSwap(() => this._refreshAfterAccountChange()),
-                });
+                if (argv)
+                    this._runClaudeSwapTerminal('install', argv, 'install claude-swap');
             },
         });
     }
 
-    // Opens `argv` (a fixed argv, no shell string) in the user's terminal
-    // (authlogin.js terminalArgv, as the Sign in button does) and calls
-    // onExit when the launcher exits.
-    _runInTerminal(argv, {what, onExit = null}) {
-        const command = terminalArgv(argv, p => GLib.find_program_in_path(p));
-        if (!command) {
-            this._notify('UsageBar', `No terminal found. Run \`${argv.join(' ')}\` in a terminal to ${what}.`);
+    // cli-login (#169): opens `codexbar codex-accounts add` (accountactions.js
+    // CLI_LOGIN_HELPERS) in a terminal and refreshes the cards when it ends;
+    // an add that didn't succeed is also notified (the terminal shows the
+    // failing step). claude-swap's add (#172) does the same with its argv.
+    _runCliLoginHelper(action) {
+        const name = PROVIDER_META[action.provider]?.name ?? action.provider;
+        const argv = cliLoginArgv(action.provider, this._binary);
+        if (!argv) {
+            this._notify('UsageBar', launchFailureText(null, name));
             return;
         }
-        this._indicator?.menu.close();
         try {
-            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
-            const generation = this._generation;
-            proc.wait_async(null, () => {
-                if (generation === this._generation)
-                    onExit?.();
+            const opened = this._runInTerminal(argv, status => {
+                const notice = addExitNotice(status, name);
+                if (notice)
+                    this._notify('UsageBar', notice);
+                this._refreshAfterAccountChange();
             });
+            if (!opened) {
+                console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+                this._notify('UsageBar', launchFailureText(argv, name, {noTerminal: true}));
+            }
         } catch (e) {
-            console.warn(`usagebar: terminal failed: ${e.message}`);
-            this._notify('UsageBar', `Could not open a terminal. Run \`${argv.join(' ')}\` to ${what}.`);
+            console.warn(`usagebar: add-account terminal failed: ${e.message}`);
+            this._notify('UsageBar', launchFailureText(argv, name));
         }
+    }
+
+    // Runs `argv` (fixed, no shell) in a terminal through authlogin.js's
+    // launcher and calls onExit(status) once when it ends. The status comes
+    // from a marker the terminal wrapper writes (terminalwatch.js), since
+    // launchers that hand off to a terminal server exit at once; only when
+    // no marker can be made does the launcher's own exit stand in, with
+    // status null. Returns false when no terminal was found; throws when
+    // the terminal can't be started.
+    _runInTerminal(argv, onExit) {
+        const marker = this._newTerminalMarker();
+        const smokeTerminal = this._smokeTerminal;
+        const command = terminalArgv(argv, p => smokeTerminal
+            ? (p === 'xdg-terminal-exec' ? smokeTerminal : null)
+            : GLib.find_program_in_path(p), marker);
+        if (!command)
+            return false;
+        this._indicator?.menu.close();
+        const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
+        const generation = this._generation;
+        if (marker) {
+            this._watchTerminalMarker(marker, generation, onExit);
+        } else {
+            proc.wait_async(null, () => {
+                if (generation === this._generation && this._indicator)
+                    onExit(null);
+            });
+        }
+        return true;
+    }
+
+    // A fresh marker path under $XDG_RUNTIME_DIR/usagebar (0700), or null.
+    _newTerminalMarker() {
+        const marker = markerPath(GLib.get_user_runtime_dir(), GLib.uuid_string_random());
+        if (!marker || GLib.mkdir_with_parents(GLib.path_get_dirname(marker), 0o700) !== 0)
+            return null;
+        return marker;
+    }
+
+    _watchTerminalMarker(marker, generation, onExit) {
+        this._terminalWatches ??= new Map();
+        const started = GLib.get_monotonic_time();
+        const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, TERMINAL_POLL_SECS, () => {
+            let status = null;
+            try {
+                const [ok, bytes] = GLib.file_get_contents(marker);
+                status = ok ? readMarker(new TextDecoder().decode(bytes)) : null;
+            } catch {
+                // not written yet
+            }
+            const state = watchState({
+                status,
+                elapsedSecs: (GLib.get_monotonic_time() - started) / 1e6,
+                stale: generation !== this._generation || !this._indicator,
+            });
+            if (state === 'wait')
+                return GLib.SOURCE_CONTINUE;
+            this._terminalWatches?.delete(marker);
+            try {
+                Gio.File.new_for_path(marker).delete(null);
+            } catch {
+                // never written, or already gone
+            }
+            if (state === 'exited')
+                onExit(status);
+            return GLib.SOURCE_REMOVE;
+        });
+        this._terminalWatches.set(marker, id);
+    }
+
+    // On disable: stop polling and delete the markers still pending. A
+    // command that ends later can still leave its small status file; the
+    // runtime dir is cleared at logout.
+    _stopTerminalWatches() {
+        for (const [marker, id] of this._terminalWatches ?? []) {
+            GLib.source_remove(id);
+            try {
+                Gio.File.new_for_path(marker).delete(null);
+            } catch {
+                // not written
+            }
+        }
+        this._terminalWatches = null;
     }
 
     // A refresh after an account changed. A fetch already out may have read

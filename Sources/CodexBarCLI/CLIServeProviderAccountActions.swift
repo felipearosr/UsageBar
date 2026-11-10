@@ -12,7 +12,8 @@ import Musl
 
 /// serve's account action routes, answered through `forkServeResponse`:
 /// - `GET /accounts/kinds`: per provider, the kind of Provider Account it can add (`ProviderAccountKind`) and
-///   whether its accounts can be renamed and removed here.
+///   whether its accounts can be renamed and removed here. `cli-login` (Codex) has no route of its own: the client
+///   runs `codexbar codex-accounts add` in a terminal (CLICodexAccountsAdd.swift).
 /// - `POST /accounts/add`: store a labelled key or cookie as a new token account (`key` kind).
 /// - `POST /accounts/rename`, `POST /accounts/remove`: change or delete one account, named by the `accountId` its
 ///   `/usage?accounts=all` row carries.
@@ -131,12 +132,17 @@ extension CodexBarCLI {
     /// The kind of Provider Account `provider` can add, or nil when it can't add one here.
     static func addableProviderAccountKind(for provider: UsageProvider) -> ProviderAccountKind? {
         switch provider {
-        // Provider-specific by design: these accounts come from a login flow, not a pasted key. Codex adds managed
-        // homes (cli-login, #169) and Claude adds claude-swap slots (#172). Antigravity's token accounts are OAuth
-        // credentials from its own sign-in, and removing one must also clear its shared credential cache.
+        // Provider-specific by design: Codex accounts are managed homes its own `codex login` signs in to, which
+        // `codexbar codex-accounts add` runs in a terminal (CLICodexAccountsAdd.swift, #169).
+        case .codex:
+            .cliLogin
+        // Provider-specific by design: Claude accounts are claude-swap slots, added by `codexbar claude add-account`
+        // in a terminal (CLIClaudeSwapAddAccount.swift, #172).
         case .claude:
             .claudeSwap
-        case .codex, .antigravity:
+        // Provider-specific by design: Antigravity's token accounts are OAuth credentials from its own sign-in, and
+        // removing one must also clear its shared credential cache.
+        case .antigravity:
             nil
         default:
             TokenAccountSupportCatalog.support(for: provider) == nil ? nil : .key
@@ -154,8 +160,20 @@ extension CodexBarCLI {
     static func providerAccountKinds(config: CodexBarConfig?) -> ProviderAccountKindsPayload {
         var providers: [String: ProviderAccountKindPayload] = [:]
         for provider in UsageProvider.allCases {
-            guard let support = TokenAccountSupportCatalog.support(for: provider) else { continue }
             let kind = self.addableProviderAccountKind(for: provider)
+            guard let support = TokenAccountSupportCatalog.support(for: provider) else {
+                // Accounts a login flow adds outside the token-account store (Codex's managed homes): they can be
+                // added here, and their rows can't be renamed or removed through the token-account routes.
+                if let kind, kind != .key {
+                    providers[provider.rawValue] = ProviderAccountKindPayload(
+                        kind: kind,
+                        placeholder: nil,
+                        rename: false,
+                        remove: false,
+                        replacesCurrent: false)
+                }
+                continue
+            }
             providers[provider.rawValue] = ProviderAccountKindPayload(
                 kind: kind,
                 placeholder: kind == .key ? support.placeholder : nil,

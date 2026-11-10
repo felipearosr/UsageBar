@@ -85,3 +85,35 @@ export const NO_INSTALLER_ERROR = 'Neither uv nor pipx was found. Install one of
 function absolute(path) {
     return typeof path === 'string' && path.startsWith('/') ? path : null;
 }
+
+// What to do when a claude-swap terminal run ends (terminalwatch.js reports
+// the command's exit status from its marker; null when no marker could be
+// made and only the launcher's exit is known). `run` is 'install' or 'add'.
+//   install: detect again on success (or when the status is unknown), else
+//            only say it was cancelled (130, Ctrl-C) or didn't finish.
+//   add:     always refresh the cards; a failed or cancelled run also gets a
+//            notice (the terminal shows the failing step).
+// → {detect, refresh, notice}
+export function afterTerminal(run, status) {
+    const known = Number.isInteger(status);
+    if (run === 'install') {
+        if (!known || status === 0)
+            return {detect: true, refresh: true, notice: null};
+        return {
+            detect: false,
+            refresh: false,
+            notice: status === 130
+                ? 'Installing claude-swap was cancelled.'
+                : 'Installing claude-swap didn’t finish. The terminal shows what went wrong.',
+        };
+    }
+    if (!known || status === 0)
+        return {detect: false, refresh: true, notice: null};
+    return {
+        detect: false,
+        refresh: true,
+        notice: status === 130
+            ? 'Adding a Claude account was cancelled.'
+            : 'Adding a Claude account didn’t finish. The terminal shows the step that failed.',
+    };
+}

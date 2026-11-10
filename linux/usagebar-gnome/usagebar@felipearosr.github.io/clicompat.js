@@ -18,6 +18,7 @@ export const FEATURES = {
     // without them just shows no Add account…, Rename or Remove.
     providerAccountKinds: {label: 'Adding accounts', minVersion: null},
     providerAccountAddKey: {label: 'Adding key accounts', minVersion: null},
+    providerAccountAddCliLogin: {label: 'Adding Codex accounts', minVersion: null},
     providerAccountRename: {label: 'Renaming accounts', minVersion: null},
     providerAccountRemove: {label: 'Removing accounts', minVersion: null},
     // serve's /accounts/claude-swap/detect and `codexbar claude add-account`

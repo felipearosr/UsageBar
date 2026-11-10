@@ -11,12 +11,13 @@ extension CodexBarCLI {
     }
 
     /// `codex-accounts list` runs everywhere: it only reads the managed account store and each managed home's
-    /// `auth.json`. `promote` replaces the system Codex login and stays macOS-only.
+    /// `auth.json`. So does `add` (#169), which signs in to a new managed home and never touches the system login.
+    /// `promote` replaces the system Codex login and stays macOS-only.
     static func codexAccountsUnsupportedPlatformMessage(path: [String]) -> String? {
         #if os(macOS)
         return nil
         #else
-        return path == ["codex-accounts", "list"]
+        return path == ["codex-accounts", "list"] || path == ["codex-accounts", "add"]
             ? nil
             : "Promoting a managed Codex account is only available on macOS."
         #endif

@@ -32,7 +32,17 @@ STUB_CODEXBAR_CLAUDE_SWAP_ADD=1 (with ACCOUNTS) offers Add account… on Claude
 /accounts/claude-swap/detect (action token required) answers "not installed"
 the first time and installed after that, as if the install offer worked.
 `codexbar claude add-account` prints the three steps and "done"; it runs
-nothing.
+nothing, but with an XDG_DATA_HOME of its own it leaves a flag file there
+($XDG_DATA_HOME/usagebar-stub-claude-added) that makes serve list a third
+claude-swap slot, as if the add had worked.
+With an action token, CODEX_ACCOUNTS also offers `cli-login` for Codex on
+/accounts/kinds, and `stub-codexbar codex-accounts add` acts out the add helper:
+it runs the fake `codex` named by STUB_CODEX_BIN (never a codex from PATH) as
+`<STUB_CODEX_BIN> login` with CODEX_HOME set to a new home under
+$XDG_DATA_HOME/CodexBar/managed-codex-homes, then records the email the fake
+wrote to that home's auth.json in $XDG_DATA_HOME/CodexBar/managed-codex-accounts.json,
+which serve then lists as one more managed row. It refuses to run without an
+XDG_DATA_HOME of its own, so it never writes the real data directory.
 STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
 seconds after serve starts, like a serve that isn't ready yet.
 """
@@ -40,6 +50,8 @@ seconds after serve starts, like a serve that isn't ready yet.
 import hmac
 import json
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -118,6 +130,8 @@ ACCOUNT_CAPABILITIES = ["providerAccountRows"] + (
     ["providerAccountKinds", "providerAccountAddKey", "providerAccountRename", "providerAccountRemove"]
     if ACTION_TOKEN else []) + (["providerAccountAddClaudeSwap"] if ACTION_TOKEN and CLAUDE_SWAP_ADD else [])
 DETECTS = {"count": 0}
+CODEX_ACCOUNT_CAPABILITIES = ["providerAccountRows"] + (
+    ["providerAccountKinds", "providerAccountAddCliLogin"] if ACTION_TOKEN else [])
 # The OpenRouter token accounts, in store order. Only ids, labels and which
 # one is active: the stub never keeps a key.
 OPENROUTER = [
@@ -225,7 +239,24 @@ def claude_swap_rows(all_accounts, window):
                        "updatedAt": iso(5400)},
              "error": {"code": 1, "kind": "provider",
                        "message": "Token expired. Switch to this account in claude-swap to refresh it."}}
-    return [active, stale]
+    rows = [active, stale]
+    if claude_added():
+        rows.append({"provider": "claude", "source": "claude-swap", "account": "added@example.com",
+                     "accountId": "claude-swap:3", "accountSource": "claude-swap",
+                     "accountLabel": "added@example.com", "active": False, "updatedAt": iso(60),
+                     "usage": {"primary": window(5, 300, 9000), "secondary": window(9, 10080, 400000),
+                               "updatedAt": iso(60)}})
+    return rows
+
+
+def claude_added_flag():
+    data = os.environ.get("XDG_DATA_HOME") or ""
+    return os.path.join(data, "usagebar-stub-claude-added") if data.startswith("/") else None
+
+
+def claude_added():
+    flag = claude_added_flag()
+    return bool(flag) and os.path.exists(flag)
 
 
 def codex_account_rows(all_accounts):
@@ -244,6 +275,10 @@ def codex_account_rows(all_accounts):
             if usage:
                 body["updatedAt"] = usage["updatedAt"]
         return body
+    added = [row(account["email"], "codex-managed", account["id"], False,
+                 usage={"primary": window(5, 300, 18000), "secondary": window(9, 10080, 600000),
+                        "updatedAt": iso(10)})
+             for account in stub_codex_store()["accounts"]]
     return [
         row("me@example.com", "codex-system", "3f9a1c2b7d4e8f60", True,
             usage={"primary": window(18, 300, 9000), "secondary": window(52, 10080, 400000),
@@ -253,7 +288,65 @@ def codex_account_rows(all_accounts):
         row("work@example.com", "codex-managed", "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7a8b", False,
             usage={"primary": window(71, 300, 3600), "secondary": window(33, 10080, 500000),
                    "updatedAt": iso(90)}),
-    ]
+    ] + added
+
+
+def stub_data_dir():
+    """$XDG_DATA_HOME/CodexBar, or None when XDG_DATA_HOME is unset or is the real one."""
+    data_home = os.environ.get("XDG_DATA_HOME") or ""
+    real = os.path.join(os.path.expanduser("~"), ".local", "share")
+    if not data_home.startswith("/") or os.path.realpath(data_home) == os.path.realpath(real):
+        return None
+    return os.path.join(data_home, "CodexBar")
+
+
+def stub_codex_store():
+    directory = stub_data_dir()
+    if not directory:
+        return {"accounts": []}
+    try:
+        with open(os.path.join(directory, "managed-codex-accounts.json")) as handle:
+            store = json.load(handle)
+        return store if isinstance(store.get("accounts"), list) else {"accounts": []}
+    except (OSError, ValueError, AttributeError):
+        return {"accounts": []}
+
+
+def codex_accounts_add():
+    """The add helper's steps against a fake codex; prints done or the failing step."""
+    def fail(step, home=None):
+        if home:
+            shutil.rmtree(home, ignore_errors=True)
+        print(f"\nFailed: {step}", file=sys.stderr)
+        sys.exit(1)
+
+    directory = stub_data_dir()
+    if not directory:
+        fail("the stub needs an XDG_DATA_HOME of its own.")
+    codex = os.environ.get("STUB_CODEX_BIN") or ""
+    if not codex.startswith("/") or not os.access(codex, os.X_OK):
+        fail("couldn't find the codex CLI (the stub only runs STUB_CODEX_BIN).")
+    print("Adding a Codex account. Codex opens its sign-in page in your browser.")
+    print("Your everyday Codex login is not changed.\n")
+    home = os.path.join(directory, "managed-codex-homes", str(uuid.uuid4()))
+    os.makedirs(home, mode=0o700)
+    env = dict(os.environ, CODEX_HOME=home)
+    sys.stdout.flush()
+    status = subprocess.run([codex, "login"], env=env, check=False).returncode
+    if status != 0:
+        fail(f"`codex login` exited with status {status}. No account was added.", home)
+    try:
+        with open(os.path.join(home, "auth.json")) as handle:
+            email = str(json.load(handle).get("email") or "").strip()
+    except (OSError, ValueError, AttributeError):
+        fail("`codex login` finished, but its login couldn't be read. No account was added.", home)
+    if not email:
+        fail("`codex login` finished, but the login has no email. No account was added.", home)
+    store = stub_codex_store()
+    store["accounts"].append({"id": str(uuid.uuid4()), "email": email, "home": home})
+    with open(os.path.join(directory, "managed-codex-accounts.json"), "w") as handle:
+        json.dump(store, handle)
+    print(f"\nDone. Added {email} to UsageBar.")
 
 
 def unknown_command(name):
@@ -287,12 +380,15 @@ class Handler(BaseHTTPRequestHandler):
             if REPORT or ACCOUNTS or CODEX_ACCOUNTS:
                 body["capabilities"] = (["machineSync"] if SYNC else []) + \
                     (ACCOUNT_CAPABILITIES if ACCOUNTS else
-                     ["providerAccountRows"] if CODEX_ACCOUNTS else [])
+                     CODEX_ACCOUNT_CAPABILITIES if CODEX_ACCOUNTS else [])
                 body["usagebarVersion"] = VERSION
                 body["upstreamVersion"] = VERSION
             self.send_json(200, body)
         elif path == "/usage" and ISSUES:
             self.send_json(200, issue_rows())
+        elif path == "/accounts/kinds" and CODEX_ACCOUNTS and not ACCOUNTS:
+            self.send_json(200, {"providers": {
+                "codex": {"kind": "cli-login", "rename": False, "remove": False, "replacesCurrent": False}}})
         elif path == "/accounts/kinds" and ACCOUNTS:
             self.send_json(200, {"providers": {
                 "openrouter": {"kind": "key", "placeholder": "sk-or-…", "rename": True, "remove": True,
@@ -375,7 +471,13 @@ def main():
         # Offline: say what the real helper runs, run none of it.
         for index, step in enumerate(["cswap add", "claude auth login", "cswap add"], start=1):
             print(f"Step {index} of 3: {step} (stub: not run)")
+        flag = claude_added_flag()
+        if flag and os.path.isdir(os.path.dirname(flag)):
+            with open(flag, "w") as handle:
+                handle.write("added\n")
         print("done")
+    elif command == "codex-accounts" and argv[1:2] == ["add"]:
+        codex_accounts_add()
     elif command == "config":
         if argv[1:2] == ["providers"]:
             print("[]")

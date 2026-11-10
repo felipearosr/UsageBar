@@ -6,6 +6,7 @@ import {
     CLAUDE_SWAP_KIND,
     NO_INSTALLER_ERROR,
     addHelperArgv,
+    afterTerminal,
     detectRequest,
     installArgv,
     installConfirmLabel,
@@ -92,4 +93,28 @@ test('no argv this module builds logs out', () => {
     ];
     for (const argv of argvs)
         assert.ok(!argv.some(part => /logout/i.test(part)), argv.join(' '));
+});
+
+test('after the install terminal: detect on success, a notice otherwise', () => {
+    assert.deepEqual(afterTerminal('install', 0), {detect: true, refresh: true, notice: null});
+    // No marker (launcher exit only): detect anyway, it is harmless.
+    assert.deepEqual(afterTerminal('install', null), {detect: true, refresh: true, notice: null});
+    assert.deepEqual(afterTerminal('install', 130),
+        {detect: false, refresh: false, notice: 'Installing claude-swap was cancelled.'});
+    const failed = afterTerminal('install', 1);
+    assert.equal(failed.detect, false);
+    assert.match(failed.notice, /didn’t finish/);
+});
+
+test('after the add helper: always refresh, a notice when it did not succeed', () => {
+    assert.deepEqual(afterTerminal('add', 0), {detect: false, refresh: true, notice: null});
+    assert.deepEqual(afterTerminal('add', null), {detect: false, refresh: true, notice: null});
+    assert.deepEqual(afterTerminal('add', 130),
+        {detect: false, refresh: true, notice: 'Adding a Claude account was cancelled.'});
+    // The helper exits 1 for a failed step, 2 when cswap or claude is missing.
+    for (const status of [1, 2]) {
+        const result = afterTerminal('add', status);
+        assert.equal(result.refresh, true);
+        assert.match(result.notice, /didn’t finish/);
+    }
 });

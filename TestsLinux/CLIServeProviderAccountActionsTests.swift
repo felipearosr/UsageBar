@@ -155,12 +155,33 @@ struct CLIServeProviderAccountActionsTests {
         #expect(providers["claude"]?["replacesCurrent"] as? Bool == false)
         #expect(providers["claude"]?["remove"] as? Bool == true)
         #expect(providers["antigravity"]?["remove"] as? Bool == false)
-        // No token accounts at all: nothing.
+        // No token accounts at all: nothing, except Codex, whose managed accounts its own login adds (#169).
         #expect(providers["gemini"] == nil)
-        #expect(providers["codex"] == nil)
         for provider in UsageProvider.allCases where TokenAccountSupportCatalog.support(for: provider) == nil {
+            guard provider != .codex else { continue }
             #expect(providers[provider.rawValue] == nil, "\(provider.rawValue)")
         }
+    }
+
+    @Test
+    func `kinds report cli-login for Codex, with no rename, remove or key placeholder`() async throws {
+        let codex = try #require(try await Self.kinds(Self.runtime())["codex"])
+        #expect(codex["kind"] as? String == "cli-login")
+        #expect(codex["placeholder"] == nil)
+        #expect(codex["rename"] as? Bool == false)
+        #expect(codex["remove"] as? Bool == false)
+        #expect(codex["replacesCurrent"] as? Bool == false)
+        #expect(CodexBarCLI.addableProviderAccountKind(for: .codex) == .cliLogin)
+    }
+
+    @Test
+    func `add refuses Codex, whose accounts come from its login`() async throws {
+        let runtime = try Self.runtime()
+        let add = try await Self.send(
+            Self.request("/accounts/add", json: ["provider": "codex", "token": Self.secret]),
+            runtime)
+        #expect(add.status == .badRequest)
+        #expect(!Self.leaks(add.body))
     }
 
     @Test
@@ -425,6 +446,7 @@ struct CLIServeProviderAccountActionsTests {
         for name in [
             "providerAccountKinds",
             "providerAccountAddKey",
+            "providerAccountAddCliLogin",
             "providerAccountRename",
             "providerAccountRemove",
         ] {
@@ -477,6 +499,7 @@ struct CLIServeProviderAccountActionsTests {
         for name in [
             "providerAccountKinds",
             "providerAccountAddKey",
+            "providerAccountAddCliLogin",
             "providerAccountRename",
             "providerAccountRemove",
         ] {
