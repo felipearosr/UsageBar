@@ -128,13 +128,16 @@ import {
     wantsKinds,
 } from './accountactions.js';
 import {
+    claudeSwapConfigKey,
     idleSwitch,
     rowSwitchView,
     startSwitch,
     switchAnswered,
+    switchConfigChanged,
     switchRefreshed,
     switchRenderKey,
     switchRequest,
+    switchTimedOut,
 } from './accountswitch.js';
 
 // Sizes a container from its first child only and floats the rest at
@@ -168,6 +171,11 @@ class OverlayLayout extends Clutter.LayoutManager {
 });
 
 const REQUEST_TIMEOUT_SECS = 120;
+// A claude-swap switch is a credential transaction serve never cancels: its
+// POST may wait this long before the row says "Still switching…", and the
+// card reloads this long after that.
+const SWITCH_TIMEOUT_SECS = 600;
+const SWITCH_STILL_RELOAD_SECS = 60;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
 const TICK_SECS = 30;              // countdown re-render while the menu is open
@@ -1953,6 +1961,7 @@ export default class UsageBarExtension extends Extension {
                         if (generation !== this._generation || !this._indicator)
                             return GLib.SOURCE_REMOVE;
                         this._loadDisplayNames(this._binary);
+                        this._claudeSwapConfigChanged();
                         this._fetchUsage();
                         return GLib.SOURCE_REMOVE;
                     });
@@ -2080,6 +2089,12 @@ export default class UsageBarExtension extends Extension {
         this._cancellable = null;
         this._session?.abort();
         this._session = null;
+        this._switchSession?.abort();
+        this._switchSession = null;
+        if (this._switchStillId) {
+            GLib.source_remove(this._switchStillId);
+            this._switchStillId = 0;
+        }
         this._supervisor?.stop();
         this._supervisor = null;
         this._destroyOverviewView();
@@ -2236,7 +2251,7 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    _fetchJSON(url, cb, method = 'GET', body = null, headers = null) {
+    _fetchJSON(url, cb, method = 'GET', body = null, headers = null, session = this._session) {
         const generation = this._generation;
         const msg = Soup.Message.new(method, url);
         for (const [name, value] of Object.entries(headers ?? {}))
@@ -2247,7 +2262,7 @@ export default class UsageBarExtension extends Extension {
             msg.set_request_body_from_bytes('application/json',
                 new GLib.Bytes(new TextEncoder().encode(JSON.stringify(body))));
         }
-        this._session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
+        session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
             (session, res) => {
                 try {
                     if (generation !== this._generation || !this._indicator)
@@ -2270,13 +2285,13 @@ export default class UsageBarExtension extends Extension {
             });
     }
 
-    _get(path, cb, method = 'GET', body = null, headers = null) {
+    _get(path, cb, method = 'GET', body = null, headers = null, session = this._session) {
         const port = this._supervisor?.port;
         if (!port) {
             cb(null, new Error('serve not running'));
             return;
         }
-        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method, body, headers);
+        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method, body, headers, session);
     }
 
     // ----- Machine Sync -----
@@ -7504,22 +7519,41 @@ export default class UsageBarExtension extends Extension {
     // accounts ("Refreshing account status…"). Only that reload decides
     // which account is active; a failure stays on the row.
     _switchAccount(provider, account) {
-        const state = startSwitch(this._accountSwitch ?? idleSwitch(), {provider, accountId: account.id});
+        const state = startSwitch(this._accountSwitch ?? idleSwitch(),
+            {provider, accountId: account.id, config: this._claudeSwapConfigKey()});
         if (!state)
             return;
         const seq = state.seq;
         this._accountSwitch = state;
         this._requestRender();
+        const reloaded = () => {
+            this._accountSwitch = switchRefreshed(this._accountSwitch, seq);
+            this._requestRender();
+        };
+        // Serve keeps switching after the POST gives up here: say so, keep
+        // Switch disabled, and reload a while later.
+        const timedOut = () => {
+            const next = switchTimedOut(this._accountSwitch, seq);
+            if (next === this._accountSwitch)
+                return;
+            this._accountSwitch = next;
+            this._requestRender();
+            if (this._switchStillId)
+                GLib.source_remove(this._switchStillId);
+            this._switchStillId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, SWITCH_STILL_RELOAD_SECS, () => {
+                this._switchStillId = 0;
+                if (this._indicator)
+                    this._whenUsageRefreshed(reloaded);
+                return GLib.SOURCE_REMOVE;
+            });
+        };
         const answered = error => {
             const next = switchAnswered(this._accountSwitch, seq, {error});
             if (next === this._accountSwitch)
                 return;
             this._accountSwitch = next;
             this._requestRender();
-            this._whenUsageRefreshed(() => {
-                this._accountSwitch = switchRefreshed(this._accountSwitch, seq);
-                this._requestRender();
-            });
+            this._whenUsageRefreshed(reloaded);
         };
         const actionToken = this._supervisor?.actionToken;
         if (!actionToken) {
@@ -7527,8 +7561,43 @@ export default class UsageBarExtension extends Extension {
             return;
         }
         const request = switchRequest({provider, accountId: account.id});
-        this._get(request.path, (_result, error) => answered(error ? actionErrorText(error) : null),
-            request.method, request.body, {[ACTION_TOKEN_HEADER]: actionToken});
+        this._switchSession ??= new Soup.Session({timeout: SWITCH_TIMEOUT_SECS});
+        this._get(request.path, (_result, error) => {
+            if (error?.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.TIMED_OUT))
+                timedOut();
+            else
+                answered(error ? actionErrorText(error) : null);
+        }, request.method, request.body, {[ACTION_TOKEN_HEADER]: actionToken}, this._switchSession);
+    }
+
+    // claude-swap's configuration (enabled, executable) from the CLI's
+    // config.json, or null when it can't be read.
+    _claudeSwapConfigKey() {
+        // UI smoke runs over fixtures and must not read the user's config.
+        if (GLib.getenv('USAGEBAR_UI_SMOKE_RESULT'))
+            return null;
+        try {
+            const path = GLib.build_filenamev([GLib.get_user_config_dir(), 'codexbar', 'config.json']);
+            const [, bytes] = GLib.file_get_contents(path);
+            return claudeSwapConfigKey(JSON.parse(new TextDecoder().decode(bytes)));
+        } catch {
+            return null;
+        }
+    }
+
+    // The config changed: a switch started under another claude-swap
+    // configuration drops its progress and error (accountswitch.js).
+    _claudeSwapConfigChanged() {
+        const state = this._accountSwitch ?? idleSwitch();
+        const next = switchConfigChanged(state, this._claudeSwapConfigKey());
+        if (next === state)
+            return;
+        this._accountSwitch = next;
+        if (this._switchStillId) {
+            GLib.source_remove(this._switchStillId);
+            this._switchStillId = 0;
+        }
+        this._requestRender();
     }
 
     // ----- Provider Account actions (accountactions.js) -----

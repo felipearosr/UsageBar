@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
     PHASE_REFRESHING,
+    PHASE_STILL,
     PHASE_SWITCHING,
     PHASE_TEXT,
+    claudeSwapConfigKey,
     idleSwitch,
     isBusy,
     isSwitchableId,
@@ -13,7 +15,9 @@ import {
     switchAnswered,
     switchRefreshed,
     switchRenderKey,
+    switchConfigChanged,
     switchRequest,
+    switchTimedOut,
 } from '../usagebar@felipearosr.github.io/accountswitch.js';
 import {buildCards} from '../usagebar@felipearosr.github.io/accounts.js';
 import {readReport} from '../usagebar@felipearosr.github.io/clicompat.js';
@@ -98,7 +102,67 @@ test('a switch goes switching, then refreshing, then idle', () => {
     assert.equal(isBusy(state), false);
     assert.deepEqual(target(), {button: true, enabled: true, progress: null, error: null});
     assert.deepEqual(PHASE_TEXT, {[PHASE_SWITCHING]: 'Switching account…',
-        [PHASE_REFRESHING]: 'Refreshing account status…'});
+        [PHASE_REFRESHING]: 'Refreshing account status…', [PHASE_STILL]: 'Still switching…'});
+});
+
+test('a timed-out POST shows Still switching… with Switch disabled until a reload', () => {
+    let state = startSwitch(idleSwitch(), {provider: 'claude', accountId: 'claude-swap:1'});
+    const seq = state.seq;
+    state = switchTimedOut(state, seq);
+    assert.equal(state.phase, PHASE_STILL);
+    assert.equal(isBusy(state), true);
+    const c = card();
+    const view = id => rowSwitchView(byId(c, id), {provider: 'claude', state, capabilities: WITH_SWITCH});
+    assert.deepEqual(view('claude-swap:1'), {button: true, enabled: false, progress: 'Still switching…', error: null});
+    assert.equal(view('claude-swap:4').enabled, false);
+    assert.equal(startSwitch(state, {provider: 'claude', accountId: 'claude-swap:4'}), null);
+    // A late answer to the timed-out POST changes nothing; the reload ends it.
+    assert.equal(switchAnswered(state, seq, {error: 'late'}), state);
+    state = switchRefreshed(state, seq);
+    assert.equal(isBusy(state), false);
+    assert.equal(view('claude-swap:1').error, null);
+    // Only a switch that is still waiting for its answer can time out.
+    assert.equal(switchTimedOut(state, seq), state);
+});
+
+test('claude-swap\'s configuration key reads only its enabled flag and executable', () => {
+    const config = path => ({providers: [{id: 'codex', enabled: true},
+        {id: 'claude', enabled: true, claudeSwapEnabled: true, claudeSwapExecutablePath: path, apiKey: 'x'}]});
+    assert.equal(claudeSwapConfigKey(config('/usr/bin/cswap')), JSON.stringify([true, '/usr/bin/cswap']));
+    assert.notEqual(claudeSwapConfigKey(config('/usr/bin/cswap')), claudeSwapConfigKey(config('/opt/cswap')));
+    assert.equal(claudeSwapConfigKey({providers: [{id: 'claude'}]}), JSON.stringify([false, '']));
+    assert.equal(claudeSwapConfigKey(null), null);
+    assert.equal(claudeSwapConfigKey({providers: 'x'}), null);
+});
+
+test('a configuration change clears the switch, and turning claude-swap back on never revives it', () => {
+    const on = JSON.stringify([true, '/usr/bin/cswap']);
+    const off = JSON.stringify([false, '/usr/bin/cswap']);
+    let state = startSwitch(idleSwitch(), {provider: 'claude', accountId: 'claude-swap:1', config: on});
+    const seq = state.seq;
+    // Nothing changed that matters: the switch goes on.
+    assert.equal(switchConfigChanged(state, on), state);
+    state = switchConfigChanged(state, off);
+    assert.equal(isBusy(state), false);
+    assert.equal(state.error, null);
+    // The old switch's answer and reload no longer apply.
+    assert.equal(switchAnswered(state, seq, {error: 'Account switch failed: x'}), state);
+    assert.equal(switchRefreshed(state, seq), state);
+    state = switchConfigChanged(state, on);
+    assert.equal(isBusy(state), false);
+    assert.equal(state.error, null);
+    const view = rowSwitchView(byId(card(), 'claude-swap:1'), {provider: 'claude', state, capabilities: WITH_SWITCH});
+    assert.deepEqual(view, {button: true, enabled: true, progress: null, error: null});
+
+    // A switch error shown after the switch ended goes too.
+    let failed = startSwitch(idleSwitch(), {provider: 'claude', accountId: 'claude-swap:1', config: on});
+    failed = switchRefreshed(switchAnswered(failed, failed.seq, {error: 'Account switch failed: x'}), failed.seq);
+    assert.equal(failed.error, 'Account switch failed: x');
+    assert.equal(switchConfigChanged(failed, off).error, null);
+    assert.equal(switchConfigChanged(switchConfigChanged(failed, off), on).error, null);
+    // A new switch starts from the configuration it sees.
+    const next = startSwitch(switchConfigChanged(failed, off), {provider: 'claude', accountId: 'claude-swap:4', config: off});
+    assert.equal(next.seq, failed.seq + 1);
 });
 
 test('the new active account comes from the reloaded rows, not the switch', () => {

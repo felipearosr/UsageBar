@@ -145,6 +145,8 @@ test('an untagged provider error keeps every account\'s last Quota, stale', () =
     const openrouter = merged.filter(row => row.provider === 'openrouter');
     assert.deepEqual(openrouter.map(row => row.accountId), [PERSONAL, WORK]);
     assert.ok(openrouter.every(row => row.stale && row.error.message === 'openrouter usage timed out'));
+    // Which account is active is unknown now: no stale copy keeps the badge.
+    assert.ok(openrouter.every(row => row.active === false));
     assert.equal(openrouter[1].usage.primary.usedPercent, 64);
     assert.equal(openrouter[1].updatedAt, '2026-11-10T11:55:00Z');
     const cards = buildCards(merged, {accountRows: true, now: NOW});

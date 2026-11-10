@@ -11,11 +11,19 @@
 //   switching    POST /accounts/switch is out: "Switching account…"
 //   refreshing   serve answered; the extension reloads the accounts:
 //                "Refreshing account status…"
+//   still        the POST timed out on the extension's side while serve
+//                keeps switching (it never cancels one): "Still switching…"
+//                until a later reload
 //   idle         the reload landed. The card's active account is whatever
 //                that reload says; a switch error stays on the row it was
 //                for until the next switch.
 // The requested row keeps its progress, and every Switch on the card stays
-// disabled, through both phases.
+// disabled, through every phase.
+//
+// A switch remembers claude-swap's configuration (enabled and executable)
+// from when it started. When that configuration changes, its progress and
+// error go away and its late answers are ignored, so turning claude-swap
+// off and on again never brings an old error back.
 
 import {redactEmails} from './accountlabels.js';
 
@@ -24,10 +32,12 @@ export const SWITCH_PATH = '/accounts/switch';
 
 export const PHASE_SWITCHING = 'switching';
 export const PHASE_REFRESHING = 'refreshing';
+export const PHASE_STILL = 'still';
 
 export const PHASE_TEXT = {
     [PHASE_SWITCHING]: 'Switching account…',
     [PHASE_REFRESHING]: 'Refreshing account status…',
+    [PHASE_STILL]: 'Still switching…',
 };
 
 function has(capabilities, name) {
@@ -41,19 +51,47 @@ export function isSwitchableId(id) {
 
 // No switch out, nothing to show.
 export function idleSwitch() {
-    return {seq: 0, provider: null, accountId: null, phase: null, error: null};
+    return {seq: 0, provider: null, accountId: null, phase: null, error: null, config: null};
 }
 
 export function isBusy(state) {
-    return state?.phase === PHASE_SWITCHING || state?.phase === PHASE_REFRESHING;
+    return state?.phase === PHASE_SWITCHING || state?.phase === PHASE_REFRESHING || state?.phase === PHASE_STILL;
+}
+
+// claude-swap's configuration as one comparable string: the Claude entry's
+// `claudeSwapEnabled` and `claudeSwapExecutablePath` in the CLI's
+// config.json (parsed), or null when there is none.
+export function claudeSwapConfigKey(config) {
+    const providers = Array.isArray(config?.providers) ? config.providers : [];
+    const claude = providers.find(entry => entry?.id === 'claude');
+    if (!claude)
+        return null;
+    const path = typeof claude.claudeSwapExecutablePath === 'string' ? claude.claudeSwapExecutablePath.trim() : '';
+    return JSON.stringify([claude.claudeSwapEnabled === true, path]);
 }
 
 // Starts a switch to `accountId`, or null while another one is out. `seq`
-// tells this switch's answers from a later one's.
-export function startSwitch(state, {provider, accountId}) {
+// tells this switch's answers from a later one's; `config` is
+// claudeSwapConfigKey at the start.
+export function startSwitch(state, {provider, accountId, config = null}) {
     if (isBusy(state) || !provider || !isSwitchableId(accountId))
         return null;
-    return {seq: (state?.seq ?? 0) + 1, provider, accountId, phase: PHASE_SWITCHING, error: null};
+    return {seq: (state?.seq ?? 0) + 1, provider, accountId, phase: PHASE_SWITCHING, error: null, config};
+}
+
+// claude-swap's configuration is now `config`. A switch that started under
+// another one loses its progress and error; its answers no longer apply.
+export function switchConfigChanged(state, config) {
+    if (!state || (!isBusy(state) && !state.error) || state.config === config)
+        return state;
+    return {...idleSwitch(), seq: state.seq, config};
+}
+
+// The POST timed out here; serve still runs the switch.
+export function switchTimedOut(state, seq) {
+    if (!state || state.seq !== seq || state.phase !== PHASE_SWITCHING)
+        return state;
+    return {...state, phase: PHASE_STILL};
 }
 
 // Serve answered the POST. Either way the accounts are reloaded next, since
@@ -67,7 +105,7 @@ export function switchAnswered(state, seq, {error = null} = {}) {
 
 // The reload after the switch landed.
 export function switchRefreshed(state, seq) {
-    if (!state || state.seq !== seq || state.phase !== PHASE_REFRESHING)
+    if (!state || state.seq !== seq || (state.phase !== PHASE_REFRESHING && state.phase !== PHASE_STILL))
         return state;
     return {...state, phase: null};
 }
