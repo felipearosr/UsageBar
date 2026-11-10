@@ -176,6 +176,28 @@ struct ClaudeSwapAddAccountTests {
         #expect(home.invocations == ["cswap add", "claude auth login"])
     }
 
+    #if os(Linux)
+    @Test
+    func `a step spawned from a concurrency thread starts with no blocked signals`() async throws {
+        let home = try SyntheticHome()
+        defer { home.remove() }
+        // Swift concurrency's worker threads block SIGINT, SIGQUIT, SIGHUP and SIGTERM, and posix_spawn copies the
+        // caller's mask. A non-shell child (shell fakes reset their own mask): `cp` copies its own
+        // /proc/self/status, which records the mask it started with.
+        let output = home.root.appendingPathComponent("status")
+        let copy = ["/usr/bin/cp", "/bin/cp"].first { FileManager.default.isExecutableFile(atPath: $0) }
+        let cp = try #require(copy)
+        let status = try await Task.detached {
+            try CLIForegroundProcess.run(cp, ["/proc/self/status", output.path])
+        }.value
+        #expect(status == 0)
+        let text = try String(contentsOf: output, encoding: .utf8)
+        let line = try #require(text.split(separator: "\n").first { $0.hasPrefix("SigBlk:") }.map(String.init))
+        let mask = line.split(separator: "\t").last.map(String.init) ?? line
+        #expect(!mask.isEmpty && mask.allSatisfy { $0 == "0" }, "\(line)")
+    }
+    #endif
+
     @Test
     func `the wait status decodes exits and signals`() {
         #expect(CLIForegroundProcess.exitCode(fromWaitStatus: 0) == 0)
@@ -193,6 +215,42 @@ struct ClaudeSwapAddAccountTests {
         // Unknown counts can't tell, so they say done.
         #expect(ClaudeSwapAddAccountFlow.message(for: done, slotsBefore: nil, slotsAfter: 2) == "done")
         #expect(ClaudeSwapAddAccountFlow.message(for: done, slotsBefore: 2, slotsAfter: nil) == "done")
+    }
+
+    @Test
+    func `first use that signs back in to the same account warns`() {
+        let done = ClaudeSwapAddAccountFlow.Outcome.done
+        // Step 1 saved the current login (0 -> 1) and step 3 saved nothing new: still 1.
+        #expect(ClaudeSwapAddAccountFlow.message(
+            for: done, slotsBefore: 0, slotsAfter: 1, currentAlreadySaved: false) ==
+            ClaudeSwapAddAccountFlow.nothingAddedWarning)
+        #expect(ClaudeSwapAddAccountFlow.message(
+            for: done, slotsBefore: 0, slotsAfter: 2, currentAlreadySaved: false) == "done")
+        // The current login was already saved: one more slot is a new account.
+        #expect(ClaudeSwapAddAccountFlow.message(
+            for: done, slotsBefore: 1, slotsAfter: 2, currentAlreadySaved: true) == "done")
+        #expect(ClaudeSwapAddAccountFlow.message(
+            for: done, slotsBefore: 1, slotsAfter: 1, currentAlreadySaved: true) ==
+            ClaudeSwapAddAccountFlow.nothingAddedWarning)
+    }
+
+    @Test
+    func `the current login counts as saved when a slot has its email and organization`() throws {
+        let list = try ClaudeSwapListParser.parse(Data("""
+        {"schemaVersion":1,"activeAccountNumber":1,"accounts":[
+         {"number":1,"email":"work@example.com","organizationName":"Example Org","active":true,"usageStatus":"ok"}]}
+        """.utf8))
+        let saved = ClaudeCodeSignedInAccount(
+            accountUuid: "u-1",
+            email: "work@example.com",
+            organizationName: "Example Org")
+        let other = ClaudeCodeSignedInAccount(
+            accountUuid: "u-2",
+            email: "personal@example.com",
+            organizationName: "")
+        #expect(ClaudeSwapAddAccountFlow.currentLoginSaved(in: list, account: saved) == true)
+        #expect(ClaudeSwapAddAccountFlow.currentLoginSaved(in: list, account: other) == false)
+        #expect(ClaudeSwapAddAccountFlow.currentLoginSaved(in: list, account: nil) == nil)
     }
 
     @Test

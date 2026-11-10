@@ -170,19 +170,34 @@ struct ClaudeSwapAddAccountFlow {
         "Run Add account again and sign in to a different account."
 
     /// `slotsBefore`/`slotsAfter`: claude-swap's account count before step 1 and after step 3, when both could be
-    /// read. A successful run that didn't add a slot says so instead of a plain "done".
-    static func message(for outcome: Outcome, total: Int = 3, slotsBefore: Int? = nil, slotsAfter: Int? = nil)
-        -> String
+    /// read. `currentAlreadySaved`: whether the login Claude Code held before step 1 was already one of those slots
+    /// (nil when that can't be told). Step 1 adds the current login unless it was saved, and step 3 should add one
+    /// more; a successful run that falls short of that says nothing new was added instead of a plain "done". When it
+    /// can't be told, only a run that added nothing at all warns.
+    static func message(
+        for outcome: Outcome,
+        total: Int = 3,
+        slotsBefore: Int? = nil,
+        slotsAfter: Int? = nil,
+        currentAlreadySaved: Bool? = nil) -> String
     {
         switch outcome {
         case .done:
-            if let slotsBefore, let slotsAfter, slotsAfter <= slotsBefore {
+            let expectedGrowth = currentAlreadySaved == false ? 2 : 1
+            if let slotsBefore, let slotsAfter, slotsAfter < slotsBefore + expectedGrowth {
                 return self.nothingAddedWarning
             }
             return "done"
         case let .failed(index, step, reason):
             return "Step \(index) of \(total) failed: `\(step.commandLine)` (\(step.title.lowercased())): \(reason)."
         }
+    }
+
+    /// Whether claude-swap already holds `account` (Claude Code's current login), matched by email and
+    /// organization as serve matches the signed-in slot; nil without a readable account.
+    static func currentLoginSaved(in list: ClaudeSwapAccountList, account: ClaudeCodeSignedInAccount?) -> Bool? {
+        guard let account else { return nil }
+        return ClaudeSwapStatusLineOverride.matchingSlot(in: list, account: account) != nil
     }
 
     /// The child shares this process's terminal and stays in its foreground process group (`CLIForegroundProcess`),
@@ -232,21 +247,27 @@ extension CodexBarCLI {
             self.platformExit(ExitCode.binaryNotFound.rawValue)
         }
         let flow = ClaudeSwapAddAccountFlow(cswapPath: cswap, claudePath: claude)
-        let slotsBefore = await self.claudeSwapSlotCount(cswap)
+        let before = await self.claudeSwapList(cswap)
+        let currentAlreadySaved = before.flatMap {
+            ClaudeSwapAddAccountFlow.currentLoginSaved(
+                in: $0,
+                account: ClaudeCodeSignedInAccount.load(environment: environment))
+        }
         let outcome = flow.run(announce: { line in self.writeUnbuffered("\n\(line)\n") })
-        let slotsAfter = outcome == .done ? await self.claudeSwapSlotCount(cswap) : nil
+        let after = outcome == .done ? await self.claudeSwapList(cswap) : nil
         self.writeUnbuffered("\n" + ClaudeSwapAddAccountFlow.message(
             for: outcome,
             total: flow.steps.count,
-            slotsBefore: slotsBefore,
-            slotsAfter: slotsAfter) + "\n")
+            slotsBefore: before?.accounts.count,
+            slotsAfter: after?.accounts.count,
+            currentAlreadySaved: currentAlreadySaved) + "\n")
         self.platformExit(outcome == .done ? 0 : ExitCode.failure.rawValue)
     }
 
-    /// How many accounts claude-swap lists, through the adapter's own exact `cswap --list --json` read; nil when
-    /// the read fails (the flow then just says "done").
-    private static func claudeSwapSlotCount(_ cswap: String) async -> Int? {
-        try? await ClaudeSwapAccountReader.readAccountList(executablePath: cswap, timeout: 15).accounts.count
+    /// claude-swap's accounts, through the adapter's own exact `cswap --list --json` read; nil when the read fails
+    /// (the flow then just says "done").
+    private static func claudeSwapList(_ cswap: String) async -> ClaudeSwapAccountList? {
+        try? await ClaudeSwapAccountReader.readAccountList(executablePath: cswap, timeout: 15)
     }
 
     /// Straight to the terminal, so the step lines never land after the children's own output.
