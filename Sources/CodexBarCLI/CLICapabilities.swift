@@ -8,6 +8,9 @@ import Foundation
 enum CLICapability: String, CaseIterable, Encodable, Sendable {
     /// `codexbar sync` and serve's `/sync/status` and `/sync/push`.
     case machineSync
+    /// serve's `GET /usage?accounts=all`: one row per Provider Account, each with `accountId`, `accountSource`,
+    /// `accountLabel`, `active` and `updatedAt` (CLIServeProviderAccounts.swift).
+    case providerAccountRows
 }
 
 /// The version and capability fields shared by `codexbar --version --json` and serve's `GET /health`.

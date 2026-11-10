@@ -268,6 +268,28 @@
   margin-top: 6px;
 }
 
+/* One Provider Account on a multi-account card (accounts.js). */
+.usagebar-account-head {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.usagebar-account-label {
+  font-size: 10pt;
+  font-weight: bold;
+  color: #eeeeec;
+}
+
+.usagebar-account-headlabel {
+  margin-right: 6px;
+}
+
+.usagebar-account-active {
+  background-color: rgba(46, 194, 126, 0.22);
+  color: #8ff0a4;
+}
+
 .usagebar-window-label {
   font-size: 10pt;
   font-weight: bold;
@@ -859,6 +881,7 @@
 .usagebar-theme-system .usagebar-compact-title,
 .usagebar-theme-system .usagebar-card-title,
 .usagebar-theme-system .usagebar-window-label,
+.usagebar-theme-system .usagebar-account-label,
 .usagebar-theme-system .usagebar-credits-count,
 .usagebar-theme-system .usagebar-kpi-value,
 .usagebar-theme-system .usagebar-ov-total,

@@ -9,6 +9,12 @@ STUB_CODEXBAR_PAIRED=1 (with sync) pretends this Machine is in a Sync Group
 with one other Machine, so the Machines tab and the paired Settings page show.
 STUB_CODEXBAR_ISSUES=1 makes /usage return one healthy provider and one of
 each provider error state, for the issues banner and Details dialog.
+STUB_CODEXBAR_ACCOUNTS=1 advertises providerAccountRows on /health and answers
+/usage?accounts=all with two OpenRouter Provider Accounts (Work active, the
+Personal key failing) next to a single-account Claude row; plain /usage gets
+the single-account rows an older CLI would send.
+STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
+seconds after serve starts, like a serve that isn't ready yet.
 """
 
 import json
@@ -23,6 +29,9 @@ SYNC = os.environ.get("STUB_CODEXBAR_SYNC", "1") != "0"
 REPORT = os.environ.get("STUB_CODEXBAR_REPORT") == "1"
 PAIRED = SYNC and os.environ.get("STUB_CODEXBAR_PAIRED") == "1"
 ISSUES = os.environ.get("STUB_CODEXBAR_ISSUES") == "1"
+ACCOUNTS = os.environ.get("STUB_CODEXBAR_ACCOUNTS") == "1"
+HEALTH_FAIL_SECS = float(os.environ.get("STUB_CODEXBAR_HEALTH_FAIL_SECS") or 0)
+STARTED = time.monotonic()
 VERSION = "0.69.0"
 REPORTING_DAY = {"timeZone": None, "startHour": 0, "effectiveTimeZone": "UTC"}
 
@@ -74,6 +83,30 @@ def issue_rows():
     ]
 
 
+def iso(offset_secs=0):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - offset_secs))
+
+
+def account_rows(all_accounts):
+    def window(percent, minutes, reset_secs):
+        return {"usedPercent": percent, "windowMinutes": minutes, "resetsAt": iso(-reset_secs)}
+    claude = {"provider": "claude", "source": "oauth",
+              "usage": {"primary": window(22, 300, 7200), "secondary": window(41, 10080, 300000),
+                        "updatedAt": iso(30)}}
+    work = {"provider": "openrouter", "source": "api", "account": "Work",
+            "usage": {"primary": window(64, 43200, 900000), "updatedAt": iso(240)}}
+    if not all_accounts:
+        return [claude, work]
+    personal = {"provider": "openrouter", "source": "api", "account": "Personal",
+                "accountId": "token:6f0c2a9e-1b4d-4c8a-9e2f-0a1b2c3d4e5f", "accountSource": "token",
+                "accountLabel": "Personal", "active": False,
+                "error": {"code": 1, "kind": "provider",
+                          "message": "OpenRouter API error: 401 Unauthorized (invalid key)"}}
+    work.update({"accountId": "token:0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70", "accountSource": "token",
+                 "accountLabel": "Work", "active": True, "updatedAt": iso(240)})
+    return [claude, personal, work]
+
+
 def unknown_command(name):
     if "--json-only" in sys.argv:
         print(json.dumps([{"provider": "cli", "source": "cli", "error": {
@@ -96,16 +129,22 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        path = urlsplit(self.path).path
-        if path == "/health":
+        parts = urlsplit(self.path)
+        path = parts.path
+        if path == "/health" and time.monotonic() - STARTED < HEALTH_FAIL_SECS:
+            self.send_json(503, {"error": "starting"})
+        elif path == "/health":
             body = {"status": "ok", "version": VERSION}
-            if REPORT:
-                body["capabilities"] = ["machineSync"] if SYNC else []
+            if REPORT or ACCOUNTS:
+                body["capabilities"] = (["machineSync"] if SYNC else []) + \
+                    (["providerAccountRows"] if ACCOUNTS else [])
                 body["usagebarVersion"] = VERSION
                 body["upstreamVersion"] = VERSION
             self.send_json(200, body)
         elif path == "/usage" and ISSUES:
             self.send_json(200, issue_rows())
+        elif path == "/usage" and ACCOUNTS:
+            self.send_json(200, account_rows("accounts=all" in parts.query.split("&")))
         elif path in ("/usage", "/cost"):
             self.send_json(200, [])
         elif path == "/sync/status" and SYNC:
