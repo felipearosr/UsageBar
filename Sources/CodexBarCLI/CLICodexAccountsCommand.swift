@@ -20,7 +20,7 @@ extension CodexBarCLI {
                     abstract: "Explicitly replace system auth after preserving its account",
                     discussion: nil,
                     signature: CommandSignature.describe(CodexAccountPromoteOptions()).flattened()),
-            ],
+            ] + forkCodexAccountsSubcommandDescriptors(), // UsageBar: `add` (CLICodexAccountsAdd.swift)
             defaultSubcommandName: "list")
     }
 
@@ -28,6 +28,7 @@ extension CodexBarCLI {
     static func runCodexAccounts(path: [String], values: ParsedValues) async {
         let output = CLIOutputPreferences.from(values: values)
         Self.forkRequireCodexAccountsPlatformSupport(path: path, output: output)
+        if await Self.forkRunCodexAccounts(path: path, values: values, output: output) { return }
         do {
             let store = FileManagedCodexAccountStore()
             let liveHome = CodexHomeScope.ambientHomeURL(env: ProcessInfo.processInfo.environment)
@@ -148,7 +149,7 @@ enum CodexAccountCLIError: Error, LocalizedError, Equatable {
     }
 }
 
-private struct CLICodexManagedHomeFactory: ManagedCodexHomeProducing {
+struct CLICodexManagedHomeFactory: ManagedCodexHomeProducing {
     private var root: URL {
         FileManagedCodexAccountStore.defaultURL().deletingLastPathComponent()
             .appendingPathComponent("managed-codex-homes", isDirectory: true)
