@@ -107,6 +107,18 @@ import {
 } from './logoinstall.js';
 import {findCodexbar, withClaudeOAuth} from './cli.js';
 import {featureState, readReport, syncProbeFromHttpStatus} from './clicompat.js';
+import {
+    actionErrorText,
+    addAction,
+    addKeyRequest,
+    keyFormError,
+    readKinds,
+    removeRequest,
+    renameFormError,
+    renameRequest,
+    rowActions,
+    wantsKinds,
+} from './accountactions.js';
 
 // Sizes a container from its first child only and floats the rest at
 // their preferred size in the top-right corner, so an open dropdown
@@ -1997,6 +2009,8 @@ export default class UsageBarExtension extends Extension {
         this._aboutDialog = null;
         this._issuesDialog?.destroy();
         this._issuesDialog = null;
+        this._accountDialog?.destroy();
+        this._accountDialog = null;
         this._issueSince = null;
         this._settings = null;
         if (this._fetchId) {
@@ -2007,6 +2021,9 @@ export default class UsageBarExtension extends Extension {
         this._fetchInFlight = false;
         this._retryInFlight = false;
         this._costInFlight = false;
+        this._usageRefetchQueued = false;
+        this._accountKindsInFlight = false;
+        this._accountKinds = null;
         if (this._tickId) {
             GLib.source_remove(this._tickId);
             this._tickId = 0;
@@ -2190,9 +2207,15 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    _fetchJSON(url, cb, method = 'GET') {
+    _fetchJSON(url, cb, method = 'GET', body = null) {
         const generation = this._generation;
         const msg = Soup.Message.new(method, url);
+        // Account actions send JSON; it can hold a key, so it goes in the
+        // body and is never logged.
+        if (body !== null) {
+            msg.set_request_body_from_bytes('application/json',
+                new GLib.Bytes(new TextEncoder().encode(JSON.stringify(body))));
+        }
         this._session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
             (session, res) => {
                 try {
@@ -2216,13 +2239,13 @@ export default class UsageBarExtension extends Extension {
             });
     }
 
-    _get(path, cb, method = 'GET') {
+    _get(path, cb, method = 'GET', body = null) {
         const port = this._supervisor?.port;
         if (!port) {
             cb(null, new Error('serve not running'));
             return;
         }
-        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method);
+        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method, body);
     }
 
     // ----- Machine Sync -----
@@ -2339,6 +2362,8 @@ export default class UsageBarExtension extends Extension {
             }
             sync.reportChecked = true;
             sync.report = readReport(payload);
+            if (wantsKinds(sync.report?.capabilities))
+                this._fetchAccountKinds();
             this._runReportGate(sync, sync.reportGate.healthResult(true, Date.now()));
             // The report landed after a plain /usage went out (the gate's
             // window closed first): ask for account rows now, not at the next
@@ -2583,6 +2608,12 @@ export default class UsageBarExtension extends Extension {
                 this._fetchCost();
             }
             this._requestRender();
+            // An account was added, renamed or removed while this fetch
+            // was out: its answer may predate the change.
+            if (this._usageRefetchQueued) {
+                this._usageRefetchQueued = false;
+                this._fetchUsage(true);
+            }
         });
     }
 
@@ -3789,7 +3820,7 @@ export default class UsageBarExtension extends Extension {
         const accountsSmoke = assertions => {
             let waited = 0;
             const ready = () => {
-                if (!this._accountCards?.get('openrouter')?.multi && waited < 15000) {
+                if ((!this._accountCards?.get('openrouter')?.multi || !this._accountKinds) && waited < 15000) {
                     waited += 250;
                     later(250, ready);
                     return;
@@ -3833,14 +3864,114 @@ export default class UsageBarExtension extends Extension {
                             {actual: banners.length}));
                         if (heads[0])
                             assertions.push(painted('first account block is painted', heads[0]));
+                        const addButtons = descendants(box)
+                            .filter(actor => actor.style_class?.includes('usagebar-account-add'));
+                        assertions.push(assertion('the OpenRouter view offers Add account…',
+                            addButtons.length === 1 && addButtons[0].label === 'Add account…',
+                            {actual: addButtons.map(button => button.label)}));
+                        const rowButtons = descendants(box)
+                            .filter(actor => actor.style_class?.includes('usagebar-account-action'));
+                        assertions.push(assertion('each key account offers rename and remove',
+                            rowButtons.length === 4, {actual: rowButtons.map(button => button.accessible_name)}));
                     } catch (error) {
                         finish(assertions, error);
                         return;
                     }
-                    capture('accounts-provider-openrouter.png', () => finish(assertions));
+                    capture('accounts-provider-openrouter.png', () => accountActionsSmoke(assertions));
                 });
             };
             ready();
+        };
+
+        // Waits for `done()` (up to 15 s), then runs `then`.
+        const waitFor = (done, then) => {
+            let waited = 0;
+            const poll = () => {
+                if (!done() && waited < 15000) {
+                    waited += 250;
+                    later(250, poll);
+                    return;
+                }
+                then();
+            };
+            poll();
+        };
+        const openrouterLabels = () => this._accountCards?.get('openrouter')?.accounts.map(a => a.label) ?? [];
+        // Fills the account dialog's fields and submits it the way Enter does.
+        const submitAccountDialog = (dialog, values) => {
+            const entries = descendants(dialog).filter(actor => actor instanceof St.Entry);
+            values.forEach((value, index) => {
+                entries[index].text = value;
+            });
+            (entries[entries.length - 1] ?? null)?.clutter_text.emit('activate');
+            return entries.length;
+        };
+
+        // Add, rename and remove a key account through the dialogs against the
+        // stub serve, which keeps the accounts in memory: each change must
+        // close its dialog and refresh the card on its own.
+        const accountActionsSmoke = assertions => {
+            let dialog;
+            try {
+                const action = this._addAccountAction('openrouter');
+                assertions.push(assertion('Add account… dispatches on the key kind', action?.kind === 'key',
+                    {actual: action?.kind ?? null}));
+                dialog = this._showAddKeyDialog(action);
+                const entries = descendants(dialog).filter(actor => actor instanceof St.Entry);
+                assertions.push(assertion('the add dialog asks for a label and a key', entries.length === 2,
+                    {actual: entries.length}));
+                entries[0].text = 'Side project';
+                entries[1].text = 'fake-smoke-key';
+            } catch (error) {
+                finish(assertions, error);
+                return;
+            }
+            later(400, () => capture('accounts-add-dialog.png', () => {
+                try {
+                    submitAccountDialog(dialog, ['Side project', 'fake-smoke-key']);
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                waitFor(() => openrouterLabels().includes('Side project'), () => {
+                    assertions.push(assertion('the card refreshes with the added account',
+                        openrouterLabels().join(',') === 'Personal,Work,Side project',
+                        {labels: openrouterLabels()}));
+                    assertions.push(assertion('the add dialog closed', !this._accountDialog));
+                    const added = this._accountCards?.get('openrouter')?.accounts.at(-1);
+                    try {
+                        submitAccountDialog(this._showRenameAccountDialog('openrouter', added), ['Hobby']);
+                    } catch (error) {
+                        finish(assertions, error);
+                        return;
+                    }
+                    waitFor(() => openrouterLabels().includes('Hobby'), () => {
+                        assertions.push(assertion('rename changes only that account',
+                            openrouterLabels().join(',') === 'Personal,Work,Hobby', {labels: openrouterLabels()}));
+                        const personal = this._accountCards?.get('openrouter')?.accounts[0];
+                        try {
+                            this._showRemoveAccountDialog('openrouter', personal);
+                            this._accountDialog?.usagebarConfirm?.emit('clicked', 1);
+                        } catch (error) {
+                            finish(assertions, error);
+                            return;
+                        }
+                        waitFor(() => !openrouterLabels().includes('Personal'), () => {
+                            assertions.push(assertion('remove deletes only that account',
+                                openrouterLabels().join(',') === 'Work,Hobby', {labels: openrouterLabels()}));
+                            try {
+                                this._indicator.menu.open();
+                                this._selectedProvider = 'openrouter';
+                                this._render();
+                            } catch (error) {
+                                finish(assertions, error);
+                                return;
+                            }
+                            later(600, () => capture('accounts-after-actions.png', () => finish(assertions)));
+                        });
+                    });
+                });
+            }));
         };
 
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
@@ -4840,6 +4971,7 @@ export default class UsageBarExtension extends Extension {
             provider,
             this._detailPayloadKey(row),
             accountsRenderKey(accountCard),
+            this._accountActionsKey(provider),
             (accountCard?.accounts ?? []).map(account => this._detailPayloadKey(account.row)).join(','),
             this._displayName(provider),
             DISPLAY.absoluteResets,
@@ -6786,10 +6918,15 @@ export default class UsageBarExtension extends Extension {
         // freshness and error. Otherwise the provider's one row.
         if (accountCard?.multi) {
             for (const account of accountCard.accounts)
-                this._addAccountBlock(card, account);
+                this._addAccountBlock(card, account, {provider: row.provider, actions: flat});
         } else {
             this._addRowQuota(card, row);
         }
+        // The provider's own view offers Add account… where serve says
+        // which kind of account it can add (accountactions.js).
+        const add = flat ? this._addAccountAction(row.provider) : null;
+        if (add)
+            card.add_child(this._buildAddAccountButton(add));
 
         // Following another Machine: its synced spend for this provider (no
         // daily chart), never this Machine's report.
@@ -6933,8 +7070,9 @@ export default class UsageBarExtension extends Extension {
     }
 
     // One Provider Account on a multi-account card: label, active marker and
-    // "updated X ago", then that account's own Quota or error.
-    _addAccountBlock(card, account) {
+    // "updated X ago", then that account's own Quota or error. In the
+    // provider's own view, key accounts also get rename and remove.
+    _addAccountBlock(card, account, {provider = null, actions = false} = {}) {
         const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-account-head'});
         head.add_child(new St.Label({
             text: account.label ?? 'Account',
@@ -6963,8 +7101,234 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
+        const allowed = actions && provider ? rowActions(account, this._accountCapabilities()) : {};
+        if (allowed.rename) {
+            head.add_child(this._accountIconButton('document-edit-symbolic', 'Rename',
+                () => this._showRenameAccountDialog(provider, account)));
+        }
+        if (allowed.remove) {
+            head.add_child(this._accountIconButton('user-trash-symbolic', 'Remove',
+                () => this._showRemoveAccountDialog(provider, account)));
+        }
         card.add_child(head);
         this._addRowQuota(card, account.row);
+    }
+
+    // ----- Provider Account actions (accountactions.js) -----
+
+    _accountCapabilities() {
+        return this._sync?.report?.capabilities ?? null;
+    }
+
+    _addAccountAction(provider) {
+        return addAction(provider, {kinds: this._accountKinds, capabilities: this._accountCapabilities()});
+    }
+
+    // What the detail view's actions depend on, for its render cache.
+    _accountActionsKey(provider) {
+        return JSON.stringify([
+            this._addAccountAction(provider)?.kind ?? null,
+            rowActions({id: 'token:x'}, this._accountCapabilities()),
+        ]);
+    }
+
+    // GET /accounts/kinds, after each capability report that advertises it.
+    _fetchAccountKinds() {
+        if (this._accountKindsInFlight)
+            return;
+        this._accountKindsInFlight = true;
+        this._get('/accounts/kinds', (payload, error) => {
+            this._accountKindsInFlight = false;
+            if (error) {
+                console.warn(`usagebar: account kinds unavailable: ${error.detail ?? error.message}`);
+                return;
+            }
+            this._accountKinds = readKinds(payload);
+            this._requestRender();
+        });
+    }
+
+    _buildAddAccountButton(action) {
+        const button = new St.Button({
+            label: 'Add account…',
+            style_class: 'usagebar-issue-btn usagebar-account-add',
+            can_focus: true,
+            x_align: Clutter.ActorAlign.START,
+        });
+        button.connect('clicked', () => this._addAccount(action));
+        return button;
+    }
+
+    _accountIconButton(iconName, accessibleName, onClick) {
+        const button = new St.Button({
+            style_class: 'usagebar-btn usagebar-account-action',
+            can_focus: true,
+            accessible_name: accessibleName,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        button.add_child(new St.Icon({icon_name: iconName, icon_size: 12, style_class: 'usagebar-btn-icon'}));
+        button.connect('clicked', onClick);
+        return button;
+    }
+
+    // Dispatches on the kind serve advertised. cli-login (#169) and
+    // claude-swap (#172) add their handlers here.
+    _addAccount(action) {
+        switch (action.kind) {
+        case 'key':
+            this._showAddKeyDialog(action);
+            break;
+        default:
+            console.warn(`usagebar: no handler for account kind ${action.kind}`);
+        }
+    }
+
+    // A refresh after an account changed. A fetch already out may have read
+    // the old config, so it asks again when it lands.
+    _refreshAfterAccountChange() {
+        if (this._fetchInFlight)
+            this._usageRefetchQueued = true;
+        else
+            this._fetchUsage(true);
+    }
+
+    // One modal for every account action: title, description, the given
+    // fields, an error line, then Cancel and one primary button. `submit`
+    // gets {fields, fail, done}; the dialog stays open on failure.
+    _openAccountDialog({title, description, fields = [], confirmLabel, destructive = false, submit}) {
+        this._accountDialog?.destroy();
+        this._indicator?.menu.close();
+        const dialog = new ModalDialog.ModalDialog({destroyOnClose: true, styleClass: 'usagebar-account-dialog'});
+        this._accountDialog = dialog;
+        dialog.connect('destroy', () => {
+            if (this._accountDialog === dialog)
+                this._accountDialog = null;
+        });
+        dialog.contentLayout.add_child(new Dialog.MessageDialogContent({title, description}));
+        const entries = {};
+        const form = new St.BoxLayout({vertical: true, style_class: 'usagebar-account-form', x_expand: true});
+        for (const field of fields) {
+            const entry = new St.Entry({
+                text: field.text ?? '',
+                hint_text: field.hint ?? '',
+                can_focus: true,
+                x_expand: true,
+                style_class: 'usagebar-account-entry',
+            });
+            if (field.secret)
+                entry.clutter_text.set_password_char('●');
+            entries[field.name] = entry;
+            form.add_child(entry);
+        }
+        const errorLabel = new St.Label({text: '', style_class: 'usagebar-account-error', visible: false});
+        errorLabel.clutter_text.line_wrap = true;
+        form.add_child(errorLabel);
+        dialog.contentLayout.add_child(form);
+
+        let busy = false;
+        let confirm = null;
+        const fail = text => {
+            if (this._accountDialog !== dialog)
+                return;
+            busy = false;
+            confirm.reactive = true;
+            errorLabel.text = text;
+            errorLabel.visible = true;
+        };
+        const done = () => {
+            for (const entry of Object.values(entries))
+                entry.text = '';
+            if (this._accountDialog === dialog)
+                dialog.close();
+            this._refreshAfterAccountChange();
+        };
+        const run = () => {
+            if (busy)
+                return;
+            const values = Object.fromEntries(Object.entries(entries).map(([name, entry]) => [name, entry.text]));
+            busy = true;
+            confirm.reactive = false;
+            errorLabel.visible = false;
+            submit({fields: values, fail, done});
+        };
+        for (const entry of Object.values(entries))
+            entry.clutter_text.connect('activate', run);
+        dialog.addButton({label: 'Cancel', action: () => dialog.close(), key: Clutter.KEY_Escape});
+        confirm = dialog.addButton({label: confirmLabel, action: run, default: true});
+        if (destructive)
+            confirm.add_style_class_name('usagebar-account-destructive');
+        // The UI smoke clicks it.
+        dialog.usagebarConfirm = confirm;
+        dialog.open();
+        const first = Object.values(entries)[0];
+        if (first)
+            dialog.setInitialKeyFocus(first);
+        return dialog;
+    }
+
+    _sendAccountRequest(request, {fail, done, token = ''}) {
+        this._get(request.path, (_result, error) => {
+            if (error)
+                fail(actionErrorText(error, token));
+            else
+                done();
+        }, request.method, request.body);
+    }
+
+    _showAddKeyDialog(action) {
+        const name = this._displayName(action.provider);
+        return this._openAccountDialog({
+            title: `Add ${name} account`,
+            description: `UsageBar saves the key in its config file and sends it only to ${name}.`,
+            fields: [
+                {name: 'label', hint: 'Label, for example Work'},
+                {name: 'token', hint: action.placeholder ?? 'API key', secret: true},
+            ],
+            confirmLabel: 'Add account',
+            submit: ({fields, fail, done}) => {
+                const problem = keyFormError(fields);
+                if (problem) {
+                    fail(problem);
+                    return;
+                }
+                this._sendAccountRequest(
+                    addKeyRequest({provider: action.provider, label: fields.label, token: fields.token}),
+                    {fail, done, token: fields.token});
+            },
+        });
+    }
+
+    _showRenameAccountDialog(provider, account) {
+        const name = this._displayName(provider);
+        return this._openAccountDialog({
+            title: `Rename ${name} account`,
+            description: 'The new label shows on this account’s row.',
+            fields: [{name: 'label', text: account.label ?? '', hint: 'Label'}],
+            confirmLabel: 'Rename',
+            submit: ({fields, fail, done}) => {
+                const problem = renameFormError(fields);
+                if (problem) {
+                    fail(problem);
+                    return;
+                }
+                this._sendAccountRequest(
+                    renameRequest({provider, accountId: account.id, label: fields.label}), {fail, done});
+            },
+        });
+    }
+
+    _showRemoveAccountDialog(provider, account) {
+        const name = this._displayName(provider);
+        return this._openAccountDialog({
+            title: `Remove ${account.label ?? 'this account'}?`,
+            description: `UsageBar deletes this ${name} key from its config file and stops showing the ` +
+                'account. The key itself stays valid with the provider.',
+            confirmLabel: 'Remove',
+            destructive: true,
+            submit: ({fail, done}) => {
+                this._sendAccountRequest(removeRequest({provider, accountId: account.id}), {fail, done});
+            },
+        });
     }
 
     _compactDisplayItems(row) {

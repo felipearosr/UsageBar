@@ -14,6 +14,12 @@ export const FEATURES = {
     // serve's /usage?accounts=all (accounts.js). No version gate: a CLI
     // without it just keeps single-account cards.
     providerAccountRows: {label: 'Several accounts per provider', minVersion: null},
+    // serve's /accounts/* routes (accountactions.js). No version gate: a CLI
+    // without them just shows no Add account…, Rename or Remove.
+    providerAccountKinds: {label: 'Adding accounts', minVersion: null},
+    providerAccountAddKey: {label: 'Adding key accounts', minVersion: null},
+    providerAccountRename: {label: 'Renaming accounts', minVersion: null},
+    providerAccountRemove: {label: 'Removing accounts', minVersion: null},
 };
 
 // ---------- versions ----------
