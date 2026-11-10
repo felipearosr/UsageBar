@@ -52,7 +52,7 @@ struct CLIServeClaudeSwapSwitchTests {
     /// The fake `cswap`. `<path>.args` gets one line per run (its arguments), `<path>.log` "start N" / "end N"
     /// around each switch. A switch copies `<path>.list.<slot>` (if any) over the list it answers, the way a real
     /// switch changes which slot is active. With `<path>.gate`, a switch waits for `<path>.release` after "start N";
-    /// with `<path>.listdelay`, list reads after the first switch take that many seconds.
+    /// with `<path>.listgate`, list reads after the first switch wait for `<path>.listrelease`.
     private struct FakeCSwap {
         let executable: URL
 
@@ -66,7 +66,9 @@ struct CLIServeClaudeSwapSwitchTests {
             base="${0%.sh}"
             printf '%s\n' "$*" >> "$base.args"
             if [ "$#" -eq 2 ] && [ "$1" = "--list" ] && [ "$2" = "--json" ]; then
-              if [ -f "$base.log" ] && [ -f "$base.listdelay" ]; then sleep "$(cat "$base.listdelay")"; fi
+              if [ -f "$base.log" ] && [ -f "$base.listgate" ]; then
+                while [ ! -f "$base.listrelease" ]; do sleep 0.05; done
+              fi
               exec /bin/cat "$base.list"
             fi
             if [ "$#" -eq 3 ] && [ "$1" = "--switch-to" ] && [ "$3" = "--json" ]; then
@@ -500,20 +502,20 @@ struct CLIServeClaudeSwapSwitchTests {
     func `the answer goes out when the command exits, before the refresh`(mode: String) async throws {
         let cswap = try FakeCSwap()
         try cswap.write(mode, "mode")
-        try cswap.write("1.5", "listdelay")
+        // The refresh's list read waits until the test releases it, after the answer.
+        try cswap.write("", "listgate")
         let source = Self.source(cswap)
         let queue = ClaudeSwapSwitchQueue()
-        let started = ContinuousClock.now
         let response = try await Self.send(
             Self.request(accountId: "claude-swap:1"),
             runtime: Self.runtime(),
             source: source,
             queue: queue,
             drain: false)
-        #expect(ContinuousClock.now - started < .milliseconds(1200))
         #expect(response.status == (mode == "ok" ? .ok : .badGateway))
         // The refresh hasn't landed: the rows still have the old active slot.
         #expect(await Self.rows(source)["claude-swap:2"]?.active == true)
+        try cswap.write("", "listrelease")
         await queue.drain()
         #expect(cswap.invocations.last == "--list --json")
         #expect(await Self.rows(source)["claude-swap:1"]?.active == (mode == "ok"))
