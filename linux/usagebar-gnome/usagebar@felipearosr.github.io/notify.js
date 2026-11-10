@@ -1,4 +1,6 @@
-import {extraWindowsOf, isLongWindow, paceOf, windowLabel, windowsOf} from './payload.js';
+import {
+    extraWindowsOf, hasAccountId, isLongWindow, paceOf, primaryRow, windowLabel, windowsOf,
+} from './payload.js';
 
 const EXPIRY_GRACE_MS = 3600000;
 
@@ -7,15 +9,13 @@ const EXPIRY_GRACE_MS = 3600000;
 // (every provider with one account: the same keys as before accounts
 // existed), else provider#<encoded accountId>, so each account has its own
 // cycles and changing which account is active changes no key. The accountId
-// is URI-encoded so the owner never holds a colon.
+// is URI-encoded so the owner never holds a colon. An account whose id
+// changes (serve re-keys it) is a new owner: its current crossings announce
+// once more under the new key.
 // Match the ISO timestamp rather than splitting colons inside labels or times.
 function cycleResetAt(key) {
     const stamp = key.match(/:(\d{4}-\d{2}-\d{2}(?:T.*?)?)(?::pace)?$/)?.[1];
     return Date.parse(stamp ?? '');
-}
-
-function hasAccountId(row) {
-    return typeof row?.accountId === 'string' && row.accountId !== '';
 }
 
 export function cycleOwner(row) {
@@ -42,23 +42,30 @@ function stronger(a, b) {
     return a === true || b === true ? true : a;
 }
 
-// The account the popover shows for a provider's rows: the active one, else
-// the first with Quota, else the first (accounts.js primaryAccount).
-function primaryRow(rows) {
-    return rows.find(row => row.active === true) ?? rows.find(row => !row.error) ?? rows[0];
+// Whether a provider-keyed value records more than the accounts had: a
+// threshold above all of theirs, or a pace flag none of them had.
+function exceeds(value, accountsMax) {
+    if (accountsMax === undefined)
+        return true;
+    if (typeof value === 'number' && typeof accountsMax === 'number')
+        return value > accountsMax;
+    return value === true && accountsMax !== true;
 }
 
 // Memo entries keyed the other way than this payload's rows, carried over so
 // the switch never re-announces a crossing:
-// - provider-keyed entries (written while the provider's rows had no
-//   accountId: an older serve, or the first /usage before the /health report
-//   asked for account rows) move to the account the popover showed then,
-//   the primary account. They move once, so a later change of the active
-//   account inherits nothing.
-// - account-keyed entries of a provider whose row has no accountId now (one
-//   account left, or an older serve) lend their highest value to the
-//   provider-keyed cycle. They stay, so the accounts keep them if they
-//   come back.
+// - all of a provider's rows have an accountId: its provider-keyed entries
+//   (written while its rows had none: an older serve, or the first /usage
+//   before the /health report asked for account rows, as on every unlock)
+//   go to the primary account (payload.js primaryRow), the one the untagged
+//   row stood for. An account keeps its own value for the cycle; it takes
+//   the provider-keyed one only when that is above what every account had
+//   (a crossing announced while the rows were untagged). The entries move
+//   once, so a later change of the active account inherits nothing.
+// - none of its rows has one: its account-keyed entries lend their highest
+//   value to the provider-keyed cycle. They stay (see planNotifications), so
+//   the accounts keep them when account rows come back.
+// - a mix (an odd serve): nothing moves; each row keeps its own keys.
 // Muted providers, and providers whose primary row is stale, are left alone.
 function carryOver(memo, rows, muted) {
     const working = new Map(memo);
@@ -67,26 +74,31 @@ function carryOver(memo, rows, muted) {
         byProvider.set(row.provider, [...byProvider.get(row.provider) ?? [], row]);
     for (const [provider, list] of byProvider) {
         const tagged = list.filter(hasAccountId);
-        const primary = primaryRow(tagged.length ? tagged : list);
+        const primary = primaryRow(list);
         if (muted.has(provider) || primary.stale)
             continue;
-        if (tagged.length) {
+        // The highest account-keyed value per cycle suffix (:label:resetsAt[:pace]).
+        const accountsMax = new Map();
+        for (const [key, value] of memo) {
+            const owner = ownerOfKey(key);
+            if (owner === provider || providerOfOwner(owner) !== provider)
+                continue;
+            const rest = key.slice(owner.length);
+            accountsMax.set(rest, stronger(accountsMax.get(rest), value));
+        }
+        if (tagged.length === list.length) {
             const owner = cycleOwner(primary);
             for (const [key, value] of memo) {
                 if (ownerOfKey(key) !== provider)
                     continue;
                 working.delete(key);
-                const moved = `${owner}${key.slice(provider.length)}`;
-                working.set(moved, stronger(working.get(moved), value));
+                const rest = key.slice(provider.length);
+                if (exceeds(value, accountsMax.get(rest)))
+                    working.set(`${owner}${rest}`, stronger(working.get(`${owner}${rest}`), value));
             }
-        } else {
-            for (const [key, value] of memo) {
-                const owner = ownerOfKey(key);
-                if (owner === provider || providerOfOwner(owner) !== provider)
-                    continue;
-                const legacy = `${provider}${key.slice(owner.length)}`;
-                working.set(legacy, stronger(working.get(legacy), value));
-            }
+        } else if (tagged.length === 0) {
+            for (const [rest, value] of accountsMax)
+                working.set(`${provider}${rest}`, stronger(working.get(`${provider}${rest}`), value));
         }
     }
     return working;
@@ -101,6 +113,11 @@ export function planNotifications({rows, memo, sessionThresholds, weeklyThreshol
     const seen = new Map();
     const notifications = [];
     const present = new Set(rows.map(cycleOwner));
+    // Providers answered with no account rows at all this time: their
+    // accounts' undated cycles wait for the account rows to come back.
+    const untaggedProviders = new Set(rows.map(row => row.provider));
+    for (const row of rows.filter(hasAccountId))
+        untaggedProviders.delete(row.provider);
     const staleOwners = new Set(rows.filter(row => row.stale).map(cycleOwner));
     const staleProviders = new Set(rows.filter(row => row.stale).map(row => row.provider));
     const accountsOf = new Map();
@@ -115,10 +132,12 @@ export function planNotifications({rows, memo, sessionThresholds, weeklyThreshol
         if (dated && resetAt < now - EXPIRY_GRACE_MS)
             continue;
         // Preserve outages/mutes, and recently missing dated cycles. Undated
-        // entries survive only while their owner is present in the payload.
-        // A provider-keyed entry also waits out any stale row of its provider.
+        // entries survive only while their owner is present in the payload,
+        // or for an account, while its provider is answered untagged. A
+        // provider-keyed entry also waits out any stale row of its provider.
         const skipped = muted.has(provider) || staleOwners.has(owner) ||
-            (owner === provider && staleProviders.has(provider));
+            (owner === provider && staleProviders.has(provider)) ||
+            (owner !== provider && untaggedProviders.has(provider));
         if (skipped || (!present.has(owner) && dated))
             seen.set(key, value);
     }

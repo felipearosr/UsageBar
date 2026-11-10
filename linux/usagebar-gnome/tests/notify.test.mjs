@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {notificationTitle, planNotifications} from '../usagebar@felipearosr.github.io/notify.js';
+import {buildCards, notificationRows, primaryRows} from '../usagebar@felipearosr.github.io/accounts.js';
 
 const NOW = Date.parse('2026-10-12T12:00:00Z');
 const RESET = '2026-10-12T15:00:00Z';
@@ -229,4 +230,68 @@ test('titles name the account only when the provider has several', () => {
     assert.equal(notificationTitle({...base, kind: 'pace'}), 'OpenRouter Session (5h) won\'t last to reset');
     assert.equal(notificationTitle({...base, kind: 'pace', account: 'Work'}),
         'OpenRouter (Work) Session (5h) won\'t last to reset');
+});
+
+test('an untagged poll between tagged ones never hands another account\'s threshold to the active one', () => {
+    const thresholds = {sessionThresholds: [80, 90, 95]};
+    const tagged = plan([account(WORK, 84), account(HOME, 96)], new Map(), thresholds);
+    // An unlock: the first /usage goes out before /health, untagged.
+    const untagged = plan([row(84)], tagged.memo, thresholds);
+    assert.deepEqual(untagged.notifications, []);
+    const again = plan([account(WORK, 84), account(HOME, 96)], untagged.memo, thresholds);
+    assert.deepEqual(again.notifications, []);
+    assert.equal(again.memo.get(WORK_CYCLE), 80);
+    const crossed = plan([account(WORK, 91), account(HOME, 96)], again.memo, thresholds);
+    assert.deepEqual(crossed.notifications.map(n => [n.accountId, n.percent]), [[WORK, 91]]);
+});
+
+test('a crossing announced while untagged goes to the active account', () => {
+    const tagged = plan([account(WORK, 84), account(HOME, 84)]);
+    const untagged = plan([row(96)], tagged.memo);
+    assert.equal(untagged.notifications.length, 1);
+    const again = plan([account(WORK, 96), account(HOME, 84)], untagged.memo);
+    assert.deepEqual(again.notifications, []);
+    assert.equal(again.memo.get(WORK_CYCLE), 95);
+});
+
+test('an untagged row next to account rows keeps its own memory', () => {
+    let memo = new Map();
+    const announced = [];
+    for (let poll = 0; poll < 3; poll++) {
+        const result = plan([account(WORK, 50), row(85)], memo);
+        announced.push(...result.notifications.map(n => n.accountId));
+        memo = result.memo;
+    }
+    assert.deepEqual(announced, [null]);
+    assert.equal(memo.get(CYCLE), 80);
+});
+
+test('undated account cycles survive an untagged poll', () => {
+    const undatedUsage = {primary: {usedPercent: 84, windowMinutes: 300}};
+    const undated = id => ({...account(id, 84), usage: undatedUsage});
+    const tagged = plan([undated(WORK), undated(HOME)]);
+    assert.equal(tagged.notifications.length, 2);
+    const untagged = plan([{provider: 'fixture', usage: undatedUsage}], tagged.memo);
+    assert.deepEqual(untagged.notifications, []);
+    assert.deepEqual(plan([undated(WORK), undated(HOME)], untagged.memo).notifications, []);
+});
+
+test('Hide Personal Info cards notify each account by ordinal, end to end', () => {
+    const usage = percent => ({primary: {usedPercent: percent, windowMinutes: 300, resetsAt: RESET}});
+    const served = [
+        {provider: 'claude', usage: usage(84)},
+        {provider: 'openrouter', accountId: WORK, accountLabel: 'work@example.com', active: true, usage: usage(84)},
+        {provider: 'openrouter', accountId: HOME, accountLabel: 'home@example.com', active: false, usage: usage(96)},
+    ];
+    const cards = buildCards(served, {accountRows: true, now: NOW, hidePersonalInfo: true});
+    const multi = new Map(cards.filter(card => card.multi).map(card => [card.provider, card]));
+    const rows = notificationRows(primaryRows(cards), multi);
+    const names = {claude: 'Claude', openrouter: 'OpenRouter'};
+    const first = plan(rows, new Map(), {displayName: p => names[p]});
+    assert.deepEqual(first.notifications.map(notificationTitle), [
+        'Claude Session (5h) at 84%',
+        'OpenRouter (Account 1) Session (5h) at 84%',
+        'OpenRouter (Account 2) Session (5h) at 96%',
+    ]);
+    assert.deepEqual(plan(rows, first.memo, {displayName: p => names[p]}).notifications, []);
 });

@@ -19,6 +19,7 @@ import {
     modelKey,
     providerModels,
 } from './modelprefs.js';
+import {ICON_SOURCES} from './accounts.js';
 import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
@@ -619,10 +620,9 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             subtitle: 'What a provider\'s chip reflects when it has more than one account',
             model: Gtk.StringList.new(['Active account', 'Account with most headroom']),
         });
-        const SOURCES = ['active', 'most-headroom'];
-        sourceRow.selected = Math.max(0, SOURCES.indexOf(settings.get_string('panel-icon-source')));
+        sourceRow.selected = Math.max(0, ICON_SOURCES.indexOf(settings.get_string('panel-icon-source')));
         sourceRow.connect('notify::selected', () => {
-            settings.set_string('panel-icon-source', SOURCES[sourceRow.selected]);
+            settings.set_string('panel-icon-source', ICON_SOURCES[sourceRow.selected]);
         });
         panel.add(sourceRow);
         panel.add(switchRow(settings, 'merge-chips', 'Single merged chip',

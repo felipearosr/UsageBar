@@ -275,6 +275,29 @@ test('with Hide Personal Info the notification rows carry ordinal labels only', 
     assert.doesNotMatch(JSON.stringify(notify), /@example\.com/);
 });
 
+test('without an active account the primary is picked by account id, not row order or privacy', () => {
+    const rows = headroomPayload().map(row => ({...row, active: false}));
+    const reversed = [rows[0], ...rows.slice(1).reverse()];
+    // Work's id sorts first and has Quota.
+    for (const payload of [rows, reversed]) {
+        for (const hidePersonalInfo of [false, true]) {
+            const card = buildCards(payload, {accountRows: true, now: NOW, hidePersonalInfo})[1];
+            assert.equal(card.row.accountId, WORK);
+        }
+    }
+});
+
+test('most headroom ties among other accounts go to the lowest account id', () => {
+    const rows = headroomPayload().slice(0, 2).concat([
+        {provider: 'openrouter', accountId: SPARE, accountLabel: 'Spare', usage: {primary: window(10)}},
+        {provider: 'openrouter', accountId: PERSONAL, accountLabel: 'Personal', usage: {primary: window(10)}},
+    ]);
+    for (const payload of [rows, [rows[0], rows[1], rows[3], rows[2]]]) {
+        const card = buildCards(payload, {accountRows: true, now: NOW})[1];
+        assert.equal(panelAccount(card, 'most-headroom').id, PERSONAL);
+    }
+});
+
 test('malformed payloads yield no cards', () => {
     assert.deepEqual(buildCards(null, {accountRows: true}), []);
     assert.deepEqual(buildCards([null, 3], {accountRows: true}), []);

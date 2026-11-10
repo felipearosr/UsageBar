@@ -10,7 +10,7 @@
 // CLI) are cards on their own, exactly as before.
 
 import {accountLabels, ordinalLabel, scrubRow} from './accountlabels.js';
-import {isStaleSource, windowsOf, worstPercent} from './payload.js';
+import {byAccountId, hasAccountId, isStaleSource, primaryRow, windowsOf, worstPercent} from './payload.js';
 
 export const ACCOUNT_ROWS_CAPABILITY = 'providerAccountRows';
 
@@ -23,10 +23,6 @@ export function usagePath({accountRows = false, fresh = false} = {}) {
     if (fresh)
         query.push('fresh=1');
     return query.length ? `/usage?${query.join('&')}` : '/usage';
-}
-
-export function hasAccountId(row) {
-    return typeof row?.accountId === 'string' && row.accountId !== '';
 }
 
 // Which earlier row a fresh row continues: the same Provider Account, or for
@@ -106,10 +102,11 @@ function singleCard(row, now, hidePersonalInfo) {
 
 // The account the rest of the popover (panel chip, compact row, issues,
 // notifications) shows for a multi-account card: the active one, else the
-// first with Quota, else the first.
+// first with Quota, else the first, by account id (payload.js primaryRow,
+// which notify.js shares), so Hide Personal Info never changes it.
 function primaryAccount(accounts) {
-    return accounts.find(account => account.active) ??
-        accounts.find(account => !account.error) ?? accounts[0];
+    const row = primaryRow(accounts.map(account => account.row));
+    return accounts.find(account => account.row === row) ?? accounts[0];
 }
 
 // rows → [{provider, row, multi, accounts: [{id, source, label, ordinal,
@@ -155,7 +152,7 @@ export function primaryRows(cards) {
 }
 
 // The `panel-icon-source` preference: what a multi-account card's panel
-// chip reflects.
+// chip reflects. prefs.js lists its choices in this order.
 export const ICON_SOURCES = ['active', 'most-headroom'];
 
 // The account a card's panel chip reflects. 'active' (the default, and any
@@ -165,15 +162,19 @@ export const ICON_SOURCES = ['active', 'most-headroom'];
 // (payload.js worstWindow, what the chip has always shown), so the account
 // with most headroom is the one whose tightest window is least used. Rows
 // with an error (stale carried Quota included) or without any known percent
-// never win; a tie keeps the primary, then the first in card order. With no
-// eligible account, or a card with one account, it is the primary.
+// (a stale row without usage) never win; a stale row without an error that
+// still has usage counts with that usage. A tie keeps the primary, then the
+// first by account id. With no eligible account, or a card with one account,
+// it is the primary.
 export function panelAccount(card, source = 'active') {
     const primary = card.accounts.find(account => account.row === card.row) ?? card.accounts[0];
     if (source !== 'most-headroom' || !card.multi)
         return primary;
     let best = null;
     let bestPercent = Infinity;
-    for (const account of [primary, ...card.accounts.filter(a => a !== primary)]) {
+    const others = byAccountId(card.accounts.filter(a => a !== primary).map(a => a.row))
+        .map(row => card.accounts.find(a => a.row === row));
+    for (const account of [primary, ...others]) {
         if (account.error || account.row?.error)
             continue;
         const percent = worstPercent(account.row);
