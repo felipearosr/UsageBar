@@ -7593,9 +7593,18 @@ export default class UsageBarExtension extends Extension {
         this._terminalWatches.set(marker, id);
     }
 
+    // On disable: stop polling and delete the markers still pending. A
+    // command that ends later can still leave its small status file; the
+    // runtime dir is cleared at logout.
     _stopTerminalWatches() {
-        for (const id of this._terminalWatches?.values() ?? [])
+        for (const [marker, id] of this._terminalWatches ?? []) {
             GLib.source_remove(id);
+            try {
+                Gio.File.new_for_path(marker).delete(null);
+            } catch {
+                // not written
+            }
+        }
         this._terminalWatches = null;
     }
 
