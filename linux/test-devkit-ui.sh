@@ -6,7 +6,8 @@
 # stub CLI; add STUB_CODEXBAR_SYNC=0 for one without Machine Sync (upstream's).
 # USAGEBAR_UI_SMOKE_EXPECT_SYNC=0|1 asserts which of the two the run sees.
 # USAGEBAR_UI_SMOKE_ACCOUNTS=1 with STUB_CODEXBAR_ACCOUNTS=1 checks a provider
-# card with two Provider Accounts.
+# card with two Provider Accounts; add USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and
+# STUB_CODEXBAR_CLAUDE_SWAP=1 to also check Claude's claude-swap slots.
 # USAGEBAR_UI_SMOKE_LOGOS=1, with USAGEBAR_LOGO_PACK_BASE_URL and
 # USAGEBAR_LOGO_PACK_VERSION, clicks through the offer to download provider
 # logos; the script's own last run serves a pack built from this checkout.
@@ -127,6 +128,17 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
         STUB_CODEXBAR_ACCOUNTS=1 USAGEBAR_UI_SMOKE_ACCOUNTS=1 \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/provider-accounts"
+fi
+
+# claude-swap slots as Claude Provider Accounts: the Claude card must show one
+# block per slot, the active one marked and the other stale.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    printf '\nRe-running the UI smoke against a CLI with claude-swap accounts\n'
+    CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
+        STUB_CODEXBAR_ACCOUNTS=1 STUB_CODEXBAR_CLAUDE_SWAP=1 \
+        USAGEBAR_UI_SMOKE_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 \
+        USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
+        "$0" "$artifact_dir/claude-swap-accounts"
 fi
 
 # The extensions.gnome.org build offers to download the logos it leaves out:

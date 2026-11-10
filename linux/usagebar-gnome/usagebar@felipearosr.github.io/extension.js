@@ -3837,10 +3837,48 @@ export default class UsageBarExtension extends Extension {
                         finish(assertions, error);
                         return;
                     }
-                    capture('accounts-provider-openrouter.png', () => finish(assertions));
+                    capture('accounts-provider-openrouter.png', () => {
+                        if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWAP') === '1')
+                            claudeSwapSmoke(assertions);
+                        else
+                            finish(assertions);
+                    });
                 });
             };
             ready();
+        };
+
+        // With USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and STUB_CODEXBAR_CLAUDE_SWAP=1,
+        // after the OpenRouter card: the Claude card shows the two claude-swap
+        // slots, the active one first and the other stale with its error.
+        const claudeSwapSmoke = assertions => {
+            try {
+                this._selectedProvider = 'claude';
+                this._render();
+            } catch (error) {
+                finish(assertions, error);
+                return;
+            }
+            later(600, () => {
+                try {
+                    const box = this._indicator._detailBox;
+                    const heads = descendants(box)
+                        .filter(actor => actor.style_class === 'usagebar-account-head');
+                    const labels = heads.map(head => descendants(head)
+                        .filter(actor => actor instanceof St.Label).map(actor => actor.text));
+                    assertions.push(assertion('one block per claude-swap slot', heads.length === 2, {labels}));
+                    assertions.push(assertion('the active slot is marked active, the other stale',
+                        labels[0]?.includes('active') && !labels[0]?.includes('stale') &&
+                        labels[1]?.includes('stale') && !labels[1]?.includes('active'), {labels}));
+                    assertions.push(assertion('one overview row for Claude',
+                        this._rows.filter(row => row.provider === 'claude').length === 1,
+                        {actual: this._rows.map(row => row.provider)}));
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                capture('accounts-provider-claude.png', () => finish(assertions));
+            });
         };
 
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
