@@ -44,8 +44,8 @@ Sources/CodexBarCore/Providers/OpenCode/OpenCodeProviderDescriptor.swift	OpenCod
 Tests/CodexBarTests/CLIEntryTests.swift	OpenCode on Linux	Auto-mode web-support exemption assertions; #53
 docs/opencode.md	OpenCode on Linux	local-history source and Auto-mode order; #53
 
-# Managed Codex accounts on Linux (#167): list and per-account usage run on Linux, promote stays macOS-only.
-# The read side is fork-owned in ManagedCodexAccountCatalog.swift and CLICodexAccountsCommand+UsageBar.swift.
+# Managed Codex accounts on Linux (#167): `codex-accounts list` runs on Linux, promote stays macOS-only.
+# The platform rule is fork-owned in CLICodexAccountsCommand+UsageBar.swift.
 Sources/CodexBarCLI/CLICodexAccountsCommand.swift	Managed Codex accounts on Linux	Hook: forkRequireCodexAccountsPlatformSupport(path:output:) replaces the #if os(macOS) wrapper around runCodexAccounts (CLICodexAccountsCommand+UsageBar.swift); #167
 
 # Codex app-server exit diagnostics (upstream candidate, no ticket yet)

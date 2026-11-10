@@ -1,31 +1,38 @@
+#if os(Linux)
 import Foundation
 import Testing
 @testable import CodexBarCLI
 @testable import CodexBarCore
 
-/// Managed Codex accounts on Linux (#167): listing and per-account usage scoping against a synthetic store and
-/// synthetic Codex homes. Every token below is a fake string; nothing reads the real `~/.codex` or a Keychain.
+/// Managed Codex accounts on Linux (#167): `codex-accounts list` and the existing per-account Codex home scoping,
+/// against a synthetic store and synthetic Codex homes. Every token below is a fake string; nothing reads the real
+/// `~/.codex` or a Keychain.
 @Suite(.serialized)
 @MainActor
 struct ManagedCodexAccountsLinuxTests {
     // MARK: - Listing
 
     @Test
-    func `catalog lists managed accounts with the system marker and no credential contents`() throws {
+    func `list rows carry the system marker and no credential contents`() throws {
         let fixture = try Fixture()
         defer { fixture.tearDown() }
         let matching = try fixture.addAccount(email: "system@example.com", accountID: "acct-system")
-        let other = try fixture.addAccount(
-            email: "Other@Example.com", accountID: "acct-other", workspaceID: "ws-other", workspaceLabel: "Team")
+        let other = try fixture.addAccount(email: "Other@Example.com", accountID: "acct-other")
+        let broken = try fixture.addAccount(email: "broken@example.com", accountID: "acct-broken")
+        try Data("not json".utf8).write(to: fixture.authURL(home: broken.managedHomePath))
         try fixture.writeLiveAuth(email: "system@example.com", accountID: "acct-system")
 
-        let summaries = try fixture.scoped { try fixture.catalog().list() }
+        let rows = try fixture.scoped {
+            try CodexBarCLI.codexAccountRows(
+                accounts: FileManagedCodexAccountStore(fileURL: fixture.storeURL).loadAccounts().accounts,
+                liveHome: fixture.liveHome,
+                reader: DefaultCodexAuthMaterialReader())
+        }
 
-        #expect(summaries.map(\.id) == [matching.id, other.id])
-        #expect(summaries.map(\.email) == ["system@example.com", "other@example.com"])
-        #expect(summaries.map(\.isSystemAccount) == [true, false])
-        #expect(summaries.map(\.workspaceLabel) == [nil, "Team"])
-        let json = try #require(String(bytes: JSONEncoder().encode(summaries), encoding: .utf8))
+        #expect(rows.map(\.id) == [matching.id, other.id, broken.id].map(\.uuidString))
+        #expect(rows.map(\.email) == ["system@example.com", "other@example.com", "broken@example.com"])
+        #expect(rows.map(\.isSystemAccount) == [true, false, false])
+        let json = try #require(String(bytes: JSONEncoder().encode(rows), encoding: .utf8))
         for secret in [
             "synthetic-access",
             "synthetic-refresh",
@@ -38,101 +45,32 @@ struct ManagedCodexAccountsLinuxTests {
         }
     }
 
-    @Test
-    func `catalog listing matches the codex-accounts list rows`() throws {
-        let fixture = try Fixture()
-        defer { fixture.tearDown() }
-        _ = try fixture.addAccount(email: "system@example.com", accountID: "acct-system")
-        _ = try fixture.addAccount(email: "other@example.com", accountID: "acct-other")
-        let broken = try fixture.addAccount(email: "broken@example.com", accountID: "acct-broken")
-        try Data("not json".utf8).write(to: fixture.authURL(home: broken.managedHomePath))
-        try fixture.writeLiveAuth(email: "system@example.com", accountID: "acct-system")
-
-        try fixture.scoped {
-            let catalog = fixture.catalog()
-            let summaries = try catalog.list()
-            let rows = try CodexBarCLI.codexAccountRows(
-                accounts: catalog.accounts(),
-                liveHome: fixture.liveHome,
-                reader: DefaultCodexAuthMaterialReader())
-            #expect(summaries.map(\.id.uuidString) == rows.map(\.id))
-            #expect(summaries.map(\.email) == rows.map(\.email))
-            #expect(summaries.map(\.isSystemAccount) == rows.map(\.isSystemAccount))
-            #expect(rows.map(\.isSystemAccount) == [true, false, false])
-        }
-    }
+    // MARK: - Usage home
 
     @Test
-    func `missing store lists no accounts`() throws {
-        let fixture = try Fixture()
-        defer { fixture.tearDown() }
-        #expect(try fixture.scoped { try fixture.catalog().list() }.isEmpty)
-    }
-
-    // MARK: - Usage scope
-
-    @Test
-    func `usage scope reads the managed home and never the system home`() throws {
+    func `managed account fetch environment uses the managed home and never the system home`() throws {
         let fixture = try Fixture()
         defer { fixture.tearDown() }
         let account = try fixture.addAccount(
             email: "managed@example.com", accountID: "acct-managed", workspaceID: "WS-Managed")
         try fixture.writeLiveAuth(email: "system@example.com", accountID: "acct-system")
+        let base = ["HOME": fixture.root.path, "CODEX_HOME": fixture.liveHome.path]
 
         try fixture.scoped {
-            let scope = try fixture.catalog().usageScope(accountID: account.id)
-            #expect(scope.accountID == account.id)
-            #expect(scope.environment["CODEX_HOME"] == account.managedHomePath)
-            #expect(scope.makeUsageFetcher().loadAuthBackedCodexAccount().email == "managed@example.com")
-            #expect(scope.settings.managedWorkspaceAccountID == "ws-managed")
-            #expect(scope.settings.openAIWebCacheScope == .managedAccount(account.id))
-            #expect(scope.settings.managedAccountTargetUnavailable == false)
-
-            let context = scope.makeFetchContext()
-            #expect(context.sourceMode == .oauth)
-            #expect(context.env["CODEX_HOME"] == account.managedHomePath)
-            #expect(context.codexWorkspaceID == "ws-managed")
-            #expect(context.fetcher.loadAuthBackedCodexAccount().email == "managed@example.com")
-        }
-    }
-
-    @Test
-    func `usage scope keeps the managed home when the account is also the system login`() throws {
-        let fixture = try Fixture()
-        defer { fixture.tearDown() }
-        let account = try fixture.addAccount(email: "same@example.com", accountID: "acct-same")
-        try fixture.writeLiveAuth(email: "same@example.com", accountID: "acct-same")
-
-        try fixture.scoped {
-            let catalog = fixture.catalog()
-            #expect(try catalog.list().first?.isSystemAccount == true)
-            let scope = try catalog.usageScope(accountID: account.id)
-            #expect(scope.environment["CODEX_HOME"] == account.managedHomePath)
-            #expect(scope.settings.openAIWebCacheScope == .managedAccount(account.id))
-        }
-    }
-
-    @Test
-    func `usage scope rejects unknown accounts and homes that are the system home`() throws {
-        let fixture = try Fixture()
-        defer { fixture.tearDown() }
-        let unsafe = try fixture.addAccount(
-            email: "unsafe@example.com", accountID: "acct-unsafe", home: fixture.liveHome.path)
-        let relative = try fixture.addAccount(
-            email: "relative@example.com", accountID: "acct-relative", home: "relative/home")
-
-        try fixture.scoped {
-            let catalog = fixture.catalog()
-            let unknown = UUID()
-            #expect(throws: ManagedCodexAccountCatalogError.unknownAccount(unknown)) {
-                try catalog.usageScope(accountID: unknown)
-            }
-            #expect(throws: ManagedCodexAccountCatalogError.unusableHome(unsafe.id)) {
-                try catalog.usageScope(accountID: unsafe.id)
-            }
-            #expect(throws: ManagedCodexAccountCatalogError.unusableHome(relative.id)) {
-                try catalog.usageScope(accountID: relative.id)
-            }
+            let context = try TokenAccountCLIContext(
+                selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: true),
+                config: CodexBarConfig.makeDefault(),
+                verbose: false,
+                baseEnvironment: base,
+                managedCodexAccountStoreURL: fixture.storeURL)
+            let source = CodexActiveSource.managedAccount(id: account.id)
+            let env = context.environment(
+                base: base, provider: .codex, account: nil, codexActiveSourceOverride: source)
+            #expect(env["CODEX_HOME"] == account.managedHomePath)
+            let fetcher = context.fetcher(base: UsageFetcher(environment: base), provider: .codex, env: env)
+            #expect(fetcher.loadAuthBackedCodexAccount().email == "managed@example.com")
+            let settings = context.settingsSnapshot(for: .codex, account: nil, codexActiveSourceOverride: source)
+            #expect(settings?.codex?.managedWorkspaceAccountID == "ws-managed")
         }
     }
 
@@ -238,12 +176,6 @@ private final class Fixture {
         try CodexCredentialFileAccess.withFixtureScope(self.scope, operation: operation)
     }
 
-    func catalog() -> ManagedCodexAccountCatalog {
-        ManagedCodexAccountCatalog(
-            storeURL: self.storeURL,
-            baseEnvironment: ["HOME": self.root.path, "CODEX_HOME": self.liveHome.path])
-    }
-
     func authURL(home: String) -> URL {
         URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent("auth.json")
     }
@@ -332,3 +264,4 @@ private final class Fixture {
         return "\(encode(["alg": "none", "typ": "JWT"])).\(encode(claims)).synthetic-signature"
     }
 }
+#endif
