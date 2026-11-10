@@ -72,6 +72,16 @@ test('each spawn gets a fresh action token in its environment, cleared when serv
     assert.equal(h.supervisor.actionToken, null);
 });
 
+test('a token that fails to generate starts serve without one', () => {
+    const h = harness();
+    h.deps.actionToken = () => { throw new Error('no /dev/urandom'); };
+    h.supervisor.start();
+    assert.equal(h.procs.length, 1);
+    assert.deepEqual(h.procs[0].env, {});
+    assert.equal(h.supervisor.actionToken, null);
+    assert.deepEqual(h.states, [[42001, '']]);
+});
+
 test('without an actionToken dep serve starts with no token', () => {
     const h = harness();
     h.supervisor.start();

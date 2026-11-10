@@ -15,6 +15,13 @@ import Foundation
 /// Fails closed: a serve started without the variable refuses every mutating route (403) and `/health` leaves the
 /// action capabilities out, so clients don't offer actions that can't work. Comparison is constant-time over SHA-256
 /// digests. The token is never logged or echoed.
+///
+/// Every mutating fork route, now and later (managed Codex accounts #169, switching #171, claude-swap #172), must
+/// call `refuseUnlessMutatingForkRequestAllowed` before it reads its body; it is the only gate. `/sync/push` predates
+/// the guard and stays outside it, since the tray and CLI users call it without a token.
+///
+/// Provider fetches get an environment without the token (`scrubbingServeSecrets`, applied where the CLI builds
+/// each provider's environment), so provider CLIs that serve runs don't inherit it.
 struct CLIServeActionGuard: Sendable {
     static let environmentKey = "USAGEBAR_SERVE_ACTION_TOKEN"
     static let headerName = "X-UsageBar-Action-Token"
@@ -49,6 +56,15 @@ struct CLIServeActionGuard: Sendable {
         else { return false }
         let digest = Array(SHA256.hash(data: Data(presented.utf8)))
         return CLIServeDashboardAuth.constantTimeEquals(digest, expectedDigest)
+    }
+}
+
+extension CLIServeActionGuard {
+    /// `environment` without serve's secrets, for a provider fetch and the processes it starts.
+    static func scrubbingServeSecrets(_ environment: [String: String]) -> [String: String] {
+        var scrubbed = environment
+        scrubbed.removeValue(forKey: self.environmentKey)
+        return scrubbed
     }
 }
 

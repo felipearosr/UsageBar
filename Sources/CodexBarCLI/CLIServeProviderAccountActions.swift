@@ -64,8 +64,8 @@ struct ProviderAccountKindPayload: Encodable, Equatable {
     /// Whether this provider's account rows can be renamed and removed through serve.
     let rename: Bool
     let remove: Bool
-    /// The first add takes over from a credential UsageBar uses now and can't keep as an account (a cookie, or an
-    /// API key from the environment); clients warn before adding. A config `apiKey` is kept instead (`add`).
+    /// The provider has no token accounts yet and `add` has no config key to keep, so the first account takes over
+    /// from whatever credential UsageBar uses now (a cookie, an environment key, a CLI login); clients warn first.
     let replacesCurrent: Bool
 }
 
@@ -147,12 +147,9 @@ extension CodexBarCLI {
         provider != .antigravity
     }
 
-    /// Every provider with token-account support, with what can be done to its accounts here. `config` and
-    /// `environment` decide `replacesCurrent`.
-    static func providerAccountKinds(
-        config: CodexBarConfig?,
-        environment: [String: String]) -> ProviderAccountKindsPayload
-    {
+    /// Every provider with token-account support, with what can be done to its accounts here. `config` decides
+    /// `replacesCurrent`.
+    static func providerAccountKinds(config: CodexBarConfig?) -> ProviderAccountKindsPayload {
         var providers: [String: ProviderAccountKindPayload] = [:]
         for provider in UsageProvider.allCases {
             guard let support = TokenAccountSupportCatalog.support(for: provider) else { continue }
@@ -164,8 +161,7 @@ extension CodexBarCLI {
                 remove: self.canRemoveProviderAccount(of: provider),
                 replacesCurrent: kind == .key && ProviderTokenAccountEditor.firstAddReplacesCurrentCredential(
                     provider: provider,
-                    entry: config?.providerConfig(for: provider.instanceID),
-                    environment: environment))
+                    entry: config?.providerConfig(for: provider.instanceID)))
         }
         return ProviderAccountKindsPayload(providers: providers)
     }
@@ -173,17 +169,14 @@ extension CodexBarCLI {
     static func serveProviderAccountRoute(
         _ route: CLIServeProviderAccountRoute,
         request: CLILocalHTTPRequest,
-        runtime: ServeRuntime,
-        environment: [String: String] = ProcessInfo.processInfo.environment) async -> CLILocalHTTPResponse
+        runtime: ServeRuntime) async -> CLILocalHTTPResponse
     {
         if route == .kinds {
             guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
                 return self.serveUnauthorizedResponse()
             }
             let config = try? runtime.configStore.load()
-            return self.addingNoStore(self.forkServeJSON(self.providerAccountKinds(
-                config: config,
-                environment: environment)))
+            return self.addingNoStore(self.forkServeJSON(self.providerAccountKinds(config: config)))
         }
         if let refusal = self.refuseUnlessMutatingForkRequestAllowed(request, runtime: runtime) {
             return refusal
@@ -437,11 +430,10 @@ enum ProviderTokenAccountEditor {
 
     /// Appends the account under a new UUID and makes it the active one, as the app's Add does.
     ///
-    /// The first add for a provider that has a config `apiKey` and no token accounts keeps that key: it becomes the
-    /// first token account ("Account 1") before the new one is added, so the card shows both and a provider that
-    /// clears `apiKey` on mutation (Copilot) loses nothing. Only for providers whose token accounts hold the same
-    /// kind of credential (an API key, injected through the environment); a cookie provider's `apiKey` is never
-    /// moved into a cookie account.
+    /// The first add for a provider that has a config `apiKey` and no token accounts keeps that key: it moves into
+    /// the first token account ("Account 1", and out of `apiKey`) before the new one is added, so the card shows
+    /// both and removing accounts never brings a forgotten `apiKey` back. Only when that `apiKey` is exactly what
+    /// the provider's token accounts replace (`migratableAPIKey`).
     static func add(
         to config: inout CodexBarConfig,
         provider: UsageProvider,
@@ -459,6 +451,7 @@ enum ProviderTokenAccountEditor {
                 token: apiKey,
                 addedAt: addedAt,
                 lastUsed: nil))
+            entry.apiKey = nil
         }
         let account = ProviderTokenAccount(
             id: UUID(),
@@ -475,36 +468,31 @@ enum ProviderTokenAccountEditor {
         return self.fields(account, active: true)
     }
 
-    /// The config `apiKey` the first add keeps as a token account, or nil.
+    /// The config `apiKey` the first add keeps as a token account, or nil. Only when the provider projects that
+    /// key into exactly the environment variable its token accounts inject, so the key and an account are the same
+    /// kind of credential (not, say, Grok's API key next to its OAuth-token accounts, DeepSeek's unprojected key, or
+    /// a Doubao access key).
     static func migratableAPIKey(provider: UsageProvider, entry: ProviderConfig?) -> String? {
         guard let support = TokenAccountSupportCatalog.support(for: provider),
-              case .environment = support.injection,
-              entry?.tokenAccounts?.accounts.isEmpty ?? true,
-              let apiKey = entry?.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !apiKey.isEmpty
+              case let .environment(key) = support.injection,
+              let entry,
+              entry.tokenAccounts?.accounts.isEmpty ?? true,
+              let apiKey = entry.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !apiKey.isEmpty,
+              ProviderConfigEnvironment.applyAPIKeyOverride(base: [:], provider: provider, config: entry)[key]?
+                  .trimmingCharacters(in: .whitespacesAndNewlines) == apiKey
         else { return nil }
         return apiKey
     }
 
-    /// Whether the first add takes over from a credential UsageBar uses now without keeping it: a cookie provider
-    /// (its browser or manual cookie isn't moved into an account), or an API-key provider whose key comes from the
-    /// environment variable its token accounts override. False once the provider has token accounts, and when a
-    /// config `apiKey` is kept by `add`.
-    static func firstAddReplacesCurrentCredential(
-        provider: UsageProvider,
-        entry: ProviderConfig?,
-        environment: [String: String]) -> Bool
-    {
-        guard let support = TokenAccountSupportCatalog.support(for: provider),
+    /// Whether the first add takes over from whatever credential UsageBar uses now without keeping it: true for
+    /// every first add that has no config key to migrate (a cookie, an environment key, a provider's own CLI login
+    /// such as Grok's). False once the provider has token accounts.
+    static func firstAddReplacesCurrentCredential(provider: UsageProvider, entry: ProviderConfig?) -> Bool {
+        guard TokenAccountSupportCatalog.support(for: provider) != nil,
               entry?.tokenAccounts?.accounts.isEmpty ?? true
         else { return false }
-        switch support.injection {
-        case .cookieHeader:
-            return true
-        case let .environment(key):
-            guard self.migratableAPIKey(provider: provider, entry: entry) == nil else { return false }
-            return !(environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        }
+        return self.migratableAPIKey(provider: provider, entry: entry) == nil
     }
 
     static func rename(

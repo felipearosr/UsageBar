@@ -92,15 +92,11 @@ struct CLIServeProviderAccountActionsTests {
         return try #require(response)
     }
 
-    private static func kinds(
-        _ runtime: ServeRuntime,
-        environment: [String: String] = [:]) async throws -> [String: [String: Any]]
-    {
+    private static func kinds(_ runtime: ServeRuntime) async throws -> [String: [String: Any]] {
         let response = try await CodexBarCLI.serveProviderAccountRoute(
             .kinds,
             request: Self.request("/accounts/kinds", method: "GET"),
-            runtime: runtime,
-            environment: environment)
+            runtime: runtime)
         #expect(response.status == .ok)
         return try #require(Self.object(response)["providers"] as? [String: [String: Any]])
     }
@@ -164,22 +160,17 @@ struct CLIServeProviderAccountActionsTests {
     }
 
     @Test
-    func `kinds warn when the first add replaces a credential it can't keep`() async throws {
-        // An API key in the environment: the token account overrides it.
-        let fromEnvironment = try await Self.kinds(Self.runtime(), environment: ["OPENROUTER_API_KEY": "fake-env"])
-        #expect(fromEnvironment["openrouter"]?["replacesCurrent"] as? Bool == true)
-        // No key anywhere: nothing to replace.
-        #expect(try await Self.kinds(Self.runtime())["openrouter"]?["replacesCurrent"] as? Bool == false)
-        // A config apiKey is kept as Account 1, so no warning even with the variable set.
+    func `kinds warn on every first add that has no config key to keep`() async throws {
+        // No config key: the first account takes over from whatever UsageBar uses now (an environment key, a
+        // cookie, a CLI login), so the extension warns.
+        #expect(try await Self.kinds(Self.runtime())["openrouter"]?["replacesCurrent"] as? Bool == true)
+        // A config apiKey moves into Account 1, so no warning.
         let configured = try Self.runtime(config: CodexBarConfig(providers: [ProviderConfig(
             id: UsageProvider.openrouter.instanceID,
             apiKey: "fake-config-key")]))
-        let kept = try await Self.kinds(configured, environment: ["OPENROUTER_API_KEY": "fake-env"])
-        #expect(kept["openrouter"]?["replacesCurrent"] as? Bool == false)
+        #expect(try await Self.kinds(configured)["openrouter"]?["replacesCurrent"] as? Bool == false)
         // Accounts already exist: adding another replaces nothing.
-        let existing = try await Self.kinds(
-            Self.runtime(config: Self.config(Self.twoAccounts)),
-            environment: ["OPENROUTER_API_KEY": "fake-env"])
+        let existing = try await Self.kinds(Self.runtime(config: Self.config(Self.twoAccounts)))
         #expect(existing["openrouter"]?["replacesCurrent"] as? Bool == false)
         // A cookie provider's browser or manual cookie never moves into an account.
         let cookies = try await Self.kinds(Self.runtime())
@@ -528,6 +519,79 @@ struct CLIServeProviderAccountActionsTests {
             "provider": "copilot", "label": "Side", "token": "fake-side",
         ]), runtime)
         #expect(try Self.accounts(runtime, .copilot)?.accounts.map(\.label) == ["Account 1", "Work", "Side"])
+    }
+
+    @Test
+    func `removing the migrated account leaves no key behind`() async throws {
+        let runtime = try Self.runtime(config: CodexBarConfig(providers: [ProviderConfig(
+            id: UsageProvider.openrouter.instanceID,
+            enabled: true,
+            apiKey: "fake-config-key")]))
+        _ = try await Self.send(Self.request("/accounts/add", json: [
+            "provider": "openrouter", "label": "Work", "token": Self.secret,
+        ]), runtime)
+        let entry = { try runtime.configStore.load()?.providerConfig(for: UsageProvider.openrouter.instanceID) }
+        // The key moved: it is Account 1 now, not also the config apiKey.
+        #expect(try entry()?.apiKey == nil)
+        let migrated = try #require(try Self.accounts(runtime)?.accounts.first)
+        #expect(migrated.label == "Account 1")
+        for account in try #require(try Self.accounts(runtime)?.accounts) {
+            _ = try await Self.send(Self.request("/accounts/remove", json: [
+                "provider": "openrouter", "accountId": "token:\(account.id.uuidString.lowercased())",
+            ]), runtime)
+        }
+        // Removing every account doesn't quietly bring the old key back as the active credential.
+        #expect(try Self.accounts(runtime) == nil)
+        #expect(try entry()?.apiKey == nil)
+        let leftOnDisk = try Data(contentsOf: runtime.configStore.fileURL).range(of: Data("fake-config-key".utf8))
+        #expect(leftOnDisk == nil)
+    }
+
+    /// The first add's migration and warning for a provider with `apiKey` set to `key`.
+    private static func firstAdd(_ provider: UsageProvider, apiKey: String) -> (migrated: Bool, warns: Bool) {
+        let entry = ProviderConfig(id: provider.instanceID, apiKey: apiKey)
+        var config = CodexBarConfig(providers: [entry])
+        _ = ProviderTokenAccountEditor.add(to: &config, provider: provider, label: "New", token: "fake-new", addedAt: 0)
+        let labels = config.providerConfig(for: provider.instanceID)?.tokenAccounts?.accounts.map(\.label) ?? []
+        return (
+            labels == ["Account 1", "New"],
+            ProviderTokenAccountEditor.firstAddReplacesCurrentCredential(provider: provider, entry: entry))
+    }
+
+    @Test
+    func `only a config key that feeds the token account is migrated`() {
+        // Grok: the config apiKey is not the OAuth token its accounts inject (its login is ~/.grok/auth.json).
+        let grok = Self.firstAdd(.grok, apiKey: "fake-grok-key")
+        #expect(!grok.migrated)
+        #expect(grok.warns)
+        // DeepSeek: the config apiKey isn't projected into the environment at all.
+        let deepseek = Self.firstAdd(.deepseek, apiKey: "fake-deepseek-key")
+        #expect(!deepseek.migrated)
+        #expect(deepseek.warns)
+        // Doubao: an API key is projected into the account's variable; an AKLT access key is not.
+        let doubaoKey = Self.firstAdd(.doubao, apiKey: "fake-doubao-key")
+        #expect(doubaoKey.migrated)
+        #expect(!doubaoKey.warns)
+        let doubaoAccessKey = Self.firstAdd(.doubao, apiKey: "AKLTfake-access-key")
+        #expect(!doubaoAccessKey.migrated)
+        #expect(doubaoAccessKey.warns)
+        // OpenRouter: the plain case.
+        #expect(Self.firstAdd(.openrouter, apiKey: "fake-or-key") == (true, false))
+    }
+
+    @Test
+    func `provider fetches never see serve's action token`() throws {
+        let context = try TokenAccountCLIContext(
+            selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
+            config: CodexBarConfig(providers: []),
+            verbose: false,
+            baseEnvironment: [:])
+        let env = context.environment(
+            base: ["USAGEBAR_SERVE_ACTION_TOKEN": "fake-action", "PATH": "/usr/bin"],
+            provider: .openrouter,
+            account: nil)
+        #expect(env["USAGEBAR_SERVE_ACTION_TOKEN"] == nil)
+        #expect(env["PATH"] == "/usr/bin")
     }
 
     @Test

@@ -49,7 +49,15 @@ export class ServeSupervisor {
             this._scheduleRestart();
             return;
         }
-        const actionToken = this._deps.actionToken?.() ?? null;
+        // A token that can't be made (say /dev/urandom unreadable) starts
+        // serve without one: it then refuses the account actions and
+        // doesn't advertise them, but usage keeps working.
+        let actionToken = null;
+        try {
+            actionToken = this._deps.actionToken?.() ?? null;
+        } catch {
+            actionToken = null;
+        }
         let proc;
         try {
             proc = this._deps.spawn([

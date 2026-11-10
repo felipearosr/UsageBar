@@ -48,6 +48,9 @@ docs/opencode.md	OpenCode on Linux	local-history source and Auto-mode order; #53
 # The platform rule is fork-owned in CLICodexAccountsCommand+UsageBar.swift.
 Sources/CodexBarCLI/CLICodexAccountsCommand.swift	Managed Codex accounts on Linux	Hook: forkRequireCodexAccountsPlatformSupport(path:output:) replaces the #if os(macOS) wrapper around runCodexAccounts (CLICodexAccountsCommand+UsageBar.swift); #167
 
+# Provider Account actions (#164): serve's action token never reaches provider fetches.
+Sources/CodexBarCLI/TokenAccountCLI.swift	Provider Account actions	Hook: TokenAccountCLIContext.environment returns CLIServeActionGuard.scrubbingServeSecrets(env) so provider CLIs don't inherit USAGEBAR_SERVE_ACTION_TOKEN (CLIServeActionGuard.swift); #164
+
 # Codex app-server exit diagnostics (upstream candidate, no ticket yet)
 Sources/CodexBarCore/UsageFetcher.swift	Codex app-server exit diagnostics	RPCWireError.processExited with exit status and stderr tail
 Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift	Codex app-server exit diagnostics	CodexUIErrorMapper treats app-server exits as connection errors

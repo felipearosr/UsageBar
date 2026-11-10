@@ -187,7 +187,8 @@ struct TokenAccountCLIContext {
         {
             env = CodexHomeScope.scopedEnvironment(base: env, codexHome: codexHomePath)
         }
-        return env
+        // UsageBar: provider fetches and their child processes never see serve's action token.
+        return CLIServeActionGuard.scrubbingServeSecrets(env)
     }
 
     func tokenUpdater(for account: ProviderTokenAccount?) -> ProviderFetchContext.TokenAccountTokenUpdater? {

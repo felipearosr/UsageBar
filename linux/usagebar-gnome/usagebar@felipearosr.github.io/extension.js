@@ -7212,6 +7212,9 @@ export default class UsageBarExtension extends Extension {
     // A refresh after an account changed. A fetch already out may have read
     // the old config, so it asks again when it lands.
     _refreshAfterAccountChange() {
+        // `replacesCurrent` depends on how many accounts a provider has.
+        if (wantsKinds(this._accountCapabilities()))
+            this._fetchAccountKinds();
         if (this._fetchInFlight)
             this._usageRefetchQueued = true;
         else
