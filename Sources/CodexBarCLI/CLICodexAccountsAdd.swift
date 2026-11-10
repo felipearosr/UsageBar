@@ -27,17 +27,18 @@ extension CodexBarCLI {
                 name: "add",
                 abstract: "Sign in to another Codex account in a home UsageBar manages",
                 discussion: nil,
-                signature: CommandSignature.describe(ConfigOptions()).flattened()),
+                signature: CommandSignature.describe(CodexAccountAddOptions()).flattened()),
         ]
     }
 
     /// Hook at the top of `runCodexAccounts`: runs the subcommands UsageBar adds and returns true, or false for
     /// upstream's own.
     @MainActor
-    static func forkRunCodexAccounts(path: [String], values _: ParsedValues, output: CLIOutputPreferences) async
+    static func forkRunCodexAccounts(path: [String], values: ParsedValues, output: CLIOutputPreferences) async
         -> Bool
     {
         guard path == ["codex-accounts", "add"] else { return false }
+        let resultPath = AccountHelperResult.path(from: values.options)
         let environment = ProcessInfo.processInfo.environment
         let adder = CodexAccountAdder(
             store: FileManagedCodexAccountStore(),
@@ -50,12 +51,13 @@ extension CodexBarCLI {
         print("")
         do {
             let account = try await adder.add()
+            AccountHelperResult(status: .done, message: "Added a Codex account.").write(to: resultPath)
             print("")
             print("Done. Added \(account.email) to UsageBar.")
-        } catch let error as CodexAccountAddError {
-            Self.exit(code: .failure, message: "\nFailed: \(error.step)", output: output, kind: .runtime)
         } catch {
-            Self.exit(code: .failure, message: "\nFailed: \(error.localizedDescription)", output: output)
+            let step = (error as? CodexAccountAddError)?.step ?? "couldn't add the account."
+            AccountHelperResult(status: .failed, message: "Failed: \(step)").write(to: resultPath)
+            Self.exit(code: .failure, message: "\nFailed: \(step)", output: output, kind: .runtime)
         }
         return true
     }
@@ -92,6 +94,14 @@ enum CodexAccountAddError: Error, Equatable {
             "couldn't save the account to UsageBar's account list. No account was added."
         }
     }
+}
+
+struct CodexAccountAddOptions: CommanderParsable {
+    @OptionGroup var common: CLICommonOptions
+    @Option(
+        name: .long("result-file"),
+        help: "Write {status, message} JSON to this absolute path when done (for the GNOME extension)")
+    var resultFile: String?
 }
 
 /// One `codex-accounts add`. Every outside effect is injected, so tests run it against a synthetic store, a

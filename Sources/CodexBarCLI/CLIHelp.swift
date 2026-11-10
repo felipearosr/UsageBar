@@ -8,7 +8,7 @@ extension CodexBarCLI {
 
         Usage:
           codexbar codex-accounts list [--json] [--pretty]
-          codexbar codex-accounts add
+          codexbar codex-accounts add [--result-file <path>]
           codexbar codex-accounts promote <exact-uuid-or-email> [--json] [--pretty]
 
         Description:

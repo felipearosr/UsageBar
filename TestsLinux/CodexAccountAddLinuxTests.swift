@@ -174,7 +174,11 @@ struct CodexAccountAddLinuxTests {
         var environment = try fixture.childEnvironment(dataHome: dataHome)
         environment["CODEX_CLI_PATH"] = codex.path
 
-        let added = try Self.run(binary, ["codex-accounts", "add"], environment: environment)
+        let resultFile = fixture.root.appendingPathComponent("result-added.json")
+        let added = try Self.run(
+            binary,
+            ["codex-accounts", "add", "--result-file", resultFile.path],
+            environment: environment)
         #expect(added.status == 0, "stderr: \(added.stderr)")
         #expect(added.stdout.contains("Done. Added second@example.com"))
         for secret in ["synthetic-access", "synthetic-refresh"] {
@@ -188,9 +192,21 @@ struct CodexAccountAddLinuxTests {
 
         let failing = try fixture.installCodex(.fail(status: 7), name: "codex-failing")
         environment["CODEX_CLI_PATH"] = failing.path
-        let failed = try Self.run(binary, ["codex-accounts", "add"], environment: environment)
+        let failedResult = fixture.root.appendingPathComponent("result-failed.json")
+        let failed = try Self.run(
+            binary,
+            ["codex-accounts", "add", "--result-file", failedResult.path],
+            environment: environment)
         #expect(failed.status != 0)
         #expect(failed.stderr.contains("Failed: `codex login` exited with status 7"))
+        // The extension waits on the result file, not the terminal's process.
+        #expect(try Self.result(resultFile) == ["status": "done", "message": "Added a Codex account."])
+        #expect(try Self.result(failedResult) == [
+            "status": "failed",
+            "message": "Failed: `codex login` exited with status 7. No account was added.",
+        ])
+        let mode = try FileManager.default.attributesOfItem(atPath: failedResult.path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
         #expect(try FileManager.default.contentsOfDirectory(atPath: homesRoot.path).count == 1)
         #expect(try fixture.systemHomeUnchanged())
     }
@@ -203,6 +219,21 @@ struct CodexAccountAddLinuxTests {
             $0.appendingPathComponent("CodexBarCLI")
         }
         return try #require(candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) })
+    }
+
+    private static func result(_ url: URL) throws -> [String: String]? {
+        try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: String]
+    }
+
+    @Test
+    func `the result path comes from --result-file and must be absolute`() throws {
+        let program = Program(descriptors: CodexBarCLI.commandDescriptors())
+        func path(_ argv: [String]) throws -> String? {
+            try AccountHelperResult.path(from: program.resolve(argv: argv).parsedValues.options)
+        }
+        #expect(try path(["codex-accounts", "add", "--result-file", "/run/user/1/x.json"]) == "/run/user/1/x.json")
+        #expect(try path(["codex-accounts", "add", "--result-file", "out.json"]) == nil)
+        #expect(try path(["codex-accounts", "add"]) == nil)
     }
 
     private static func run(
