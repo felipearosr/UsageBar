@@ -20,6 +20,9 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     case providerAccountRename
     /// serve's `POST /accounts/remove`: delete one Provider Account by its `accountId`.
     case providerAccountRemove
+    /// serve's `POST /accounts/switch`: make a claude-swap slot Claude Code's active account
+    /// (CLIServeClaudeSwapSwitch.swift). Rows it can target carry `canSwitch: true`.
+    case providerAccountSwitch
 
     /// The account actions. serve lists them on `/health` only when it was started with an action token
     /// (CLIServeActionGuard.swift), since it refuses every one of them without it.
@@ -28,6 +31,7 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
         .providerAccountAddKey,
         .providerAccountRename,
         .providerAccountRemove,
+        .providerAccountSwitch,
     ]
 }
 

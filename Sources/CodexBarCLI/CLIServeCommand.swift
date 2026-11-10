@@ -318,6 +318,13 @@ actor CLIServeResponseCache {
         return entry.response
     }
 
+    /// UsageBar: drops the cached and last-good whole responses whose cache key `matches`, so the next request
+    /// fetches again (after an account switch, CLIServeClaudeSwapSwitch.swift, #171). Per-account last-good rows stay.
+    func forkInvalidateResponses(where matches: @Sendable (String) -> Bool) {
+        self.entries = self.entries.filter { !matches($0.key) }
+        self.lastGood = self.lastGood.filter { !matches($0.key) }
+    }
+
     func cachedResponse(for key: String, now: Date) -> CLILocalHTTPResponse? {
         self.pruneExpiredEntries(now: now)
         return self.response(for: key)

@@ -25,6 +25,11 @@ extension CodexBarCLI {
         if self.isProviderAccountUsageRequest(request) {
             return await self.serveProviderAccountUsageRoute(request, runtime: runtime)
         }
+        // `POST /accounts/switch`: make a claude-swap slot Claude Code's active account
+        // (CLIServeClaudeSwapSwitch.swift).
+        if self.isClaudeSwapSwitchRequest(request) {
+            return await self.serveClaudeSwapSwitchRoute(request, runtime: runtime)
+        }
         // `/accounts/*`: add, rename and remove Provider Accounts (CLIServeProviderAccountActions.swift).
         do {
             if let accountRoute = try CLIServeProviderAccountRoute.route(method: request.method, path: request.path) {

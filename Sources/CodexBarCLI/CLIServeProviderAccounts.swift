@@ -357,6 +357,10 @@ struct ProviderAccountRowFields: Equatable, Sendable {
     /// The Quota on this account's row is an older one served in place of a current one (claude-swap's last good
     /// rows after a failed read, or a slot's source-declared last-known usage); sent as `stale: true`.
     var stale = false
+    /// An explicit switch can make this account the active one (`POST /accounts/switch`,
+    /// CLIServeClaudeSwapSwitch.swift):
+    /// an inactive claude-swap slot whose credential claude-swap can activate. Sent as `canSwitch: true`.
+    var canSwitch = false
 
     /// `<source>:<opaque id>`, stable across refreshes, renames and reorders. Serve also makes it the row's cache
     /// key, so the per-account last-good merge restores each account on its own.
@@ -393,6 +397,7 @@ struct ProviderAccountRowPayload: Encodable {
         case updatedAt
         case stale
         case disabled
+        case canSwitch
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -412,6 +417,9 @@ struct ProviderAccountRowPayload: Encodable {
         try container.encodeIfPresent(self.updatedAt, forKey: .updatedAt)
         if self.stale {
             try container.encode(true, forKey: .stale)
+        }
+        if account.canSwitch {
+            try container.encode(true, forKey: .canSwitch)
         }
     }
 }

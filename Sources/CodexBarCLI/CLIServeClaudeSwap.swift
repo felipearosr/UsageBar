@@ -183,6 +183,9 @@ struct ClaudeSwapServeRow: Sendable {
             active: snapshot.isActive,
             labelIsDefault: label.isEmpty || Self.isFallbackLabel(baseLabel, row: row),
             disabled: row.isDisabled)
+        // Only an inactive slot is a switch target (the projection's `canActivate` also covers the active slot's
+        // re-authentication, which serve doesn't offer). Expired, missing and unknown credentials never are.
+        fields.canSwitch = !snapshot.isActive && snapshot.canActivate
         let email = CLIClaudeSwapText.sanitizeLabel(row.email)
         let organization = CLIClaudeSwapText.sanitizeLabel(row.organizationName)
         // The projection's `loginMethod` names the adapter, not a plan. The plan comes from Claude Code's own account
@@ -250,6 +253,8 @@ struct ClaudeSwapServeRow: Sendable {
             adapterError: adapterError) ?? adapterError
         var fields = self.account.fields
         fields.stale = true
+        // A failed read can't vouch for the slot; the switch route reads the list again anyway.
+        fields.canSwitch = false
         let isStatusLine = [ClaudeStatusLineFeed.sourceLabel, ClaudeStatusLineFeed.staleSourceLabel]
             .contains(self.payload.source)
         return Self(
