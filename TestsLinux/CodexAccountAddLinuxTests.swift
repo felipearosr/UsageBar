@@ -36,12 +36,15 @@ struct CodexAccountAddLinuxTests {
     }
 
     @Test
-    func `the login gets fixed arguments and the caller's environment with only CODEX_HOME replaced`() async throws {
+    func `the login gets fixed arguments, the login PATH and the caller's environment with CODEX_HOME replaced`()
+        async throws
+    {
         let fixture = try AddFixture()
         defer { fixture.tearDown() }
         let codex = try fixture.installCodex(.signIn(email: "second@example.com", accountID: "acct-second"))
         let calls = LaunchLog()
         var adder = fixture.adder(codex: codex)
+        adder.loginPATH = ["/synthetic/login/bin", "/usr/bin"]
         adder.launch = { executable, arguments, environment in
             calls.append(executable: executable, arguments: arguments, environment: environment)
             return await CodexLoginProcess.run(executable: executable, arguments: arguments, environment: environment)
@@ -54,6 +57,8 @@ struct CodexAccountAddLinuxTests {
         #expect(call.arguments == ["login"])
         var expected = fixture.baseEnvironment
         expected["CODEX_HOME"] = account.managedHomePath
+        // The login shell's entries first, then the caller's, without duplicates (the app's CodexLoginRunner).
+        expected["PATH"] = "/synthetic/login/bin:/usr/bin:/bin"
         #expect(call.environment == expected)
         #expect(fixture.baseEnvironment["CODEX_HOME"] == fixture.systemCodexHome.path)
     }
@@ -211,6 +216,102 @@ struct CodexAccountAddLinuxTests {
         #expect(try fixture.systemHomeUnchanged())
     }
 
+    @Test
+    func `an npm codex finds node on the login shell's PATH`() throws {
+        let fixture = try AddFixture()
+        defer { fixture.tearDown() }
+        let binary = try Self.cliBinary()
+        let dataHome = fixture.root.appendingPathComponent("data", isDirectory: true)
+        // `fakenode` exists only in a directory the login shell's PATH has and the caller's PATH lacks.
+        let loginBin = fixture.root.appendingPathComponent("login-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: loginBin, withIntermediateDirectories: true)
+        _ = try fixture.installCodex(
+            .signIn(email: "npm@example.com", accountID: "acct-npm"),
+            name: "login-bin/fakenode")
+        // npm's launcher is `#!/usr/bin/env node`; this does the same lookup through env and PATH.
+        let codex = fixture.root.appendingPathComponent("codex-npm")
+        try FakeExecutable.install("exec /usr/bin/env fakenode \"$0\" \"$@\"\n", at: codex)
+        let shell = fixture.root.appendingPathComponent("login-shell")
+        try FakeExecutable.install(
+            "printf '__CODEXBAR_PATH__%s__CODEXBAR_PATH__' '\(loginBin.path):/usr/bin:/bin'\n",
+            at: shell)
+        var environment = try fixture.childEnvironment(dataHome: dataHome)
+        environment["CODEX_CLI_PATH"] = codex.path
+        environment["SHELL"] = shell.path
+        #expect(environment["PATH"] == "/usr/bin:/bin")
+
+        let added = try Self.run(binary, ["codex-accounts", "add"], environment: environment)
+        #expect(added.status == 0, "stderr: \(added.stderr)")
+        #expect(added.stdout.contains("Done. Added npm@example.com"))
+
+        // Without the login shell's PATH, env can't find it: exit 127, and nothing is left behind.
+        environment["SHELL"] = fixture.root.appendingPathComponent("no-such-shell").path
+        let missing = try Self.run(binary, ["codex-accounts", "add"], environment: environment)
+        #expect(missing.stderr.contains("exited with status 127"), "stderr: \(missing.stderr)")
+        let homesRoot = dataHome.appendingPathComponent("CodexBar/managed-codex-homes", isDirectory: true)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: homesRoot.path).count == 1)
+    }
+
+    @Test
+    func `Ctrl-C during the login exits 130 and leaves nothing behind`() throws {
+        let fixture = try AddFixture()
+        defer { fixture.tearDown() }
+        let binary = try Self.cliBinary()
+        let dataHome = fixture.root.appendingPathComponent("data", isDirectory: true)
+        let codex = try fixture.installCodex(.interrupted)
+        var environment = try fixture.childEnvironment(dataHome: dataHome)
+        environment["CODEX_CLI_PATH"] = codex.path
+
+        let cancelled = try Self.run(binary, ["codex-accounts", "add"], environment: environment)
+        // 128 + SIGINT, so the terminal wrapper's marker reads as cancelled.
+        #expect(cancelled.status == 130, "stderr: \(cancelled.stderr)")
+        #expect(cancelled.stderr.contains("Failed: `codex login` was interrupted"))
+        let homesRoot = dataHome.appendingPathComponent("CodexBar/managed-codex-homes", isDirectory: true)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: homesRoot.path).isEmpty)
+    }
+
+    @Test
+    func `closing the terminal mid-login removes the new home, credential and all`() throws {
+        let fixture = try AddFixture()
+        defer { fixture.tearDown() }
+        let binary = try Self.cliBinary()
+        let dataHome = fixture.root.appendingPathComponent("data", isDirectory: true)
+        let codex = try fixture.installCodex(.signInThenWait(email: "hangup@example.com"))
+        var environment = try fixture.childEnvironment(dataHome: dataHome)
+        environment["CODEX_CLI_PATH"] = codex.path
+
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["codex-accounts", "add"]
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        // Wait until the fake has written auth.json into the new home and is still "signing in".
+        let ready = fixture.records.appendingPathComponent("ready")
+        let deadline = Date().addingTimeInterval(15)
+        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        #expect(FileManager.default.fileExists(atPath: ready.path))
+        let group = getpgid(process.processIdentifier)
+        // Foundation starts the helper in a group of its own; never signal the test runner's.
+        try #require(group > 0 && group != getpgrp())
+        // A closed terminal hangs up its whole foreground group: the helper and codex alike.
+        #expect(kill(-group, SIGHUP) == 0)
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 128 + SIGHUP)
+        let homesRoot = dataHome.appendingPathComponent("CodexBar/managed-codex-homes", isDirectory: true)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: homesRoot.path).isEmpty)
+        let storeURL = dataHome.appendingPathComponent("CodexBar/managed-codex-accounts.json")
+        #expect(try fixture.scoped { try FileManagedCodexAccountStore(fileURL: storeURL).loadAccounts() }
+            .accounts.isEmpty)
+        #expect(try fixture.systemHomeUnchanged())
+    }
+
     // MARK: - Helpers
 
     private static func cliBinary() throws -> URL {
@@ -277,6 +378,8 @@ private final class AddFixture {
         case succeedWithoutAuth
         case fail(status: Int32)
         case killed
+        case interrupted
+        case signInThenWait(email: String)
         case recordProcessGroup(email: String)
     }
 
@@ -382,6 +485,18 @@ private final class AddFixture {
             action = "echo 'fake codex: login failed' >&2\nexit \(status)\n"
         case .killed:
             action = "kill -TERM $$\nsleep 5\n"
+        case .interrupted:
+            action = "kill -INT $$\nsleep 5\n"
+        case let .signInThenWait(email):
+            let source = self.root.appendingPathComponent("\(name)-auth.json")
+            try Self.authData(email: email, accountID: "acct-hangup").write(to: source)
+            action = """
+            cp '\(source.path)' "$CODEX_HOME/auth.json"
+            : > "$FAKE_CODEX_RECORDS/ready"
+            sleep 30
+            exit 0
+
+            """
         case let .recordProcessGroup(email):
             let source = self.root.appendingPathComponent("\(name)-auth.json")
             try Self.authData(email: email, accountID: "acct-pgid").write(to: source)

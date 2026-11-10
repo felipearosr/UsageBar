@@ -1,6 +1,13 @@
 import CodexBarCore
 import Commander
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 // MARK: - UsageBar: `codexbar codex-accounts add` (#169)
 
@@ -11,7 +18,9 @@ import Foundation
 /// The GNOME extension opens it in a terminal for the `cli-login` kind. It runs the login with a fixed argument
 /// array and no shell, never reads or writes the system Codex home, and on any failure removes the home it made.
 /// The macOS app's workspace chooser and its network workspace lookup are left out: the account keeps the
-/// workspace its login names, which is what the app stores when that lookup finds nothing.
+/// workspace its login names, which is what the app stores when that lookup finds nothing. Like the app's
+/// `CodexLoginRunner`, the login gets the login shell's PATH ahead of the caller's, so an npm or nvm `codex`
+/// (`#!/usr/bin/env node`) finds its `node` even from GNOME Shell's short PATH. It also runs on the macOS CLI.
 extension CodexBarCLI {
     /// The `add` entry under `codex-accounts`, appended to upstream's subcommands.
     static func forkCodexAccountsSubcommandDescriptors() -> [CommandDescriptor] {
@@ -32,22 +41,41 @@ extension CodexBarCLI {
     {
         guard path == ["codex-accounts", "add"] else { return false }
         let environment = ProcessInfo.processInfo.environment
+        let loginPATH = LoginShellPathCache.shared.currentOrCapture()
         let adder = CodexAccountAdder(
             store: FileManagedCodexAccountStore(),
             homeFactory: CLICodexManagedHomeFactory(),
             baseEnvironment: environment,
+            loginPATH: loginPATH,
             // Provider-specific by design: this helper drives Codex's own CLI, found as the app finds it.
-            resolveCodex: { BinaryLocator.resolveCodexBinary(env: $0) })
+            resolveCodex: { BinaryLocator.resolveCodexBinary(env: $0, loginPATH: loginPATH) })
         print("Adding a Codex account. Codex opens its sign-in page in your browser.")
         print("Your everyday Codex login is not changed.")
         print("")
+        // Closing the terminal hangs up the whole foreground group. Survive it until the new home is cleaned up;
+        // `codex login` still gets the default action (a handled signal resets on exec), and writes to the gone
+        // terminal just fail.
+        let restore = CodexAccountAddSignals.surviveHangup()
+        let result: Result<ManagedCodexAccount, Error>
         do {
-            let account = try await adder.add()
+            result = try await .success(adder.add())
+        } catch {
+            result = .failure(error)
+        }
+        restore()
+        switch result {
+        case let .success(account):
             print("")
             print("Done. Added \(account.email) to UsageBar.")
-        } catch {
-            let step = (error as? CodexAccountAddError)?.step ?? "couldn't add the account."
-            Self.exit(code: .failure, message: "\nFailed: \(step)", output: output, kind: .runtime)
+        case let .failure(error as CodexAccountAddError):
+            if case let .loginInterrupted(signal) = error {
+                // 128 + signal, like a shell, so the terminal wrapper reports Ctrl-C as 130 (cancelled).
+                Self.writeStderr("\nFailed: \(error.step)\n")
+                Self.platformExit(128 + signal)
+            }
+            Self.exit(code: .failure, message: "\nFailed: \(error.step)", output: output, kind: .runtime)
+        case .failure:
+            Self.exit(code: .failure, message: "\nFailed: couldn't add the account.", output: output, kind: .runtime)
         }
         return true
     }
@@ -74,8 +102,9 @@ enum CodexAccountAddError: Error, Equatable {
             "couldn't start `codex login`."
         case let .login(status):
             "`codex login` exited with status \(status). No account was added."
-        case .loginInterrupted:
-            "`codex login` was interrupted. No account was added."
+        case let .loginInterrupted(signal):
+            // The runner reports a signal as 128 + its number, which a plain exit status can also be.
+            "`codex login` was interrupted (status \(128 + signal)). No account was added."
         case .readLogin:
             "`codex login` finished, but its login couldn't be read. No account was added."
         case .missingEmail:
@@ -100,15 +129,23 @@ struct CodexAccountAdder {
     let store: any ManagedCodexAccountStoring
     let homeFactory: any ManagedCodexHomeProducing
     let baseEnvironment: [String: String]
+    /// The login shell's PATH (`LoginShellPathCache`), or nil when it couldn't be read.
+    var loginPATH: [String]?
     let resolveCodex: @Sendable ([String: String]) -> String?
     var launch: Launch = { await CodexLoginProcess.run(executable: $0, arguments: $1, environment: $2) }
     var fileManager: FileManager = .default
     var now: @Sendable () -> Date = { Date() }
 
-    /// The environment `codex login` runs with: the caller's, with `CODEX_HOME` set to the new home (replacing any
+    /// The environment `codex login` runs with, as the app's `CodexLoginRunner` builds it: the caller's, with the
+    /// login shell's PATH entries ahead of the caller's own, and `CODEX_HOME` set to the new home (replacing any
     /// `CODEX_HOME` the caller had, so the system home is never the target).
-    static func loginEnvironment(base: [String: String], home: URL) -> [String: String] {
-        CodexHomeScope.scopedEnvironment(base: base, codexHome: home.path)
+    static func loginEnvironment(base: [String: String], home: URL, loginPATH: [String]?) -> [String: String] {
+        var environment = base
+        environment["PATH"] = PathBuilder.effectivePATH(
+            purposes: [.rpc, .tty, .nodeTooling],
+            env: base,
+            loginPATH: loginPATH)
+        return CodexHomeScope.scopedEnvironment(base: environment, codexHome: home.path)
     }
 
     @MainActor
@@ -126,7 +163,7 @@ struct CodexAccountAdder {
         let account: ManagedCodexAccount
         let replacedHomes: [String]
         do {
-            let environment = Self.loginEnvironment(base: self.baseEnvironment, home: home)
+            let environment = Self.loginEnvironment(base: self.baseEnvironment, home: home, loginPATH: self.loginPATH)
             switch await self.launch(codex, Self.loginArguments, environment) {
             case nil:
                 throw CodexAccountAddError.startLogin
@@ -143,6 +180,8 @@ struct CodexAccountAdder {
             throw error
         }
         // A re-login of an account already in the store replaces it; its old home goes once nothing points at it.
+        // As in the macOS app, a serve fetch that read the old account just before may still refresh that home's
+        // OAuth token while it is removed; its next fetch reads the new home.
         try? ManagedCodexAccountLock.withLock(at: self.store.lockURL) {
             let referenced = try Set(self.store.loadAccounts().accounts.map(\.managedHomePath))
             for path in replacedHomes where path != home.path && !referenced.contains(path) {
@@ -173,7 +212,7 @@ struct CodexAccountAdder {
         case .emailOnly, .unresolved: nil
         }
         do {
-            return try ManagedCodexAccountLock.withLock(at: self.store.lockURL) {
+            return try self.withStoreLock {
                 let snapshot = try self.store.loadAccounts()
                 let existing = snapshot.account(email: email, providerAccountID: providerAccountID)
                 let sameWorkspace = existing?.effectiveWorkspaceAccountID == providerAccountID
@@ -208,6 +247,21 @@ struct CodexAccountAdder {
         }
     }
 
+    /// The store's lock, retried for up to two seconds while another writer holds it, so a concurrent add or
+    /// promote doesn't throw away a login that already succeeded.
+    @MainActor
+    private func withStoreLock<T>(_ operation: () throws -> T) throws -> T {
+        var attempt = 0
+        while true {
+            do {
+                return try ManagedCodexAccountLock.withLock(at: self.store.lockURL, operation: operation)
+            } catch ManagedCodexAccountLockError.busy where attempt < 20 {
+                attempt += 1
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+    }
+
     /// Removes a home only when upstream's factory says it is one of its managed homes.
     private func removeHome(_ home: URL) {
         guard (try? self.homeFactory.validateManagedHomeForDeletion(home)) != nil,
@@ -234,8 +288,26 @@ enum CodexLoginProcess {
             guard let code = try? CLIForegroundProcess.run(executable, arguments, environment: environment) else {
                 return nil
             }
-            // The runner reports a signal as 128 + its number.
+            // The runner reports a signal as 128 + its number; an exit status above 128 reads the same.
             return code > 128 ? .signalled(code - 128) : .exited(code)
         }.value
+    }
+}
+
+/// SIGHUP and SIGTERM while `codex-accounts add` runs: a no-op handler (not `SIG_IGN`, which `codex login` would
+/// inherit), so the helper outlives a closed terminal long enough to remove the new home, while `codex login`
+/// gets the default action back on exec and stops. The shared runner (CLIForegroundProcess.swift) handles
+/// SIGINT and SIGQUIT itself.
+enum CodexAccountAddSignals {
+    private static let hangups: [Int32] = [SIGHUP, SIGTERM]
+
+    /// Installs the handlers and returns what restores the previous ones.
+    static func surviveHangup() -> () -> Void {
+        let previous = self.hangups.map { number in (number, signal(number) { _ in }) }
+        return {
+            for (number, handler) in previous {
+                signal(number, handler)
+            }
+        }
     }
 }
