@@ -22,6 +22,7 @@ export const REMOVE_CAPABILITY = 'providerAccountRemove';
 // a handler in the extension's _addAccount.
 export const ADD_CAPABILITIES = {
     key: 'providerAccountAddKey',
+    'claude-swap': 'providerAccountAddClaudeSwap',
 };
 
 export const LABEL_LIMIT = 100;

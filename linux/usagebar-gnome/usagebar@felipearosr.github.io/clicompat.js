@@ -20,6 +20,9 @@ export const FEATURES = {
     providerAccountAddKey: {label: 'Adding key accounts', minVersion: null},
     providerAccountRename: {label: 'Renaming accounts', minVersion: null},
     providerAccountRemove: {label: 'Removing accounts', minVersion: null},
+    // serve's /accounts/claude-swap/detect and `codexbar claude add-account`
+    // (claudeswapadd.js).
+    providerAccountAddClaudeSwap: {label: 'Adding Claude accounts', minVersion: null},
 };
 
 // ---------- versions ----------

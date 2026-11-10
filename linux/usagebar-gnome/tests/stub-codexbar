@@ -27,6 +27,12 @@ STUB_CODEXBAR_CODEX_ACCOUNTS=1 advertises providerAccountRows and answers
 /usage?accounts=all with three Codex Provider Accounts: the everyday login
 (active) and two managed accounts, one of them failing; plain /usage gets the
 same three rows untagged, as serve sends them.
+STUB_CODEXBAR_CLAUDE_SWAP_ADD=1 (with ACCOUNTS) offers Add account… on Claude
+(kind `claude-swap`, providerAccountAddClaudeSwap on /health). POST
+/accounts/claude-swap/detect (action token required) answers "not installed"
+the first time and installed after that, as if the install offer worked.
+`codexbar claude add-account` prints the three steps and "done"; it runs
+nothing.
 STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
 seconds after serve starts, like a serve that isn't ready yet.
 """
@@ -49,6 +55,7 @@ ACCOUNTS = os.environ.get("STUB_CODEXBAR_ACCOUNTS") in ("1", "3")
 SPARE = os.environ.get("STUB_CODEXBAR_ACCOUNTS") == "3"
 CLAUDE_SWAP = ACCOUNTS and os.environ.get("STUB_CODEXBAR_CLAUDE_SWAP") == "1"
 CODEX_ACCOUNTS = os.environ.get("STUB_CODEXBAR_CODEX_ACCOUNTS") == "1"
+CLAUDE_SWAP_ADD = ACCOUNTS and os.environ.get("STUB_CODEXBAR_CLAUDE_SWAP_ADD") == "1"
 HEALTH_FAIL_SECS = float(os.environ.get("STUB_CODEXBAR_HEALTH_FAIL_SECS") or 0)
 STARTED = time.monotonic()
 VERSION = "0.69.0"
@@ -109,7 +116,8 @@ def iso(offset_secs=0):
 ACTION_TOKEN = (os.environ.get("USAGEBAR_SERVE_ACTION_TOKEN") or "").strip()
 ACCOUNT_CAPABILITIES = ["providerAccountRows"] + (
     ["providerAccountKinds", "providerAccountAddKey", "providerAccountRename", "providerAccountRemove"]
-    if ACTION_TOKEN else [])
+    if ACTION_TOKEN else []) + (["providerAccountAddClaudeSwap"] if ACTION_TOKEN and CLAUDE_SWAP_ADD else [])
+DETECTS = {"count": 0}
 # The OpenRouter token accounts, in store order. Only ids, labels and which
 # one is active: the stub never keeps a key.
 OPENROUTER = [
@@ -289,7 +297,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"providers": {
                 "openrouter": {"kind": "key", "placeholder": "sk-or-…", "rename": True, "remove": True,
                                "replacesCurrent": False},
-                "claude": {"rename": True, "remove": True, "replacesCurrent": False}}})
+                "claude": dict({"rename": True, "remove": True, "replacesCurrent": False},
+                               **({"kind": "claude-swap"} if CLAUDE_SWAP_ADD else {}))}})
         elif path == "/usage" and CODEX_ACCOUNTS:
             self.send_json(200, codex_account_rows("accounts=all" in parts.query.split("&")))
         elif path == "/usage" and ACCOUNTS:
@@ -305,6 +314,20 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/sync/push" and SYNC:
             self.send_json(200, {"status": "pushed", "uploaded": []})
+        elif path == "/accounts/claude-swap/detect" and CLAUDE_SWAP_ADD:
+            presented = (self.headers.get("X-UsageBar-Action-Token") or "").encode()
+            if not ACTION_TOKEN or not hmac.compare_digest(presented, ACTION_TOKEN.encode()):
+                self.send_json(403, {"error": "missing or wrong action token"})
+                return
+            with LOCK:
+                DETECTS["count"] += 1
+                installed = DETECTS["count"] > 1
+            if installed:
+                self.send_json(200, {"installed": True, "executablePath": "/stub/home/.local/bin/cswap",
+                                     "enabled": True})
+            else:
+                self.send_json(200, {"installed": False, "enabled": False,
+                                     "message": "claude-swap is not installed."})
         elif path in ("/accounts/add", "/accounts/rename", "/accounts/remove") and ACCOUNTS:
             length = int(self.headers.get("Content-Length") or 0)
             try:
@@ -348,6 +371,11 @@ def main():
     command = argv[0] if argv else ""
     if command == "serve":
         serve(argv)
+    elif command == "claude" and argv[1:2] == ["add-account"]:
+        # Offline: say what the real helper runs, run none of it.
+        for index, step in enumerate(["cswap add", "claude auth login", "cswap add"], start=1):
+            print(f"Step {index} of 3: {step} (stub: not run)")
+        print("done")
     elif command == "config":
         if argv[1:2] == ["providers"]:
             print("[]")

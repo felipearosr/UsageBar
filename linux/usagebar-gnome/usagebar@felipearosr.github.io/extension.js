@@ -127,6 +127,16 @@ import {
     rowActions,
     wantsKinds,
 } from './accountactions.js';
+import {
+    CLAUDE_SWAP_KIND,
+    NO_INSTALLER_ERROR,
+    addHelperArgv,
+    detectRequest,
+    installArgv,
+    installOfferText,
+    nextStep,
+    readDetect,
+} from './claudeswapadd.js';
 
 // Sizes a container from its first child only and floats the rest at
 // their preferred size in the top-right corner, so an open dropdown
@@ -4202,7 +4212,90 @@ export default class UsageBarExtension extends Extension {
                     finish(assertions, error);
                     return;
                 }
-                capture('accounts-provider-claude.png', () => finish(assertions));
+                capture('accounts-provider-claude.png', () => {
+                    if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD') === '1')
+                        claudeSwapAddSmoke(assertions);
+                    else
+                        finish(assertions);
+                });
+            });
+        };
+
+        // With USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 and STUB_CODEXBAR_CLAUDE_SWAP_ADD=1,
+        // after the Claude card: Add account… detects claude-swap, which the
+        // stub reports missing the first time, so the install offer shows.
+        // Install opens the installer and its exit detects again; the next
+        // Add account… opens the add helper. Terminals are recorded here,
+        // never opened, so no installer or helper ever runs.
+        const claudeSwapAddSmoke = assertions => {
+            const launched = [];
+            const runInTerminal = this._runInTerminal;
+            this._runInTerminal = (argv, options) => launched.push({argv, options});
+            const done = (error = null) => {
+                this._runInTerminal = runInTerminal;
+                finish(assertions, error);
+            };
+            let action;
+            try {
+                action = this._addAccountAction('claude');
+                assertions.push(assertion('Add account… on Claude dispatches on the claude-swap kind',
+                    action?.kind === 'claude-swap', {actual: action?.kind ?? null}));
+                const button = descendants(this._indicator._detailBox)
+                    .find(actor => actor instanceof St.Button && actor.label === 'Add account…');
+                assertions.push(assertion('the Claude card offers Add account…', !!button));
+                this._addAccount(action);
+            } catch (error) {
+                done(error);
+                return;
+            }
+            waitFor(() => !!this._accountDialog, () => {
+                const texts = this._accountDialog
+                    ? descendants(this._accountDialog).filter(actor => actor instanceof St.Label).map(a => a.text)
+                    : [];
+                assertions.push(assertion('not installed opens the install offer',
+                    texts.includes('Install claude-swap'), {texts}));
+                capture('claude-swap-install-offer.png', () => {
+                    try {
+                        this._accountDialog?.usagebarConfirm?.emit('clicked', 1);
+                    } catch (error) {
+                        done(error);
+                        return;
+                    }
+                    waitFor(() => launched.length >= 1, () => {
+                        const install = launched[0]?.argv ?? [];
+                        const tail = install.slice(1).join(' ');
+                        assertions.push(assertion('Install opens uv, or pipx without uv, as a fixed argv',
+                            install[0]?.startsWith('/') &&
+                            (tail === 'tool install claude-swap' || tail === 'install claude-swap'),
+                            {argv: install}));
+                        try {
+                            launched[0].options.onExit();
+                        } catch (error) {
+                            done(error);
+                            return;
+                        }
+                        later(500, () => {
+                            assertions.push(assertion('the offer closed', !this._accountDialog));
+                            try {
+                                this._addAccount(action);
+                            } catch (error) {
+                                done(error);
+                                return;
+                            }
+                            waitFor(() => launched.length >= 2, () => {
+                                const helper = launched[1]?.argv ?? [];
+                                assertions.push(assertion('installed opens codexbar claude add-account',
+                                    helper[0] === findBinary() && helper.slice(1).join(' ') === 'claude add-account',
+                                    {argv: helper}));
+                                assertions.push(assertion('the add helper refreshes when its terminal exits',
+                                    typeof launched[1]?.options?.onExit === 'function'));
+                                assertions.push(assertion('nothing logs out',
+                                    !launched.some(entry => entry.argv.some(part => /logout/i.test(part)))));
+                                done();
+                            });
+                        });
+                    });
+                });
             });
         };
 
@@ -7424,8 +7517,99 @@ export default class UsageBarExtension extends Extension {
         case 'key':
             this._showAddKeyDialog(action);
             break;
+        case CLAUDE_SWAP_KIND:
+            this._addClaudeSwapAccount(action);
+            break;
         default:
             console.warn(`usagebar: no handler for account kind ${action.kind}`);
+        }
+    }
+
+    // ----- Claude accounts through claude-swap (claudeswapadd.js, #172) -----
+
+    // Detect first: installed opens the add helper, otherwise the install
+    // offer. Detect also saves cswap's path and turns claude-swap on.
+    _addClaudeSwapAccount(action) {
+        this._detectClaudeSwap((detect, error) => {
+            if (error) {
+                this._notify('UsageBar', `Couldn’t check for claude-swap: ${actionErrorText(error)}`);
+                return;
+            }
+            if (nextStep(detect) === 'add')
+                this._openClaudeSwapAddHelper();
+            else
+                this._offerClaudeSwapInstall(action);
+        });
+    }
+
+    // POST /accounts/claude-swap/detect with the action token. cb(detect, error).
+    _detectClaudeSwap(cb) {
+        const actionToken = this._supervisor?.actionToken;
+        if (!actionToken) {
+            cb(null, new Error('serve not running'));
+            return;
+        }
+        const request = detectRequest();
+        this._get(request.path, (payload, error) => cb(error ? null : readDetect(payload), error ?? null),
+            request.method, request.body, {[ACTION_TOKEN_HEADER]: actionToken});
+    }
+
+    _openClaudeSwapAddHelper() {
+        const argv = addHelperArgv(findBinary());
+        if (!argv) {
+            this._notify('UsageBar', 'The UsageBar CLI wasn’t found, so the Claude add helper can’t start.');
+            return;
+        }
+        this._runInTerminal(argv, {
+            what: 'add a Claude account',
+            onExit: () => this._refreshAfterAccountChange(),
+        });
+    }
+
+    _offerClaudeSwapInstall(action) {
+        const argv = installArgv(name => findLoginBinary(name));
+        const dialog = this._openAccountDialog({
+            title: 'Install claude-swap',
+            description: installOfferText(argv),
+            confirmLabel: 'Install',
+            provider: action.provider,
+            submit: ({fail}) => {
+                if (!argv) {
+                    fail(NO_INSTALLER_ERROR);
+                    return;
+                }
+                dialog.close();
+                // Detect again once the installer's terminal exits; the next
+                // Add account… detects again too, for terminals that hand off
+                // to a server and exit early.
+                this._runInTerminal(argv, {
+                    what: 'install claude-swap',
+                    onExit: () => this._detectClaudeSwap(() => this._refreshAfterAccountChange()),
+                });
+            },
+        });
+    }
+
+    // Opens `argv` (a fixed argv, no shell string) in the user's terminal
+    // (authlogin.js terminalArgv, as the Sign in button does) and calls
+    // onExit when the launcher exits.
+    _runInTerminal(argv, {what, onExit = null}) {
+        const command = terminalArgv(argv, p => GLib.find_program_in_path(p));
+        if (!command) {
+            this._notify('UsageBar', `No terminal found. Run \`${argv.join(' ')}\` in a terminal to ${what}.`);
+            return;
+        }
+        this._indicator?.menu.close();
+        try {
+            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
+            const generation = this._generation;
+            proc.wait_async(null, () => {
+                if (generation === this._generation)
+                    onExit?.();
+            });
+        } catch (e) {
+            console.warn(`usagebar: terminal failed: ${e.message}`);
+            this._notify('UsageBar', `Could not open a terminal. Run \`${argv.join(' ')}\` to ${what}.`);
         }
     }
 

@@ -7,7 +7,9 @@
 # USAGEBAR_UI_SMOKE_EXPECT_SYNC=0|1 asserts which of the two the run sees.
 # USAGEBAR_UI_SMOKE_ACCOUNTS=1 with STUB_CODEXBAR_ACCOUNTS=1 checks a provider
 # card with two Provider Accounts; add USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and
-# STUB_CODEXBAR_CLAUDE_SWAP=1 to also check Claude's claude-swap slots.
+# STUB_CODEXBAR_CLAUDE_SWAP=1 to also check Claude's claude-swap slots, and
+# USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 with STUB_CODEXBAR_CLAUDE_SWAP_ADD=1 to
+# then add a Claude account through the install offer and the add helper.
 # USAGEBAR_UI_SMOKE_ICON_SOURCE=1 with STUB_CODEXBAR_ACCOUNTS=3 checks the
 # panel icon source and per-account notifications.
 # USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 with STUB_CODEXBAR_CODEX_ACCOUNTS=1 checks
@@ -153,6 +155,17 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
         USAGEBAR_UI_SMOKE_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/claude-swap-accounts"
+fi
+
+# Add account… on Claude (#172): detect, the install offer, then the add
+# helper. The smoke records the terminals instead of opening them.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    printf '\nRe-running the UI smoke to add a Claude account through claude-swap\n'
+    CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
+        STUB_CODEXBAR_ACCOUNTS=1 STUB_CODEXBAR_CLAUDE_SWAP=1 STUB_CODEXBAR_CLAUDE_SWAP_ADD=1 \
+        USAGEBAR_UI_SMOKE_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 \
+        USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
+        "$0" "$artifact_dir/claude-swap-add"
 fi
 
 # A third account with the most headroom: the panel chip follows the icon
