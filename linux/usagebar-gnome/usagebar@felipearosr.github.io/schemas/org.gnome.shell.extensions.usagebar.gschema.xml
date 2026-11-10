@@ -52,6 +52,11 @@
       <summary>Bars label shows used percent</summary>
       <description>Usage bar foot shows "N% used"; off shows "N% remaining".</description>
     </key>
+    <key name="hide-personal-info" type="b">
+      <default>false</default>
+      <summary>Hide personal information</summary>
+      <description>Show Provider Accounts as "Account 1", "Account 2" instead of their labels or emails, and hide email addresses in error text.</description>
+    </key>
     <key name="absolute-reset-times" type="b">
       <default>false</default>
       <summary>Absolute reset times</summary>

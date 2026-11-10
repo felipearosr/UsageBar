@@ -180,9 +180,15 @@ extension CodexBarCLI {
                     source: .token,
                     id: account.id.uuidString.lowercased(),
                     label: Self.providerAccountLabel(account.label, index: index),
-                    active: index == activeIndex),
+                    active: index == activeIndex,
+                    labelIsDefault: Self.isDefaultProviderAccountLabel(account.label)),
                 selector: .tokenIndex(index))
         }
+    }
+
+    /// True when the user gave the account no label, so `providerAccountLabel` made one up.
+    static func isDefaultProviderAccountLabel(_ label: String) -> Bool {
+        label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     static func providerAccountLabel(_ label: String, index: Int) -> String {
@@ -290,6 +296,9 @@ struct ProviderAccountRowFields: Equatable, Sendable {
     let id: String
     let label: String
     let active: Bool
+    /// The user set no label and `label` is serve's "Account N" (numbered by store position). Clients then make
+    /// their own label instead of treating it as the user's alias; older clients still render `label`.
+    var labelIsDefault: Bool = false
 
     /// `<source>:<opaque id>`, stable across refreshes, renames and reorders. Serve also makes it the row's cache
     /// key, so the per-account last-good merge restores each account on its own.
@@ -314,6 +323,7 @@ struct ProviderAccountRowPayload: Encodable {
         case accountId
         case accountSource
         case accountLabel
+        case accountLabelIsDefault
         case active
         case updatedAt
     }
@@ -325,6 +335,9 @@ struct ProviderAccountRowPayload: Encodable {
         try container.encode(account.accountID, forKey: .accountId)
         try container.encode(account.source, forKey: .accountSource)
         try container.encode(account.label, forKey: .accountLabel)
+        if account.labelIsDefault {
+            try container.encode(true, forKey: .accountLabelIsDefault)
+        }
         try container.encode(account.active, forKey: .active)
         try container.encodeIfPresent(self.updatedAt, forKey: .updatedAt)
     }
