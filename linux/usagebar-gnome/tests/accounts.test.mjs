@@ -8,7 +8,11 @@ import {
     agoText,
     buildCards,
     forgetAccount,
+    ICON_SOURCES,
     mergeStale,
+    notificationRows,
+    panelAccount,
+    panelRows,
     primaryRows,
     usagePath,
 } from '../usagebar@felipearosr.github.io/accounts.js';
@@ -181,6 +185,120 @@ test('freshness text', () => {
     assert.equal(agoText(7200), '2h ago');
 });
 
+// Three OpenRouter accounts for the panel icon source: Work active at 64%,
+// Personal at 30% in its session but 50% in its weekly window, Spare with
+// most headroom but a stale carried Quota behind an error, Old stale with no
+// usage at all.
+const SPARE = 'token:9a8b7c6d-5e4f';
+const OLD = 'token:1a2b3c4d-5e6f';
+function headroomPayload({personalWeekly = 50} = {}) {
+    return [
+        {provider: 'claude', source: 'oauth', usage: {primary: window(20)}},
+        {provider: 'openrouter', accountId: WORK, accountLabel: 'work@example.com', active: true,
+            usage: {primary: window(64)}},
+        {provider: 'openrouter', accountId: PERSONAL, accountLabel: 'me@example.com', active: false,
+            usage: {primary: window(30), secondary: {...window(personalWeekly), windowMinutes: 10080}}},
+        {provider: 'openrouter', accountId: SPARE, accountLabel: 'Spare', active: false, stale: true,
+            error: {message: 'timed out'}, usage: {primary: window(5)}},
+        {provider: 'openrouter', accountId: OLD, accountLabel: 'Old', active: false, stale: true},
+    ];
+}
+const cardMap = cards => new Map(cards.filter(card => card.multi).map(card => [card.provider, card]));
+
+test('the panel icon source defaults to the active account', () => {
+    const cards = buildCards(headroomPayload(), {accountRows: true, now: NOW});
+    const rows = primaryRows(cards);
+    assert.deepEqual(ICON_SOURCES, ['active', 'most-headroom']);
+    assert.equal(panelAccount(cards[1]).id, WORK);
+    assert.deepEqual(panelRows(rows, cardMap(cards)), rows);
+    assert.equal(panelRows(rows, cardMap(cards), 'active')[1], rows[1]);
+    assert.equal(panelRows(rows, cardMap(cards), 'bogus')[1], rows[1]);
+});
+
+test('most headroom picks the lowest chip percent, skipping error and usage-less rows', () => {
+    const cards = buildCards(headroomPayload(), {accountRows: true, now: NOW});
+    assert.equal(panelAccount(cards[1], 'most-headroom').id, PERSONAL);
+    const chips = panelRows(primaryRows(cards), cardMap(cards), 'most-headroom');
+    assert.equal(chips[0], cards[0].row);
+    assert.equal(chips[1].accountId, PERSONAL);
+});
+
+test('an account\'s chip percent is its most-used window, as the chip shows', () => {
+    // Personal's 30% session hides a 70% weekly window: Work's 64% has more headroom.
+    const cards = buildCards(headroomPayload({personalWeekly: 70}), {accountRows: true, now: NOW});
+    assert.equal(panelAccount(cards[1], 'most-headroom').id, WORK);
+});
+
+test('most headroom ties keep the active account and falls back to it without candidates', () => {
+    const tie = buildCards(headroomPayload({personalWeekly: 64}), {accountRows: true, now: NOW});
+    assert.equal(panelAccount(tie[1], 'most-headroom').id, WORK);
+    const none = buildCards(headroomPayload().map(row => row.provider === 'openrouter'
+        ? {...row, usage: undefined, stale: true} : row), {accountRows: true, now: NOW});
+    assert.equal(panelAccount(none[1], 'most-headroom').id, WORK);
+});
+
+test('with one account the panel rows are exactly the popover rows for either source', () => {
+    for (const [payload, accountRows] of [[singlePayload(), false], [accountPayload().slice(0, 1), true],
+        [[headroomPayload()[1]], true]]) {
+        const cards = buildCards(payload, {accountRows, now: NOW});
+        const rows = primaryRows(cards);
+        for (const source of ICON_SOURCES) {
+            const chips = panelRows(rows, cardMap(cards), source);
+            assert.equal(chips.length, rows.length);
+            chips.forEach((chip, index) => assert.equal(chip, rows[index]));
+        }
+    }
+});
+
+test('notification rows expand multi-account cards with their display labels', () => {
+    const cards = buildCards(headroomPayload(), {accountRows: true, now: NOW});
+    const rows = primaryRows(cards).map(row => ({...row, enriched: true}));
+    const notify = notificationRows(rows, cardMap(cards));
+    assert.deepEqual(notify.map(row => [row.provider, row.accountId ?? null, row.accountLabel ?? null]), [
+        ['claude', null, null],
+        ['openrouter', WORK, 'work@example.com'],
+        ['openrouter', PERSONAL, 'me@example.com'],
+        ['openrouter', SPARE, 'Spare'],
+        ['openrouter', OLD, 'Old'],
+    ]);
+    // The primary account keeps the popover's own (enriched) row.
+    assert.equal(notify[1].enriched, true);
+    assert.equal(notify[2].enriched, undefined);
+    // Single-account cards pass through untouched.
+    assert.equal(notify[0], rows[0]);
+});
+
+test('with Hide Personal Info the notification rows carry ordinal labels only', () => {
+    const cards = buildCards(headroomPayload(), {accountRows: true, now: NOW, hidePersonalInfo: true});
+    const notify = notificationRows(primaryRows(cards), cardMap(cards));
+    const labels = new Map(notify.filter(row => row.accountId).map(row => [row.accountId, row.accountLabel]));
+    assert.deepEqual([...labels.values()].sort(), ['Account 1', 'Account 2', 'Account 3', 'Account 4']);
+    assert.doesNotMatch(JSON.stringify(notify), /@example\.com/);
+});
+
+test('without an active account the primary is picked by account id, not row order or privacy', () => {
+    const rows = headroomPayload().map(row => ({...row, active: false}));
+    const reversed = [rows[0], ...rows.slice(1).reverse()];
+    // Work's id sorts first and has Quota.
+    for (const payload of [rows, reversed]) {
+        for (const hidePersonalInfo of [false, true]) {
+            const card = buildCards(payload, {accountRows: true, now: NOW, hidePersonalInfo})[1];
+            assert.equal(card.row.accountId, WORK);
+        }
+    }
+});
+
+test('most headroom ties among other accounts go to the lowest account id', () => {
+    const rows = headroomPayload().slice(0, 2).concat([
+        {provider: 'openrouter', accountId: SPARE, accountLabel: 'Spare', usage: {primary: window(10)}},
+        {provider: 'openrouter', accountId: PERSONAL, accountLabel: 'Personal', usage: {primary: window(10)}},
+    ]);
+    for (const payload of [rows, [rows[0], rows[1], rows[3], rows[2]]]) {
+        const card = buildCards(payload, {accountRows: true, now: NOW})[1];
+        assert.equal(panelAccount(card, 'most-headroom').id, PERSONAL);
+    }
+});
+
 test('malformed payloads yield no cards', () => {
     assert.deepEqual(buildCards(null, {accountRows: true}), []);
     assert.deepEqual(buildCards([null, 3], {accountRows: true}), []);
@@ -208,4 +326,38 @@ test('forgetAccount keeps a removed account from coming back as a stale row', ()
     assert.ok(!merged.some(r => r.accountLabel === 'Personal'));
     // Without forgetting, the removed account would come back.
     assert.ok(mergeStale(rows, fresh()).some(r => r.accountLabel === 'Personal'));
+});
+
+// Managed Codex accounts (#168): serve tags the everyday login `codex-system`
+// (active) and each managed account `codex-managed`, in one Codex card.
+test('managed Codex accounts and the everyday login share one Codex card', () => {
+    const rows = [
+        {provider: 'codex', source: 'oauth', account: 'me@example.com', accountId: 'codex-system:3f9a1c2b7d4e8f60',
+            accountSource: 'codex-system', accountLabel: 'me@example.com', active: true,
+            updatedAt: '2026-11-10T11:59:00Z', usage: {primary: window(18), updatedAt: '2026-11-10T11:59:00Z'}},
+        {provider: 'codex', source: 'oauth', account: 'old@example.com',
+            accountId: 'codex-managed:7a1e2d3c-4b5a-4c6d-8e7f-9a0b1c2d3e4f',
+            accountSource: 'codex-managed', accountLabel: 'old@example.com', active: false,
+            error: {code: 1, kind: 'provider', message: 'Codex OAuth token expired'}},
+        {provider: 'codex', source: 'oauth', account: 'work@example.com',
+            accountId: 'codex-managed:1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7a8b',
+            accountSource: 'codex-managed', accountLabel: 'work@example.com', active: false,
+            updatedAt: '2026-11-10T11:58:00Z', usage: {primary: window(71), updatedAt: '2026-11-10T11:58:00Z'}},
+    ];
+    const cards = buildCards(rows, {accountRows: true, now: NOW});
+    assert.equal(cards.length, 1);
+    const [card] = cards;
+    assert.equal(card.multi, true);
+    assert.deepEqual(card.accounts.map(account => account.source),
+        ['codex-system', 'codex-managed', 'codex-managed']);
+    assert.deepEqual(card.accounts.map(account => account.active), [true, false, false]);
+    assert.deepEqual(card.accounts.map(account => account.error), [null, 'Codex OAuth token expired', null]);
+    assert.equal(card.row.accountLabel, 'me@example.com');
+
+    // Without managed accounts serve sends upstream's untagged row: today's card.
+    const plain = buildCards([{provider: 'codex', source: 'oauth', account: 'me@example.com',
+        usage: {primary: window(18), updatedAt: '2026-11-10T11:59:00Z'}}], {accountRows: true, now: NOW});
+    assert.equal(plain.length, 1);
+    assert.equal(plain[0].multi, false);
+    assert.equal(plain[0].accounts[0].id, null);
 });

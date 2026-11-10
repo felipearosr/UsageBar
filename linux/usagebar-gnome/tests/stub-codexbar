@@ -12,13 +12,21 @@ each provider error state, for the issues banner and Details dialog.
 STUB_CODEXBAR_ACCOUNTS=1 advertises providerAccountRows on /health and answers
 /usage?accounts=all with two OpenRouter Provider Accounts (Work active, the
 Personal key failing) next to a single-account Claude row; plain /usage gets
-the single-account rows an older CLI would send. It also advertises the
-account actions: /accounts/kinds offers `key` for OpenRouter, and
+the single-account rows an older CLI would send. STUB_CODEXBAR_ACCOUNTS=3 adds
+a third OpenRouter account, Spare, at 12% (the most headroom). Both also
+advertise the account actions: /accounts/kinds offers `key` for OpenRouter, and
 /accounts/add, /accounts/rename and /accounts/remove change the OpenRouter
 accounts in memory (keys are checked for presence and never stored). Like
 serve, those need the X-UsageBar-Action-Token header to match
 USAGEBAR_SERVE_ACTION_TOKEN (403 otherwise, and for any Origin header); without
 the variable they are refused and /health leaves the account actions out.
+STUB_CODEXBAR_CLAUDE_SWAP=1 (with ACCOUNTS) makes Claude's rows claude-swap's:
+two slots on /usage?accounts=all (work active, personal stale with its
+error), and the active slot's row on plain /usage.
+STUB_CODEXBAR_CODEX_ACCOUNTS=1 advertises providerAccountRows and answers
+/usage?accounts=all with three Codex Provider Accounts: the everyday login
+(active) and two managed accounts, one of them failing; plain /usage gets the
+same three rows untagged, as serve sends them.
 STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
 seconds after serve starts, like a serve that isn't ready yet.
 """
@@ -37,7 +45,10 @@ SYNC = os.environ.get("STUB_CODEXBAR_SYNC", "1") != "0"
 REPORT = os.environ.get("STUB_CODEXBAR_REPORT") == "1"
 PAIRED = SYNC and os.environ.get("STUB_CODEXBAR_PAIRED") == "1"
 ISSUES = os.environ.get("STUB_CODEXBAR_ISSUES") == "1"
-ACCOUNTS = os.environ.get("STUB_CODEXBAR_ACCOUNTS") == "1"
+ACCOUNTS = os.environ.get("STUB_CODEXBAR_ACCOUNTS") in ("1", "3")
+SPARE = os.environ.get("STUB_CODEXBAR_ACCOUNTS") == "3"
+CLAUDE_SWAP = ACCOUNTS and os.environ.get("STUB_CODEXBAR_CLAUDE_SWAP") == "1"
+CODEX_ACCOUNTS = os.environ.get("STUB_CODEXBAR_CODEX_ACCOUNTS") == "1"
 HEALTH_FAIL_SECS = float(os.environ.get("STUB_CODEXBAR_HEALTH_FAIL_SECS") or 0)
 STARTED = time.monotonic()
 VERSION = "0.69.0"
@@ -103,8 +114,11 @@ ACCOUNT_CAPABILITIES = ["providerAccountRows"] + (
 # one is active: the stub never keeps a key.
 OPENROUTER = [
     {"id": "6f0c2a9e-1b4d-4c8a-9e2f-0a1b2c3d4e5f", "label": "Personal", "failing": True},
-    {"id": "0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70", "label": "Work", "failing": False},
+    {"id": "0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70", "label": "Work", "failing": False, "percent": 64},
 ]
+if SPARE:
+    OPENROUTER.append({"id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", "label": "Spare", "failing": False,
+                       "percent": 12})
 ACTIVE = {"id": "0d9e8f7a-6b5c-4d3e-8f1a-2b3c4d5e6f70"}
 LOCK = threading.Lock()
 
@@ -115,6 +129,11 @@ def account_rows(all_accounts):
     claude = {"provider": "claude", "source": "oauth",
               "usage": {"primary": window(22, 300, 7200), "secondary": window(41, 10080, 300000),
                         "updatedAt": iso(30)}}
+
+    if CLAUDE_SWAP:
+        claude = claude_swap_rows(all_accounts, window)
+    else:
+        claude = [claude]
 
     def row(account, percent):
         if account["failing"]:
@@ -128,15 +147,15 @@ def account_rows(all_accounts):
         accounts = list(OPENROUTER)
         active = ACTIVE["id"]
     if not accounts:
-        return [claude]
+        return claude
     active_account = next((a for a in accounts if a["id"] == active), accounts[0])
     # Like serve: one account (or a client without accounts=all) gets the
     # active account's plain row.
     if not all_accounts or len(accounts) == 1:
-        return [claude, row(active_account, 64)]
-    rows = [claude]
+        return claude + [row(active_account, active_account.get("percent", 64))]
+    rows = list(claude)
     for index, account in enumerate(accounts):
-        tagged = row(account, 64 - 20 * index)
+        tagged = row(account, account.get("percent", 64 - 20 * index))
         tagged.update({"accountId": f"token:{account['id']}", "accountSource": "token",
                        "accountLabel": account["label"], "active": account["id"] == active})
         if "usage" in tagged:
@@ -177,6 +196,58 @@ def account_action(path, body):
         return 200, {"provider": "openrouter", "accountId": account_id, "removed": True}
 
 
+def claude_swap_rows(all_accounts, window):
+    # Synthetic slots only: example.com labels, no tokens.
+    active = {"provider": "claude", "source": "claude-swap",
+              "usage": {"primary": window(31, 300, 9000), "secondary": window(47, 10080, 400000),
+                        "updatedAt": iso(120), "loginMethod": "Claude Max",
+                        "identity": {"providerID": "claude", "accountEmail": "work@example.com",
+                                     "accountOrganization": "Example Org", "loginMethod": "Claude Max",
+                                     "accountID": "claude-swap:2"}}}
+    if not all_accounts:
+        return [active]
+    active.update({"account": "work@example.com", "accountId": "claude-swap:2",
+                   "accountSource": "claude-swap", "accountLabel": "work@example.com", "active": True,
+                   "updatedAt": iso(120)})
+    stale = {"provider": "claude", "source": "claude-swap-stale", "account": "personal@example.com",
+             "accountId": "claude-swap:1", "accountSource": "claude-swap",
+             "accountLabel": "personal@example.com", "active": False, "stale": True,
+             "updatedAt": iso(5400),
+             "usage": {"primary": window(88, 300, 3600), "secondary": window(62, 10080, 300000),
+                       "updatedAt": iso(5400)},
+             "error": {"code": 1, "kind": "provider",
+                       "message": "Token expired. Switch to this account in claude-swap to refresh it."}}
+    return [active, stale]
+
+
+def codex_account_rows(all_accounts):
+    def window(percent, minutes, reset_secs):
+        return {"usedPercent": percent, "windowMinutes": minutes, "resetsAt": iso(-reset_secs)}
+
+    def row(email, source, account_id, active, usage=None, error=None):
+        body = {"provider": "codex", "source": "oauth", "account": email}
+        if usage:
+            body["usage"] = usage
+        if error:
+            body["error"] = {"code": 1, "kind": "provider", "message": error}
+        if all_accounts:
+            body.update({"accountId": f"{source}:{account_id}", "accountSource": source,
+                         "accountLabel": email, "active": active})
+            if usage:
+                body["updatedAt"] = usage["updatedAt"]
+        return body
+    return [
+        row("me@example.com", "codex-system", "3f9a1c2b7d4e8f60", True,
+            usage={"primary": window(18, 300, 9000), "secondary": window(52, 10080, 400000),
+                   "updatedAt": iso(20)}),
+        row("old@example.com", "codex-managed", "7a1e2d3c-4b5a-4c6d-8e7f-9a0b1c2d3e4f", False,
+            error="Codex OAuth token expired. Run `codex login` in this account's home."),
+        row("work@example.com", "codex-managed", "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7a8b", False,
+            usage={"primary": window(71, 300, 3600), "secondary": window(33, 10080, 500000),
+                   "updatedAt": iso(90)}),
+    ]
+
+
 def unknown_command(name):
     if "--json-only" in sys.argv:
         print(json.dumps([{"provider": "cli", "source": "cli", "error": {
@@ -205,9 +276,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {"error": "starting"})
         elif path == "/health":
             body = {"status": "ok", "version": VERSION}
-            if REPORT or ACCOUNTS:
+            if REPORT or ACCOUNTS or CODEX_ACCOUNTS:
                 body["capabilities"] = (["machineSync"] if SYNC else []) + \
-                    (ACCOUNT_CAPABILITIES if ACCOUNTS else [])
+                    (ACCOUNT_CAPABILITIES if ACCOUNTS else
+                     ["providerAccountRows"] if CODEX_ACCOUNTS else [])
                 body["usagebarVersion"] = VERSION
                 body["upstreamVersion"] = VERSION
             self.send_json(200, body)
@@ -218,6 +290,8 @@ class Handler(BaseHTTPRequestHandler):
                 "openrouter": {"kind": "key", "placeholder": "sk-or-…", "rename": True, "remove": True,
                                "replacesCurrent": False},
                 "claude": {"rename": True, "remove": True, "replacesCurrent": False}}})
+        elif path == "/usage" and CODEX_ACCOUNTS:
+            self.send_json(200, codex_account_rows("accounts=all" in parts.query.split("&")))
         elif path == "/usage" and ACCOUNTS:
             self.send_json(200, account_rows("accounts=all" in parts.query.split("&")))
         elif path in ("/usage", "/cost"):

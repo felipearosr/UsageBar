@@ -9,7 +9,8 @@
 // `accountId` (every provider with one account, and every row from an older
 // CLI) are cards on their own, exactly as before.
 
-import {isStaleSource, windowsOf} from './payload.js';
+import {accountLabels, ordinalLabel, scrubRow} from './accountlabels.js';
+import {byAccountId, hasAccountId, isStaleSource, primaryRow, windowsOf, worstPercent} from './payload.js';
 
 export const ACCOUNT_ROWS_CAPABILITY = 'providerAccountRows';
 
@@ -22,10 +23,6 @@ export function usagePath({accountRows = false, fresh = false} = {}) {
     if (fresh)
         query.push('fresh=1');
     return query.length ? `/usage?${query.join('&')}` : '/usage';
-}
-
-export function hasAccountId(row) {
-    return typeof row?.accountId === 'string' && row.accountId !== '';
 }
 
 // Which earlier row a fresh row continues: the same Provider Account, or for
@@ -63,7 +60,9 @@ function accountOf(row, now, {single = false} = {}) {
     return {
         id: hasAccountId(row) ? row.accountId : null,
         source: typeof row.accountSource === 'string' ? row.accountSource : null,
-        label: [row.accountLabel, row.account].find(v => typeof v === 'string' && v.trim())?.trim() ?? null,
+        // Set per card by labelAccounts (accountlabels.js).
+        label: null,
+        ordinal: null,
         // A provider's only row is the account its tools use.
         active: single || row.active === true,
         updatedAt,
@@ -75,35 +74,57 @@ function accountOf(row, now, {single = false} = {}) {
     };
 }
 
-function singleCard(row, now) {
-    return {provider: row.provider, row, multi: false, accounts: [accountOf(row, now, {single: true})]};
+// Labels for one card's accounts (private with Hide Personal Info, told
+// apart when two share an email). With Hide Personal Info each account's row
+// becomes a scrubbed copy, so nothing that renders a row (card head, account
+// blocks, panel chips, issues, notifications) sees the raw label or an email
+// in an error. The blocks keep row order either way, so toggling the setting
+// never reorders the card (see accountlabels.js on the numbering).
+function labelAccounts(card, hidePersonalInfo) {
+    const labels = accountLabels(card.accounts.map(account => account.row), {hidePersonalInfo});
+    card.accounts.forEach((account, index) => {
+        account.label = labels[index].label;
+        account.ordinal = labels[index].ordinal;
+        if (hidePersonalInfo) {
+            account.row = scrubRow(account.row, account.label);
+            account.error = errorText(account.row);
+        }
+    });
+}
+
+function singleCard(row, now, hidePersonalInfo) {
+    const card = {provider: row.provider, row, multi: false, accounts: [accountOf(row, now, {single: true})]};
+    labelAccounts(card, hidePersonalInfo);
+    card.row = card.accounts[0].row;
+    return card;
 }
 
 // The account the rest of the popover (panel chip, compact row, issues,
 // notifications) shows for a multi-account card: the active one, else the
-// first with Quota, else the first.
+// first with Quota, else the first, by account id (payload.js primaryRow,
+// which notify.js shares), so Hide Personal Info never changes it.
 function primaryAccount(accounts) {
-    return accounts.find(account => account.active) ??
-        accounts.find(account => !account.error) ?? accounts[0];
+    const row = primaryRow(accounts.map(account => account.row));
+    return accounts.find(account => account.row === row) ?? accounts[0];
 }
 
-// rows → [{provider, row, multi, accounts: [{id, source, label, active,
-// updatedAt, ageSecs, freshness, error, stale, row}]}], in row order. Without
+// rows → [{provider, row, multi, accounts: [{id, source, label, ordinal,
+// active, updatedAt, ageSecs, freshness, error, stale, row}]}], in row order. Without
 // the capability every row is its own card, as before; with it, a provider
 // with any row that carries an accountId gets one card holding all its rows.
 // Serve tags all or nothing per provider; an untagged row of such a provider
 // (an older or odd serve) still joins that card, as an account without an id,
-// so nothing renders twice.
-export function buildCards(rows, {accountRows = false, now = Date.now()} = {}) {
+// so nothing renders twice. hidePersonalInfo: see labelAccounts.
+export function buildCards(rows, {accountRows = false, now = Date.now(), hidePersonalInfo = false} = {}) {
     const list = Array.isArray(rows) ? rows.filter(row => row && typeof row === 'object') : [];
     if (!accountRows)
-        return list.map(row => singleCard(row, now));
+        return list.map(row => singleCard(row, now, hidePersonalInfo));
     const tagged = new Set(list.filter(hasAccountId).map(row => row.provider));
     const cards = [];
     const grouped = new Map();
     for (const row of list) {
         if (!tagged.has(row.provider)) {
-            cards.push(singleCard(row, now));
+            cards.push(singleCard(row, now, hidePersonalInfo));
             continue;
         }
         let card = grouped.get(row.provider);
@@ -118,6 +139,7 @@ export function buildCards(rows, {accountRows = false, now = Date.now()} = {}) {
         card.multi = card.accounts.length > 1;
         if (!card.multi)
             card.accounts[0].active = true;
+        labelAccounts(card, hidePersonalInfo);
         card.row = primaryAccount(card.accounts).row;
     }
     return cards;
@@ -126,6 +148,73 @@ export function buildCards(rows, {accountRows = false, now = Date.now()} = {}) {
 // One row per card, for everything outside the card's account list.
 export function primaryRows(cards) {
     return cards.map(card => card.row);
+}
+
+// The `panel-icon-source` preference: what a multi-account card's panel
+// chip reflects. prefs.js lists its choices in this order.
+export const ICON_SOURCES = ['active', 'most-headroom'];
+
+// The account a card's panel chip reflects. 'active' (the default, and any
+// unknown value): the card's primary account, the one the popover shows.
+// 'most-headroom': the account whose chip percent is lowest. The chip
+// percent is the row's most-used window, standard and extra windows alike
+// (payload.js worstWindow, what the chip has always shown), so the account
+// with most headroom is the one whose tightest window is least used. Rows
+// with an error (stale carried Quota included) or without any known percent
+// (a stale row without usage) never win; a stale row without an error that
+// still has usage counts with that usage. A tie keeps the primary, then the
+// first by account id. With no eligible account, or a card with one account,
+// it is the primary.
+export function panelAccount(card, source = 'active') {
+    const primary = card.accounts.find(account => account.row === card.row) ?? card.accounts[0];
+    if (source !== 'most-headroom' || !card.multi)
+        return primary;
+    let best = null;
+    let bestPercent = Infinity;
+    const others = byAccountId(card.accounts.filter(a => a !== primary).map(a => a.row))
+        .map(row => card.accounts.find(a => a.row === row));
+    for (const account of [primary, ...others]) {
+        if (account.error || account.row?.error)
+            continue;
+        const percent = worstPercent(account.row);
+        if (percent === null || !Number.isFinite(percent))
+            continue;
+        if (percent < bestPercent) {
+            best = account;
+            bestPercent = percent;
+        }
+    }
+    return best ?? primary;
+}
+
+// The row each panel chip renders. rows are the popover's rows (primaryRows,
+// possibly enriched); cards maps provider → its multi-account card. A row
+// whose card picks its primary account stays the very same row, so with one
+// account, or the 'active' source, the panel is exactly as before.
+export function panelRows(rows, cards, source = 'active') {
+    return rows.map(row => {
+        const card = cards?.get(row.provider);
+        if (!card?.multi)
+            return row;
+        const account = panelAccount(card, source);
+        return account.row === card.row ? row : account.row;
+    });
+}
+
+// The rows quota notifications are planned over: every Provider Account of
+// a multi-account card (each carrying its display label as accountLabel,
+// which is the ordinal label with Hide Personal Info), every other card's
+// row as it is. The primary account keeps the popover's own row.
+export function notificationRows(rows, cards) {
+    return rows.flatMap(row => {
+        const card = cards?.get(row.provider);
+        if (!card?.multi)
+            return [row];
+        return card.accounts.map(account => ({
+            ...(account.row === card.row ? row : account.row),
+            accountLabel: account.label ?? ordinalLabel(account.ordinal),
+        }));
+    });
 }
 
 // Serve replaces a failing provider's row with a bare error row; carry the

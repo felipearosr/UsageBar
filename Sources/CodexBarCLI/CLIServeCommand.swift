@@ -184,6 +184,8 @@ struct ServeUsageContext: Sendable {
     let providerOperations: CLIServeOperationCoordinator<UsageCommandOutput>
     let includeAllCodexAccounts: Bool
     let persistCLISessions: Bool
+    /// UsageBar: plain `/usage` lets claude-swap answer Claude (CLIServeClaudeSwap.swift); the dashboard doesn't.
+    let claudeSwapRows: Bool
 
     init(
         config: CodexBarConfig,
@@ -193,7 +195,8 @@ struct ServeUsageContext: Sendable {
         providerDeadline: ContinuousClock.Instant?,
         providerOperations: CLIServeOperationCoordinator<UsageCommandOutput>,
         includeAllCodexAccounts: Bool = true,
-        persistCLISessions: Bool = true)
+        persistCLISessions: Bool = true,
+        claudeSwapRows: Bool = false)
     {
         self.config = config
         self.configFingerprint = configFingerprint
@@ -203,6 +206,7 @@ struct ServeUsageContext: Sendable {
         self.providerOperations = providerOperations
         self.includeAllCodexAccounts = includeAllCodexAccounts
         self.persistCLISessions = persistCLISessions
+        self.claudeSwapRows = claudeSwapRows
     }
 }
 
@@ -924,13 +928,12 @@ extension CodexBarCLI {
                 makeResponse: {
                     await Self.serveUsage(
                         provider: provider,
-                        context: ServeUsageContext(
-                            config: snapshot.config,
-                            configFingerprint: snapshot.cacheToken,
-                            refreshInterval: runtime.refreshInterval,
+                        // UsageBar: the plain route's context, with claude-swap on (CLIServeClaudeSwap.swift, #170).
+                        context: Self.servePlainUsageContext(
+                            snapshot: snapshot,
+                            runtime: runtime,
                             providerTimeout: providerTimeout,
-                            providerDeadline: providerDeadline,
-                            providerOperations: runtime.providerOperations))
+                            providerDeadline: providerDeadline))
                 }))
         case let .cost(provider, days):
             guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
@@ -1364,11 +1367,12 @@ extension CodexBarCLI {
             operations: context.providerOperations)
         { provider in
             await ProviderInteractionContext.$current.withValue(.background) {
-                await Self.fetchUsageOutputs(
+                // UsageBar: claude-swap's active slot answers Claude when enabled (CLIServeClaudeSwap.swift, #170).
+                await Self.forkServeFetchUsageOutputs(
                     provider: provider,
-                    status: nil,
                     tokenContext: tokenContext,
-                    command: command)
+                    command: command,
+                    context: context)
             }
         }
     }

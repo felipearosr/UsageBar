@@ -118,6 +118,11 @@ struct CLIServeProviderAccountsTests {
                     label: account.label,
                     cacheAccountKey: "upstream-\(index)",
                     usedPercent: failing.contains(account.label) ? nil : 40))
+            case .codexAccount:
+                Issue.record("a token-account provider was fetched as a Codex account")
+            case .claudeSwapSlot:
+                // claude-swap slots are never fetched one by one (CLIServeClaudeSwapTests).
+                await calls.record("claude-swap slot")
             }
             return output
         }
@@ -162,6 +167,8 @@ struct CLIServeProviderAccountsTests {
         #expect(rows.map { $0["accountSource"] as? String } == ["token", "token"])
         #expect(rows.map { $0["accountLabel"] as? String } == ["Personal", "Work"])
         #expect(rows.map { $0["account"] as? String } == ["Personal", "Work"])
+        // Labels the user set carry no default flag.
+        #expect(rows.allSatisfy { $0["accountLabelIsDefault"] == nil })
         #expect(rows.map { $0["active"] as? Bool } == [false, true])
         #expect(rows.allSatisfy { $0["updatedAt"] as? String == "2026-09-21T14:13:20Z" })
         #expect(rows.allSatisfy { $0["provider"] as? String == "openrouter" && $0["usage"] != nil })
@@ -300,7 +307,7 @@ struct CLIServeProviderAccountsTests {
     }
 
     @Test
-    func `blank labels read Account N and codex keeps upstream rows`() throws {
+    func `blank labels read Account N and codex ignores token accounts`() throws {
         let accounts = [Self.account(Self.personalID, "  "), Self.account(Self.workID, "Work")]
         let context = try TokenAccountCLIContext(
             selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
@@ -309,16 +316,21 @@ struct CLIServeProviderAccountsTests {
             baseEnvironment: [:])
         let found = CodexBarCLI.providerAccounts(for: .openrouter, context: context)
         #expect(found.map(\.fields.label) == ["Account 1", "Work"])
+        #expect(found.map(\.fields.labelIsDefault) == [true, false])
         #expect(found.map(\.fields.active) == [true, false])
         #expect(found.map(\.selector) == [.tokenIndex(0), .tokenIndex(1)])
 
+        // Codex's accounts are its managed homes (#168), never its token accounts; with none it keeps upstream's rows.
+        let empty = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CLIServeProviderAccountsTests-\(UUID().uuidString)", isDirectory: true)
         let codex = try TokenAccountCLIContext(
             selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
             config: CodexBarConfig(providers: [ProviderConfig(
                 id: UsageProvider.codex.instanceID,
                 tokenAccounts: ProviderTokenAccountData(version: 1, accounts: accounts, activeIndex: 0))]),
             verbose: false,
-            baseEnvironment: [:])
+            baseEnvironment: ["HOME": empty.path, "CODEX_HOME": empty.appendingPathComponent(".codex").path],
+            managedCodexAccountStoreURL: empty.appendingPathComponent("managed-codex-accounts.json"))
         #expect(CodexBarCLI.providerAccounts(for: .codex, context: codex).isEmpty)
     }
 
@@ -342,5 +354,16 @@ struct CLIServeProviderAccountsTests {
         let response = try await CodexBarCLI.handleServeRequest(Self.request("/health"), runtime: Self.runtime())
         let object = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
         #expect((object["capabilities"] as? [String])?.contains("providerAccountRows") == true)
+    }
+
+    @Test
+    func `a blank label is sent as Account N flagged as default`() async throws {
+        let accounts = [Self.account(Self.personalID, ""), Self.account(Self.workID, "Work")]
+        let response = try await Self.serve(
+            Self.config(accounts),
+            fetch: Self.stubFetch(accounts, calls: CallLog()))
+        let rows = try Self.rows(response)
+        #expect(rows.map { $0["accountLabel"] as? String } == ["Account 1", "Work"])
+        #expect(rows.map { $0["accountLabelIsDefault"] as? Bool } == [true, nil])
     }
 }

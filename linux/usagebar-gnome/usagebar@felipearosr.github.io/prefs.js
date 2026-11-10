@@ -19,6 +19,7 @@ import {
     modelKey,
     providerModels,
 } from './modelprefs.js';
+import {ICON_SOURCES} from './accounts.js';
 import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
@@ -614,6 +615,16 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             settings.set_string('chip-display-mode', MODES[modeRow.selected]);
         });
         panel.add(modeRow);
+        const sourceRow = new Adw.ComboRow({
+            title: 'With several accounts, show',
+            subtitle: 'What a provider\'s chip reflects when it has more than one account',
+            model: Gtk.StringList.new(['Active account', 'Account with most headroom']),
+        });
+        sourceRow.selected = Math.max(0, ICON_SOURCES.indexOf(settings.get_string('panel-icon-source')));
+        sourceRow.connect('notify::selected', () => {
+            settings.set_string('panel-icon-source', ICON_SOURCES[sourceRow.selected]);
+        });
+        panel.add(sourceRow);
         panel.add(switchRow(settings, 'merge-chips', 'Single merged chip',
             'One chip for the provider closest to its limit'));
         panel.add(switchRow(settings, 'show-reset-when-exhausted',
@@ -631,6 +642,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             '"Resets 18:30" instead of "Resets in 3h"'));
         popover.add(switchRow(settings, 'show-credits-extras', 'Credits and extra limits',
             'Limit-reset credits and per-model or feature bars'));
+        popover.add(switchRow(settings, 'hide-personal-info', 'Hide personal information',
+            'Accounts show as "Account 1", "Account 2", and emails are hidden'));
         general.add(popover);
 
         const thresholds = new Adw.PreferencesGroup({

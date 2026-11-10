@@ -357,7 +357,7 @@ extension CodexBarCLI {
         }
     }
 
-    private static func fetchUsageOutput(
+    static func fetchUsageOutput(
         provider: UsageProvider,
         account: ProviderTokenAccount?,
         codexVisibleAccount: CodexVisibleAccount? = nil,

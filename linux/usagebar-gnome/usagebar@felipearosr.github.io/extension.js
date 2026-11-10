@@ -28,7 +28,7 @@ import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import {planNotifications} from './notify.js';
+import {notificationTitle, planNotifications} from './notify.js';
 import {
     ACCOUNT_ROWS_CAPABILITY,
     accountsRenderKey,
@@ -36,10 +36,15 @@ import {
     buildCards,
     forgetAccount,
     mergeStale,
+    notificationRows,
+    panelRows,
     primaryRows,
     usagePath,
 } from './accounts.js';
-import {extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf} from './payload.js';
+import {ordinalLabel} from './accountlabels.js';
+import {
+    extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf, worstPercent, worstWindow,
+} from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {ReportGate} from './reportgate.js';
 import {PROVIDER_META} from './providermeta.js';
@@ -255,21 +260,6 @@ function compactWindowLabel(label) {
     if (firstWord.length <= 8)
         return firstWord;
     return trimmed.slice(0, 7);
-}
-
-// The row's most-used window (standard slots and extras alike), or null.
-// windowsOf already drops unknown percents; extras need the same filter.
-function worstWindow(row) {
-    const wins = [
-        ...windowsOf(row).map(({w}) => w),
-        ...extraWindowsOf(row).map(x => x.window)
-            .filter(w => w.usedPercent !== null && w.usedPercent !== undefined),
-    ];
-    return wins.reduce((a, b) => !a || b.usedPercent > a.usedPercent ? b : a, null);
-}
-
-function worstPercent(row) {
-    return worstWindow(row)?.usedPercent ?? null;
 }
 
 // Enrich Antigravity rows with the 4 core quota summary bars from the local agy server
@@ -492,7 +482,10 @@ const DISPLAY = {
     mergeChips: false,
     resetWhenExhausted: false,
     chipMode: 'ring',
+    panelIconSource: 'active',
     showExtras: true,
+    // Provider Account labels become "Account 1", "Account 2" (accountlabels.js).
+    hidePersonalInfo: false,
     antigravityOverviewGemini: true,
     hiddenChips: new Set(),
     hiddenWindows: new Set(),
@@ -1742,7 +1735,9 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.mergeChips = this._settings.get_boolean('merge-chips');
             DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
             DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
+            DISPLAY.panelIconSource = this._settings.get_string('panel-icon-source');
             DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
+            DISPLAY.hidePersonalInfo = this._settings.get_boolean('hide-personal-info');
             DISPLAY.antigravityOverviewGemini = this._settings.get_boolean('antigravity-overview-gemini');
             DISPLAY.hiddenChips = new Set(this._settings.get_strv('hidden-chips'));
             DISPLAY.hiddenWindows = new Set(this._settings.get_strv('hidden-windows'));
@@ -1761,10 +1756,10 @@ export default class UsageBarExtension extends Extension {
         const DISPLAY_KEYS = new Set([
             'warn-threshold', 'crit-threshold', 'absolute-reset-times',
             'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
-            'show-reset-when-exhausted', 'chip-display-mode',
+            'show-reset-when-exhausted', 'chip-display-mode', 'panel-icon-source',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
-            'machine-colors',
+            'machine-colors', 'hide-personal-info',
             'status-scopes', 'status-checks-enabled', 'logo-prompt-dismissed',
         ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
@@ -1804,6 +1799,9 @@ export default class UsageBarExtension extends Extension {
             }
             if (key === 'app-theme')
                 this._indicator?.setAppTheme(DISPLAY.appTheme);
+            // Labels live in the cards: rebuild them from the last rows.
+            if (key === 'hide-personal-info' && this._usageRows)
+                this._buildAccountCards();
             // Settings, or this extension's own download, installed or
             // removed the logo pack.
             if (key === 'logo-pack-version')
@@ -2610,11 +2608,7 @@ export default class UsageBarExtension extends Extension {
             } else {
                 this._usageAccountRows = accountRows;
                 this._usageRows = mergeStale(this._usageRows ?? [], Array.isArray(rows) ? rows : []);
-                const cards = buildCards(this._usageRows, {accountRows});
-                this._accountCards = new Map(cards.filter(card => card.multi)
-                    .map(card => [card.provider, card]));
-                this._rows = applyClaudeAccountPlan(
-                    enrichAntigravityModels(primaryRows(cards)), this._claudeAccountPlan);
+                this._buildAccountCards();
                 this._loadClaudeAccountPlan();
                 this._lastFetchAt = Date.now();
                 this._trackIssueSince(this._rows);
@@ -2637,6 +2631,20 @@ export default class UsageBarExtension extends Extension {
                 this._fetchUsage(true);
             }
         });
+    }
+
+    // Cards and the popover's rows from the merged /usage rows. With Hide
+    // Personal Info on, every row they hold is a scrubbed copy (accounts.js);
+    // _usageRows keeps the raw rows so turning it off restores the labels.
+    _buildAccountCards() {
+        const cards = buildCards(this._usageRows ?? [], {
+            accountRows: !!this._usageAccountRows,
+            hidePersonalInfo: DISPLAY.hidePersonalInfo,
+        });
+        this._accountCards = new Map(cards.filter(card => card.multi)
+            .map(card => [card.provider, card]));
+        this._rows = applyClaudeAccountPlan(
+            enrichAntigravityModels(primaryRows(cards)), this._claudeAccountPlan);
     }
 
     // Claude Code caches Anthropic's current plan label in its account
@@ -2697,7 +2705,7 @@ export default class UsageBarExtension extends Extension {
         if (!this._settings.get_boolean('notify-enabled'))
             return;
         const result = planNotifications({
-            rows: this._rows,
+            rows: notificationRows(this._rows, this._accountCards),
             memo: this._notified,
             muted: new Set(this._settings.get_strv('notify-muted-providers')),
             sessionThresholds: this._settings.get_value('notify-session-thresholds').deepUnpack(),
@@ -2706,14 +2714,11 @@ export default class UsageBarExtension extends Extension {
             now: Date.now(),
             displayName: p => this._displayName(p),
         });
-        for (const {kind, name, label, w, percent, pace} of result.notifications) {
-            if (kind === 'threshold') {
-                this._notify(`${name} ${label} at ${percent}%`,
-                    resetText(w) || 'usage limit approaching');
-            } else {
-                this._notify(`${name} ${label} won't last to reset`,
-                    pace.summary ?? 'current pace exceeds the window');
-            }
+        for (const notification of result.notifications) {
+            const {kind, w, pace} = notification;
+            this._notify(notificationTitle(notification), kind === 'threshold'
+                ? resetText(w) || 'usage limit approaching'
+                : pace.summary ?? 'current pace exceeds the window');
         }
         this._notified = result.memo;
     }
@@ -3899,7 +3904,52 @@ export default class UsageBarExtension extends Extension {
                         finish(assertions, error);
                         return;
                     }
-                    capture('accounts-provider-openrouter.png', () => accountActionsSmoke(assertions));
+                    capture('accounts-provider-openrouter.png', () => privateLabels());
+                });
+            };
+            // Hide Personal Info: ordinals by account id (Work's sorts
+            // first), blocks still in row order, and no raw label is left.
+            const privateLabels = () => {
+                const wasHidden = this._settings.get_boolean('hide-personal-info');
+                const restore = () => this._settings.set_boolean('hide-personal-info', wasHidden);
+                try {
+                    this._settings.set_boolean('hide-personal-info', true);
+                    this._render();
+                } catch (error) {
+                    restore();
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => {
+                    try {
+                        const box = this._indicator._detailBox;
+                        const texts = descendants(box).filter(actor => actor instanceof St.Label)
+                            .map(actor => actor.text);
+                        const labels = descendants(box)
+                            .filter(actor => actor.style_class === 'usagebar-account-head')
+                            .map(head => descendants(head).filter(actor => actor instanceof St.Label)
+                                .map(actor => actor.text));
+                        assertions.push(assertion('Hide Personal Info shows ordinal labels in row order',
+                            labels[0]?.includes('Account 2') && !labels[0]?.includes('active') &&
+                            labels[1]?.includes('Account 1') && labels[1]?.includes('active'), {labels}));
+                        assertions.push(assertion('no raw account label is rendered',
+                            !texts.some(text => /\b(Work|Personal)\b/.test(text)), {texts}));
+                        const headLabel = descendants(box)
+                            .find(actor => actor.style_class?.includes('usagebar-account-headlabel'));
+                        assertions.push(assertion('the head names the active account by ordinal',
+                            headLabel?.text === 'Account 1', {actual: headLabel?.text ?? null}));
+                    } catch (error) {
+                        restore();
+                        finish(assertions, error);
+                        return;
+                    }
+                    capture('accounts-private-openrouter.png', () => {
+                        restore();
+                        if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWAP') === '1')
+                            claudeSwapSmoke(assertions);
+                        else
+                            accountActionsSmoke(assertions);
+                    });
                 });
             };
             ready();
@@ -3994,6 +4044,166 @@ export default class UsageBarExtension extends Extension {
                     });
                 });
             }));
+        };
+
+        // Run with USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 against the stub CLI with
+        // STUB_CODEXBAR_CODEX_ACCOUNTS=1: the Codex card shows the everyday
+        // login (active) and two managed accounts, one of them failing with
+        // only its own error.
+        const codexAccountsSmoke = assertions => {
+            let waited = 0;
+            const ready = () => {
+                if (!this._accountCards?.get('codex')?.multi && waited < 15000) {
+                    waited += 250;
+                    later(250, ready);
+                    return;
+                }
+                try {
+                    assertions.push(assertion('one Codex overview row',
+                        this._rows.filter(row => row.provider === 'codex').length === 1,
+                        {actual: this._rows.map(row => row.provider)}));
+                    this._indicator.menu.open();
+                    this._selectedProvider = 'codex';
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => {
+                    try {
+                        const box = this._indicator._detailBox;
+                        const heads = descendants(box)
+                            .filter(actor => actor.style_class === 'usagebar-account-head');
+                        const labels = heads.map(head => descendants(head)
+                            .filter(actor => actor instanceof St.Label).map(actor => actor.text));
+                        const block = email => labels.find(texts => texts.includes(email)) ?? [];
+                        assertions.push(assertion('one block per Codex account', heads.length === 3, {labels}));
+                        assertions.push(assertion('the everyday login is the active account',
+                            block('me@example.com').includes('active') &&
+                            !block('work@example.com').includes('active') &&
+                            !block('old@example.com').includes('active'), {labels}));
+                        assertions.push(assertion('the failing managed account shows no freshness',
+                            block('work@example.com').some(text => /^updated /.test(text)) &&
+                            !block('old@example.com').some(text => /^updated /.test(text)), {labels}));
+                        const headLabel = descendants(box)
+                            .find(actor => actor.style_class?.includes('usagebar-account-headlabel'));
+                        assertions.push(assertion('the head % names the everyday login',
+                            headLabel?.text === 'me@example.com', {actual: headLabel?.text ?? null}));
+                        const banners = descendants(box)
+                            .filter(actor => actor.style_class?.includes('usagebar-provider-issue') &&
+                                actor.style_class.includes('usagebar-issues-banner'));
+                        assertions.push(assertion('only the failing managed account has an error',
+                            banners.length === 1, {actual: banners.length}));
+                    } catch (error) {
+                        finish(assertions, error);
+                        return;
+                    }
+                    capture('accounts-provider-codex.png', () => finish(assertions));
+                });
+            };
+            ready();
+        };
+
+        // Run with USAGEBAR_UI_SMOKE_ICON_SOURCE=1 against the stub CLI with
+        // STUB_CODEXBAR_ACCOUNTS=3: OpenRouter has Work (active, 64%),
+        // Personal (failing key) and Spare (12%). The panel chip follows the
+        // active account, then the one with most headroom; notifications
+        // name each account (by ordinal with Hide Personal Info) and don't
+        // repeat. Notifications are recorded, not shown.
+        const iconSourceSmoke = assertions => {
+            const chipPercent = () => this._indicator._panelEntries.get('openrouter')?.state.percent ?? null;
+            const titles = [];
+            const notify = this._notify;
+            const restore = () => {
+                this._notify = notify;
+                for (const key of ['panel-icon-source', 'hide-personal-info',
+                    'notify-session-thresholds', 'notify-weekly-thresholds'])
+                    this._settings.reset(key);
+            };
+            const done = (error = null) => {
+                restore();
+                finish(assertions, error);
+            };
+            let waited = 0;
+            const ready = () => {
+                if ((this._accountCards?.get('openrouter')?.accounts.length ?? 0) < 3 && waited < 15000) {
+                    waited += 250;
+                    later(250, ready);
+                    return;
+                }
+                try {
+                    this._render();
+                    assertions.push(assertion('the chip follows the active account by default',
+                        chipPercent() === 64, {actual: chipPercent()}));
+                    this._settings.set_string('panel-icon-source', 'most-headroom');
+                } catch (error) {
+                    done(error);
+                    return;
+                }
+                later(400, () => {
+                    try {
+                        assertions.push(assertion('most headroom picks the account with the lowest percent',
+                            chipPercent() === 12, {actual: chipPercent()}));
+                        this._notify = title => titles.push(title);
+                        this._settings.set_boolean('hide-personal-info', true);
+                        this._settings.set_value('notify-session-thresholds', new GLib.Variant('ai', [10]));
+                        this._settings.set_value('notify-weekly-thresholds', new GLib.Variant('ai', [10]));
+                        this._notified = new Map();
+                        this._maybeNotify();
+                        const first = [...titles];
+                        this._maybeNotify();
+                        const openrouter = first.filter(title => title.startsWith('OpenRouter'));
+                        assertions.push(assertion('each account crossing notifies once, by ordinal',
+                            openrouter.length === 2 &&
+                            openrouter.some(title => title.startsWith('OpenRouter (Account 1) ')) &&
+                            openrouter.some(title => title.startsWith('OpenRouter (Account 3) ')), {titles: first}));
+                        assertions.push(assertion('a single-account provider keeps its title',
+                            first.some(title => /^Claude Session \(5h\) at \d+%$/.test(title)), {titles: first}));
+                        assertions.push(assertion('repeats stay suppressed', titles.length === first.length,
+                            {titles}));
+                        assertions.push(assertion('no raw label in a notification',
+                            !first.some(title => /\b(Work|Personal|Spare)\b/.test(title)), {titles: first}));
+                    } catch (error) {
+                        done(error);
+                        return;
+                    }
+                    capture('icon-source-headroom.png', () => done());
+                });
+            };
+            ready();
+        };
+
+        // With USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and STUB_CODEXBAR_CLAUDE_SWAP=1,
+        // after the OpenRouter card: the Claude card shows the two claude-swap
+        // slots, the active one first and the other stale with its error.
+        const claudeSwapSmoke = assertions => {
+            try {
+                this._selectedProvider = 'claude';
+                this._render();
+            } catch (error) {
+                finish(assertions, error);
+                return;
+            }
+            later(600, () => {
+                try {
+                    const box = this._indicator._detailBox;
+                    const heads = descendants(box)
+                        .filter(actor => actor.style_class === 'usagebar-account-head');
+                    const labels = heads.map(head => descendants(head)
+                        .filter(actor => actor instanceof St.Label).map(actor => actor.text));
+                    assertions.push(assertion('one block per claude-swap slot', heads.length === 2, {labels}));
+                    assertions.push(assertion('the active slot is marked active, the other stale',
+                        labels[0]?.includes('active') && !labels[0]?.includes('stale') &&
+                        labels[1]?.includes('stale') && !labels[1]?.includes('active'), {labels}));
+                    assertions.push(assertion('one overview row for Claude',
+                        this._rows.filter(row => row.provider === 'claude').length === 1,
+                        {actual: this._rows.map(row => row.provider)}));
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                capture('accounts-provider-claude.png', () => finish(assertions));
+            });
         };
 
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
@@ -4108,6 +4318,14 @@ export default class UsageBarExtension extends Extension {
             }
             if (GLib.getenv('USAGEBAR_UI_SMOKE_ACCOUNTS') === '1') {
                 accountsSmoke(assertions);
+                return;
+            }
+            if (GLib.getenv('USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS') === '1') {
+                codexAccountsSmoke(assertions);
+                return;
+            }
+            if (GLib.getenv('USAGEBAR_UI_SMOKE_ICON_SOURCE') === '1') {
+                iconSourceSmoke(assertions);
                 return;
             }
             steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
@@ -4345,7 +4563,9 @@ export default class UsageBarExtension extends Extension {
 
         // Panel chips (minus providers hidden in prefs). Merged mode shows a
         // single chip for the provider with the highest worst-window percent.
-        let chipRows = rows.filter(row => !DISPLAY.hiddenChips.has(row.provider));
+        // A multi-account card's chip follows the panel icon source.
+        let chipRows = panelRows(rows, this._accountCards, DISPLAY.panelIconSource)
+            .filter(row => !DISPLAY.hiddenChips.has(row.provider));
         if (DISPLAY.mergeChips && chipRows.length > 1) {
             chipRows = [chipRows.reduce((best, row) =>
                 (worstPercent(row) ?? -1) > (worstPercent(best) ?? -1) ? row : best)];
@@ -7097,7 +7317,7 @@ export default class UsageBarExtension extends Extension {
     _addAccountBlock(card, account, {provider = null, actions = false} = {}) {
         const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-account-head'});
         head.add_child(new St.Label({
-            text: account.label ?? 'Account',
+            text: account.label ?? ordinalLabel(account.ordinal ?? 1),
             style_class: 'usagebar-account-label',
             y_align: Clutter.ActorAlign.CENTER,
         }));

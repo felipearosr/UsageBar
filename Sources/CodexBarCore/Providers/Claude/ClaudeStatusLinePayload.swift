@@ -60,7 +60,12 @@ public enum ClaudeStatusLineProfile {
     /// Nil when the config cannot prove a signed-in account; callers then treat the feed as absent.
     public static func accountID(environment: [String: String]) -> String? {
         guard let uuid = ClaudeAccountProfile.accountUuid(environment: environment) else { return nil }
-        return self.sha256Hex("codexbar.claude-account.\(uuid.lowercased())")
+        return self.accountID(accountUuid: uuid)
+    }
+
+    /// The hash a capture stores for the Claude account `accountUuid`.
+    public static func accountID(accountUuid uuid: String) -> String {
+        self.sha256Hex("codexbar.claude-account.\(uuid.lowercased())")
     }
 
     private static func sha256Hex(_ material: String) -> String {
