@@ -142,6 +142,11 @@ extension CodexBarCLI {
             let tokenContext: TokenAccountCLIContext
             switch selector {
             case nil:
+                // Provider-specific by design: Codex without Provider Account rows still keeps every managed home
+                // away from the everyday login's PAT (CLIServeCodexAccounts.swift).
+                if provider == .codex {
+                    return await self.fetchCodexUntagged(tokenContext: defaultContext, command: command)
+                }
                 tokenContext = defaultContext
             case let .tokenIndex(index):
                 // Upstream's index selection reads exactly that stored account's token.

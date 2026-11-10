@@ -160,14 +160,21 @@ struct CLIServeCodexAccountsTests {
         })
         let system = try #require(projection.visibleAccounts.first { $0.selectionSource == .liveSystem })
 
-        // Every configured source that could reach the PAT strategy is forced to OAuth for a managed row; the
-        // Codex CLI already runs in the managed home. The everyday login keeps its configured source.
+        // Every configured source that could reach the PAT strategy is forced to OAuth for a managed row. The
+        // Codex CLI runs in the managed home, so it stays only while no managed workspace is selected (its
+        // app-server can't carry the workspace). The everyday login keeps its configured source.
         for configured: ProviderSourceMode in [.auto, .api, .oauth, .web] {
-            #expect(CodexBarCLI.codexProviderAccountSourceMode(managed, configured: configured) == .oauth)
+            for workspaceSelected in [false, true] {
+                #expect(CodexBarCLI.codexProviderAccountSourceMode(
+                    managed, configured: configured, workspaceSelected: workspaceSelected) == .oauth)
+            }
         }
-        #expect(CodexBarCLI.codexProviderAccountSourceMode(managed, configured: .cli) == .cli)
+        #expect(CodexBarCLI.codexProviderAccountSourceMode(managed, configured: .cli, workspaceSelected: false) == .cli)
+        #expect(CodexBarCLI
+            .codexProviderAccountSourceMode(managed, configured: .cli, workspaceSelected: true) == .oauth)
         for configured: ProviderSourceMode in [.auto, .api, .oauth, .web, .cli] {
-            #expect(CodexBarCLI.codexProviderAccountSourceMode(system, configured: configured) == nil)
+            #expect(CodexBarCLI.codexProviderAccountSourceMode(
+                system, configured: configured, workspaceSelected: false) == nil)
         }
 
         let env = context.environment(
@@ -186,14 +193,125 @@ struct CLIServeCodexAccountsTests {
             #expect(await pipeline.resolveStrategies(auto).map(\.id).contains("codex.pat"))
 
             // The forced source never runs it.
-            let forced = try #require(CodexBarCLI.codexProviderAccountSourceMode(managed, configured: .auto))
+            let command = CodexBarCLI.codexProviderAccountCommand(
+                account: managed, tokenContext: context, command: Self.serveCommand(context))
+            let forced = try #require(command.sourceModeOverride)
             let strategies = await pipeline.resolveStrategies(Self.fetchContext(env: env, sourceMode: forced))
             #expect(!strategies.isEmpty)
             #expect(!strategies.map(\.id).contains("codex.pat"))
         }
     }
 
+    @Test(arguments: [ProviderSourceMode.auto, .api, .cli, .oauth])
+    func `the fetch command forces OAuth for a managed account and keeps the everyday login's source`(
+        configured: ProviderSourceMode) throws
+    {
+        let fixture = try CodexFixture()
+        defer { fixture.tearDown() }
+        try fixture.writeLiveAuth(email: "system@example.com", accountID: "acct-system")
+        // A managed account always has a workspace (its own, or its auth's account id), so even the CLI is replaced.
+        let account = try fixture.addAccount(email: "other@example.com", accountID: "acct-other")
+
+        // Configured in config.json, and as a command override.
+        for (context, override) in try [
+            (fixture.tokenContext(source: configured), ProviderSourceMode?.none),
+            (fixture.tokenContext(), configured),
+        ] {
+            var base = Self.serveCommand(context)
+            base.sourceModeOverride = override
+            try fixture.scoped {
+                let accounts = context.visibleCodexAccounts().visibleAccounts
+                let managed = try #require(accounts.first { $0.selectionSource == .managedAccount(id: account.id) })
+                let system = try #require(accounts.first { $0.selectionSource == .liveSystem })
+                #expect(CodexBarCLI.codexProviderAccountCommand(
+                    account: managed, tokenContext: context, command: base).sourceModeOverride == .oauth)
+                #expect(CodexBarCLI.codexProviderAccountCommand(
+                    account: system, tokenContext: context, command: base).sourceModeOverride == override)
+            }
+        }
+    }
+
+    @Test
+    func `a PAT only everyday login never lends its PAT to a lone managed account`() throws {
+        let fixture = try CodexFixture()
+        defer { fixture.tearDown() }
+        // A PAT (or API key) login has no email, so reconciliation doesn't list it: Codex has a single account.
+        try Data(#"{"personal_access_token":"synthetic-system-pat"}"#.utf8)
+            .write(to: fixture.liveHome.appendingPathComponent("auth.json"))
+        let account = try fixture.addAccount(email: "other@example.com", accountID: "acct-other")
+        let context = try fixture.tokenContext()
+        let command = Self.serveCommand(context)
+
+        try fixture.scoped {
+            let projection = context.visibleCodexAccounts()
+            #expect(projection.visibleAccounts.map(\.selectionSource) == [.managedAccount(id: account.id)])
+            // No rows to tag, so Codex stays untagged...
+            #expect(CodexBarCLI.codexProviderAccounts(projection).isEmpty)
+            // ...but the managed account is fetched on its own, through OAuth, never by upstream's .auto loop.
+            let fetches = CodexBarCLI.codexUntaggedFetches(projection, tokenContext: context, command: command)
+            #expect(fetches.map(\.account?.selectionSource) == [.managedAccount(id: account.id)])
+            #expect(fetches.map(\.command.sourceModeOverride) == [.oauth])
+        }
+
+        // Without a managed account, upstream's own loop runs with serve's command unchanged.
+        let plain = try CodexFixture()
+        defer { plain.tearDown() }
+        try plain.writeLiveAuth(email: "system@example.com", accountID: "acct-system")
+        let plainContext = try plain.tokenContext()
+        try plain.scoped {
+            let fetches = CodexBarCLI.codexUntaggedFetches(
+                plainContext.visibleCodexAccounts(), tokenContext: plainContext, command: command)
+            #expect(fetches.count == 1)
+            #expect(fetches.first?.account == nil)
+            #expect(fetches.first?.command.sourceModeOverride == nil)
+        }
+    }
+
+    @Test
+    func `a managed account removed mid fetch never falls back to the everyday login's home`() throws {
+        let fixture = try CodexFixture()
+        defer { fixture.tearDown() }
+        try fixture.writeLiveAuth(email: "system@example.com", accountID: "acct-system")
+        let account = try fixture.addAccount(email: "other@example.com", accountID: "acct-other")
+        let context = try fixture.tokenContext()
+        let managed = try fixture.scoped {
+            try #require(context.visibleCodexAccounts().visibleAccounts.first {
+                $0.selectionSource == .managedAccount(id: account.id)
+            })
+        }
+        let system = CodexVisibleAccount(
+            id: "system", email: "system@example.com", storedAccountID: nil, selectionSource: .liveSystem,
+            isActive: true, isLive: true, canReauthenticate: false, canRemove: false)
+        let env = { (account: CodexVisibleAccount) in
+            try fixture.scoped {
+                context.environment(
+                    base: fixture.baseEnvironment, provider: .codex, account: nil,
+                    codexActiveSourceOverride: account.selectionSource)
+            }
+        }
+        #expect(try CodexBarCLI.codexAccountHomeIsOwn(managed, env: env(managed), base: fixture.baseEnvironment))
+        #expect(try CodexBarCLI.codexAccountHomeIsOwn(system, env: env(system), base: fixture.baseEnvironment))
+
+        try fixture.removeAccount(account.id)
+        let after = try env(managed)
+        #expect(after["CODEX_HOME"] != account.managedHomePath)
+        #expect(!CodexBarCLI.codexAccountHomeIsOwn(managed, env: after, base: fixture.baseEnvironment))
+        // No CODEX_HOME at all would read $HOME/.codex: refused too.
+        #expect(!CodexBarCLI.codexAccountHomeIsOwn(
+            managed, env: ["HOME": fixture.root.path], base: ["HOME": fixture.root.path]))
+    }
+
     // MARK: - Helpers
+
+    private static func serveCommand(_ context: TokenAccountCLIContext) -> UsageCommandContext {
+        CodexBarCLI.serveUsageCommand(context: ServeUsageContext(
+            config: context.config,
+            configFingerprint: "codex-accounts-test",
+            refreshInterval: 60,
+            providerTimeout: nil,
+            providerDeadline: nil,
+            providerOperations: CLIServeOperationCoordinator()))
+    }
 
     private static func serve(
         _ fixture: CodexFixture,
@@ -346,10 +464,13 @@ private final class CodexFixture {
         try CodexCredentialFileAccess.withFixtureScope(self.scope, operation: operation)
     }
 
-    func tokenContext() throws -> TokenAccountCLIContext {
+    func tokenContext(source: ProviderSourceMode? = nil) throws -> TokenAccountCLIContext {
         try TokenAccountCLIContext(
             selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
-            config: CodexBarConfig(providers: [ProviderConfig(id: UsageProvider.codex.instanceID, enabled: true)]),
+            config: CodexBarConfig(providers: [ProviderConfig(
+                id: UsageProvider.codex.instanceID,
+                enabled: true,
+                source: source)]),
             verbose: false,
             baseEnvironment: self.baseEnvironment,
             managedCodexAccountStoreURL: self.storeURL)
@@ -379,6 +500,16 @@ private final class CodexFixture {
                 accounts: existing + [account]))
         }
         return account
+    }
+
+    func removeAccount(_ id: UUID) throws {
+        let store = FileManagedCodexAccountStore(fileURL: self.storeURL)
+        let existing = try self.scoped { try store.loadAccountMetadata().accounts }
+        try self.scoped {
+            try store.storeAccounts(ManagedCodexAccountSet(
+                version: FileManagedCodexAccountStore.currentVersion,
+                accounts: existing.filter { $0.id != id }))
+        }
     }
 
     func writeLiveAuth(email: String, accountID: String, pat: String? = nil) throws {

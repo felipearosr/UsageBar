@@ -11,8 +11,10 @@ import Foundation
 /// folds a managed account that is the everyday login into the everyday login's entry, by upstream's identity rule
 /// (the one `codex-accounts list` uses for its system marker), so such an account is listed once.
 ///
-/// Codex gets rows only once it has a managed account shown on its own; without one (and with a single account) it
-/// keeps upstream's untagged rows exactly. The everyday login is the active account.
+/// Codex gets rows only once it has a managed account shown on its own next to another account; otherwise it keeps
+/// upstream's untagged rows (see `codexUntaggedFetches`). The everyday login is the active account. An everyday login
+/// that is only a PAT or API key has no email, so reconciliation doesn't list it: it gets no row of its own and, with
+/// two or more managed accounts, no row is marked active.
 extension CodexBarCLI {
     static func codexProviderAccounts(_ projection: CodexVisibleAccountProjection) -> [ProviderAccount] {
         let accounts = projection.visibleAccounts
@@ -56,28 +58,159 @@ extension CodexBarCLI {
     /// Codex's PAT strategy reads its token from `$HOME/.codex` whenever `CODEX_HOME` is a managed home (and from
     /// there too for a profile home without a PAT of its own), so under `.auto` or `.api` a managed account's row
     /// would show the everyday login's workspace. Every account other than the everyday login therefore reads its
-    /// own home: through the Codex CLI when that is the configured source, else through OAuth.
+    /// own home through OAuth. The Codex CLI stays when it is the configured source and no managed workspace is
+    /// selected: its app-server can't carry the workspace header, so with one it would report the auth file's
+    /// workspace instead.
     static func codexProviderAccountSourceMode(
         _ account: CodexVisibleAccount,
-        configured: ProviderSourceMode) -> ProviderSourceMode?
+        configured: ProviderSourceMode,
+        workspaceSelected: Bool) -> ProviderSourceMode?
     {
         guard account.selectionSource != .liveSystem else { return nil }
-        return configured == .cli ? .cli : .oauth
+        return configured == .cli && !workspaceSelected ? .cli : .oauth
     }
 
-    /// Upstream's per-account Codex fetch (the one plain `/usage` runs for each reconciled account), with the source
-    /// mode `codexProviderAccountSourceMode` picks.
+    /// The usage command one Codex account is fetched with: serve's, with `codexProviderAccountSourceMode` applied.
+    static func codexProviderAccountCommand(
+        account: CodexVisibleAccount,
+        tokenContext: TokenAccountCLIContext,
+        command: UsageCommandContext) -> UsageCommandContext
+    {
+        var command = command
+        // Provider-specific by design: Codex's source mode decides whether its PAT strategy (which ignores managed
+        // homes) can run, and its managed workspace decides whether the Codex CLI can stand in for OAuth.
+        let configured = command.sourceModeOverride ?? tokenContext.preferredSourceMode(for: .codex)
+        let workspaceSelected = account.selectionSource != .liveSystem && tokenContext.settingsSnapshot(
+            for: .codex,
+            account: nil,
+            codexActiveSourceOverride: account.selectionSource)?.codex?.managedWorkspaceAccountID != nil
+        if let forced = Self.codexProviderAccountSourceMode(
+            account,
+            configured: configured,
+            workspaceSelected: workspaceSelected)
+        {
+            command.sourceModeOverride = forced
+        }
+        return command
+    }
+
+    /// One Codex fetch serve runs: one account with its own command, or upstream's whole Codex selection (`account`
+    /// nil) with serve's command unchanged.
+    struct CodexAccountFetch {
+        let account: CodexVisibleAccount?
+        let command: UsageCommandContext
+    }
+
+    /// Codex's fetches when it has no Provider Account rows. Upstream's loop when every account is the everyday
+    /// login (or there is none), so those rows are exactly today's. Otherwise, for example a managed account next to
+    /// an everyday login that is only a PAT or API key (which reconciliation doesn't list), each account is fetched
+    /// on its own with `codexProviderAccountCommand`, so no managed home ever reads the everyday login's PAT. Rows
+    /// stay untagged and otherwise identical to upstream's: it is upstream's per-account fetch either way.
+    static func codexUntaggedFetches(
+        _ projection: CodexVisibleAccountProjection,
+        tokenContext: TokenAccountCLIContext,
+        command: UsageCommandContext) -> [CodexAccountFetch]
+    {
+        let accounts = projection.visibleAccounts
+        guard command.includeAllCodexAccounts,
+              accounts.contains(where: { $0.selectionSource != .liveSystem })
+        else { return [CodexAccountFetch(account: nil, command: command)] }
+        return accounts.map { account in
+            CodexAccountFetch(
+                account: account,
+                command: Self.codexProviderAccountCommand(
+                    account: account,
+                    tokenContext: tokenContext,
+                    command: command))
+        }
+    }
+
+    /// Serve's Codex fetch for `/usage?accounts=all` when Codex has no Provider Account rows.
+    static func fetchCodexUntagged(
+        tokenContext: TokenAccountCLIContext,
+        command: UsageCommandContext) async -> UsageCommandOutput
+    {
+        let fetches = Self.codexUntaggedFetches(
+            tokenContext.visibleCodexAccounts(),
+            tokenContext: tokenContext,
+            command: command)
+        var output = UsageCommandOutput()
+        for fetch in fetches {
+            if let account = fetch.account {
+                await output.merge(Self.runCodexAccountFetch(
+                    account,
+                    tokenContext: tokenContext,
+                    command: fetch.command))
+            } else {
+                // Provider-specific by design: upstream's reconciled Codex selection, unchanged.
+                await output.merge(Self.fetchUsageOutputs(
+                    provider: .codex,
+                    status: nil,
+                    tokenContext: tokenContext,
+                    command: fetch.command))
+            }
+        }
+        return output
+    }
+
+    /// One Codex Provider Account's fetch: upstream's per-account Codex fetch (the one plain `/usage` runs for each
+    /// reconciled account) with `codexProviderAccountCommand`.
     static func fetchCodexProviderAccount(
         _ account: CodexVisibleAccount,
         tokenContext: TokenAccountCLIContext,
         command: UsageCommandContext) async -> UsageCommandOutput
     {
-        var command = command
-        // Provider-specific by design: Codex's source mode decides whether its PAT strategy (which ignores managed
-        // homes) can run, and the fetch is upstream's per-account Codex fetch.
-        let configured = command.sourceModeOverride ?? tokenContext.preferredSourceMode(for: .codex)
-        if let forced = Self.codexProviderAccountSourceMode(account, configured: configured) {
-            command.sourceModeOverride = forced
+        await self.runCodexAccountFetch(
+            account,
+            tokenContext: tokenContext,
+            command: self.codexProviderAccountCommand(account: account, tokenContext: tokenContext, command: command))
+    }
+
+    /// Whether `env` (what the fetch will run with) reads `account`'s own Codex home. A managed account removed or a
+    /// profile home unconfigured since the list was read resolves to no scoped home, so the fetch would fall back to
+    /// the everyday login's home and show its usage under this account's row.
+    static func codexAccountHomeIsOwn(
+        _ account: CodexVisibleAccount,
+        env: [String: String],
+        base: [String: String]) -> Bool
+    {
+        guard account.selectionSource != .liveSystem else { return true }
+        guard let home = CodexHomeScope.normalizedHomePath(env["CODEX_HOME"]) else { return false }
+        var ambient = [base["CODEX_HOME"]]
+        // Provider-specific by design: without CODEX_HOME, Codex reads the everyday login from $HOME/.codex.
+        if let userHome = base["HOME"] {
+            ambient.append(URL(fileURLWithPath: userHome, isDirectory: true)
+                .appendingPathComponent(".codex", isDirectory: true).path)
+        }
+        return !ambient.compactMap { CodexHomeScope.normalizedHomePath($0) }.contains(home)
+    }
+
+    private static func runCodexAccountFetch(
+        _ account: CodexVisibleAccount,
+        tokenContext: TokenAccountCLIContext,
+        command: UsageCommandContext) async -> UsageCommandOutput
+    {
+        // Provider-specific by design: Codex accounts are separate Codex homes; the fetch must run in this one.
+        let base = ProcessInfo.processInfo.environment
+        let env = tokenContext.environment(
+            base: base,
+            provider: .codex,
+            account: nil,
+            codexActiveSourceOverride: account.selectionSource)
+        guard Self.codexAccountHomeIsOwn(account, env: env, base: base) else {
+            var output = UsageCommandOutput()
+            output.exitCode = .failure
+            output.payload.append(Self.makeProviderErrorPayload(
+                provider: .codex,
+                account: account.menuDisplayName,
+                cacheAccountKey: Self.usageCacheAccountKey(
+                    provider: .codex,
+                    account: nil,
+                    codexVisibleAccount: account),
+                source: command.sourceModeOverride?.rawValue ?? ProviderSourceMode.oauth.rawValue,
+                status: nil,
+                error: CodexProviderAccountError.homeUnavailable))
+            return output
         }
         return await self.fetchUsageOutput(
             provider: .codex,
@@ -86,6 +219,14 @@ extension CodexBarCLI {
             status: nil,
             tokenContext: tokenContext,
             command: command)
+    }
+}
+
+enum CodexProviderAccountError: LocalizedError, Equatable {
+    case homeUnavailable
+
+    var errorDescription: String? {
+        "This Codex account's home is no longer available. Add the account again with codexbar codex-accounts."
     }
 }
 
