@@ -38,7 +38,7 @@ struct ClaudeSwapDetectPayload: Encodable, Equatable {
 
 /// What detection looks at: the process environment and home, unless a test overrides them.
 struct ClaudeSwapDetectEnvironment: Sendable {
-    let environment: [String: String]
+    @ProcessEnvironment var environment: [String: String]
     let home: String
 
     @TaskLocal static var override: ClaudeSwapDetectEnvironment?
