@@ -54,3 +54,17 @@ A stale answer is a success with source `statusline-stale`. The GNOME extension 
 same way it greys last good numbers it carries forward over a provider error (`mergeStale`). Both feed sources also get a
 `statusLine` badge on the card, so numbers from the user's own statusLine are always labelled; OAuth rows (source
 `oauth`) render as before.
+
+## With claude-swap
+
+With claude-swap enabled, `codexbar serve` lists Claude's accounts from `cswap --list --json` instead of fetching the
+ambient account (`CLIServeClaudeSwap.swift`). What Claude Code knows about its account then applies to at most one slot:
+the one whose email and organization match Claude Code's current `oauthAccount` in `.claude.json` (a plain file read;
+never the Keychain). It is never matched by position: with no match, or with two slots sharing that email and
+organization, no row changes.
+
+- That slot's `loginMethod` is the plan from `oauthAccount.organizationType` (`claude_max` → `Claude Max`), so the
+  extension's plan tag works as it does for the ambient row.
+- With the feed on, a capture newer than the slot's `usageFetchedAt` replaces the windows it has and keeps claude-swap's
+  others; the row's source becomes `statusline` (or `statusline-stale` past 15 minutes). Its `updatedAt` is the capture
+  time only when the capture replaced every window claude-swap had, otherwise claude-swap's older time.

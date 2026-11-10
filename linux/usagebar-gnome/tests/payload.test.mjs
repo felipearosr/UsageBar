@@ -51,8 +51,10 @@ test('window labels preserve the full duration ladder', () => {
         assert.equal(windowLabel(minutes, slot), expected);
 });
 
-test('only the stale statusLine source counts as stale as served', () => {
+test('only the stale statusLine and claude-swap sources count as stale as served', () => {
     assert.equal(isStaleSource({provider: 'claude', source: 'statusline-stale'}), true);
+    assert.equal(isStaleSource({provider: 'claude', source: 'claude-swap-stale'}), true);
+    assert.equal(isStaleSource({provider: 'claude', source: 'claude-swap'}), false);
     assert.equal(isStaleSource({provider: 'claude', source: 'statusline'}), false);
     assert.equal(isStaleSource({provider: 'claude', source: 'oauth'}), false);
     assert.equal(isStaleSource({}), false);

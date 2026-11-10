@@ -27,9 +27,10 @@ export function isStatusLineSource(row) {
     return row?.source === 'statusline' || row?.source === 'statusline-stale';
 }
 
-// Rows serve answered from an old Claude statusLine capture while OAuth was rate limited.
+// Rows serve answered from an old Claude statusLine capture while OAuth was rate limited, or from claude-swap's
+// last good list (or a slot's last-known usage) while its live numbers were unavailable.
 export function isStaleSource(row) {
-    return row?.source === 'statusline-stale';
+    return row?.source === 'statusline-stale' || row?.source === 'claude-swap-stale';
 }
 
 export function extraWindowsOf(row) {

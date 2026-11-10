@@ -7,10 +7,10 @@
 Sources/CodexBarCLI/CLIEntry.swift	Machine Sync: sync command	CLI extension hook: forkCommandDescriptors() append and runForkCommand in the dispatch default case (CLIForkCommands.swift); also forkPrintVersionJSONIfRequested in the --version fast path (CLICapabilities.swift, #37); #57
 Sources/CodexBarCLI/CLIHelp.swift	Machine Sync: sync command	CLI extension hook: forkRootHelpUsage() in rootHelp's usage list; also the /cost?days help example (#54) and codex-accounts list on Linux (#167); #57
 Sources/CodexBarCLI/CLIIO.swift	Machine Sync: sync command	CLI extension hook: forkHelp(for:) in printHelp's default case; #57
-docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54), /health capabilities and --version --json (#37), codex-accounts list on Linux (#167), /usage?accounts=all (#163), accountLabelIsDefault (#165); #56
+docs/cli.md	Machine Sync: sync command	`codexbar sync` and serve /sync/* reference; also /cost?days (#54), /health capabilities and --version --json (#37), codex-accounts list on Linux (#167), /usage?accounts=all (#163), claude-swap rows (#170), accountLabelIsDefault (#165); #56
 
 # Machine Sync: serve /sync/status and /sync/push via the route-extension hook in CLIServeForkRoutes.swift (#58)
-Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	Route-extension hook: forkServeResponse(_:runtime:) first in handleServeRequest (CLIServeForkRoutes.swift); also /cost?days (#54); serveUsageCommand(context:) split out of serveUsageOutput so /usage?accounts=all reuses the usage command (CLIServeProviderAccounts.swift, #163); #58
+Sources/CodexBarCLI/CLIServeCommand.swift	Machine Sync: serve /sync routes	Route-extension hook: forkServeResponse(_:runtime:) first in handleServeRequest (CLIServeForkRoutes.swift); also /cost?days (#54); serveUsageCommand(context:) split out of serveUsageOutput so /usage?accounts=all reuses the usage command (CLIServeProviderAccounts.swift, #163); serveUsageOutput calls forkServeFetchUsageOutputs, and ServeUsageContext.claudeSwapRows (set only in the plain /usage route context, built by servePlainUsageContext) lets claude-swap's active slot answer Claude there (CLIServeClaudeSwap.swift, #170); #58
 Sources/CodexBarCLI/CLILocalHTTPServer.swift	Machine Sync: serve /sync routes	409 and 502 CLIHTTPStatus cases (POST /sync/push: not paired, push failed); a closed enum can't gain cases from fork code; #58
 
 # serve /cost?days=N rolling window (upstream candidate: #54)
@@ -62,3 +62,6 @@ LICENSE	Launch: license attribution	UsageBar copyright line next to upstream's; 
 Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift	Claude shared usage cache	Wrap default Linux usage transport with cross-process cache and rate-limit backoff
 Sources/CodexBarCore/Providers/Claude/ClaudeProviderSettings.swift	Claude statusLine feed	Add the opt-in statusLineFeedEnabled flag (default off); shrinks if upstream restores #2769
 Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift	Claude statusLine feed	Read the flag from config.json and route the plan through ClaudeStatusLineFeedRouting (one call)
+
+# claude-swap rows in serve (#170)
+docs/claude-multi-account-and-status-items.md	claude-swap rows in serve	One UsageBar note: serve reads Claude Code's .claude.json oauthAccount to find the signed-in slot; #170
