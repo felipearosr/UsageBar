@@ -14,6 +14,10 @@ _Avoid_: Usage (ambiguous), limit
 Estimated cost, tokens, and requests calculated from the agent session logs on one machine. Every unit of spend belongs to exactly one machine.
 _Avoid_: Usage (ambiguous), bill, cost (when you mean the synced concept)
 
+**Provider Account**:
+One login or key for one provider, such as one OpenRouter key, one Codex login or one claude-swap slot. It owns its Quota, so two Provider Accounts of the same provider show separate Quota. It is not a Machine (one computer can hold several Provider Accounts) and not a Sync Group (which shares Spend, never Quota or credentials). The **active** Provider Account is the one the provider's own tools use right now.
+_Avoid_: Account (ambiguous with Account Billing and Sync Group), profile, slot (except for claude-swap's own term), login
+
 **Account Billing**:
 Cost reported by a provider's billing API (for example the Claude Admin API, OpenAI API usage, or Bedrock). It covers the whole account, like Quota, is never Spend, and never syncs.
 _Avoid_: Spend, API spend
