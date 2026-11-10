@@ -1343,3 +1343,32 @@
   color: -st-foreground-color;
   opacity: 0.7;
 }
+
+/* Provider Account actions: Add account…, rename and remove (accountactions.js). */
+.usagebar-account-add {
+  margin-top: 10px;
+}
+
+.usagebar-account-action {
+  margin-left: 4px;
+  padding: 3px;
+}
+
+.usagebar-account-dialog .modal-dialog-content-box {
+  padding: 18px 20px 6px;
+  spacing: 10px;
+}
+
+.usagebar-account-form {
+  spacing: 8px;
+  min-width: 340px;
+}
+
+.usagebar-account-error {
+  color: #ff7b63;
+  font-size: 10pt;
+}
+
+.usagebar-account-destructive {
+  color: #ff7b63;
+}

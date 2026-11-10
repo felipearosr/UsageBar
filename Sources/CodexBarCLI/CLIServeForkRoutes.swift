@@ -16,12 +16,22 @@ extension CodexBarCLI {
         // `/health` gains the version halves and capabilities (CLICapabilities.swift). A wrong method falls
         // through to upstream's router and its 405.
         if request.method.uppercased() == "GET", request.path == "/health" {
-            return self.forkServeJSON(CLICapabilitiesPayload.health(version: runtime.healthVersion))
+            return self.forkServeJSON(CLICapabilitiesPayload.health(
+                version: runtime.healthVersion,
+                accountActions: CLIServeActionGuard.current.isConfigured))
         }
         // `/usage?accounts=all`: one row per Provider Account (CLIServeProviderAccounts.swift). Plain `/usage`
         // falls through to upstream unchanged.
         if self.isProviderAccountUsageRequest(request) {
             return await self.serveProviderAccountUsageRoute(request, runtime: runtime)
+        }
+        // `/accounts/*`: add, rename and remove Provider Accounts (CLIServeProviderAccountActions.swift).
+        do {
+            if let accountRoute = try CLIServeProviderAccountRoute.route(method: request.method, path: request.path) {
+                return await self.serveProviderAccountRoute(accountRoute, request: request, runtime: runtime)
+            }
+        } catch {
+            return self.forkServeError(status: .methodNotAllowed, message: "method not allowed")
         }
         let route: CLIServeSyncRoute?
         do {

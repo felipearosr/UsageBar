@@ -35,6 +35,8 @@ struct CLILocalHTTPRequest {
     let path: String
     let queryItems: [String: String]
     let authorization: String?
+    /// UsageBar: body, Content-Type and Origin for serve's fork POST routes (CLILocalHTTPServer+UsageBar.swift).
+    var forkFields = CLILocalHTTPRequestForkFields()
 
     static func parse(
         _ data: Data,
@@ -91,7 +93,7 @@ struct CLILocalHTTPRequest {
             host: host,
             path: path,
             queryItems: queryItems,
-            authorization: authorization))
+            authorization: authorization).withForkFields(from: data))
     }
 
     private static func parseHeaders(_ raw: String) -> Result<[(String, String)], CLILocalHTTPRequestParseError> {
@@ -540,6 +542,13 @@ private func readRequest(
     }
 
     guard sawHeaderEnd else { return .failure(.invalidRequest) }
+    // UsageBar: the body a Content-Length declares, for fork POST routes (CLILocalHTTPServer+UsageBar.swift).
+    guard forkReadRequestBody(
+        &data,
+        fd: fd,
+        startedAt: startedAt,
+        totalReadTimeoutMilliseconds: totalReadTimeoutMilliseconds)
+    else { return .failure(.invalidRequest) }
     return CLILocalHTTPRequest.parse(data, allowedHosts: allowedHosts)
 }
 

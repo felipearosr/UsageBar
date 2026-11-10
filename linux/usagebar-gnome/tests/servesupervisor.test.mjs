@@ -12,9 +12,9 @@ function harness() {
     let port = 42000;
     const deps = {
         pickPort: () => ++port,
-        spawn: argv => {
+        spawn: (argv, env) => {
             const proc = {
-                argv, terminated: 0, killed: 0,
+                argv, env, terminated: 0, killed: 0,
                 wait(cb) { this.exit = cb; },
                 terminate() { this.terminated++; },
                 kill() { this.killed++; },
@@ -54,6 +54,39 @@ test('start spawns once with the existing serve arguments and reports its port',
     assert.deepEqual(h.procs[0].argv, ['/stub', 'serve', '--port', '42001',
         '--refresh-interval', '60', '--request-timeout', '120']);
     assert.deepEqual(h.states, [[42001, '']]);
+});
+
+test('each spawn gets a fresh action token in its environment, cleared when serve goes away', () => {
+    const h = harness();
+    let n = 0;
+    h.deps.actionToken = () => `fake-token-${++n}`;
+    h.supervisor.start();
+    assert.deepEqual(h.procs[0].env, {USAGEBAR_SERVE_ACTION_TOKEN: 'fake-token-1'});
+    assert.equal(h.supervisor.actionToken, 'fake-token-1');
+    h.procs[0].exit();
+    assert.equal(h.supervisor.actionToken, null);
+    h.fire();
+    assert.deepEqual(h.procs[1].env, {USAGEBAR_SERVE_ACTION_TOKEN: 'fake-token-2'});
+    assert.equal(h.supervisor.actionToken, 'fake-token-2');
+    h.supervisor.stop();
+    assert.equal(h.supervisor.actionToken, null);
+});
+
+test('a token that fails to generate starts serve without one', () => {
+    const h = harness();
+    h.deps.actionToken = () => { throw new Error('no /dev/urandom'); };
+    h.supervisor.start();
+    assert.equal(h.procs.length, 1);
+    assert.deepEqual(h.procs[0].env, {});
+    assert.equal(h.supervisor.actionToken, null);
+    assert.deepEqual(h.states, [[42001, '']]);
+});
+
+test('without an actionToken dep serve starts with no token', () => {
+    const h = harness();
+    h.supervisor.start();
+    assert.deepEqual(h.procs[0].env, {});
+    assert.equal(h.supervisor.actionToken, null);
 });
 
 test('late exit after restart cannot clear the replacement or schedule another child', () => {

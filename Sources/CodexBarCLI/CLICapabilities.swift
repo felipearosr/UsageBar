@@ -11,6 +11,24 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     /// serve's `GET /usage?accounts=all`: one row per Provider Account, each with `accountId`, `accountSource`,
     /// `accountLabel`, `active` and `updatedAt` (CLIServeProviderAccounts.swift).
     case providerAccountRows
+    /// serve's `GET /accounts/kinds`: the kind of Provider Account each provider can add
+    /// (CLIServeProviderAccountActions.swift).
+    case providerAccountKinds
+    /// serve's `POST /accounts/add`: store a labelled key or cookie as a new Provider Account.
+    case providerAccountAddKey
+    /// serve's `POST /accounts/rename`: relabel one Provider Account by its `accountId`.
+    case providerAccountRename
+    /// serve's `POST /accounts/remove`: delete one Provider Account by its `accountId`.
+    case providerAccountRemove
+
+    /// The account actions. serve lists them on `/health` only when it was started with an action token
+    /// (CLIServeActionGuard.swift), since it refuses every one of them without it.
+    static let accountActions: Set<CLICapability> = [
+        .providerAccountKinds,
+        .providerAccountAddKey,
+        .providerAccountRename,
+        .providerAccountRemove,
+    ]
 }
 
 /// The version and capability fields shared by `codexbar --version --json` and serve's `GET /health`.
@@ -27,17 +45,19 @@ struct CLICapabilitiesPayload: Encodable, Equatable, Sendable {
     let upstreamBase: String?
     let capabilities: [CLICapability]
 
-    init(version: String?, status: String? = nil) {
+    init(version: String?, status: String? = nil, accountActions: Bool = true) {
         self.status = status
         self.version = version
         let parts = version.flatMap(Self.releaseParts(of:))
         self.upstreamBase = parts?.upstreamBase
         self.usagebarVersion = parts?.usagebarVersion
         self.capabilities = CLICapability.allCases
+            .filter { accountActions || !CLICapability.accountActions.contains($0) }
     }
 
-    static func health(version: String?) -> Self {
-        Self(version: version, status: "ok")
+    /// `accountActions`: whether this serve has an action token and so can run the account actions.
+    static func health(version: String?, accountActions: Bool) -> Self {
+        Self(version: version, status: "ok", accountActions: accountActions)
     }
 
     /// Splits `<upstream base>+usagebar.<UsageBar version>`; nil when `version` isn't in that form.

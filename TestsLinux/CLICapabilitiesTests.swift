@@ -5,6 +5,32 @@ import Testing
 
 struct CLICapabilitiesTests {
     private static let releaseVersion = "0.73.0+usagebar.1.1.0-rc.2"
+    /// The capability names on the wire, in order. Spelled out so a renamed case fails here.
+    private static let wireCapabilities = [
+        "machineSync",
+        "providerAccountRows",
+        "providerAccountKinds",
+        "providerAccountAddKey",
+        "providerAccountRename",
+        "providerAccountRemove",
+    ]
+
+    /// `/health` from a serve started with an action token, so the account actions are listed.
+    private static func health(_ runtime: ServeRuntime) async throws -> CLILocalHTTPResponse {
+        try await CLIServeActionGuard.$override.withValue(CLIServeActionGuard(token: "fake-action-token")) {
+            try await CodexBarCLI.handleServeRequest(Self.request("GET", "/health"), runtime: runtime)
+        }
+    }
+
+    @Test
+    func `health leaves the account actions out without an action token`() async throws {
+        let response = try await CLIServeActionGuard.$override.withValue(CLIServeActionGuard(token: nil)) {
+            try await CodexBarCLI.handleServeRequest(
+                Self.request("GET", "/health"),
+                runtime: Self.runtime(healthVersion: nil))
+        }
+        #expect(try Self.object(response.body)["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+    }
 
     private static func object(_ data: Data) throws -> [String: Any] {
         try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -60,9 +86,7 @@ struct CLICapabilitiesTests {
 
     @Test
     func `health keeps status and version and adds capabilities`() async throws {
-        let response = try await CodexBarCLI.handleServeRequest(
-            Self.request("GET", "/health"),
-            runtime: Self.runtime(healthVersion: Self.releaseVersion))
+        let response = try await Self.health(Self.runtime(healthVersion: Self.releaseVersion))
         #expect(response.status == .ok)
         #expect(!response.extraHeaders.contains { $0.0 == "Cache-Control" })
         let object = try Self.object(response.body)
@@ -70,26 +94,25 @@ struct CLICapabilitiesTests {
         #expect(object["version"] as? String == Self.releaseVersion)
         #expect(object["upstreamBase"] as? String == "0.73.0")
         #expect(object["usagebarVersion"] as? String == "1.1.0-rc.2")
-        #expect(object["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+        #expect(object["capabilities"] as? [String] == Self.wireCapabilities)
     }
 
     @Test
     func `health without a version keeps upstream's shape plus capabilities`() async throws {
-        let response = try await CodexBarCLI.handleServeRequest(
-            Self.request("GET", "/health"),
-            runtime: Self.runtime(healthVersion: nil))
+        let response = try await Self.health(Self.runtime(healthVersion: nil))
         let object = try Self.object(response.body)
         #expect(Set(object.keys) == ["status", "capabilities"])
-        #expect(object["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+        #expect(object["capabilities"] as? [String] == Self.wireCapabilities)
     }
 
     @Test
     func `health stays open on non-loopback binds`() async throws {
-        let response = try await CodexBarCLI.handleServeRequest(
-            Self.request("GET", "/health"),
-            runtime: Self.runtime(healthVersion: Self.releaseVersion, bindHost: "0.0.0.0", token: "secret"))
+        let response = try await Self.health(Self.runtime(
+            healthVersion: Self.releaseVersion,
+            bindHost: "0.0.0.0",
+            token: "secret"))
         #expect(response.status == .ok)
-        #expect(try Self.object(response.body)["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
+        #expect(try Self.object(response.body)["capabilities"] as? [String] == Self.wireCapabilities)
     }
 
     @Test
@@ -113,9 +136,7 @@ struct CLICapabilitiesTests {
                 argv: ["usage", "--version", "--json"],
                 version: version))
             let cli = try Self.object(Data(json.utf8))
-            let response = try await CodexBarCLI.handleServeRequest(
-                Self.request("GET", "/health"),
-                runtime: Self.runtime(healthVersion: version))
+            let response = try await Self.health(Self.runtime(healthVersion: version))
             var health = try Self.object(response.body)
             #expect(health.removeValue(forKey: "status") as? String == "ok")
             #expect(NSDictionary(dictionary: cli).isEqual(to: health))
