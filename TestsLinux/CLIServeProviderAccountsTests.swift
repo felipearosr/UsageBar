@@ -165,6 +165,8 @@ struct CLIServeProviderAccountsTests {
         #expect(rows.map { $0["accountSource"] as? String } == ["token", "token"])
         #expect(rows.map { $0["accountLabel"] as? String } == ["Personal", "Work"])
         #expect(rows.map { $0["account"] as? String } == ["Personal", "Work"])
+        // Labels the user set carry no default flag.
+        #expect(rows.allSatisfy { $0["accountLabelIsDefault"] == nil })
         #expect(rows.map { $0["active"] as? Bool } == [false, true])
         #expect(rows.allSatisfy { $0["updatedAt"] as? String == "2026-09-21T14:13:20Z" })
         #expect(rows.allSatisfy { $0["provider"] as? String == "openrouter" && $0["usage"] != nil })
@@ -312,6 +314,7 @@ struct CLIServeProviderAccountsTests {
             baseEnvironment: [:])
         let found = CodexBarCLI.providerAccounts(for: .openrouter, context: context)
         #expect(found.map(\.fields.label) == ["Account 1", "Work"])
+        #expect(found.map(\.fields.labelIsDefault) == [true, false])
         #expect(found.map(\.fields.active) == [true, false])
         #expect(found.map(\.selector) == [.tokenIndex(0), .tokenIndex(1)])
 
@@ -345,5 +348,16 @@ struct CLIServeProviderAccountsTests {
         let response = try await CodexBarCLI.handleServeRequest(Self.request("/health"), runtime: Self.runtime())
         let object = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
         #expect((object["capabilities"] as? [String])?.contains("providerAccountRows") == true)
+    }
+
+    @Test
+    func `a blank label is sent as Account N flagged as default`() async throws {
+        let accounts = [Self.account(Self.personalID, ""), Self.account(Self.workID, "Work")]
+        let response = try await Self.serve(
+            Self.config(accounts),
+            fetch: Self.stubFetch(accounts, calls: CallLog()))
+        let rows = try Self.rows(response)
+        #expect(rows.map { $0["accountLabel"] as? String } == ["Account 1", "Work"])
+        #expect(rows.map { $0["accountLabelIsDefault"] as? Bool } == [true, nil])
     }
 }

@@ -8,6 +8,8 @@
 # USAGEBAR_UI_SMOKE_ACCOUNTS=1 with STUB_CODEXBAR_ACCOUNTS=1 checks a provider
 # card with two Provider Accounts; add USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and
 # STUB_CODEXBAR_CLAUDE_SWAP=1 to also check Claude's claude-swap slots.
+# USAGEBAR_UI_SMOKE_ICON_SOURCE=1 with STUB_CODEXBAR_ACCOUNTS=3 checks the
+# panel icon source and per-account notifications.
 # USAGEBAR_UI_SMOKE_LOGOS=1, with USAGEBAR_LOGO_PACK_BASE_URL and
 # USAGEBAR_LOGO_PACK_VERSION, clicks through the offer to download provider
 # logos; the script's own last run serves a pack built from this checkout.
@@ -139,6 +141,16 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
         USAGEBAR_UI_SMOKE_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/claude-swap-accounts"
+fi
+
+# A third account with the most headroom: the panel chip follows the icon
+# source, and notifications name each account.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    printf '\nRe-running the UI smoke for the panel icon source and account notifications\n'
+    CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
+        STUB_CODEXBAR_ACCOUNTS=3 USAGEBAR_UI_SMOKE_ICON_SOURCE=1 \
+        USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
+        "$0" "$artifact_dir/icon-source"
 fi
 
 # The extensions.gnome.org build offers to download the logos it leaves out:
