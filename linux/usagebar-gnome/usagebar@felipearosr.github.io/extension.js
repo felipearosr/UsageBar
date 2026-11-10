@@ -115,14 +115,11 @@ import {findCodexbar, withClaudeOAuth} from './cli.js';
 import {featureState, readReport, syncProbeFromHttpStatus} from './clicompat.js';
 import {
     ACTION_TOKEN_HEADER,
-    CLI_LOGIN_WATCH_SECS,
     REPLACES_CURRENT_NOTE,
     actionErrorText,
     addAction,
     addKeyRequest,
     cliLoginArgv,
-    cliLoginFallbackText,
-    cliLoginStorePath,
     keyFormError,
     readKinds,
     removeRequest,
@@ -131,6 +128,15 @@ import {
     rowActions,
     wantsKinds,
 } from './accountactions.js';
+import {
+    POLL_SECS as HELPER_POLL_SECS,
+    launchFailureText,
+    pollState,
+    readResult,
+    resultNotice,
+    resultPath,
+    withResultFile,
+} from './helperrun.js';
 
 // Sizes a container from its first child only and floats the rest at
 // their preferred size in the top-right corner, so an open dropdown
@@ -2072,7 +2078,7 @@ export default class UsageBarExtension extends Extension {
         }
         this._configMonitor?.cancel();
         this._configMonitor = null;
-        this._stopCliLoginWatch();
+        this._stopAccountHelperWatches();
         this._cancellable?.cancel();
         this._cancellable = null;
         this._session?.abort();
@@ -7503,86 +7509,86 @@ export default class UsageBarExtension extends Extension {
     }
 
     // cli-login (#169): opens `codexbar codex-accounts add` (accountactions.js
-    // CLI_LOGIN_HELPERS) through the same terminal launcher as Sign in, with a
-    // fixed argv. Refreshes when the terminal's child process exits, and when
-    // the helper writes its account store: launchers that hand off to a
-    // terminal server exit before the helper does.
+    // CLI_LOGIN_HELPERS) in a terminal; see _runAccountHelper.
     _runCliLoginHelper(action) {
         const name = PROVIDER_META[action.provider]?.name ?? action.provider;
-        const argv = cliLoginArgv(action.provider, this._binary);
+        this._runAccountHelper(cliLoginArgv(action.provider, this._binary), name);
+    }
+
+    // Opens an account helper (fixed argv) in a terminal through the same
+    // launcher as Sign in, and learns that it finished from the result file
+    // it writes (helperrun.js), not from the terminal's process: launchers
+    // that hand off to a terminal server exit at once. Refreshes the cards
+    // when the helper is done or failed; a failure is also notified. Shared
+    // by every helper kind (cli-login here, claude-swap in #172).
+    _runAccountHelper(argv, name) {
         if (!argv) {
-            this._notify('UsageBar', cliLoginFallbackText(null, name));
+            this._notify('UsageBar', launchFailureText(null, name));
             return;
         }
+        const runtimeDir = GLib.get_user_runtime_dir();
+        const path = resultPath(runtimeDir, GLib.uuid_string_random());
+        const command = path ? withResultFile(argv, path) : null;
         const smokeTerminal = this._smokeTerminal;
-        const command = terminalArgv(argv, p => smokeTerminal
+        const terminal = command ? terminalArgv(command, p => smokeTerminal
             ? (p === 'xdg-terminal-exec' ? smokeTerminal : null)
-            : GLib.find_program_in_path(p));
-        if (!command) {
+            : GLib.find_program_in_path(p)) : null;
+        if (!terminal) {
             console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
-            this._notify('UsageBar', cliLoginFallbackText(argv, name, {noTerminal: true}));
+            this._notify('UsageBar', launchFailureText(argv, name, {noTerminal: true}));
             return;
         }
         this._indicator?.menu.close();
         try {
-            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
-            this._watchCliLoginStore(action.provider);
-            const generation = this._generation;
-            proc.wait_async(null, () => {
-                if (generation === this._generation && this._indicator)
-                    this._refreshAfterAccountChange();
-            });
+            GLib.mkdir_with_parents(GLib.path_get_dirname(path), 0o700);
+            Gio.Subprocess.new(terminal, Gio.SubprocessFlags.NONE);
         } catch (e) {
             console.warn(`usagebar: add-account terminal failed: ${e.message}`);
-            this._notify('UsageBar', cliLoginFallbackText(argv, name));
+            this._notify('UsageBar', launchFailureText(argv, name));
+            return;
         }
+        this._watchAccountHelper(path, name);
     }
 
-    // Watches the cli-login helper's store for CLI_LOGIN_WATCH_SECS and
-    // refreshes (debounced) when it changes. One watch at a time.
-    _watchCliLoginStore(provider) {
-        this._stopCliLoginWatch();
-        const path = cliLoginStorePath(provider, GLib.get_user_data_dir());
-        if (!path)
-            return;
+    _watchAccountHelper(path, name) {
+        this._accountHelperWatches ??= new Map();
         const generation = this._generation;
-        try {
-            this._cliLoginMonitor = Gio.File.new_for_path(path)
-                .monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, null);
-        } catch (e) {
-            console.warn(`usagebar: can't watch the account store: ${e.message}`);
-            return;
-        }
-        this._cliLoginMonitor.connect('changed', () => {
-            if (generation !== this._generation || !this._indicator)
-                return;
-            if (this._cliLoginDebounceId)
-                GLib.source_remove(this._cliLoginDebounceId);
-            this._cliLoginDebounceId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
-                this._cliLoginDebounceId = 0;
-                if (generation === this._generation && this._indicator)
-                    this._refreshAfterAccountChange();
+        const started = GLib.get_monotonic_time();
+        const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, HELPER_POLL_SECS, () => {
+            if (generation !== this._generation || !this._indicator) {
+                this._accountHelperWatches?.delete(path);
                 return GLib.SOURCE_REMOVE;
-            });
-        });
-        this._cliLoginWatchId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, CLI_LOGIN_WATCH_SECS, () => {
-            this._cliLoginWatchId = 0;
-            this._stopCliLoginWatch();
+            }
+            let result = null;
+            try {
+                const [ok, bytes] = GLib.file_get_contents(path);
+                result = ok ? readResult(new TextDecoder().decode(bytes)) : null;
+            } catch {
+                // not written yet
+            }
+            const state = pollState({result, elapsedSecs: (GLib.get_monotonic_time() - started) / 1e6});
+            if (state === 'wait')
+                return GLib.SOURCE_CONTINUE;
+            this._accountHelperWatches.delete(path);
+            try {
+                Gio.File.new_for_path(path).delete(null);
+            } catch {
+                // never written (timeout) or already gone
+            }
+            const notice = resultNotice(state, result, name);
+            if (notice)
+                this._notify('UsageBar', notice);
+            if (state !== 'timeout')
+                this._refreshAfterAccountChange();
             return GLib.SOURCE_REMOVE;
         });
+        this._accountHelperWatches.set(path, id);
     }
 
-    _stopCliLoginWatch() {
-        if (this._cliLoginWatchId) {
-            GLib.source_remove(this._cliLoginWatchId);
-            this._cliLoginWatchId = 0;
-        }
-        if (this._cliLoginDebounceId) {
-            GLib.source_remove(this._cliLoginDebounceId);
-            this._cliLoginDebounceId = 0;
-        }
-        this._cliLoginMonitor?.cancel();
-        this._cliLoginMonitor = null;
+    _stopAccountHelperWatches() {
+        for (const id of this._accountHelperWatches?.values() ?? [])
+            GLib.source_remove(id);
+        this._accountHelperWatches = null;
     }
 
     // A refresh after an account changed. A fetch already out may have read

@@ -7,8 +7,6 @@ import {
     addAction,
     addKeyRequest,
     cliLoginArgv,
-    cliLoginFallbackText,
-    cliLoginStorePath,
     keyFormError,
     readKinds,
     removeRequest,
@@ -153,23 +151,5 @@ test('the cli-login helper runs the extension\'s own codexbar with fixed argumen
     assert.equal(cliLoginArgv('__proto__', '/usr/bin/codexbar'), null);
     // The argv is a fresh array each time; callers can't change the table.
     cliLoginArgv('codex', '/usr/bin/codexbar').push('--evil');
-    assert.deepEqual(CLI_LOGIN_HELPERS.codex.args, ['codex-accounts', 'add']);
-});
-
-test('the helper\'s store is watched under the user data dir', () => {
-    assert.equal(cliLoginStorePath('codex', '/home/u/.local/share'),
-        '/home/u/.local/share/CodexBar/managed-codex-accounts.json');
-    assert.equal(cliLoginStorePath('codex', '/home/u/.local/share/'),
-        '/home/u/.local/share/CodexBar/managed-codex-accounts.json');
-    assert.equal(cliLoginStorePath('codex', ''), null);
-    assert.equal(cliLoginStorePath('codex', 'relative'), null);
-    assert.equal(cliLoginStorePath('gemini', '/home/u/.local/share'), null);
-});
-
-test('the fallback text names the command to run', () => {
-    const argv = ['/usr/bin/codexbar', 'codex-accounts', 'add'];
-    assert.equal(cliLoginFallbackText(argv, 'Codex', {noTerminal: true}),
-        'No terminal found. Run `/usr/bin/codexbar codex-accounts add` in a terminal to add a Codex account.');
-    assert.match(cliLoginFallbackText(argv, 'Codex'), /^Could not open a terminal\. Run `\/usr\/bin\/codexbar/);
-    assert.match(cliLoginFallbackText(null, 'Codex'), /codexbar CLI wasn’t found/);
+    assert.deepEqual(CLI_LOGIN_HELPERS.codex, ['codex-accounts', 'add']);
 });

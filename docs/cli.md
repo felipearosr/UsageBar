@@ -485,7 +485,11 @@ records it in the account store, replacing an account with the same email and wo
 `Done.` or the step that failed; on any failure, including Ctrl-C, it removes the new home. The system
 Codex home (`~/.codex` or `CODEX_HOME`) is never read or written. Unlike the app it doesn't ask which
 workspace to use when a login has several; it keeps the one the login names. The GNOME extension runs
-it in a terminal for **Add account…** on the Codex card (the `cli-login` kind on `/accounts/kinds`).
+it in a terminal for **Add account…** on the Codex card (the `cli-login` kind on `/accounts/kinds`),
+passing `--result-file <absolute path>`: when the helper ends it writes
+`{"status": "done" | "failed", "message": "..."}` there (0600, written whole), which is how the extension
+knows it finished, since terminals that hand off to a server exit at once. The message never carries a
+token or an email.
 
 `codexbar codex-accounts promote <uuid-or-email>` explicitly promotes one managed account to system
 authentication. Use the exact UUID when several accounts share an email. Promotion preserves the

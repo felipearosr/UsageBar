@@ -33,7 +33,8 @@ it runs the fake `codex` named by STUB_CODEX_BIN (never a codex from PATH) as
 `<STUB_CODEX_BIN> login` with CODEX_HOME set to a new home under
 $XDG_DATA_HOME/CodexBar/managed-codex-homes, then records the email the fake
 wrote to that home's auth.json in $XDG_DATA_HOME/CodexBar/managed-codex-accounts.json,
-which serve then lists as one more managed row. It refuses to run without an
+which serve then lists as one more managed row; with `--result-file <path>` it
+also writes the CLI's {status, message} result there. It refuses to run without an
 XDG_DATA_HOME of its own, so it never writes the real data directory.
 STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
 seconds after serve starts, like a serve that isn't ready yet.
@@ -285,11 +286,27 @@ def stub_codex_store():
         return {"accounts": []}
 
 
-def codex_accounts_add():
+def write_result(argv, status, message):
+    """Like the CLI's --result-file: {status, message} JSON, written whole (0600), absolute paths only."""
+    if "--result-file" not in argv:
+        return
+    index = argv.index("--result-file") + 1
+    path = argv[index] if index < len(argv) else ""
+    if not path.startswith("/"):
+        return
+    temporary = f"{path}.{os.getpid()}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        json.dump({"status": status, "message": message}, handle)
+    os.replace(temporary, path)
+
+
+def codex_accounts_add(argv):
     """The add helper's steps against a fake codex; prints done or the failing step."""
     def fail(step, home=None):
         if home:
             shutil.rmtree(home, ignore_errors=True)
+        write_result(argv, "failed", f"Failed: {step}")
         print(f"\nFailed: {step}", file=sys.stderr)
         sys.exit(1)
 
@@ -319,6 +336,7 @@ def codex_accounts_add():
     store["accounts"].append({"id": str(uuid.uuid4()), "email": email, "home": home})
     with open(os.path.join(directory, "managed-codex-accounts.json"), "w") as handle:
         json.dump(store, handle)
+    write_result(argv, "done", "Added a Codex account.")
     print(f"\nDone. Added {email} to UsageBar.")
 
 
@@ -426,7 +444,7 @@ def main():
     if command == "serve":
         serve(argv)
     elif command == "codex-accounts" and argv[1:2] == ["add"]:
-        codex_accounts_add()
+        codex_accounts_add(argv)
     elif command == "config":
         if argv[1:2] == ["providers"]:
             print("[]")

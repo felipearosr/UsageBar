@@ -28,17 +28,12 @@ export const ADD_CAPABILITIES = {
 };
 
 // cli-login (#169): per provider, the `codexbar` arguments of the helper that
-// signs in to a new account in a terminal, and where (under the user data
-// dir, XDG_DATA_HOME) the helper records it. A provider without an entry
-// gets no Add account… even when serve reports cli-login for it.
+// signs in to a new account in a terminal. A provider without an entry gets
+// no Add account… even when serve reports cli-login for it. How the extension
+// learns that the helper finished is helperrun.js.
 export const CLI_LOGIN_HELPERS = {
-    codex: {args: ['codex-accounts', 'add'], store: ['CodexBar', 'managed-codex-accounts.json']},
+    codex: ['codex-accounts', 'add'],
 };
-
-// How long after opening the helper a change to its store still refreshes
-// the card. Terminal launchers that hand off to a terminal server exit at
-// once, so the store is what says the helper finished.
-export const CLI_LOGIN_WATCH_SECS = 15 * 60;
 
 export const LABEL_LIMIT = 100;
 
@@ -168,23 +163,5 @@ export function actionErrorText(error, token = '') {
 export function cliLoginArgv(provider, bin) {
     if (typeof bin !== 'string' || !bin.startsWith('/') || !Object.hasOwn(CLI_LOGIN_HELPERS, provider))
         return null;
-    return [bin, ...CLI_LOGIN_HELPERS[provider].args];
-}
-
-// The file the cli-login helper writes when it adds an account, under the
-// user data dir; null when there is none to watch.
-export function cliLoginStorePath(provider, dataDir) {
-    if (typeof dataDir !== 'string' || !dataDir.startsWith('/') || !Object.hasOwn(CLI_LOGIN_HELPERS, provider))
-        return null;
-    return [dataDir.replace(/\/+$/, ''), ...CLI_LOGIN_HELPERS[provider].store].join('/');
-}
-
-// What the notification says when the helper can't open in a terminal.
-export function cliLoginFallbackText(argv, name, {noTerminal = false} = {}) {
-    const command = (argv ?? []).join(' ');
-    if (!command)
-        return `UsageBar’s codexbar CLI wasn’t found, so a ${name} account can’t be added here.`;
-    return noTerminal
-        ? `No terminal found. Run \`${command}\` in a terminal to add a ${name} account.`
-        : `Could not open a terminal. Run \`${command}\` to add a ${name} account.`;
+    return [bin, ...CLI_LOGIN_HELPERS[provider]];
 }
