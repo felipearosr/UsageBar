@@ -386,6 +386,50 @@ struct CLIServeClaudeSwapTests {
     }
 
     @Test
+    func `the plain usage route's context asks for claude-swap and the dashboard's doesn't`() async throws {
+        let cswap = try FakeCSwap()
+        try cswap.respond(Self.twoAccounts)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CLIServeClaudeSwapTests-route-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = CodexBarConfigStore(fileURL: directory.appendingPathComponent("config.json"))
+        let config = Self.config(swapEnabled: true, path: cswap.executable.path)
+        try store.save(config)
+        let runtime = ServeRuntime(
+            configStore: store,
+            cache: CLIServeResponseCache(),
+            providerOperations: CLIServeOperationCoordinator(),
+            costOperations: CLIServeOperationCoordinator(),
+            refreshInterval: 60,
+            requestTimeout: 30,
+            healthVersion: nil,
+            dashboardAuth: CLIServeDashboardAuth(bearer: nil),
+            bindHost: "127.0.0.1")
+        let context = try CodexBarCLI.servePlainUsageContext(
+            snapshot: CodexBarCLI.loadServeConfigSnapshot(configStore: store),
+            runtime: runtime,
+            providerTimeout: nil,
+            providerDeadline: nil)
+        #expect(context.claudeSwapRows)
+
+        // Through the hook with the route's own context: claude-swap answers, upstream's fetch doesn't run.
+        let calls = CallLog()
+        let output = try await CodexBarCLI.forkServeFetchUsageOutputs(
+            provider: .claude,
+            tokenContext: TokenAccountCLIContext(
+                selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
+                config: context.config,
+                verbose: false),
+            command: CodexBarCLI.serveUsageCommand(context: context),
+            context: context,
+            state: ClaudeSwapServeState(),
+            ambient: Self.plainAmbient(calls))
+        #expect(output.payload.map(\.source) == ["claude-swap"])
+        #expect(await calls.calls.isEmpty)
+        #expect(cswap.invocations == ["--list", "--json"])
+    }
+
+    @Test
     func `the dashboard and a disabled config keep upstream's plain fetch`() async throws {
         let cswap = try FakeCSwap()
         try cswap.respond(Self.twoAccounts)
@@ -632,7 +676,7 @@ struct CLIServeClaudeSwapTests {
     }
 
     @Test
-    func `a stale row keeps its statusLine source and the stale flag says the rest`() async throws {
+    func `a stale statusLine row becomes statusline-stale so plain clients grey it`() async throws {
         let state = ClaudeSwapServeState()
         let config = Self.config(swapEnabled: true, path: "/fake/cswap")
         _ = await Self.serve(
@@ -645,8 +689,14 @@ struct CLIServeClaudeSwapTests {
             claudeSwap: Self.source(json: { "not json" }, state: state)))
         let work = try #require(rows.first { $0["accountId"] as? String == Self.workID })
         let personal = try #require(rows.first { $0["accountId"] as? String == Self.personalID })
-        #expect(work["source"] as? String == "statusline")
+        #expect(work["source"] as? String == "statusline-stale")
         #expect(work["stale"] as? Bool == true)
+        // Plain /usage has no `stale` key: the source alone has to say it, and the extension greys statusline-stale.
+        let plain = await CodexBarCLI.serveClaudeSwapOrFetch(
+            provider: .claude,
+            claudeSwap: Self.source(json: { "not json" }, state: state),
+            fetch: Self.plainAmbient(CallLog()))
+        #expect(plain.payload.map(\.source) == ["statusline-stale"])
         #expect(personal["source"] as? String == "claude-swap-stale")
         #expect(personal["stale"] as? Bool == true)
     }

@@ -242,22 +242,22 @@ struct ClaudeSwapServeRow: Sendable {
     }
 
     /// This last good row after a failed list read: its Quota (if any) kept, the adapter error attached, marked stale.
-    /// A statusLine source keeps its label (the `stale` flag says the rest); claude-swap's becomes
-    /// `claude-swap-stale`, so a client reading plain `/usage` (which has no `stale` key) still sees it.
+    /// The source says so too, for a client reading plain `/usage` (which has no `stale` key): a statusLine row
+    /// becomes `statusline-stale` (still labelled as the user's statusLine), claude-swap's `claude-swap-stale`.
     func stale(adapterError: String) -> Self {
         let message = ClaudeSwapAccountProjection.displayError(
             accountError: self.payload.usage == nil ? self.payload.error?.message : nil,
             adapterError: adapterError) ?? adapterError
         var fields = self.account.fields
         fields.stale = true
-        let keepsSource = [ClaudeStatusLineFeed.sourceLabel, ClaudeStatusLineFeed.staleSourceLabel]
+        let isStatusLine = [ClaudeStatusLineFeed.sourceLabel, ClaudeStatusLineFeed.staleSourceLabel]
             .contains(self.payload.source)
         return Self(
             account: ProviderAccount(fields: fields, selector: self.account.selector),
             payload: self.payload.claudeSwapCopy(
                 account: self.payload.account,
                 cacheAccountKey: self.payload.cacheAccountKey,
-                source: keepsSource ? self.payload.source : ClaudeSwapServeSource.staleSource,
+                source: isStatusLine ? ClaudeStatusLineFeed.staleSourceLabel : ClaudeSwapServeSource.staleSource,
                 error: ProviderErrorPayload(code: 1, message: message, kind: .provider)))
     }
 
@@ -385,6 +385,23 @@ extension CodexBarCLI {
         // No active slot (Claude Code is signed in to an account claude-swap doesn't list) or nothing to show: the
         // ambient fetch duplicates nothing.
         return await Self.addingClaudeSwapDiagnostic(result.adapterError, to: fetch())
+    }
+
+    /// The context upstream's plain `/usage` route builds: the only one that lets claude-swap answer Claude.
+    static func servePlainUsageContext(
+        snapshot: CLIServeConfigSnapshot,
+        runtime: ServeRuntime,
+        providerTimeout: TimeInterval?,
+        providerDeadline: ContinuousClock.Instant?) -> ServeUsageContext
+    {
+        ServeUsageContext(
+            config: snapshot.config,
+            configFingerprint: snapshot.cacheToken,
+            refreshInterval: runtime.refreshInterval,
+            providerTimeout: providerTimeout,
+            providerDeadline: providerDeadline,
+            providerOperations: runtime.providerOperations,
+            claudeSwapRows: true)
     }
 
     /// The plain `/usage` hook in upstream's `serveUsageOutput`. claude-swap answers only when the route asked for it

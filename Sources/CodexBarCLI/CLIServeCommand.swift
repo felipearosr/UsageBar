@@ -928,14 +928,12 @@ extension CodexBarCLI {
                 makeResponse: {
                     await Self.serveUsage(
                         provider: provider,
-                        context: ServeUsageContext(
-                            config: snapshot.config,
-                            configFingerprint: snapshot.cacheToken,
-                            refreshInterval: runtime.refreshInterval,
+                        // UsageBar: the plain route's context, with claude-swap on (CLIServeClaudeSwap.swift, #170).
+                        context: Self.servePlainUsageContext(
+                            snapshot: snapshot,
+                            runtime: runtime,
                             providerTimeout: providerTimeout,
-                            providerDeadline: providerDeadline,
-                            providerOperations: runtime.providerOperations,
-                            claudeSwapRows: true))
+                            providerDeadline: providerDeadline))
                 }))
         case let .cost(provider, days):
             guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
