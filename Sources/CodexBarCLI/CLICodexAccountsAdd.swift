@@ -128,7 +128,7 @@ struct CodexAccountAdder {
 
     let store: any ManagedCodexAccountStoring
     let homeFactory: any ManagedCodexHomeProducing
-    let baseEnvironment: [String: String]
+    @ProcessEnvironment var baseEnvironment: [String: String]
     /// The login shell's PATH (`LoginShellPathCache`), or nil when it couldn't be read.
     var loginPATH: [String]?
     let resolveCodex: @Sendable ([String: String]) -> String?
