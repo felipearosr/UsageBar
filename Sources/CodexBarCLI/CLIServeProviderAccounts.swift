@@ -5,16 +5,21 @@ import Foundation
 
 /// `GET /usage?accounts=all`: one `/usage` row per Provider Account, for clients that saw the
 /// `providerAccountRows` capability on `/health`. Plain `/usage` never reaches this file, so it stays upstream's
-/// single-account answer byte for byte.
+/// single-account answer.
 ///
 /// A provider with two or more token accounts (and a source mode that uses them) gets one row per account, fetched
 /// one after another through upstream's own per-account fetch, each carrying `ProviderAccountRowFields`. Every
 /// other provider, including one with a single account, gets exactly the row plain `/usage` gives it. Managed Codex
 /// accounts and claude-swap slots are later sources of the same row shape; Codex keeps upstream's rows for now.
+///
+/// Tagging is all or nothing per provider: once a provider has Provider Accounts, every row it returns carries one
+/// account's fields, including a provider-level timeout, which becomes one error row per account. Clients can rely
+/// on that, and serve's per-account last-good merge (keyed on each row's `accountId`) restores each account.
 extension CodexBarCLI {
-    /// Fetches one provider's usage with `tokenContext`'s account selection. Live serve passes upstream's
-    /// `fetchUsageOutputs`; tests pass a stub, so no test reaches a provider.
-    typealias ProviderAccountUsageFetch = @Sendable (UsageProvider, TokenAccountCLIContext) async
+    /// Fetches one provider's usage for one account (`selector`), or with upstream's default selection when
+    /// `selector` is nil. Live serve maps the selector onto upstream's `fetchUsageOutputs`; tests pass a stub, so no
+    /// test reaches a provider. The rows it returns need no particular cache key: serve tags them with the account.
+    typealias ProviderAccountUsageFetch = @Sendable (UsageProvider, ProviderAccountSelector?) async
         -> UsageCommandOutput
 
     static let providerAccountsQueryValue = "all"
@@ -76,16 +81,13 @@ extension CodexBarCLI {
     static func serveProviderAccountUsage(
         provider rawProvider: String?,
         context: ServeUsageContext,
-        fetch: ProviderAccountUsageFetch? = nil,
-        now: @Sendable () -> Date = { Date() }) async -> CLILocalHTTPResponse
+        fetch: ProviderAccountUsageFetch? = nil) async -> CLILocalHTTPResponse
     {
-        let providers: [UsageProvider]
-        let defaultContext: TokenAccountCLIContext
-        guard let selected = self.serveProviderAccountSelection(rawProvider: rawProvider, config: context.config)
+        guard let providers = self.serveProviderAccountSelection(rawProvider: rawProvider, config: context.config)
         else {
             return self.forkServeError(status: .badRequest, message: "Unknown provider: \(rawProvider ?? "")")
         }
-        providers = selected
+        let defaultContext: TokenAccountCLIContext
         do {
             defaultContext = try TokenAccountCLIContext(
                 selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
@@ -94,14 +96,16 @@ extension CodexBarCLI {
         } catch {
             return self.forkServeError(status: .internalServerError, message: error.localizedDescription)
         }
-        let command = self.serveUsageCommand(context: context)
-        let fetch = fetch ?? { provider, tokenContext in
-            await self.fetchUsageOutputs(provider: provider, status: nil, tokenContext: tokenContext, command: command)
-        }
-        let accountsByProvider = Dictionary(uniqueKeysWithValues: providers.map { provider in
-            (provider, self.providerAccounts(for: provider, context: defaultContext))
-        })
+        let fetch = fetch ?? self.liveProviderAccountFetch(
+            defaultContext: defaultContext,
+            command: self.serveUsageCommand(context: context))
+        let accountsByProvider = Dictionary(
+            providers.map { ($0, self.providerAccounts(for: $0, context: defaultContext)) },
+            uniquingKeysWith: { first, _ in first })
 
+        // The coordinator slot is per provider and shared with upstream's plain /usage. The fingerprint differs, so
+        // for one provider the coordinator runs the two routes' fetches one after the other, never at once, and
+        // never hands one route's rows to the other.
         let output = await self.serveCollectUsageOutputs(
             providers: providers,
             configFingerprint: self.serveUsageOperationFingerprint(
@@ -114,30 +118,50 @@ extension CodexBarCLI {
                 await self.fetchProviderAccountOutputs(
                     provider: provider,
                     accounts: accountsByProvider[provider] ?? [],
-                    defaultContext: defaultContext,
                     fetch: fetch)
             }
         }
 
-        let fetchedAt = now()
-        let rows = output.payload.map { row in
-            self.providerAccountRow(
-                row,
-                accounts: row.usageProvider.flatMap { accountsByProvider[$0] } ?? [],
-                fetchedAt: fetchedAt)
-        }
+        let rows = self.providerAccountRows(output.payload, accountsByProvider: accountsByProvider)
         let json = self.encodeJSON(rows, pretty: false) ?? "[]"
         return CLILocalHTTPResponse(
             status: .ok,
             body: Data(json.utf8),
-            usageCacheKeys: output.payload.map(\.cacheAccountKey))
+            usageCacheKeys: rows.map(\.row.cacheAccountKey))
+    }
+
+    /// Upstream's per-provider fetch, with the token-account selection the selector names.
+    private static func liveProviderAccountFetch(
+        defaultContext: TokenAccountCLIContext,
+        command: UsageCommandContext) -> ProviderAccountUsageFetch
+    {
+        { provider, selector in
+            let tokenContext: TokenAccountCLIContext
+            switch selector {
+            case nil:
+                tokenContext = defaultContext
+            case let .tokenIndex(index):
+                // Upstream's index selection reads exactly that stored account's token.
+                guard let selected = try? TokenAccountCLIContext(
+                    selection: TokenAccountCLISelection(label: nil, index: index, allAccounts: false),
+                    config: defaultContext.config,
+                    verbose: false)
+                else { return UsageCommandOutput() }
+                tokenContext = selected
+            }
+            return await self.fetchUsageOutputs(
+                provider: provider,
+                status: nil,
+                tokenContext: tokenContext,
+                command: command)
+        }
     }
 
     /// The Provider Accounts `provider` shows as separate rows: its token accounts when it has two or more and the
     /// source mode in use reads them. Empty means the provider keeps upstream's single-account row.
     static func providerAccounts(
         for provider: UsageProvider,
-        context: TokenAccountCLIContext) -> [ProviderAccountRowFields]
+        context: TokenAccountCLIContext) -> [ProviderAccount]
     {
         // Provider-specific by design: managed Codex accounts are their own source (#168); Codex keeps upstream's
         // reconciled-account rows until then.
@@ -151,12 +175,13 @@ extension CodexBarCLI {
         else { return [] }
         let activeIndex = data.clampedActiveIndex()
         return data.accounts.enumerated().map { index, account in
-            ProviderAccountRowFields(
-                source: .token,
-                id: account.id.uuidString.lowercased(),
-                index: index,
-                label: Self.providerAccountLabel(account.label, index: index),
-                active: index == activeIndex)
+            ProviderAccount(
+                fields: ProviderAccountRowFields(
+                    source: .token,
+                    id: account.id.uuidString.lowercased(),
+                    label: Self.providerAccountLabel(account.label, index: index),
+                    active: index == activeIndex),
+                selector: .tokenIndex(index))
         }
     }
 
@@ -165,48 +190,64 @@ extension CodexBarCLI {
         return trimmed.isEmpty ? "Account \(index + 1)" : trimmed
     }
 
-    /// One fetch per Provider Account, in store order, each through upstream's index selection so it reads that
-    /// account's token only. A failing account adds its own error row and the others still fetch.
+    /// One fetch per Provider Account, in store order, each selecting only that account. A failing account adds its
+    /// own error row and the others still fetch. Every row an account's fetch returns belongs to that account, so
+    /// it is tagged with the account's id here, whatever cache key upstream gave it.
+    ///
+    /// All accounts share the provider's one budget: when it runs out, the coordinator answers with its single
+    /// timeout row, and accounts that had already finished are lost with it (`providerAccountRows` turns that row
+    /// into one per account, which the last-good merge then restores). A deadline per account is a follow-up.
     private static func fetchProviderAccountOutputs(
         provider: UsageProvider,
-        accounts: [ProviderAccountRowFields],
-        defaultContext: TokenAccountCLIContext,
+        accounts: [ProviderAccount],
         fetch: ProviderAccountUsageFetch) async -> UsageCommandOutput
     {
-        guard !accounts.isEmpty else { return await fetch(provider, defaultContext) }
+        guard !accounts.isEmpty else { return await fetch(provider, nil) }
         let refreshDelay = TokenAccountSupportCatalog.support(for: provider)?.minimumDelayBetweenAccountRefreshes
         var output = UsageCommandOutput()
-        for account in accounts {
-            if account.index > 0, let refreshDelay {
+        for (position, account) in accounts.enumerated() {
+            if position > 0, let refreshDelay {
                 do {
                     try await Task.sleep(for: refreshDelay)
                 } catch {
                     return output
                 }
             }
-            let tokenContext: TokenAccountCLIContext
-            do {
-                tokenContext = try TokenAccountCLIContext(
-                    selection: TokenAccountCLISelection(label: nil, index: account.index, allAccounts: false),
-                    config: defaultContext.config,
-                    verbose: false)
-            } catch {
-                continue
-            }
-            await output.merge(fetch(provider, tokenContext))
+            var accountOutput = await fetch(provider, account.selector)
+            accountOutput.payload = accountOutput.payload.map { $0.tagged(with: account.fields) }
+            output.merge(accountOutput)
         }
         return output
     }
 
-    private static func providerAccountRow(
-        _ row: ProviderPayload,
-        accounts: [ProviderAccountRowFields],
-        fetchedAt: Date) -> ProviderAccountRowPayload
+    /// Attaches each row's account fields, and makes tagging all or nothing per provider. A provider with Provider
+    /// Accounts gets, for each account without a row, a copy of the provider's untagged error row (the coordinator's
+    /// timeout row is the only untagged row it can return) tagged with that account; untagged rows are dropped.
+    static func providerAccountRows(
+        _ payload: [ProviderPayload],
+        accountsByProvider: [UsageProvider: [ProviderAccount]]) -> [ProviderAccountRowPayload]
     {
-        guard let key = row.cacheAccountKey,
-              let account = accounts.first(where: { $0.accountID == key })
-        else { return ProviderAccountRowPayload(row: row, account: nil, updatedAt: nil) }
-        return ProviderAccountRowPayload(row: row, account: account, updatedAt: row.usage?.updatedAt ?? fetchedAt)
+        var rows: [ProviderAccountRowPayload] = []
+        var expandedProviders: Set<String> = []
+        for row in payload {
+            guard let provider = row.usageProvider,
+                  let accounts = accountsByProvider[provider],
+                  !accounts.isEmpty
+            else {
+                rows.append(ProviderAccountRowPayload(row: row, account: nil))
+                continue
+            }
+            if let account = accounts.first(where: { $0.fields.accountID == row.cacheAccountKey }) {
+                rows.append(ProviderAccountRowPayload(row: row, account: account.fields))
+                continue
+            }
+            guard row.error != nil, expandedProviders.insert(row.provider).inserted else { continue }
+            let answered = Set(payload.filter { $0.provider == row.provider }.compactMap(\.cacheAccountKey))
+            for account in accounts where !answered.contains(account.fields.accountID) {
+                rows.append(ProviderAccountRowPayload(row: row.tagged(with: account.fields), account: account.fields))
+            }
+        }
+        return rows
     }
 
     /// Upstream's private `serveProviderSelection`: the `provider` query, or the enabled providers; nil for an
@@ -230,17 +271,28 @@ enum ProviderAccountSource: String, Encodable, Sendable {
     case token
 }
 
-/// The fields one Provider Account adds to its `/usage` row.
+/// How serve fetches one Provider Account. Source-specific and never sent; managed Codex homes and claude-swap slots
+/// add their own cases.
+enum ProviderAccountSelector: Equatable, Sendable {
+    /// The account at this position in the provider's token-account store.
+    case tokenIndex(Int)
+}
+
+/// One Provider Account serve shows as its own row: what the row says about it, and how to fetch it.
+struct ProviderAccount: Equatable, Sendable {
+    let fields: ProviderAccountRowFields
+    let selector: ProviderAccountSelector
+}
+
+/// The fields one Provider Account adds to its `/usage` row, the same for every source.
 struct ProviderAccountRowFields: Equatable, Sendable {
     let source: ProviderAccountSource
     let id: String
-    /// Position in the provider's account store; selects the account for the fetch, never sent.
-    let index: Int
     let label: String
     let active: Bool
 
-    /// `<source>:<opaque id>`, stable across refreshes, renames and reorders. For token accounts it equals the
-    /// per-account key upstream already gives the row (`usageCacheAccountKey`), which pairs rows with accounts.
+    /// `<source>:<opaque id>`, stable across refreshes, renames and reorders. Serve also makes it the row's cache
+    /// key, so the per-account last-good merge restores each account on its own.
     var accountID: String {
         "\(self.source.rawValue):\(self.id)"
     }
@@ -251,8 +303,12 @@ struct ProviderAccountRowFields: Equatable, Sendable {
 struct ProviderAccountRowPayload: Encodable {
     let row: ProviderPayload
     let account: ProviderAccountRowFields?
-    /// The row's own freshness: its usage snapshot's time, or when its fetch failed.
-    let updatedAt: Date?
+
+    /// When the Quota this row shows was fetched: its usage snapshot's time. Absent on an error row, which shows no
+    /// Quota of its own.
+    var updatedAt: Date? {
+        self.row.usage?.updatedAt
+    }
 
     private enum CodingKeys: String, CodingKey {
         case accountId
@@ -277,5 +333,23 @@ struct ProviderAccountRowPayload: Encodable {
 extension ProviderPayload {
     fileprivate var usageProvider: UsageProvider? {
         UsageProvider(rawValue: self.provider)
+    }
+
+    /// This row as `account`'s: its label, and its id as the cache key. Everything else is unchanged.
+    fileprivate func tagged(with account: ProviderAccountRowFields) -> ProviderPayload {
+        ProviderPayload(
+            providerID: self.provider,
+            account: account.label,
+            cacheAccountKey: account.accountID,
+            version: self.version,
+            source: self.source,
+            status: self.status,
+            usage: self.usage,
+            credits: self.credits,
+            antigravityPlanInfo: self.antigravityPlanInfo,
+            openaiDashboard: self.openaiDashboard,
+            error: self.error,
+            diagnostic: self.diagnostic,
+            pace: self.pace)
     }
 }
