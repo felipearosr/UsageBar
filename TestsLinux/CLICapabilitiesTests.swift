@@ -70,7 +70,7 @@ struct CLICapabilitiesTests {
         #expect(object["version"] as? String == Self.releaseVersion)
         #expect(object["upstreamBase"] as? String == "0.73.0")
         #expect(object["usagebarVersion"] as? String == "1.1.0-rc.2")
-        #expect(object["capabilities"] as? [String] == ["machineSync"])
+        #expect(object["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
     }
 
     @Test
@@ -80,7 +80,7 @@ struct CLICapabilitiesTests {
             runtime: Self.runtime(healthVersion: nil))
         let object = try Self.object(response.body)
         #expect(Set(object.keys) == ["status", "capabilities"])
-        #expect(object["capabilities"] as? [String] == ["machineSync"])
+        #expect(object["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
     }
 
     @Test
@@ -89,7 +89,7 @@ struct CLICapabilitiesTests {
             Self.request("GET", "/health"),
             runtime: Self.runtime(healthVersion: Self.releaseVersion, bindHost: "0.0.0.0", token: "secret"))
         #expect(response.status == .ok)
-        #expect(try Self.object(response.body)["capabilities"] as? [String] == ["machineSync"])
+        #expect(try Self.object(response.body)["capabilities"] as? [String] == ["machineSync", "providerAccountRows"])
     }
 
     @Test

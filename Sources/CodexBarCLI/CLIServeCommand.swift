@@ -1327,9 +1327,30 @@ extension CodexBarCLI {
             selection: TokenAccountCLISelection(label: nil, index: nil, allAccounts: false),
             config: context.config,
             verbose: false)
+        let command = Self.serveUsageCommand(context: context)
 
+        return await Self.serveCollectUsageOutputs(
+            providers: selection.asList,
+            configFingerprint: Self.serveUsageOperationFingerprint(
+                configFingerprint: context.configFingerprint,
+                includeAllCodexAccounts: context.includeAllCodexAccounts),
+            deadline: context.providerDeadline,
+            operations: context.providerOperations)
+        { provider in
+            await ProviderInteractionContext.$current.withValue(.background) {
+                await Self.fetchUsageOutputs(
+                    provider: provider,
+                    status: nil,
+                    tokenContext: tokenContext,
+                    command: command)
+            }
+        }
+    }
+
+    /// The usage command serve runs for each provider: JSON only, credits included, background interaction.
+    static func serveUsageCommand(context: ServeUsageContext) -> UsageCommandContext {
         let browserDetection = BrowserDetection()
-        let command = UsageCommandContext(
+        return UsageCommandContext(
             format: .json,
             includeCredits: true,
             sourceModeOverride: nil,
@@ -1349,23 +1370,6 @@ extension CodexBarCLI {
             persistCLISessions: context.persistCLISessions,
             persistentCLISessionIdleWindow: Self.serveCLISessionIdleWindow(
                 refreshInterval: context.refreshInterval))
-
-        return await Self.serveCollectUsageOutputs(
-            providers: selection.asList,
-            configFingerprint: Self.serveUsageOperationFingerprint(
-                configFingerprint: context.configFingerprint,
-                includeAllCodexAccounts: context.includeAllCodexAccounts),
-            deadline: context.providerDeadline,
-            operations: context.providerOperations)
-        { provider in
-            await ProviderInteractionContext.$current.withValue(.background) {
-                await Self.fetchUsageOutputs(
-                    provider: provider,
-                    status: nil,
-                    tokenContext: tokenContext,
-                    command: command)
-            }
-        }
     }
 
     static func serveUsageOperationFingerprint(
