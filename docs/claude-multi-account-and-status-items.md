@@ -149,6 +149,13 @@ accepted decisions keep out of scope. Upstream's macOS app is unchanged.
 - It never runs a logout. claude-swap's README documents exactly this sequence ("log in with another account, then
   `cswap add`") and warns not to log out first, because Claude Code may revoke the refresh token of the account being
   left; it names logout, not a new login, as the revoking action.
+- One managed-machine exception: when an administrator sets `forceLoginMethod: "console"`, Claude Code's sign-in is
+  the Console one, and Anthropic documents that a keyless Console sign-in signs the machine out of any claude.ai
+  login. The add flow can't add a claude.ai subscription there; the account `cswap add` saved in step 1 keeps its
+  stored credential, but the live claude.ai login is replaced.
+- The steps run in the terminal's foreground process group (`posix_spawn` without a new group), so `claude auth
+  login` can use the terminal; Ctrl-C stops the running step and the helper reports it. When the run succeeds but
+  claude-swap lists no more accounts than before, the helper says nothing new was added instead of "done".
 - When claude-swap is missing, the extension offers a terminal running `uv tool install claude-swap` (or
   `pipx install claude-swap` without uv). UsageBar never installs it without that explicit step. A detect step then
   saves the absolute `cswap` path and `claudeSwapEnabled`; it reads only file metadata and runs nothing.

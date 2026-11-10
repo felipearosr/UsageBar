@@ -8,6 +8,7 @@ import {
     addHelperArgv,
     detectRequest,
     installArgv,
+    installConfirmLabel,
     installOfferText,
     installerName,
     nextStep,
@@ -77,6 +78,9 @@ test('install ignores relative finds and offers instructions without an installe
     assert.equal(none, null);
     assert.equal(installerName(none), null);
     assert.match(installOfferText(none), /Install uv or pipx/);
+    // Nothing to run: the button only closes the offer.
+    assert.equal(installConfirmLabel(none), 'OK');
+    assert.equal(installConfirmLabel(['/bin/uv', 'tool', 'install', 'claude-swap']), 'Install');
     assert.match(NO_INSTALLER_ERROR, /uv nor pipx/);
 });
 

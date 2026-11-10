@@ -129,10 +129,10 @@ import {
 } from './accountactions.js';
 import {
     CLAUDE_SWAP_KIND,
-    NO_INSTALLER_ERROR,
     addHelperArgv,
     detectRequest,
     installArgv,
+    installConfirmLabel,
     installOfferText,
     nextStep,
     readDetect,
@@ -7571,14 +7571,14 @@ export default class UsageBarExtension extends Extension {
         const dialog = this._openAccountDialog({
             title: 'Install claude-swap',
             description: installOfferText(argv),
-            confirmLabel: 'Install',
+            // With neither uv nor pipx there is nothing to run: the text
+            // says what to install and the button only closes the offer.
+            confirmLabel: installConfirmLabel(argv),
             provider: action.provider,
-            submit: ({fail}) => {
-                if (!argv) {
-                    fail(NO_INSTALLER_ERROR);
-                    return;
-                }
+            submit: () => {
                 dialog.close();
+                if (!argv)
+                    return;
                 // Detect again once the installer's terminal exits; the next
                 // Add account… detects again too, for terminals that hand off
                 // to a server and exit early.

@@ -96,8 +96,11 @@ export function loginActionFor(row) {
 
 // Keeps the terminal open after the login command exits so its outcome
 // stays readable; `sh -c` gets the command as positional args, no quoting.
+// Ctrl-C reaches the whole foreground group: `trap :` keeps this wrapper
+// alive to show the outcome, while the command (a trap with a handler is
+// reset on exec) still gets the default SIGINT and stops.
 export function holdOpenArgv(argv) {
-    return ['sh', '-c', '"$@"; status=$?; echo; printf "Press Enter to close. "; read _; exit $status',
+    return ['sh', '-c', 'trap : INT QUIT; "$@"; status=$?; echo; printf "Press Enter to close. "; read _; exit $status',
         'usagebar-login', ...argv];
 }
 

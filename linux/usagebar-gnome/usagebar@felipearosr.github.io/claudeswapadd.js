@@ -74,6 +74,12 @@ export function installOfferText(argv) {
     return `${lead} UsageBar can open a terminal running \`${command}\`.`;
 }
 
+// The offer's button: Install when there is an installer to run, else OK
+// (it only closes the offer, whose text says what to install).
+export function installConfirmLabel(argv) {
+    return argv ? 'Install' : 'OK';
+}
+
 export const NO_INSTALLER_ERROR = 'Neither uv nor pipx was found. Install one of them first.';
 
 function absolute(path) {
