@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#endif
 import Testing
 @testable import CodexBarCLI
 @testable import CodexBarCore
@@ -27,9 +30,18 @@ struct ClaudeSwapAddAccountTests {
             self.root.path
         }
 
+        func remove() {
+            try? FileManager.default.removeItem(at: self.root)
+        }
+
         /// A fake named `name` at `relativePath` (under the home) that logs its argv and exits with `status`.
         @discardableResult
-        func installFake(_ name: String, at relativePath: String, exitStatus: Int32 = 0) throws -> String {
+        func installFake(
+            _ name: String,
+            at relativePath: String,
+            exitStatus: Int32 = 0,
+            extra: String = "") throws -> String
+        {
             let url = self.root.appendingPathComponent(relativePath)
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
@@ -37,6 +49,7 @@ struct ClaudeSwapAddAccountTests {
             try FakeExecutable.install("""
             #!/bin/sh
             printf '%s\\n' "\(name) $*" >> '\(self.log.path)'
+            \(extra)
             exit \(exitStatus)
             """, at: url)
             return url.path
@@ -53,6 +66,7 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `add runs cswap add then claude auth login then cswap add`() throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let cswap = try home.installFake("cswap", at: ".local/bin/cswap")
         let claude = try home.installFake("claude", at: ".local/bin/claude")
         let flow = ClaudeSwapAddAccountFlow(cswapPath: cswap, claudePath: claude)
@@ -62,7 +76,7 @@ struct ClaudeSwapAddAccountTests {
             [cswap, "add"],
         ])
 
-        let outcome = flow.run(runner: ClaudeSwapAddAccountFlow.runInheritingTerminal)
+        let outcome = flow.run(runner: ClaudeSwapAddAccountFlow.runInForeground)
         #expect(outcome == .done)
         #expect(ClaudeSwapAddAccountFlow.message(for: outcome) == "done")
         #expect(home.invocations == ["cswap add", "claude auth login", "cswap add"])
@@ -71,11 +85,12 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `add stops at the first failing step and names it`() throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let cswap = try home.installFake("cswap", at: ".local/bin/cswap")
         let claude = try home.installFake("claude", at: ".local/bin/claude", exitStatus: 3)
         let flow = ClaudeSwapAddAccountFlow(cswapPath: cswap, claudePath: claude)
 
-        let outcome = flow.run(runner: ClaudeSwapAddAccountFlow.runInheritingTerminal)
+        let outcome = flow.run(runner: ClaudeSwapAddAccountFlow.runInForeground)
         guard case let .failed(index, step, reason) = outcome else {
             Issue.record("expected a failure, got \(outcome)")
             return
@@ -93,10 +108,11 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `add stops before signing in when the first cswap add fails`() throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let cswap = try home.installFake("cswap", at: ".local/bin/cswap", exitStatus: 1)
         let claude = try home.installFake("claude", at: ".local/bin/claude")
         let outcome = ClaudeSwapAddAccountFlow(cswapPath: cswap, claudePath: claude)
-            .run(runner: ClaudeSwapAddAccountFlow.runInheritingTerminal)
+            .run(runner: ClaudeSwapAddAccountFlow.runInForeground)
         #expect(ClaudeSwapAddAccountFlow.message(for: outcome).hasPrefix("Step 1 of 3 failed: `cswap add`"))
         #expect(home.invocations == ["cswap add"])
     }
@@ -104,10 +120,11 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `a step that cannot start fails without running the rest`() throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let claude = try home.installFake("claude", at: ".local/bin/claude")
         let missing = home.root.appendingPathComponent("missing/cswap").path
         let outcome = ClaudeSwapAddAccountFlow(cswapPath: missing, claudePath: claude)
-            .run(runner: ClaudeSwapAddAccountFlow.runInheritingTerminal)
+            .run(runner: ClaudeSwapAddAccountFlow.runInForeground)
         #expect(ClaudeSwapAddAccountFlow.message(for: outcome).contains("could not start"))
         #expect(home.invocations.isEmpty)
     }
@@ -127,11 +144,93 @@ struct ClaudeSwapAddAccountTests {
         }
     }
 
+    @Test
+    func `steps run in this process's group so they own the terminal`() throws {
+        let home = try SyntheticHome()
+        defer { home.remove() }
+        // Foundation's Process would put the child in a new group, where `claude auth login` is stopped by SIGTTOU
+        // as soon as it switches the terminal to raw mode.
+        let pgidFile = home.root.appendingPathComponent("pgid")
+        let claude = try home.installFake(
+            "claude",
+            at: ".local/bin/claude",
+            extra: "cut -d' ' -f5 /proc/$$/stat > '\(pgidFile.path)'")
+        let status = try CLIForegroundProcess.run(claude, ["auth", "login"])
+        #expect(status == 0)
+        let pgid = try String(contentsOf: pgidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(pgid == String(getpgrp()))
+    }
+
+    @Test
+    func `a step stopped by Ctrl-C fails with status 130 and the helper lives on`() throws {
+        let home = try SyntheticHome()
+        defer { home.remove() }
+        let cswap = try home.installFake("cswap", at: ".local/bin/cswap")
+        // SIGINT to itself only: the child gets the default action back even while the caller ignores it.
+        let claude = try home.installFake("claude", at: ".local/bin/claude", extra: "kill -INT $$; sleep 1")
+        let outcome = ClaudeSwapAddAccountFlow(cswapPath: cswap, claudePath: claude)
+            .run(runner: ClaudeSwapAddAccountFlow.runInForeground)
+        let message = ClaudeSwapAddAccountFlow.message(for: outcome)
+        #expect(message.hasPrefix("Step 2 of 3 failed"))
+        #expect(message.contains("status 130"))
+        #expect(home.invocations == ["cswap add", "claude auth login"])
+    }
+
+    @Test
+    func `the wait status decodes exits and signals`() {
+        #expect(CLIForegroundProcess.exitCode(fromWaitStatus: 0) == 0)
+        #expect(CLIForegroundProcess.exitCode(fromWaitStatus: 3 << 8) == 3)
+        #expect(CLIForegroundProcess.exitCode(fromWaitStatus: SIGINT) == 130)
+    }
+
+    @Test
+    func `a run that adds no slot says nothing new was added`() {
+        let done = ClaudeSwapAddAccountFlow.Outcome.done
+        #expect(ClaudeSwapAddAccountFlow.message(for: done, slotsBefore: 1, slotsAfter: 2) == "done")
+        #expect(ClaudeSwapAddAccountFlow.message(for: done, slotsBefore: 2, slotsAfter: 2) ==
+            ClaudeSwapAddAccountFlow.nothingAddedWarning)
+        #expect(ClaudeSwapAddAccountFlow.nothingAddedWarning.contains("nothing new was added"))
+        // Unknown counts can't tell, so they say done.
+        #expect(ClaudeSwapAddAccountFlow.message(for: done, slotsBefore: nil, slotsAfter: 2) == "done")
+        #expect(ClaudeSwapAddAccountFlow.message(for: done, slotsBefore: 2, slotsAfter: nil) == "done")
+    }
+
+    @Test
+    func `claude is found where the extension's Sign in looks, never on a relative PATH entry`() throws {
+        let home = try SyntheticHome()
+        defer { home.remove() }
+        let bun = try home.installFake("claude", at: ".bun/bin/claude")
+        try home.installFake("claude", at: "relative/claude")
+        let environment = ["PATH": "relative:/nonexistent-usagebar-test"]
+        #expect(ClaudeCodeExecutableDetector.detect(environment: environment, home: home.home) == bun)
+
+        let npm = try home.installFake("claude", at: ".npm-global/bin/claude")
+        try FileManager.default.removeItem(atPath: bun)
+        #expect(ClaudeCodeExecutableDetector.detect(environment: environment, home: home.home) == npm)
+
+        let local = try home.installFake("claude", at: ".local/bin/claude")
+        #expect(ClaudeCodeExecutableDetector.detect(environment: environment, home: home.home) == local)
+        let override = try home.installFake("claude", at: "opt/claude")
+        #expect(ClaudeCodeExecutableDetector.detect(
+            environment: environment.merging(["CLAUDE_CLI_PATH": override]) { $1 },
+            home: home.home) == override)
+        #expect(ClaudeCodeExecutableDetector.detect(
+            environment: ["CLAUDE_CLI_PATH": "opt/claude", "PATH": ""],
+            home: home.home) == local)
+        let paths = ClaudeCodeExecutableDetector.wellKnownPaths(home: home.home)
+        #expect(paths.allSatisfy { $0.hasPrefix("/") })
+        for directory in [".bun/bin", ".npm-global/bin", ".local/bin"] {
+            #expect(paths.contains("\(home.home)/\(directory)/claude"), "\(directory)")
+        }
+        #expect(paths.contains("/home/linuxbrew/.linuxbrew/bin/claude"))
+    }
+
     // MARK: Detect
 
     @Test
     func `detect finds cswap in the synthetic home's local bin and skips relative PATH entries`() throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let path = try home.installFake("cswap", at: ".local/bin/cswap")
         // A relative PATH entry that would match from the right working directory is never used.
         let relative = try home.installFake("cswap", at: "relative/cswap")
@@ -146,6 +245,7 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `detect finds cswap in uv's tool directory`() throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let path = try home.installFake("cswap", at: ".local/share/uv/tools/claude-swap/bin/cswap")
         #expect(ClaudeSwapExecutableDetector.detect(environment: [:], home: home.home) == path)
 
@@ -157,6 +257,7 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `detect reports nothing without a binary`() throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         #expect(ClaudeSwapExecutableDetector.detect(
             environment: ["PATH": "/nonexistent-usagebar-test"],
             home: home.home) == nil)
@@ -165,6 +266,7 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `detect saves the path and turns claude-swap on, then leaves the config alone`() async throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let path = try home.installFake("cswap", at: ".local/bin/cswap")
         let store = CodexBarConfigStore(fileURL: home.root.appendingPathComponent("config/config.json"))
 
@@ -186,6 +288,7 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `detect without a binary reports not installed and writes nothing`() async throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         let store = CodexBarConfigStore(fileURL: home.root.appendingPathComponent("config/config.json"))
         let payload = try await CodexBarCLI.detectClaudeSwap(
             store: store,
@@ -200,6 +303,7 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `detect keeps a configured path that still resolves`() async throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         try home.installFake("cswap", at: ".local/bin/cswap")
         let configured = try home.installFake("cswap", at: "opt/cswap")
         let store = CodexBarConfigStore(fileURL: home.root.appendingPathComponent("config.json"))
@@ -251,6 +355,7 @@ struct ClaudeSwapAddAccountTests {
     @Test
     func `the detect route needs the action token and a POST`() async throws {
         let home = try SyntheticHome()
+        defer { home.remove() }
         try home.installFake("cswap", at: ".local/bin/cswap")
         let runtime = Self.runtime(home)
 

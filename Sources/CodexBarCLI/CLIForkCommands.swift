@@ -25,7 +25,7 @@ extension CodexBarCLI {
             self.runClaudeStatusLineCapture()
         // Provider-specific by design: claude-swap's add flow is Claude's only interactive account add (#172).
         case "claude" where path == ["claude", "add-account"]:
-            self.runClaudeAddAccount()
+            await self.runClaudeAddAccount()
         default:
             self.exit(code: .failure, message: "Unknown command", output: output, kind: .args)
         }

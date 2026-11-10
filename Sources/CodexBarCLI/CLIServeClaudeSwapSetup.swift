@@ -103,17 +103,39 @@ extension CodexBarCLI {
                 message: ClaudeSwapDetectPayload.notInstalledMessage)
         }
         let unchanged = entry?.claudeSwapEnabled == true && entry?.sanitizedClaudeSwapExecutablePath == path
-        if !unchanged {
-            _ = try await self.editingConfig(store: store, provider: provider, createIfMissing: true) { config in
-                var entry = config.providerConfig(for: provider.instanceID) ?? ProviderConfig(id: provider.instanceID)
+        guard !unchanged else {
+            return ClaudeSwapDetectPayload(installed: true, executablePath: path, enabled: true, message: nil)
+        }
+        // Decide again under the lock: another writer may have set a path since the read above, and a configured
+        // path that still resolves wins over the one detected here.
+        let (saved, _): (String?, Int) = try await self.editingConfig(
+            store: store,
+            provider: provider,
+            createIfMissing: true)
+        { config in
+            var entry = config.providerConfig(for: provider.instanceID) ?? ProviderConfig(id: provider.instanceID)
+            guard let path = ClaudeSwapExecutableDetector.configuredOrDetected(
+                configured: entry.claudeSwapExecutablePath,
+                environment: environment,
+                home: home)
+            else { return nil }
+            if entry.claudeSwapEnabled != true || entry.sanitizedClaudeSwapExecutablePath != path {
                 entry.claudeSwapExecutablePath = path
                 entry.claudeSwapEnabled = true
                 config.setProviderConfig(entry)
             }
-            CodexBarLog.logger(LogCategories.tokenAccounts).info(
-                "claude-swap detected and enabled",
-                metadata: ["provider": provider.rawValue])
+            return path
         }
-        return ClaudeSwapDetectPayload(installed: true, executablePath: path, enabled: true, message: nil)
+        guard let saved else {
+            return ClaudeSwapDetectPayload(
+                installed: false,
+                executablePath: nil,
+                enabled: false,
+                message: ClaudeSwapDetectPayload.notInstalledMessage)
+        }
+        CodexBarLog.logger(LogCategories.tokenAccounts).info(
+            "claude-swap detected and enabled",
+            metadata: ["provider": provider.rawValue])
+        return ClaudeSwapDetectPayload(installed: true, executablePath: saved, enabled: true, message: nil)
     }
 }

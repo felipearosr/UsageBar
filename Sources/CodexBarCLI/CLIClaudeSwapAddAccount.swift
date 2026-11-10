@@ -75,8 +75,22 @@ enum ClaudeSwapExecutableDetector {
 }
 
 /// Claude Code's CLI for the add flow's sign-in step: `CLAUDE_CLI_PATH` when absolute, the absolute `PATH` entries,
-/// then Anthropic's installer locations. No login shell is started to find it.
+/// then Anthropic's installer locations (as `BinaryLocator.claudeWellKnownPaths`) and the directories the extension's
+/// **Sign in** button searches (bun, npm-global, Linuxbrew). No login shell is started to find it.
 enum ClaudeCodeExecutableDetector {
+    static func wellKnownPaths(home: String) -> [String] {
+        [
+            "\(home)/.local/bin/claude",
+            "\(home)/.claude/local/claude",
+            "\(home)/.claude/bin/claude",
+            "\(home)/.bun/bin/claude",
+            "\(home)/.npm-global/bin/claude",
+            "/home/linuxbrew/.linuxbrew/bin/claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ]
+    }
+
     static func detect(
         environment: [String: String],
         home: String,
@@ -88,12 +102,7 @@ enum ClaudeCodeExecutableDetector {
         let pathEntries = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
             .filter { $0.hasPrefix("/") }
             .map { "\($0.hasSuffix("/") ? String($0.dropLast()) : $0)/claude" }
-        let wellKnown = [
-            "\(home)/.local/bin/claude",
-            "\(home)/.claude/local/claude",
-            "\(home)/.claude/bin/claude",
-            "/usr/local/bin/claude",
-        ]
+        let wellKnown = self.wellKnownPaths(home: home).filter { $0.hasPrefix("/") }
         return (pathEntries + wellKnown).first(where: isExecutable)
     }
 }
@@ -139,7 +148,7 @@ struct ClaudeSwapAddAccountFlow {
         ]
     }
 
-    func run(announce: (String) -> Void = { _ in }, runner: Runner = Self.runInheritingTerminal) -> Outcome {
+    func run(announce: (String) -> Void = { _ in }, runner: Runner = Self.runInForeground) -> Outcome {
         for (offset, step) in self.steps.enumerated() {
             let index = offset + 1
             announce("Step \(index) of \(self.steps.count): \(step.title) (\(step.commandLine))")
@@ -156,24 +165,30 @@ struct ClaudeSwapAddAccountFlow {
         return .done
     }
 
-    static func message(for outcome: Outcome, total: Int = 3) -> String {
+    static let nothingAddedWarning =
+        "done, but nothing new was added: you signed in to an account claude-swap had already saved. " +
+        "Run Add account again and sign in to a different account."
+
+    /// `slotsBefore`/`slotsAfter`: claude-swap's account count before step 1 and after step 3, when both could be
+    /// read. A successful run that didn't add a slot says so instead of a plain "done".
+    static func message(for outcome: Outcome, total: Int = 3, slotsBefore: Int? = nil, slotsAfter: Int? = nil)
+        -> String
+    {
         switch outcome {
         case .done:
-            "done"
+            if let slotsBefore, let slotsAfter, slotsAfter <= slotsBefore {
+                return self.nothingAddedWarning
+            }
+            return "done"
         case let .failed(index, step, reason):
-            "Step \(index) of \(total) failed: `\(step.commandLine)` (\(step.title.lowercased())): \(reason)."
+            return "Step \(index) of \(total) failed: `\(step.commandLine)` (\(step.title.lowercased())): \(reason)."
         }
     }
 
-    /// The child shares this process's stdin, stdout and stderr, so the steps' prompts and the browser link reach
-    /// the terminal. No shell is involved.
-    static func runInheritingTerminal(_ executable: String, _ arguments: [String]) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationStatus
+    /// The child shares this process's terminal and stays in its foreground process group (`CLIForegroundProcess`),
+    /// so `claude auth login` can read the terminal and switch it to raw mode. No shell is involved.
+    static func runInForeground(_ executable: String, _ arguments: [String]) throws -> Int32 {
+        try CLIForegroundProcess.run(executable, arguments)
     }
 }
 
@@ -199,7 +214,7 @@ extension CodexBarCLI {
     static func runClaudeAddAccount(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
-        configStore: CodexBarConfigStore = CodexBarConfigStore()) -> Never
+        configStore: CodexBarConfigStore = CodexBarConfigStore()) async -> Never
     {
         let configured = (try? configStore.load())?.providerConfig(for: ClaudeSwapServeSource.provider.instanceID)?
             .claudeSwapExecutablePath
@@ -217,9 +232,21 @@ extension CodexBarCLI {
             self.platformExit(ExitCode.binaryNotFound.rawValue)
         }
         let flow = ClaudeSwapAddAccountFlow(cswapPath: cswap, claudePath: claude)
+        let slotsBefore = await self.claudeSwapSlotCount(cswap)
         let outcome = flow.run(announce: { line in self.writeUnbuffered("\n\(line)\n") })
-        self.writeUnbuffered("\n" + ClaudeSwapAddAccountFlow.message(for: outcome, total: flow.steps.count) + "\n")
+        let slotsAfter = outcome == .done ? await self.claudeSwapSlotCount(cswap) : nil
+        self.writeUnbuffered("\n" + ClaudeSwapAddAccountFlow.message(
+            for: outcome,
+            total: flow.steps.count,
+            slotsBefore: slotsBefore,
+            slotsAfter: slotsAfter) + "\n")
         self.platformExit(outcome == .done ? 0 : ExitCode.failure.rawValue)
+    }
+
+    /// How many accounts claude-swap lists, through the adapter's own exact `cswap --list --json` read; nil when
+    /// the read fails (the flow then just says "done").
+    private static func claudeSwapSlotCount(_ cswap: String) async -> Int? {
+        try? await ClaudeSwapAccountReader.readAccountList(executablePath: cswap, timeout: 15).accounts.count
     }
 
     /// Straight to the terminal, so the step lines never land after the children's own output.
