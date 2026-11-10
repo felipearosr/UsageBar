@@ -478,6 +478,8 @@ const DISPLAY = {
     resetWhenExhausted: false,
     chipMode: 'ring',
     showExtras: true,
+    // Provider Account labels become "Account 1", "Account 2" (accountlabels.js).
+    hidePersonalInfo: false,
     antigravityOverviewGemini: true,
     hiddenChips: new Set(),
     hiddenWindows: new Set(),
@@ -1728,6 +1730,7 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
             DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
             DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
+            DISPLAY.hidePersonalInfo = this._settings.get_boolean('hide-personal-info');
             DISPLAY.antigravityOverviewGemini = this._settings.get_boolean('antigravity-overview-gemini');
             DISPLAY.hiddenChips = new Set(this._settings.get_strv('hidden-chips'));
             DISPLAY.hiddenWindows = new Set(this._settings.get_strv('hidden-windows'));
@@ -1749,7 +1752,7 @@ export default class UsageBarExtension extends Extension {
             'show-reset-when-exhausted', 'chip-display-mode',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
-            'machine-colors',
+            'machine-colors', 'hide-personal-info',
             'status-scopes', 'status-checks-enabled', 'logo-prompt-dismissed',
         ]);
         this._settingsChangedId = this._settings.connect('changed', (_s, key) => {
@@ -1789,6 +1792,9 @@ export default class UsageBarExtension extends Extension {
             }
             if (key === 'app-theme')
                 this._indicator?.setAppTheme(DISPLAY.appTheme);
+            // Labels live in the cards: rebuild them from the last rows.
+            if (key === 'hide-personal-info' && this._usageRows)
+                this._buildAccountCards();
             // Settings, or this extension's own download, installed or
             // removed the logo pack.
             if (key === 'logo-pack-version')
@@ -2563,11 +2569,7 @@ export default class UsageBarExtension extends Extension {
             } else {
                 this._usageAccountRows = accountRows;
                 this._usageRows = mergeStale(this._usageRows ?? [], Array.isArray(rows) ? rows : []);
-                const cards = buildCards(this._usageRows, {accountRows});
-                this._accountCards = new Map(cards.filter(card => card.multi)
-                    .map(card => [card.provider, card]));
-                this._rows = applyClaudeAccountPlan(
-                    enrichAntigravityModels(primaryRows(cards)), this._claudeAccountPlan);
+                this._buildAccountCards();
                 this._loadClaudeAccountPlan();
                 this._lastFetchAt = Date.now();
                 this._trackIssueSince(this._rows);
@@ -2584,6 +2586,20 @@ export default class UsageBarExtension extends Extension {
             }
             this._requestRender();
         });
+    }
+
+    // Cards and the popover's rows from the merged /usage rows. With Hide
+    // Personal Info on, every row they hold is a scrubbed copy (accounts.js);
+    // _usageRows keeps the raw rows so turning it off restores the labels.
+    _buildAccountCards() {
+        const cards = buildCards(this._usageRows ?? [], {
+            accountRows: !!this._usageAccountRows,
+            hidePersonalInfo: DISPLAY.hidePersonalInfo,
+        });
+        this._accountCards = new Map(cards.filter(card => card.multi)
+            .map(card => [card.provider, card]));
+        this._rows = applyClaudeAccountPlan(
+            enrichAntigravityModels(primaryRows(cards)), this._claudeAccountPlan);
     }
 
     // Claude Code caches Anthropic's current plan label in its account
@@ -3837,7 +3853,46 @@ export default class UsageBarExtension extends Extension {
                         finish(assertions, error);
                         return;
                     }
-                    capture('accounts-provider-openrouter.png', () => finish(assertions));
+                    capture('accounts-provider-openrouter.png', () => privateLabels());
+                });
+            };
+            // Hide Personal Info: the blocks read Account 1, Account 2 by
+            // account id (Work's sorts first), and no raw label is left.
+            const privateLabels = () => {
+                try {
+                    this._settings.set_boolean('hide-personal-info', true);
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => {
+                    try {
+                        const box = this._indicator._detailBox;
+                        const texts = descendants(box).filter(actor => actor instanceof St.Label)
+                            .map(actor => actor.text);
+                        const labels = descendants(box)
+                            .filter(actor => actor.style_class === 'usagebar-account-head')
+                            .map(head => descendants(head).filter(actor => actor instanceof St.Label)
+                                .map(actor => actor.text));
+                        assertions.push(assertion('Hide Personal Info shows ordinal labels in order',
+                            labels[0]?.includes('Account 1') && labels[0]?.includes('active') &&
+                            labels[1]?.includes('Account 2'), {labels}));
+                        assertions.push(assertion('no raw account label is rendered',
+                            !texts.some(text => /\b(Work|Personal)\b/.test(text)), {texts}));
+                        const headLabel = descendants(box)
+                            .find(actor => actor.style_class?.includes('usagebar-account-headlabel'));
+                        assertions.push(assertion('the head names the active account by ordinal',
+                            headLabel?.text === 'Account 1', {actual: headLabel?.text ?? null}));
+                    } catch (error) {
+                        this._settings.reset('hide-personal-info');
+                        finish(assertions, error);
+                        return;
+                    }
+                    capture('accounts-private-openrouter.png', () => {
+                        this._settings.reset('hide-personal-info');
+                        finish(assertions);
+                    });
                 });
             };
             ready();

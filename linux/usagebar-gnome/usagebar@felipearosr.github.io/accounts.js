@@ -9,6 +9,7 @@
 // `accountId` (every provider with one account, and every row from an older
 // CLI) are cards on their own, exactly as before.
 
+import {accountLabels, scrubRow} from './accountlabels.js';
 import {isStaleSource, windowsOf} from './payload.js';
 
 export const ACCOUNT_ROWS_CAPABILITY = 'providerAccountRows';
@@ -63,7 +64,9 @@ function accountOf(row, now, {single = false} = {}) {
     return {
         id: hasAccountId(row) ? row.accountId : null,
         source: typeof row.accountSource === 'string' ? row.accountSource : null,
-        label: [row.accountLabel, row.account].find(v => typeof v === 'string' && v.trim())?.trim() ?? null,
+        // Set per card by labelAccounts (accountlabels.js).
+        label: null,
+        ordinal: null,
         // A provider's only row is the account its tools use.
         active: single || row.active === true,
         updatedAt,
@@ -75,8 +78,30 @@ function accountOf(row, now, {single = false} = {}) {
     };
 }
 
-function singleCard(row, now) {
-    return {provider: row.provider, row, multi: false, accounts: [accountOf(row, now, {single: true})]};
+// Labels for one card's accounts (private with Hide Personal Info, told
+// apart when two share an email). With Hide Personal Info each account's row
+// becomes a scrubbed copy, so nothing that renders a row (card head, account
+// blocks, panel chips, issues, notifications) sees the raw label or an email
+// in an error, and the accounts read Account 1, Account 2 in that order.
+function labelAccounts(card, hidePersonalInfo) {
+    const labels = accountLabels(card.accounts.map(account => account.row), {hidePersonalInfo});
+    card.accounts.forEach((account, index) => {
+        account.label = labels[index].label;
+        account.ordinal = labels[index].ordinal;
+        if (hidePersonalInfo) {
+            account.row = scrubRow(account.row, account.label);
+            account.error = errorText(account.row);
+        }
+    });
+    if (hidePersonalInfo)
+        card.accounts.sort((a, b) => a.ordinal - b.ordinal);
+}
+
+function singleCard(row, now, hidePersonalInfo) {
+    const card = {provider: row.provider, row, multi: false, accounts: [accountOf(row, now, {single: true})]};
+    labelAccounts(card, hidePersonalInfo);
+    card.row = card.accounts[0].row;
+    return card;
 }
 
 // The account the rest of the popover (panel chip, compact row, issues,
@@ -87,23 +112,23 @@ function primaryAccount(accounts) {
         accounts.find(account => !account.error) ?? accounts[0];
 }
 
-// rows → [{provider, row, multi, accounts: [{id, source, label, active,
-// updatedAt, ageSecs, freshness, error, stale, row}]}], in row order. Without
+// rows → [{provider, row, multi, accounts: [{id, source, label, ordinal,
+// active, updatedAt, ageSecs, freshness, error, stale, row}]}], in row order. Without
 // the capability every row is its own card, as before; with it, a provider
 // with any row that carries an accountId gets one card holding all its rows.
 // Serve tags all or nothing per provider; an untagged row of such a provider
 // (an older or odd serve) still joins that card, as an account without an id,
-// so nothing renders twice.
-export function buildCards(rows, {accountRows = false, now = Date.now()} = {}) {
+// so nothing renders twice. hidePersonalInfo: see labelAccounts.
+export function buildCards(rows, {accountRows = false, now = Date.now(), hidePersonalInfo = false} = {}) {
     const list = Array.isArray(rows) ? rows.filter(row => row && typeof row === 'object') : [];
     if (!accountRows)
-        return list.map(row => singleCard(row, now));
+        return list.map(row => singleCard(row, now, hidePersonalInfo));
     const tagged = new Set(list.filter(hasAccountId).map(row => row.provider));
     const cards = [];
     const grouped = new Map();
     for (const row of list) {
         if (!tagged.has(row.provider)) {
-            cards.push(singleCard(row, now));
+            cards.push(singleCard(row, now, hidePersonalInfo));
             continue;
         }
         let card = grouped.get(row.provider);
@@ -118,6 +143,7 @@ export function buildCards(rows, {accountRows = false, now = Date.now()} = {}) {
         card.multi = card.accounts.length > 1;
         if (!card.multi)
             card.accounts[0].active = true;
+        labelAccounts(card, hidePersonalInfo);
         card.row = primaryAccount(card.accounts).row;
     }
     return cards;

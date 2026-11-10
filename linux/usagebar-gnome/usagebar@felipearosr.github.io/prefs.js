@@ -631,6 +631,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             '"Resets 18:30" instead of "Resets in 3h"'));
         popover.add(switchRow(settings, 'show-credits-extras', 'Credits and extra limits',
             'Limit-reset credits and per-model or feature bars'));
+        popover.add(switchRow(settings, 'hide-personal-info', 'Hide personal information',
+            'Accounts show as "Account 1", "Account 2", and emails are hidden'));
         general.add(popover);
 
         const thresholds = new Adw.PreferencesGroup({
