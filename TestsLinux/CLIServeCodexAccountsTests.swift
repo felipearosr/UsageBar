@@ -430,6 +430,8 @@ struct CLIServeCodexAccountsTests {
                     usedPercent: failing.contains(account.email) ? nil : 40))
             case .tokenIndex:
                 Issue.record("Codex was fetched by token-account index")
+            case .claudeSwapSlot:
+                Issue.record("Codex was fetched as a claude-swap slot")
             }
             return output
         }

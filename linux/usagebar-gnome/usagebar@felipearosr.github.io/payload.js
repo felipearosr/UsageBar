@@ -27,9 +27,10 @@ export function isStatusLineSource(row) {
     return row?.source === 'statusline' || row?.source === 'statusline-stale';
 }
 
-// Rows serve answered from an old Claude statusLine capture while OAuth was rate limited.
+// Rows serve answered from an old Claude statusLine capture while OAuth was rate limited, or from claude-swap's
+// last good list (or a slot's last-known usage) while its live numbers were unavailable.
 export function isStaleSource(row) {
-    return row?.source === 'statusline-stale';
+    return row?.source === 'statusline-stale' || row?.source === 'claude-swap-stale';
 }
 
 export function extraWindowsOf(row) {
@@ -56,4 +57,49 @@ export function windowLabel(minutes, slot) {
     if (minutes >= 60)
         return `${Math.ceil(minutes / 60)}h`;
     return `${minutes}m`;
+}
+
+// The row's most-used window (standard slots and extras alike), or null:
+// the window its panel chip shows. windowsOf already drops unknown
+// percents; extras need the same filter.
+export function worstWindow(row) {
+    const wins = [
+        ...windowsOf(row).map(({w}) => w),
+        ...extraWindowsOf(row).map(x => x.window)
+            .filter(w => w.usedPercent !== null && w.usedPercent !== undefined),
+    ];
+    return wins.reduce((a, b) => !a || b.usedPercent > a.usedPercent ? b : a, null);
+}
+
+export function worstPercent(row) {
+    return worstWindow(row)?.usedPercent ?? null;
+}
+
+// A row of one Provider Account (serve's /usage?accounts=all).
+export function hasAccountId(row) {
+    return typeof row?.accountId === 'string' && row.accountId !== '';
+}
+
+// A copy of one provider's rows in a stable order: rows with an accountId by
+// that id, then the rest in row order. Serve keeps account ids across
+// refreshes, so neither response order nor Hide Personal Info's ordinal
+// sort changes it.
+export function byAccountId(rows) {
+    return rows.map((row, index) => ({row, index})).sort((a, b) => {
+        const x = hasAccountId(a.row) ? a.row.accountId : null;
+        const y = hasAccountId(b.row) ? b.row.accountId : null;
+        if (x !== null && y !== null && x !== y)
+            return x < y ? -1 : 1;
+        if ((x === null) !== (y === null))
+            return x === null ? 1 : -1;
+        return a.index - b.index;
+    }).map(entry => entry.row);
+}
+
+// The row of one provider's Provider Accounts that the popover, panel chip
+// and notifications treat as the provider's own: the active account, else
+// the first with Quota (no error), else the first, in byAccountId order.
+export function primaryRow(rows) {
+    const ordered = byAccountId(rows);
+    return ordered.find(row => row.active === true) ?? ordered.find(row => !row.error) ?? ordered[0];
 }
