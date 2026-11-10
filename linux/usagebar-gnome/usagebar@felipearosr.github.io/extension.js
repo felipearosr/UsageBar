@@ -115,10 +115,14 @@ import {findCodexbar, withClaudeOAuth} from './cli.js';
 import {featureState, readReport, syncProbeFromHttpStatus} from './clicompat.js';
 import {
     ACTION_TOKEN_HEADER,
+    CLI_LOGIN_WATCH_SECS,
     REPLACES_CURRENT_NOTE,
     actionErrorText,
     addAction,
     addKeyRequest,
+    cliLoginArgv,
+    cliLoginFallbackText,
+    cliLoginStorePath,
     keyFormError,
     readKinds,
     removeRequest,
@@ -1859,6 +1863,9 @@ export default class UsageBarExtension extends Extension {
         // that has a CLI. Ignored outside a smoke run.
         this._smokeNoCli = Boolean(uiSmokeResult) &&
             GLib.getenv('USAGEBAR_UI_SMOKE_NO_CLI') === '1';
+        // Test-only: a stand-in for xdg-terminal-exec, so the UI smoke runs
+        // the add helper without opening a real terminal. Smoke runs only.
+        this._smokeTerminal = uiSmokeResult ? GLib.getenv('USAGEBAR_UI_SMOKE_TERMINAL') : null;
 
         const binary = this._findBinary();
         if (binary)
@@ -2065,6 +2072,7 @@ export default class UsageBarExtension extends Extension {
         }
         this._configMonitor?.cancel();
         this._configMonitor = null;
+        this._stopCliLoginWatch();
         this._cancellable?.cancel();
         this._cancellable = null;
         this._session?.abort();
@@ -4098,10 +4106,72 @@ export default class UsageBarExtension extends Extension {
                         finish(assertions, error);
                         return;
                     }
-                    capture('accounts-provider-codex.png', () => finish(assertions));
+                    capture('accounts-provider-codex.png', () => {
+                        if (GLib.getenv('USAGEBAR_UI_SMOKE_CODEX_ADD') === '1')
+                            codexAddSmoke(assertions);
+                        else
+                            finish(assertions);
+                    });
                 });
             };
             ready();
+        };
+
+        // USAGEBAR_UI_SMOKE_CODEX_ADD=1 (after the Codex accounts smoke), with
+        // the stub serve started with an action token, STUB_CODEX_BIN naming a
+        // fake codex and USAGEBAR_UI_SMOKE_TERMINAL a stand-in terminal: Add
+        // account… on the Codex card runs `codexbar codex-accounts add`
+        // (cli-login), and the card refreshes with the new managed account
+        // once the helper exits.
+        const codexAddSmoke = assertions => {
+            const codexLabels = () => this._accountCards?.get('codex')?.accounts.map(a => a.label) ?? [];
+            const before = codexLabels().length;
+            const added = () => {
+                assertions.push(assertion('the card refreshes with the added Codex account',
+                    codexLabels().length === before + 1 && codexLabels().includes('added@example.com'),
+                    {labels: codexLabels()}));
+                try {
+                    this._indicator.menu.open();
+                    this._selectedProvider = 'codex';
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, () => capture('accounts-codex-added.png', () => finish(assertions)));
+            };
+            const clickAdd = () => {
+                try {
+                    const action = this._addAccountAction('codex');
+                    assertions.push(assertion('Add account… on the Codex card is cli-login',
+                        action?.kind === 'cli-login', {actual: action?.kind ?? null}));
+                    const addButtons = descendants(this._indicator._detailBox)
+                        .filter(actor => actor.style_class?.includes('usagebar-account-add'));
+                    assertions.push(assertion('the Codex card shows Add account…', addButtons.length === 1,
+                        {actual: addButtons.length}));
+                    if (!addButtons.length) {
+                        finish(assertions);
+                        return;
+                    }
+                    addButtons[0].emit('clicked', 1);
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                waitFor(() => codexLabels().includes('added@example.com'), added);
+            };
+            // The kinds arrive after the capability report.
+            waitFor(() => this._addAccountAction('codex'), () => {
+                try {
+                    this._indicator.menu.open();
+                    this._selectedProvider = 'codex';
+                    this._render();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                later(600, clickAdd);
+            });
         };
 
         // Run with USAGEBAR_UI_SMOKE_ICON_SOURCE=1 against the stub CLI with
@@ -7424,9 +7494,95 @@ export default class UsageBarExtension extends Extension {
         case 'key':
             this._showAddKeyDialog(action);
             break;
+        case 'cli-login':
+            this._runCliLoginHelper(action);
+            break;
         default:
             console.warn(`usagebar: no handler for account kind ${action.kind}`);
         }
+    }
+
+    // cli-login (#169): opens `codexbar codex-accounts add` (accountactions.js
+    // CLI_LOGIN_HELPERS) through the same terminal launcher as Sign in, with a
+    // fixed argv. Refreshes when the terminal's child process exits, and when
+    // the helper writes its account store: launchers that hand off to a
+    // terminal server exit before the helper does.
+    _runCliLoginHelper(action) {
+        const name = PROVIDER_META[action.provider]?.name ?? action.provider;
+        const argv = cliLoginArgv(action.provider, this._binary);
+        if (!argv) {
+            this._notify('UsageBar', cliLoginFallbackText(null, name));
+            return;
+        }
+        const smokeTerminal = this._smokeTerminal;
+        const command = terminalArgv(argv, p => smokeTerminal
+            ? (p === 'xdg-terminal-exec' ? smokeTerminal : null)
+            : GLib.find_program_in_path(p));
+        if (!command) {
+            console.warn(`usagebar: no terminal found to run ${argv.join(' ')}`);
+            this._notify('UsageBar', cliLoginFallbackText(argv, name, {noTerminal: true}));
+            return;
+        }
+        this._indicator?.menu.close();
+        try {
+            const proc = Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
+            this._watchCliLoginStore(action.provider);
+            const generation = this._generation;
+            proc.wait_async(null, () => {
+                if (generation === this._generation && this._indicator)
+                    this._refreshAfterAccountChange();
+            });
+        } catch (e) {
+            console.warn(`usagebar: add-account terminal failed: ${e.message}`);
+            this._notify('UsageBar', cliLoginFallbackText(argv, name));
+        }
+    }
+
+    // Watches the cli-login helper's store for CLI_LOGIN_WATCH_SECS and
+    // refreshes (debounced) when it changes. One watch at a time.
+    _watchCliLoginStore(provider) {
+        this._stopCliLoginWatch();
+        const path = cliLoginStorePath(provider, GLib.get_user_data_dir());
+        if (!path)
+            return;
+        const generation = this._generation;
+        try {
+            this._cliLoginMonitor = Gio.File.new_for_path(path)
+                .monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, null);
+        } catch (e) {
+            console.warn(`usagebar: can't watch the account store: ${e.message}`);
+            return;
+        }
+        this._cliLoginMonitor.connect('changed', () => {
+            if (generation !== this._generation || !this._indicator)
+                return;
+            if (this._cliLoginDebounceId)
+                GLib.source_remove(this._cliLoginDebounceId);
+            this._cliLoginDebounceId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+                this._cliLoginDebounceId = 0;
+                if (generation === this._generation && this._indicator)
+                    this._refreshAfterAccountChange();
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+        this._cliLoginWatchId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, CLI_LOGIN_WATCH_SECS, () => {
+            this._cliLoginWatchId = 0;
+            this._stopCliLoginWatch();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _stopCliLoginWatch() {
+        if (this._cliLoginWatchId) {
+            GLib.source_remove(this._cliLoginWatchId);
+            this._cliLoginWatchId = 0;
+        }
+        if (this._cliLoginDebounceId) {
+            GLib.source_remove(this._cliLoginDebounceId);
+            this._cliLoginDebounceId = 0;
+        }
+        this._cliLoginMonitor?.cancel();
+        this._cliLoginMonitor = null;
     }
 
     // A refresh after an account changed. A fetch already out may have read

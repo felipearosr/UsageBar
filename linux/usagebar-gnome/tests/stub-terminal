@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stand-in for xdg-terminal-exec in the UI smoke (USAGEBAR_UI_SMOKE_TERMINAL):
+# runs the command it is given in the foreground, with no window and no
+# input, and exits with it, the way a terminal that doesn't hand off does.
+exec "$@" </dev/null

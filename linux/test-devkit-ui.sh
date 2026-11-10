@@ -11,7 +11,10 @@
 # USAGEBAR_UI_SMOKE_ICON_SOURCE=1 with STUB_CODEXBAR_ACCOUNTS=3 checks the
 # panel icon source and per-account notifications.
 # USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 with STUB_CODEXBAR_CODEX_ACCOUNTS=1 checks
-# the Codex card with the everyday login and two managed accounts.
+# the Codex card with the everyday login and two managed accounts; with
+# USAGEBAR_UI_SMOKE_CODEX_ADD=1, STUB_CODEX_BIN=tests/stub-codex and
+# USAGEBAR_UI_SMOKE_TERMINAL=tests/stub-terminal it then adds one through
+# Add account… (cli-login) and checks the card refreshes.
 # USAGEBAR_UI_SMOKE_LOGOS=1, with USAGEBAR_LOGO_PACK_BASE_URL and
 # USAGEBAR_LOGO_PACK_VERSION, clicks through the offer to download provider
 # logos; the script's own last run serves a pack built from this checkout.
@@ -140,6 +143,8 @@ if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
     printf '\nRe-running the UI smoke against a CLI with managed Codex accounts\n'
     CODEXBAR_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codexbar" \
         STUB_CODEXBAR_CODEX_ACCOUNTS=1 USAGEBAR_UI_SMOKE_CODEX_ACCOUNTS=1 \
+        USAGEBAR_UI_SMOKE_CODEX_ADD=1 STUB_CODEX_BIN="$repo_dir/linux/usagebar-gnome/tests/stub-codex" \
+        USAGEBAR_UI_SMOKE_TERMINAL="$repo_dir/linux/usagebar-gnome/tests/stub-terminal" \
         USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 \
         "$0" "$artifact_dir/codex-accounts"
 fi

@@ -3,13 +3,15 @@
 // Dependency-free so the Node tests can exercise it without GJS.
 //
 // Serve advertises each action on /health (providerAccountKinds,
-// providerAccountAddKey, providerAccountRename, providerAccountRemove).
+// providerAccountAddKey, providerAccountAddCliLogin, providerAccountRename,
+// providerAccountRemove).
 // GET /accounts/kinds says, per provider, the kind of account it can add,
 // whether its account rows can be renamed and removed, and whether the first
 // add replaces a credential UsageBar can't keep. The extension dispatches
 // "Add account…" on the kind:
 //   key          an in-popover dialog asking for a label and the key (#164)
-//   cli-login    the provider's own login in a terminal (#169)
+//   cli-login    the provider's own login in a terminal (#169): `codexbar
+//                codex-accounts add` for Codex (CLI_LOGIN_HELPERS)
 //   claude-swap  claude-swap's add flow in a terminal (#172)
 // A kind only counts when serve also advertises the action that adds it, so
 // a newer serve's kind never reaches an extension without its handler.
@@ -22,7 +24,21 @@ export const REMOVE_CAPABILITY = 'providerAccountRemove';
 // a handler in the extension's _addAccount.
 export const ADD_CAPABILITIES = {
     key: 'providerAccountAddKey',
+    'cli-login': 'providerAccountAddCliLogin',
 };
+
+// cli-login (#169): per provider, the `codexbar` arguments of the helper that
+// signs in to a new account in a terminal, and where (under the user data
+// dir, XDG_DATA_HOME) the helper records it. A provider without an entry
+// gets no Add account… even when serve reports cli-login for it.
+export const CLI_LOGIN_HELPERS = {
+    codex: {args: ['codex-accounts', 'add'], store: ['CodexBar', 'managed-codex-accounts.json']},
+};
+
+// How long after opening the helper a change to its store still refreshes
+// the card. Terminal launchers that hand off to a terminal server exit at
+// once, so the store is what says the helper finished.
+export const CLI_LOGIN_WATCH_SECS = 15 * 60;
 
 export const LABEL_LIMIT = 100;
 
@@ -73,6 +89,8 @@ export function addAction(provider, {kinds = null, capabilities = null} = {}) {
         return null;
     const entry = kinds?.get?.(provider);
     if (!entry?.kind || !has(capabilities, ADD_CAPABILITIES[entry.kind]))
+        return null;
+    if (entry.kind === 'cli-login' && !Object.hasOwn(CLI_LOGIN_HELPERS, provider))
         return null;
     return {provider, kind: entry.kind, placeholder: entry.placeholder, replacesCurrent: entry.replacesCurrent};
 }
@@ -143,4 +161,30 @@ export function actionErrorText(error, token = '') {
     if (secret && text.includes(secret))
         text = text.split(secret).join('…');
     return text;
+}
+
+// The cli-login helper's argv (fixed, no shell) for `provider`, run with the
+// extension's own codexbar `bin`; null without a bin or a helper.
+export function cliLoginArgv(provider, bin) {
+    if (typeof bin !== 'string' || !bin.startsWith('/') || !Object.hasOwn(CLI_LOGIN_HELPERS, provider))
+        return null;
+    return [bin, ...CLI_LOGIN_HELPERS[provider].args];
+}
+
+// The file the cli-login helper writes when it adds an account, under the
+// user data dir; null when there is none to watch.
+export function cliLoginStorePath(provider, dataDir) {
+    if (typeof dataDir !== 'string' || !dataDir.startsWith('/') || !Object.hasOwn(CLI_LOGIN_HELPERS, provider))
+        return null;
+    return [dataDir.replace(/\/+$/, ''), ...CLI_LOGIN_HELPERS[provider].store].join('/');
+}
+
+// What the notification says when the helper can't open in a terminal.
+export function cliLoginFallbackText(argv, name, {noTerminal = false} = {}) {
+    const command = (argv ?? []).join(' ');
+    if (!command)
+        return `UsageBar’s codexbar CLI wasn’t found, so a ${name} account can’t be added here.`;
+    return noTerminal
+        ? `No terminal found. Run \`${command}\` in a terminal to add a ${name} account.`
+        : `Could not open a terminal. Run \`${command}\` to add a ${name} account.`;
 }
