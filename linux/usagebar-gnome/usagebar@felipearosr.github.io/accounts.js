@@ -9,8 +9,8 @@
 // `accountId` (every provider with one account, and every row from an older
 // CLI) are cards on their own, exactly as before.
 
-import {accountLabels, scrubRow} from './accountlabels.js';
-import {isStaleSource, windowsOf} from './payload.js';
+import {accountLabels, ordinalLabel, scrubRow} from './accountlabels.js';
+import {isStaleSource, windowsOf, worstPercent} from './payload.js';
 
 export const ACCOUNT_ROWS_CAPABILITY = 'providerAccountRows';
 
@@ -152,6 +152,69 @@ export function buildCards(rows, {accountRows = false, now = Date.now(), hidePer
 // One row per card, for everything outside the card's account list.
 export function primaryRows(cards) {
     return cards.map(card => card.row);
+}
+
+// The `panel-icon-source` preference: what a multi-account card's panel
+// chip reflects.
+export const ICON_SOURCES = ['active', 'most-headroom'];
+
+// The account a card's panel chip reflects. 'active' (the default, and any
+// unknown value): the card's primary account, the one the popover shows.
+// 'most-headroom': the account whose chip percent is lowest. The chip
+// percent is the row's most-used window, standard and extra windows alike
+// (payload.js worstWindow, what the chip has always shown), so the account
+// with most headroom is the one whose tightest window is least used. Rows
+// with an error (stale carried Quota included) or without any known percent
+// never win; a tie keeps the primary, then the first in card order. With no
+// eligible account, or a card with one account, it is the primary.
+export function panelAccount(card, source = 'active') {
+    const primary = card.accounts.find(account => account.row === card.row) ?? card.accounts[0];
+    if (source !== 'most-headroom' || !card.multi)
+        return primary;
+    let best = null;
+    let bestPercent = Infinity;
+    for (const account of [primary, ...card.accounts.filter(a => a !== primary)]) {
+        if (account.error || account.row?.error)
+            continue;
+        const percent = worstPercent(account.row);
+        if (percent === null || !Number.isFinite(percent))
+            continue;
+        if (percent < bestPercent) {
+            best = account;
+            bestPercent = percent;
+        }
+    }
+    return best ?? primary;
+}
+
+// The row each panel chip renders. rows are the popover's rows (primaryRows,
+// possibly enriched); cards maps provider → its multi-account card. A row
+// whose card picks its primary account stays the very same row, so with one
+// account, or the 'active' source, the panel is exactly as before.
+export function panelRows(rows, cards, source = 'active') {
+    return rows.map(row => {
+        const card = cards?.get(row.provider);
+        if (!card?.multi)
+            return row;
+        const account = panelAccount(card, source);
+        return account.row === card.row ? row : account.row;
+    });
+}
+
+// The rows quota notifications are planned over: every Provider Account of
+// a multi-account card (each carrying its display label as accountLabel,
+// which is the ordinal label with Hide Personal Info), every other card's
+// row as it is. The primary account keeps the popover's own row.
+export function notificationRows(rows, cards) {
+    return rows.flatMap(row => {
+        const card = cards?.get(row.provider);
+        if (!card?.multi)
+            return [row];
+        return card.accounts.map(account => ({
+            ...(account.row === card.row ? row : account.row),
+            accountLabel: account.label ?? ordinalLabel(account.ordinal),
+        }));
+    });
 }
 
 // Serve replaces a failing provider's row with a bare error row; carry the

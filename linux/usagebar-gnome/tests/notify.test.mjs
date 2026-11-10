@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planNotifications} from '../usagebar@felipearosr.github.io/notify.js';
+import {notificationTitle, planNotifications} from '../usagebar@felipearosr.github.io/notify.js';
 
 const NOW = Date.parse('2026-10-12T12:00:00Z');
 const RESET = '2026-10-12T15:00:00Z';
@@ -142,4 +142,91 @@ test('planning does not mutate its input memo or announce below all thresholds',
     assert.equal(result.notifications.length, 0);
     assert.equal(result.memo.size, 0);
     assert.notEqual(result.memo, memo);
+});
+
+// Provider Accounts: two accounts of the fixture provider, Work active.
+const WORK = 'token:0d9e8f7a-6b5c';
+const HOME = 'token:6f0c2a9e-1b4d';
+function account(id, percent, overrides = {}) {
+    return {...row(percent), accountId: id, accountLabel: id === WORK ? 'Work' : 'Home',
+        active: id === WORK, ...overrides};
+}
+const WORK_CYCLE = `fixture#${encodeURIComponent(WORK)}:Session (5h):${RESET}`;
+
+test('two accounts crossing a threshold give two notifications naming each account', () => {
+    const first = plan([account(WORK, 84), account(HOME, 90)]);
+    assert.deepEqual(first.notifications.map(n => [n.accountId, n.account, n.percent]),
+        [[WORK, 'Work', 84], [HOME, 'Home', 90]]);
+    assert.equal(first.memo.get(WORK_CYCLE), 80);
+    assert.deepEqual(plan([account(WORK, 85), account(HOME, 91)], first.memo).notifications, []);
+});
+
+test('one account crossing does not silence the other account', () => {
+    const first = plan([account(WORK, 84), account(HOME, 20)]);
+    assert.equal(first.notifications.length, 1);
+    const second = plan([account(WORK, 86), account(HOME, 82)], first.memo);
+    assert.deepEqual(second.notifications.map(n => n.accountId), [HOME]);
+    assert.deepEqual(plan([account(WORK, 86), account(HOME, 83)], second.memo).notifications, []);
+});
+
+test('changing the active account re-fires nothing', () => {
+    const first = plan([account(WORK, 84), account(HOME, 90)]);
+    const switched = plan([account(WORK, 84, {active: false}), account(HOME, 90, {active: true})], first.memo);
+    assert.deepEqual(switched.notifications, []);
+    assert.deepEqual(plan([account(WORK, 84), account(HOME, 90)], switched.memo).notifications, []);
+});
+
+test('provider-keyed memory moves to the account the popover showed, once', () => {
+    // The first /usage before the /health report: one untagged row (the active account).
+    const before = plan([row(84)]);
+    assert.equal(before.notifications.length, 1);
+    const after = plan([account(WORK, 84), account(HOME, 30)], before.memo);
+    assert.deepEqual(after.notifications, []);
+    assert.equal(after.memo.get(WORK_CYCLE), 80);
+    assert.equal(after.memo.has(CYCLE), false);
+    // Home becoming active later inherits nothing: its own first crossing announces.
+    const home = plan([account(WORK, 84, {active: false}), account(HOME, 84, {active: true})], after.memo);
+    assert.deepEqual(home.notifications.map(n => n.accountId), [HOME]);
+});
+
+test('provider-keyed memory waits while the active account is stale or the provider muted', () => {
+    const before = plan([row(84)]);
+    const stale = plan([account(WORK, 84, {stale: true}), account(HOME, 30)], before.memo);
+    assert.equal(stale.memo.get(CYCLE), 80);
+    assert.deepEqual(plan([account(WORK, 84), account(HOME, 30)], stale.memo).notifications, []);
+    const muted = plan([account(WORK, 84), account(HOME, 30)], before.memo, {muted: new Set(['fixture'])});
+    assert.equal(muted.memo.get(CYCLE), 80);
+    assert.deepEqual(plan([account(WORK, 84), account(HOME, 30)], muted.memo).notifications, []);
+});
+
+test('back to one untagged row, the accounts\' memory keeps it quiet', () => {
+    const accounts = plan([account(WORK, 84), account(HOME, 96)]);
+    const single = plan([row(90)], accounts.memo);
+    assert.deepEqual(single.notifications, []);
+    assert.equal(single.memo.get(CYCLE), 95);
+    // The accounts' own dated cycles are kept, should they come back.
+    assert.deepEqual(plan([account(WORK, 84), account(HOME, 96)], single.memo).notifications, []);
+});
+
+test('a stale account keeps its memory while the other account is planned', () => {
+    const first = plan([account(WORK, 84), account(HOME, 84)]);
+    const stale = plan([account(WORK, 84), account(HOME, 84, {stale: true})], first.memo);
+    assert.deepEqual(stale.notifications, []);
+    assert.deepEqual(plan([account(WORK, 84), account(HOME, 84)], stale.memo).notifications, []);
+});
+
+test('a single tagged account or an untagged row carries no account name', () => {
+    assert.equal(plan([account(WORK, 84)]).notifications[0].account, null);
+    const single = plan([row()]).notifications[0];
+    assert.equal(single.account, null);
+    assert.equal(single.accountId, null);
+});
+
+test('titles name the account only when the provider has several', () => {
+    const base = {kind: 'threshold', name: 'OpenRouter', label: 'Session (5h)', percent: 84, account: null};
+    assert.equal(notificationTitle(base), 'OpenRouter Session (5h) at 84%');
+    assert.equal(notificationTitle({...base, account: 'Account 2'}), 'OpenRouter (Account 2) Session (5h) at 84%');
+    assert.equal(notificationTitle({...base, kind: 'pace'}), 'OpenRouter Session (5h) won\'t last to reset');
+    assert.equal(notificationTitle({...base, kind: 'pace', account: 'Work'}),
+        'OpenRouter (Work) Session (5h) won\'t last to reset');
 });

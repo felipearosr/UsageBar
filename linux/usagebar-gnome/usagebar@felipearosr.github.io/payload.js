@@ -57,3 +57,19 @@ export function windowLabel(minutes, slot) {
         return `${Math.ceil(minutes / 60)}h`;
     return `${minutes}m`;
 }
+
+// The row's most-used window (standard slots and extras alike), or null:
+// the window its panel chip shows. windowsOf already drops unknown
+// percents; extras need the same filter.
+export function worstWindow(row) {
+    const wins = [
+        ...windowsOf(row).map(({w}) => w),
+        ...extraWindowsOf(row).map(x => x.window)
+            .filter(w => w.usedPercent !== null && w.usedPercent !== undefined),
+    ];
+    return wins.reduce((a, b) => !a || b.usedPercent > a.usedPercent ? b : a, null);
+}
+
+export function worstPercent(row) {
+    return worstWindow(row)?.usedPercent ?? null;
+}
