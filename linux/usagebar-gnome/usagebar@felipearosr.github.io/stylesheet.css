@@ -24,6 +24,29 @@
   margin-left: 1px;
 }
 
+/* Extra percentages on a chip (panelmetrics.js): the number, then a small
+   tag pill pulled under its bottom-right corner (translation, set in JS).
+   The pill's background is the user's color, set inline. */
+.usagebar-chip-extra {
+  margin-left: 3px;
+  spacing: 0;
+}
+
+/* Extras read smaller than the chip's own percent, keeping the chip compact. */
+.usagebar-chip-extra-value {
+  font-size: 9pt;
+}
+
+.usagebar-chip-tag {
+  font-family: "DejaVu Sans", Cantarell, sans-serif;
+  font-size: 5pt;
+  font-weight: bold;
+  color: #ffffff;
+  border-radius: 3px;
+  padding: 0 2px;
+  box-shadow: 0 0 0 1px #000000;
+}
+
 /* Builds without provider logos print the provider's name in their place,
    in its brand color (set inline). */
 .usagebar-provider-name {
@@ -225,6 +248,12 @@
   spacing: 3px;
 }
 
+/* One metrics line per Provider Account in the overview: the account's
+   dot (its panel tag color, set inline) leads the line. */
+.usagebar-compact-account-dot {
+  border-radius: 4px;
+}
+
 .usagebar-compact-metric-label {
   font-size: 8.5pt;
 }
@@ -269,16 +298,48 @@
 }
 
 /* One Provider Account on a multi-account card (accounts.js). */
+.usagebar-account-block {
+  margin-top: 8px;
+  padding: 8px 10px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background-color: rgba(255, 255, 255, 0.035);
+}
+
+.usagebar-account-block-active {
+  border-color: rgba(46, 194, 126, 0.45);
+  background-color: rgba(46, 194, 126, 0.06);
+}
+
 .usagebar-account-head {
-  margin-top: 10px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .usagebar-account-label {
-  font-size: 10pt;
+  font-size: 10.5pt;
   font-weight: bold;
-  color: #eeeeec;
+  color: #ffffff;
+}
+
+.usagebar-account-plan {
+  margin-left: 6px;
+}
+
+.usagebar-account-block .usagebar-window-label {
+  font-size: 9.5pt;
+  color: rgba(238, 238, 236, 0.85);
+}
+
+.usagebar-theme-system .usagebar-account-block {
+  border-color: -st-border-color;
+  background-color: rgba(128, 128, 128, 0.08);
+}
+
+.usagebar-theme-system .usagebar-account-block-active {
+  border-color: rgba(46, 194, 126, 0.55);
+  background-color: rgba(46, 194, 126, 0.08);
 }
 
 .usagebar-account-headlabel {

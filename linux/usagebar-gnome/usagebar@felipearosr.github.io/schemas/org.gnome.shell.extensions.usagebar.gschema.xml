@@ -93,6 +93,16 @@
       <summary>Usage bars discovered at render time</summary>
       <description>Catalog the extension publishes for the preferences window; each entry is a JSON object {"p":provider,"k":key,"l":label}.</description>
     </key>
+    <key name="panel-metrics" type="as">
+      <default>[]</default>
+      <summary>Extra percentages on panel chips</summary>
+      <description>Usage bars shown next to a provider's chip percent, in order. Each entry is a JSON object {"p":provider,"a":account id or "","k":bar key,"on":shown,"letter":tag text,"color":tag color id} (panelmetrics.js).</description>
+    </key>
+    <key name="known-panel-metrics" type="as">
+      <default>[]</default>
+      <summary>Usage bars per Provider Account</summary>
+      <description>Catalog the extension publishes for the preferences window; each entry is a JSON object {"p":provider,"a":account id,"n":account ordinal,"act":active,"k":key,"l":label}. Account labels and emails are never stored.</description>
+    </key>
     <key name="hidden-models" type="as">
       <default>[]</default>
       <summary>Models left out of charts and model lists</summary>

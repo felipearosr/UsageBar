@@ -42,6 +42,7 @@ import {
     usagePath,
 } from './accounts.js';
 import {ordinalLabel} from './accountlabels.js';
+import {chipExtras, colorHex, defaultColor, metricCards, metricCatalog, readMetrics} from './panelmetrics.js';
 import {
     extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf, worstPercent, worstWindow,
 } from './payload.js';
@@ -456,6 +457,61 @@ function severity(percent, grey) {
     return 'ok';
 }
 
+// ----- Extra percentages on a panel chip (panelmetrics.js) -----
+
+// What a chip's extras look like apart from their numbers: when it changes
+// the chip is rebuilt, otherwise only the numbers update.
+function extrasKeyOf(chip) {
+    return JSON.stringify((chip.extras ?? []).map(extra => [extra.key, extra.letter, extra.color]));
+}
+
+function extraValueClass(sev) {
+    // ok stays the panel's own text color, like the chip's main percent.
+    return sev === 'ok' ? 'usagebar-chip-label usagebar-chip-extra-value'
+        : `usagebar-chip-label usagebar-chip-extra-value usagebar-fg-${sev}`;
+}
+
+// One extra percent: its number, and a tag pill tucked under the number's
+// bottom-right corner.
+function newChipExtra(extra) {
+    const box = new St.BoxLayout({style_class: 'usagebar-chip-extra', y_align: Clutter.ActorAlign.CENTER});
+    const value = new St.Label({
+        text: extra.text,
+        style_class: extraValueClass(extra.sev),
+        y_align: Clutter.ActorAlign.CENTER,
+    });
+    // Panel labels measure before their theme font applies; a chip
+    // number must never collapse to "…".
+    value.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+    box.add_child(value);
+    let tag = null;
+    if (extra.letter) {
+        tag = new St.Label({
+            text: extra.letter,
+            style_class: 'usagebar-chip-tag',
+            style: `background-color: ${extra.color};`,
+            y_align: Clutter.ActorAlign.END,
+        });
+        // Overlap the % a little and sit below the baseline, without
+        // changing the chip's layout.
+        tag.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        tag.translation_x = -2;
+        tag.translation_y = 3;
+        box.add_child(tag);
+    }
+    return {box, value, tag};
+}
+
+function updateChipExtra(parts, extra) {
+    if (!parts)
+        return;
+    parts.value.text = extra.text;
+    parts.value.style_class = extraValueClass(extra.sev);
+}
+
+// Overview rows' mini bars.
+const COMPACT_TRACK_WIDTH = 24;
+
 // Locale table for the handful of strings this extension formats itself in the
 // usage foot (the % descriptor and the reset countdown). The pace verdict/ETA
 // lines already arrive localized from the backend, which follows the system
@@ -520,6 +576,8 @@ const DISPLAY = {
     resetWhenExhausted: false,
     chipMode: 'ring',
     panelIconSource: 'active',
+    // Extra percentages on panel chips (panelmetrics.js).
+    panelMetrics: [],
     showExtras: true,
     // Provider Account labels become "Account 1", "Account 2" (accountlabels.js).
     hidePersonalInfo: false,
@@ -1488,6 +1546,8 @@ class UsageBarIndicator extends PanelMenu.Button {
             name: null,
             ring: null,
             label: null,
+            extrasKey: extrasKeyOf(chip),
+            extras: [],
             state: {percent: chip.percent, sev: chip.sev},
         };
         if (chip.mode === 'dot') {
@@ -1574,6 +1634,11 @@ class UsageBarIndicator extends PanelMenu.Button {
             });
             entry.box.add_child(entry.label);
         }
+        for (const extra of chip.extras ?? []) {
+            const parts = newChipExtra(extra);
+            entry.extras.push(parts);
+            entry.box.add_child(parts.box);
+        }
         return entry;
     }
 
@@ -1609,7 +1674,8 @@ class UsageBarIndicator extends PanelMenu.Button {
         for (const chip of chips) {
             let entry = this._panelEntries.get(chip.provider);
             const hasText = !!chip.text;
-            if (entry && (entry.mode !== chip.mode || entry.hasText !== hasText)) {
+            if (entry && (entry.mode !== chip.mode || entry.hasText !== hasText ||
+                entry.extrasKey !== extrasKeyOf(chip))) {
                 entry.box.destroy();
                 this._panelEntries.delete(chip.provider);
                 entry = null;
@@ -1624,6 +1690,7 @@ class UsageBarIndicator extends PanelMenu.Button {
                     entry.dot.style_class = `usagebar-dot usagebar-bg-${chip.sev}`;
                 if (entry.label)
                     entry.label.text = chip.text;
+                (chip.extras ?? []).forEach((extra, index) => updateChipExtra(entry.extras[index], extra));
                 if (entry.name) {
                     entry.name.text = capName(chipName(chip));
                     entry.name.accessible_name = chipName(chip);
@@ -1773,6 +1840,7 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
             DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
             DISPLAY.panelIconSource = this._settings.get_string('panel-icon-source');
+            DISPLAY.panelMetrics = readMetrics(this._settings.get_strv('panel-metrics'));
             DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
             DISPLAY.hidePersonalInfo = this._settings.get_boolean('hide-personal-info');
             DISPLAY.antigravityOverviewGemini = this._settings.get_boolean('antigravity-overview-gemini');
@@ -1793,7 +1861,7 @@ export default class UsageBarExtension extends Extension {
         const DISPLAY_KEYS = new Set([
             'warn-threshold', 'crit-threshold', 'absolute-reset-times',
             'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
-            'show-reset-when-exhausted', 'chip-display-mode', 'panel-icon-source',
+            'show-reset-when-exhausted', 'chip-display-mode', 'panel-icon-source', 'panel-metrics',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
             'machine-colors', 'hide-personal-info',
@@ -4349,9 +4417,96 @@ export default class UsageBarExtension extends Extension {
                     else if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD') === '1')
                         claudeSwapAddSmoke(assertions);
                     else
-                        finish(assertions);
+                        panelMetricsSmoke(assertions);
                 });
             });
+        };
+
+        // After the Claude card: extra percentages on the Claude chip, one
+        // per pick in panel-metrics, each with its tag (panelmetrics.js).
+        // The smoke's own dconf profile holds the setting.
+        const panelMetricsSmoke = assertions => {
+            const hasStyle = (actor, name) => String(actor?.style_class ?? '').split(/\s+/).includes(name);
+            const fixture = this._panelFixture;
+            const done = (error = null) => {
+                this._panelFixture = fixture;
+                this._settings.set_strv('panel-metrics', []);
+                if (error)
+                    finish(assertions, error);
+                else
+                    finish(assertions);
+            };
+            try {
+                const catalog = this._settings.get_strv('known-panel-metrics');
+                assertions.push(assertion('the bar catalog lists both claude-swap slots, without emails',
+                    catalog.some(entry => entry.includes('"claude-swap:1"')) &&
+                    catalog.some(entry => entry.includes('"claude-swap:2"')) &&
+                    !catalog.some(entry => entry.includes('@')), {catalog}));
+                this._panelFixture = null;
+                this._settings.set_strv('panel-metrics', [
+                    {p: 'claude', a: 'claude-swap:2', k: 'w0', letter: 'S', color: 'navy'},
+                    {p: 'claude', a: 'claude-swap:1', k: 'w1', letter: 'W', color: 'plum'},
+                    {p: 'claude', a: 'claude-swap:1', k: 'w0', letter: '', color: 'teal'},
+                    {p: 'claude', a: 'claude-swap:9', k: 'w0', letter: 'X', color: 'teal'},
+                ].map(entry => JSON.stringify(entry)));
+                this._render();
+            } catch (error) {
+                done(error);
+                return;
+            }
+            later(400, () => {
+                try {
+                    const box = this._indicator._panelEntries.get('claude')?.box;
+                    const extras = descendants(box).filter(actor => hasStyle(actor, 'usagebar-chip-extra'));
+                    const values = extras.map(extra => descendants(extra)
+                        .find(actor => hasStyle(actor, 'usagebar-chip-extra-value'))?.text);
+                    const tags = descendants(box).filter(actor => hasStyle(actor, 'usagebar-chip-tag'))
+                        .map(actor => actor.text);
+                    assertions.push(assertion('the Claude chip shows one extra per resolvable pick, in order',
+                        JSON.stringify(values) === JSON.stringify(['31%', '62%', '88%']), {values}));
+                    assertions.push(assertion('tagged picks carry their letters, untagged ones none',
+                        JSON.stringify(tags) === JSON.stringify(['S', 'W']), {tags}));
+                    const staleValue = descendants(extras[1]).find(actor => hasStyle(actor, 'usagebar-chip-extra-value'));
+                    assertions.push(assertion('the stale slot\'s extra is greyed',
+                        hasStyle(staleValue, 'usagebar-fg-stale'), {actual: staleValue?.style_class ?? null}));
+                } catch (error) {
+                    done(error);
+                    return;
+                }
+                capture('panel-metrics.png', () => overviewAccounts());
+            });
+            // The overview's Claude row: one metrics line per slot, each led
+            // by its dot in the slot's tag color.
+            const overviewAccounts = () => {
+                try {
+                    this._indicator._closeCostPanel();
+                    this._indicator.menu.close();
+                } catch (error) {
+                    done(error);
+                    return;
+                }
+                // Reopening lands on the All tab.
+                later(300, () => {
+                    this._indicator.menu.open();
+                    this._render();
+                });
+                later(1000, () => {
+                    try {
+                        const row = this._overviewView?.rows?.get('claude')?.rowBox;
+                        const dots = descendants(row).filter(actor => hasStyle(actor, 'usagebar-compact-account-dot'))
+                            .map(actor => actor.style);
+                        assertions.push(assertion('the overview Claude row has one dotted line per slot, in tag colors',
+                            dots.length === 2 && dots[0].includes(colorHex('navy')) && dots[1].includes(colorHex('plum')),
+                            {dots}));
+                        // A layout bug once left the row 1px wide and the popover unpainted.
+                        assertions.push(painted('the overview Claude row lays out at full width', row));
+                    } catch (error) {
+                        done(error);
+                        return;
+                    }
+                    capture('overview-accounts.png', () => done());
+                });
+            };
         };
 
         // With USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD=1 and STUB_CODEXBAR_CLAUDE_SWAP_ADD=1,
@@ -4835,7 +4990,7 @@ export default class UsageBarExtension extends Extension {
 
     // One panel chip for a row, honoring the display mode ('ring',
     // 'ring-percent', 'percent', 'name-percent', 'dot') and the exhausted-shows-reset option.
-    _chipFor(row) {
+    _chipFor(row, cards = null) {
         const w = worstWindow(row);
         const worst = w?.usedPercent ?? null;
         const grey = row.stale || (row.error && worst === null);
@@ -4851,6 +5006,15 @@ export default class UsageBarExtension extends Extension {
             text = mode === 'name-percent'
                 ? `${this._displayName(row.provider)} ${value}` : value;
         }
+        // The user's extra percentages, each with its optional tag.
+        const extras = mode === 'dot' || !cards ? [] : chipExtras(row.provider, cards, DISPLAY.panelMetrics)
+            .map(extra => ({
+                key: extra.key,
+                text: `${Math.round(extra.percent)}%`,
+                sev: severity(extra.percent, extra.stale),
+                letter: extra.letter,
+                color: colorHex(extra.color),
+            }));
         return {
             provider: row.provider,
             name: this._displayName(row.provider),
@@ -4859,6 +5023,7 @@ export default class UsageBarExtension extends Extension {
             text,
             sev: severity(worst ?? 0, grey),
             mode,
+            extras,
         };
     }
 
@@ -4878,7 +5043,8 @@ export default class UsageBarExtension extends Extension {
                 (worstPercent(row) ?? -1) > (worstPercent(best) ?? -1) ? row : best)];
         }
         // The UI smoke pins fixture chips while it inspects the panel.
-        this._indicator._setPanelText(this._panelFixture ?? chipRows.map(row => this._chipFor(row)));
+        const cards = metricCards(rows, this._accountCards);
+        this._indicator._setPanelText(this._panelFixture ?? chipRows.map(row => this._chipFor(row, cards)));
 
         this._indicator.setUpdated(this._cliMissing ? ''
             : this._lastFetchAt ? `updated ${agoText((Date.now() - this._lastFetchAt) / 1000)}`
@@ -6984,6 +7150,18 @@ export default class UsageBarExtension extends Extension {
         this._windowCatalogSignature = signature;
         if (encoded.length !== prev.length || encoded.some((v, i) => v !== prev[i]))
             this._settings.set_strv('known-windows', encoded);
+        this._publishMetricCatalog();
+    }
+
+    // Every account × bar the chips can add, for the preferences window's
+    // "Extra percentages" list. Ordinals only: no account label or email
+    // is ever written to the settings (panelmetrics.js).
+    _publishMetricCatalog() {
+        const encoded = metricCatalog(metricCards(this._rows, this._accountCards))
+            .map(entry => JSON.stringify(entry));
+        const prev = this._settings.get_strv('known-panel-metrics');
+        if (encoded.length !== prev.length || encoded.some((v, i) => v !== prev[i]))
+            this._settings.set_strv('known-panel-metrics', encoded);
     }
 
     // ----- provider issues (banner + Details dialog) -----
@@ -7613,12 +7791,30 @@ export default class UsageBarExtension extends Extension {
     // "updated X ago", then that account's own Quota or error. In the
     // provider's own view, key accounts also get rename and remove.
     _addAccountBlock(card, account, {provider = null, actions = false} = {}) {
+        // Each account sits in its own framed panel so two accounts' windows
+        // never read as one list; the active one carries the accent frame.
+        const block = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: account.active
+                ? 'usagebar-account-block usagebar-account-block-active'
+                : 'usagebar-account-block',
+        });
+        card.add_child(block);
         const head = new St.BoxLayout({x_expand: true, style_class: 'usagebar-account-head'});
         head.add_child(new St.Label({
             text: account.label ?? ordinalLabel(account.ordinal ?? 1),
             style_class: 'usagebar-account-label',
             y_align: Clutter.ActorAlign.CENTER,
         }));
+        const plan = account.row ? this._planLabel(account.row) : null;
+        if (plan) {
+            head.add_child(new St.Label({
+                text: plan,
+                style_class: 'usagebar-badge usagebar-account-plan',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
         if (account.active) {
             head.add_child(new St.Label({
                 text: 'active',
@@ -7669,9 +7865,9 @@ export default class UsageBarExtension extends Extension {
             button.connect('clicked', () => this._switchAccount(provider, account));
             head.add_child(button);
         }
-        card.add_child(head);
+        block.add_child(head);
         if (switching.progress) {
-            card.add_child(new St.Label({
+            block.add_child(new St.Label({
                 text: switching.progress,
                 style_class: 'usagebar-dim usagebar-account-switch-progress',
             }));
@@ -7680,9 +7876,9 @@ export default class UsageBarExtension extends Extension {
             const error = new St.Label({text: switching.error, style_class: 'usagebar-account-switch-error'});
             error.clutter_text.line_wrap = true;
             error.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-            card.add_child(error);
+            block.add_child(error);
         }
-        this._addRowQuota(card, account.row);
+        this._addRowQuota(block, account.row);
     }
 
     // ----- Switching the active Claude account (accountswitch.js) -----
@@ -8321,14 +8517,125 @@ export default class UsageBarExtension extends Extension {
     }
 
     _compactRowStructureKey(row) {
-        const items = this._compactDisplayItems(row);
         return JSON.stringify({
             provider: row.provider,
             error: !!row.error,
             subtitle: !!(row.error || windowsOf(row).some(({w}) => resetText(w))),
-            labels: items.map(item => item.label),
-            extraCount: items.extraCount,
+            lines: this._compactLines(row).map(line => {
+                const items = this._compactDisplayItems(line.row);
+                const empty = items.length || items.extraCount ? null
+                    : describeIssue(line.row, line.row.provider)?.label ?? '';
+                return [line.dot, items.map(item => item.label), items.extraCount, empty];
+            }),
         });
+    }
+
+    // The overview row's metrics lines: the row's own, or on a multi-account
+    // card one per Provider Account (the popover's row standing in for the
+    // primary account), each with its account's dot color: the color of the
+    // account's first tag on the panel chip (panelmetrics.js), else its
+    // default color.
+    _compactLines(row) {
+        const card = this._accountCards?.get(row.provider);
+        if (!card?.multi)
+            return [{row, dot: null}];
+        return card.accounts.map(account => {
+            const tagged = DISPLAY.panelMetrics.find(metric =>
+                metric.p === row.provider && metric.a === (account.id ?? '') && metric.on && metric.letter) ??
+                DISPLAY.panelMetrics.find(metric => metric.p === row.provider && metric.a === (account.id ?? ''));
+            return {
+                row: account.row === card.row ? row : account.row,
+                dot: colorHex(tagged?.color ?? defaultColor(account.ordinal ?? 1)),
+            };
+        });
+    }
+
+    // One metrics line: [dot] label, mini bar, percent per window, then "+N".
+    // A line without bars is left out (the subtitle says what's wrong), except
+    // an account's line, which says it has no usage.
+    _buildCompactMetricsLine(line) {
+        const built = {box: null, refs: [], extraLabel: null};
+        const items = this._compactDisplayItems(line.row);
+        if (!items.length && !items.extraCount && !line.dot)
+            return built;
+        const box = new St.BoxLayout({
+            style_class: 'usagebar-compact-metrics',
+            x_expand: true,
+        });
+        built.box = box;
+        if (line.dot) {
+            box.add_child(new St.Widget({
+                style_class: 'usagebar-compact-account-dot',
+                style: `background-color: ${line.dot};`,
+                width: 7,
+                height: 7,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        if (!items.length && !items.extraCount) {
+            const issue = describeIssue(line.row, line.row.provider);
+            box.add_child(new St.Label({
+                text: issue?.label ?? T.unavailable,
+                style_class: 'usagebar-dim usagebar-compact-metric-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            return built;
+        }
+        for (const item of items) {
+            const metricItem = new St.BoxLayout({
+                style_class: 'usagebar-compact-metric-item',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            metricItem.add_child(new St.Label({
+                text: item.label,
+                style_class: 'usagebar-dim usagebar-compact-metric-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+            const track = new St.Widget({
+                style_class: 'usagebar-track usagebar-compact-track',
+                width: COMPACT_TRACK_WIDTH,
+                height: 4,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const fill = new St.Widget({y_align: Clutter.ActorAlign.CENTER});
+            track.add_child(fill);
+            metricItem.add_child(track);
+            const percentLabel = new St.Label({y_align: Clutter.ActorAlign.CENTER});
+            metricItem.add_child(percentLabel);
+            built.refs.push({fill, track, percentLabel});
+            box.add_child(metricItem);
+        }
+        if (items.extraCount > 0) {
+            built.extraLabel = new St.Label({
+                style_class: 'usagebar-dim usagebar-compact-metric-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            box.add_child(built.extraLabel);
+        }
+        this._updateCompactMetricsLine(built, line);
+        return built;
+    }
+
+    _updateCompactMetricsLine(built, line) {
+        if (!built)
+            return;
+        const items = this._compactDisplayItems(line.row);
+        built.refs.forEach((ref, i) => {
+            const item = items[i];
+            if (!item)
+                return;
+            const known = item.w.usedPercent !== null && item.w.usedPercent !== undefined;
+            const used = known ? Math.max(0, Math.min(100, Math.round(item.w.usedPercent))) : 0;
+            const dispPercent = DISPLAY.barsShowUsed ? used : (100 - used);
+            const sev = severity(used, line.row.stale || !known);
+            ref.percentLabel.text = known ? `${dispPercent}%` : T.unavailable;
+            ref.percentLabel.style_class = `usagebar-compact-metric-val usagebar-fg-${sev}`;
+            ref.fill.style_class = `usagebar-fill usagebar-bg-${sev}`;
+            ref.fill.set_size((known && used > 0)
+                ? Math.max(2, Math.round(COMPACT_TRACK_WIDTH * used / 100)) : 0, 4);
+        });
+        if (built.extraLabel)
+            built.extraLabel.text = `+${items.extraCount}`;
     }
 
     // Plan tag text for a row's name ('' for none), shared by the compact
@@ -8358,8 +8665,7 @@ export default class UsageBarExtension extends Extension {
             titleLabel: null,
             planLabel: null,
             subtitleLabel: null,
-            metricRefs: [],
-            extraLabel: null,
+            lines: [],
             contentBtn: null,
             separator: null,
         };
@@ -8448,74 +8754,14 @@ export default class UsageBarExtension extends Extension {
         }
         body.add_child(head);
 
-        // Bottom line: metrics
-        const metricsBox = new St.BoxLayout({
-            style_class: 'usagebar-compact-metrics',
-            x_expand: true,
+        // Bottom lines: metrics, one line per Provider Account on a
+        // multi-account card, each led by that account's dot.
+        state.lines = this._compactLines(row).map(line => {
+            const built = this._buildCompactMetricsLine(line);
+            if (built.box)
+                body.add_child(built.box);
+            return built;
         });
-
-        const displayItems = this._compactDisplayItems(row);
-        const extraCount = displayItems.extraCount;
-
-        if (displayItems.length > 0) {
-            for (const item of displayItems) {
-                const metricItem = new St.BoxLayout({
-                    style_class: 'usagebar-compact-metric-item',
-                    y_align: Clutter.ActorAlign.CENTER,
-                });
-
-                metricItem.add_child(new St.Label({
-                    text: item.label,
-                    style_class: 'usagebar-dim usagebar-compact-metric-label',
-                    y_align: Clutter.ActorAlign.CENTER,
-                }));
-
-                const known = item.w.usedPercent !== null && item.w.usedPercent !== undefined;
-                const used = known ? Math.max(0, Math.min(100, Math.round(item.w.usedPercent))) : 0;
-                const dispPercent = DISPLAY.barsShowUsed ? used : (100 - used);
-                const sev = severity(used, row.stale || !known);
-
-                const COMPACT_TRACK_WIDTH = 24;
-                const track = new St.Widget({
-                    style_class: 'usagebar-track usagebar-compact-track',
-                    width: COMPACT_TRACK_WIDTH,
-                    height: 4,
-                    y_align: Clutter.ActorAlign.CENTER,
-                });
-                const fill = new St.Widget({
-                    style_class: `usagebar-fill usagebar-bg-${sev}`,
-                    y_align: Clutter.ActorAlign.CENTER,
-                });
-                const fillWidth = (known && used > 0)
-                    ? Math.max(2, Math.round(COMPACT_TRACK_WIDTH * used / 100))
-                    : 0;
-                fill.set_size(fillWidth, 4);
-                track.add_child(fill);
-                metricItem.add_child(track);
-
-                const percentLabel = new St.Label({
-                    text: known ? `${dispPercent}%` : T.unavailable,
-                    style_class: `usagebar-compact-metric-val usagebar-fg-${sev}`,
-                    y_align: Clutter.ActorAlign.CENTER,
-                });
-                metricItem.add_child(percentLabel);
-                state.metricRefs.push({fill, track, percentLabel});
-
-                metricsBox.add_child(metricItem);
-            }
-            if (extraCount > 0) {
-                state.extraLabel = new St.Label({
-                    text: `+${extraCount}`,
-                    style_class: 'usagebar-dim usagebar-compact-metric-label',
-                    y_align: Clutter.ActorAlign.CENTER,
-                });
-                metricsBox.add_child(state.extraLabel);
-            }
-        }
-
-        // Without bars the subtitle already says what's wrong.
-        if (displayItems.length > 0 || extraCount > 0)
-            body.add_child(metricsBox);
         contentBox.add_child(body);
         contentBtn.set_child(contentBox);
         mainRow.add_child(contentBtn);
@@ -8545,23 +8791,8 @@ export default class UsageBarExtension extends Extension {
                 }
                 state.subtitleLabel.text = nextSubtitle;
             }
-            const items = this._compactDisplayItems(next);
-            state.metricRefs.forEach((ref, i) => {
-                const item = items[i];
-                if (!item)
-                    return;
-                const known = item.w.usedPercent !== null && item.w.usedPercent !== undefined;
-                const used = known ? Math.max(0, Math.min(100, Math.round(item.w.usedPercent))) : 0;
-                const dispPercent = DISPLAY.barsShowUsed ? used : (100 - used);
-                const sev = severity(used, next.stale || !known);
-                ref.percentLabel.text = known ? `${dispPercent}%` : T.unavailable;
-                ref.percentLabel.style_class = `usagebar-compact-metric-val usagebar-fg-${sev}`;
-                ref.fill.style_class = `usagebar-fill usagebar-bg-${sev}`;
-                ref.fill.set_size((known && used > 0)
-                    ? Math.max(2, Math.round(24 * used / 100)) : 0, 4);
-            });
-            if (state.extraLabel)
-                state.extraLabel.text = `+${items.extraCount}`;
+            this._compactLines(next).forEach((line, index) =>
+                this._updateCompactMetricsLine(state.lines[index], line));
         };
         rowBox._usagebarRowState = state;
 
