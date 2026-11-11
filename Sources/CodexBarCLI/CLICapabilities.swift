@@ -26,6 +26,9 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     /// serve's `POST /accounts/claude-swap/detect` and `codexbar claude add-account`: add a Claude account through
     /// claude-swap (`claude-swap` kind, CLIServeClaudeSwapSetup.swift and CLIClaudeSwapAddAccount.swift).
     case providerAccountAddClaudeSwap
+    /// serve's `POST /accounts/switch`: make a claude-swap slot Claude Code's active account
+    /// (CLIServeClaudeSwapSwitch.swift). Rows it can target carry `canSwitch: true`.
+    case providerAccountSwitch
 
     /// The account actions. serve lists them on `/health` only when it was started with an action token
     /// (CLIServeActionGuard.swift), since it refuses every one of them without it.
@@ -36,6 +39,7 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
         .providerAccountRename,
         .providerAccountRemove,
         .providerAccountAddClaudeSwap,
+        .providerAccountSwitch,
     ]
 }
 

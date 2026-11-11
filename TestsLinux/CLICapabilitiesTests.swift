@@ -15,6 +15,7 @@ struct CLICapabilitiesTests {
         "providerAccountRename",
         "providerAccountRemove",
         "providerAccountAddClaudeSwap",
+        "providerAccountSwitch",
     ]
 
     /// `/health` from a serve started with an action token, so the account actions are listed.

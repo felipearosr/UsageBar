@@ -129,6 +129,18 @@ import {
     wantsKinds,
 } from './accountactions.js';
 import {
+    claudeSwapConfigKey,
+    idleSwitch,
+    rowSwitchView,
+    startSwitch,
+    switchAnswered,
+    switchConfigChanged,
+    switchRefreshed,
+    switchRenderKey,
+    switchRequest,
+    switchTimedOut,
+} from './accountswitch.js';
+import {
     CLAUDE_SWAP_KIND,
     addHelperArgv,
     afterTerminal,
@@ -179,6 +191,11 @@ class OverlayLayout extends Clutter.LayoutManager {
 });
 
 const REQUEST_TIMEOUT_SECS = 120;
+// A claude-swap switch is a credential transaction serve never cancels: its
+// POST may wait this long before the row says "Still switching…", and the
+// card reloads this long after that.
+const SWITCH_TIMEOUT_SECS = 600;
+const SWITCH_STILL_RELOAD_SECS = 60;
 const FETCH_OK_SECS = 55;          // cache hits between serve refreshes
 const FETCH_RETRY_SECS = 10;       // serve starting up / transient failure
 const TICK_SECS = 30;              // countdown re-render while the menu is open
@@ -1971,6 +1988,7 @@ export default class UsageBarExtension extends Extension {
                         if (generation !== this._generation || !this._indicator)
                             return GLib.SOURCE_REMOVE;
                         this._loadDisplayNames(this._binary);
+                        this._claudeSwapConfigChanged();
                         this._fetchUsage();
                         return GLib.SOURCE_REMOVE;
                     });
@@ -2069,6 +2087,8 @@ export default class UsageBarExtension extends Extension {
         this._usageRefetchQueued = false;
         this._accountKindsInFlight = false;
         this._accountKinds = null;
+        this._accountSwitch = idleSwitch();
+        this._usageWaiters = [];
         if (this._tickId) {
             GLib.source_remove(this._tickId);
             this._tickId = 0;
@@ -2097,6 +2117,12 @@ export default class UsageBarExtension extends Extension {
         this._cancellable = null;
         this._session?.abort();
         this._session = null;
+        this._switchSession?.abort();
+        this._switchSession = null;
+        if (this._switchStillId) {
+            GLib.source_remove(this._switchStillId);
+            this._switchStillId = 0;
+        }
         this._supervisor?.stop();
         this._supervisor = null;
         this._destroyOverviewView();
@@ -2253,7 +2279,7 @@ export default class UsageBarExtension extends Extension {
         }
     }
 
-    _fetchJSON(url, cb, method = 'GET', body = null, headers = null) {
+    _fetchJSON(url, cb, method = 'GET', body = null, headers = null, session = this._session) {
         const generation = this._generation;
         const msg = Soup.Message.new(method, url);
         for (const [name, value] of Object.entries(headers ?? {}))
@@ -2264,7 +2290,7 @@ export default class UsageBarExtension extends Extension {
             msg.set_request_body_from_bytes('application/json',
                 new GLib.Bytes(new TextEncoder().encode(JSON.stringify(body))));
         }
-        this._session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
+        session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, this._cancellable,
             (session, res) => {
                 try {
                     if (generation !== this._generation || !this._indicator)
@@ -2287,13 +2313,13 @@ export default class UsageBarExtension extends Extension {
             });
     }
 
-    _get(path, cb, method = 'GET', body = null, headers = null) {
+    _get(path, cb, method = 'GET', body = null, headers = null, session = this._session) {
         const port = this._supervisor?.port;
         if (!port) {
             cb(null, new Error('serve not running'));
             return;
         }
-        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method, body, headers);
+        this._fetchJSON(`http://127.0.0.1:${port}${path}`, cb, method, body, headers, session);
     }
 
     // ----- Machine Sync -----
@@ -2657,8 +2683,32 @@ export default class UsageBarExtension extends Extension {
             if (this._usageRefetchQueued) {
                 this._usageRefetchQueued = false;
                 this._fetchUsage(true);
+            } else {
+                this._flushUsageWaiters();
             }
         });
+    }
+
+    // Calls `done` once a /usage fetch that started after now has landed
+    // (or failed). A fetch already out may predate the change, so it asks
+    // again when that one lands.
+    _whenUsageRefreshed(done) {
+        (this._usageWaiters ??= []).push(done);
+        if (this._fetchInFlight) {
+            this._usageRefetchQueued = true;
+            return;
+        }
+        this._fetchUsage(true);
+        // No fetch started (no CLI, or still waiting for /health): nothing to wait for.
+        if (!this._fetchInFlight)
+            this._flushUsageWaiters();
+    }
+
+    _flushUsageWaiters() {
+        const waiters = this._usageWaiters ?? [];
+        this._usageWaiters = [];
+        for (const done of waiters)
+            done();
     }
 
     // Cards and the popover's rows from the merged /usage rows. With Hide
@@ -4281,7 +4331,8 @@ export default class UsageBarExtension extends Extension {
                         .filter(actor => actor.style_class === 'usagebar-account-head');
                     const labels = heads.map(head => descendants(head)
                         .filter(actor => actor instanceof St.Label).map(actor => actor.text));
-                    assertions.push(assertion('one block per claude-swap slot', heads.length === 2, {labels}));
+                    const slots = GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWITCH') === '1' ? 3 : 2;
+                    assertions.push(assertion('one block per claude-swap slot', heads.length === slots, {labels}));
                     assertions.push(assertion('the active slot is marked active, the other stale',
                         labels[0]?.includes('active') && !labels[0]?.includes('stale') &&
                         labels[1]?.includes('stale') && !labels[1]?.includes('active'), {labels}));
@@ -4293,7 +4344,9 @@ export default class UsageBarExtension extends Extension {
                     return;
                 }
                 capture('accounts-provider-claude.png', () => {
-                    if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD') === '1')
+                    if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWITCH') === '1')
+                        claudeSwitchSmoke(assertions);
+                    else if (GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWAP_ADD') === '1')
                         claudeSwapAddSmoke(assertions);
                     else
                         finish(assertions);
@@ -4397,6 +4450,67 @@ export default class UsageBarExtension extends Extension {
                     });
                 });
             });
+        };
+
+        // With USAGEBAR_UI_SMOKE_CLAUDE_SWITCH=1 and STUB_CODEXBAR_CLAUDE_SWITCH=1,
+        // after the claude-swap card: Switch on the spare slot shows both
+        // progress phases, then spare is the active account; switching back
+        // to work fails, and the error stays on work's row.
+        const claudeSwitchSmoke = assertions => {
+            const hasClass = (actor, name) => String(actor.style_class ?? '').split(/\s+/).includes(name);
+            const box = () => this._indicator._detailBox;
+            const switchButtons = () => descendants(box()).filter(actor => hasClass(actor, 'usagebar-account-switch'));
+            const texts = () => descendants(box()).filter(actor => actor instanceof St.Label).map(actor => actor.text);
+            const activeId = () => this._accountCards?.get('claude')?.accounts.find(a => a.active)?.id ?? null;
+            const idle = () => !this._accountSwitch?.phase;
+            const step = (fileName, check, then) => {
+                try {
+                    check();
+                } catch (error) {
+                    finish(assertions, error);
+                    return;
+                }
+                capture(fileName, then);
+            };
+            try {
+                const buttons = switchButtons();
+                assertions.push(assertion('only the switchable inactive slot offers Switch', buttons.length === 1,
+                    {actual: buttons.map(button => button.accessible_name)}));
+                buttons[0].emit('clicked', 1);
+            } catch (error) {
+                finish(assertions, error);
+                return;
+            }
+            waitFor(() => texts().includes('Switching account…'), () => step('claude-switching.png', () => {
+                assertions.push(assertion('the row shows Switching account…',
+                    texts().includes('Switching account…'), {texts: texts()}));
+                assertions.push(assertion('Switch is disabled while switching',
+                    switchButtons().every(button => !button.reactive)));
+            }, () => waitFor(() => texts().includes('Refreshing account status…'), () => step(
+                'claude-refreshing.png', () => {
+                    assertions.push(assertion('the row shows Refreshing account status…',
+                        texts().includes('Refreshing account status…'), {texts: texts()}));
+                }, () => waitFor(() => idle() && activeId() === 'claude-swap:3', () => step(
+                    'claude-switched.png', () => {
+                        assertions.push(assertion('the refreshed rows make spare the active account',
+                            activeId() === 'claude-swap:3', {actual: activeId()}));
+                        assertions.push(assertion('no progress is left once refreshed',
+                            !texts().includes('Switching account…') &&
+                            !texts().includes('Refreshing account status…'), {texts: texts()}));
+                        const buttons = switchButtons();
+                        assertions.push(assertion('work now offers Switch', buttons.length === 1 &&
+                            buttons[0].reactive, {actual: buttons.map(button => button.accessible_name)}));
+                        buttons[0].emit('clicked', 1);
+                    }, () => waitFor(() => idle() && texts().some(text => text.startsWith('Account switch failed')),
+                        () => step('claude-switch-error.png', () => {
+                            const error = descendants(box())
+                                .filter(actor => hasClass(actor, 'usagebar-account-switch-error'));
+                            assertions.push(assertion('the switch error shows on the row', error.length === 1 &&
+                                error[0].text.startsWith('Account switch failed'),
+                            {actual: error.map(label => label.text)}));
+                            assertions.push(assertion('a failed switch leaves the active account alone',
+                                activeId() === 'claude-swap:3', {actual: activeId()}));
+                        }, () => finish(assertions)))))))));
         };
 
         // Run with USAGEBAR_UI_SMOKE_LOGOS=1 against a logo pack served
@@ -5407,6 +5521,7 @@ export default class UsageBarExtension extends Extension {
             this._detailPayloadKey(row),
             accountsRenderKey(accountCard),
             this._accountActionsKey(provider),
+            switchRenderKey(accountCard, this._switchViewOptions()),
             (accountCard?.accounts ?? []).map(account => this._detailPayloadKey(account.row)).join(','),
             this._displayName(provider),
             DISPLAY.absoluteResets,
@@ -7537,8 +7652,132 @@ export default class UsageBarExtension extends Extension {
             head.add_child(this._accountIconButton('user-trash-symbolic', 'Remove',
                 () => this._showRemoveAccountDialog(provider, account)));
         }
+        const switching = actions && provider
+            ? rowSwitchView(account, {...this._switchViewOptions(), provider})
+            : {};
+        if (switching.button) {
+            const button = new St.Button({
+                label: 'Switch',
+                style_class: 'usagebar-issue-btn usagebar-account-switch',
+                can_focus: switching.enabled,
+                reactive: switching.enabled,
+                accessible_name: `Switch Claude Code to ${account.label ?? 'this account'}`,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (!switching.enabled)
+                button.add_style_pseudo_class('insensitive');
+            button.connect('clicked', () => this._switchAccount(provider, account));
+            head.add_child(button);
+        }
         card.add_child(head);
+        if (switching.progress) {
+            card.add_child(new St.Label({
+                text: switching.progress,
+                style_class: 'usagebar-dim usagebar-account-switch-progress',
+            }));
+        }
+        if (switching.error) {
+            const error = new St.Label({text: switching.error, style_class: 'usagebar-account-switch-error'});
+            error.clutter_text.line_wrap = true;
+            error.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            card.add_child(error);
+        }
         this._addRowQuota(card, account.row);
+    }
+
+    // ----- Switching the active Claude account (accountswitch.js) -----
+
+    _switchViewOptions() {
+        return {
+            state: this._accountSwitch ?? idleSwitch(),
+            capabilities: this._accountCapabilities(),
+            hidePersonalInfo: DISPLAY.hidePersonalInfo,
+        };
+    }
+
+    // Switch: POST /accounts/switch ("Switching account…"), then reload the
+    // accounts ("Refreshing account status…"). Only that reload decides
+    // which account is active; a failure stays on the row.
+    _switchAccount(provider, account) {
+        const state = startSwitch(this._accountSwitch ?? idleSwitch(),
+            {provider, accountId: account.id, config: this._claudeSwapConfigKey()});
+        if (!state)
+            return;
+        const seq = state.seq;
+        this._accountSwitch = state;
+        this._requestRender();
+        const reloaded = () => {
+            this._accountSwitch = switchRefreshed(this._accountSwitch, seq);
+            this._requestRender();
+        };
+        // Serve keeps switching after the POST gives up here: say so, keep
+        // Switch disabled, and reload a while later.
+        const timedOut = () => {
+            const next = switchTimedOut(this._accountSwitch, seq);
+            if (next === this._accountSwitch)
+                return;
+            this._accountSwitch = next;
+            this._requestRender();
+            if (this._switchStillId)
+                GLib.source_remove(this._switchStillId);
+            this._switchStillId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, SWITCH_STILL_RELOAD_SECS, () => {
+                this._switchStillId = 0;
+                if (this._indicator)
+                    this._whenUsageRefreshed(reloaded);
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+        const answered = error => {
+            const next = switchAnswered(this._accountSwitch, seq, {error});
+            if (next === this._accountSwitch)
+                return;
+            this._accountSwitch = next;
+            this._requestRender();
+            this._whenUsageRefreshed(reloaded);
+        };
+        const actionToken = this._supervisor?.actionToken;
+        if (!actionToken) {
+            answered(actionErrorText(new Error('serve not running')));
+            return;
+        }
+        const request = switchRequest({provider, accountId: account.id});
+        this._switchSession ??= new Soup.Session({timeout: SWITCH_TIMEOUT_SECS});
+        this._get(request.path, (_result, error) => {
+            if (error?.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.TIMED_OUT))
+                timedOut();
+            else
+                answered(error ? actionErrorText(error) : null);
+        }, request.method, request.body, {[ACTION_TOKEN_HEADER]: actionToken}, this._switchSession);
+    }
+
+    // claude-swap's configuration (enabled, executable) from the CLI's
+    // config.json, or null when it can't be read.
+    _claudeSwapConfigKey() {
+        // UI smoke runs over fixtures and must not read the user's config.
+        if (GLib.getenv('USAGEBAR_UI_SMOKE_RESULT'))
+            return null;
+        try {
+            const path = GLib.build_filenamev([GLib.get_user_config_dir(), 'codexbar', 'config.json']);
+            const [, bytes] = GLib.file_get_contents(path);
+            return claudeSwapConfigKey(JSON.parse(new TextDecoder().decode(bytes)));
+        } catch {
+            return null;
+        }
+    }
+
+    // The config changed: a switch started under another claude-swap
+    // configuration drops its progress and error (accountswitch.js).
+    _claudeSwapConfigChanged() {
+        const state = this._accountSwitch ?? idleSwitch();
+        const next = switchConfigChanged(state, this._claudeSwapConfigKey());
+        if (next === state)
+            return;
+        this._accountSwitch = next;
+        if (this._switchStillId) {
+            GLib.source_remove(this._switchStillId);
+            this._switchStillId = 0;
+        }
+        this._requestRender();
     }
 
     // ----- Provider Account actions (accountactions.js) -----

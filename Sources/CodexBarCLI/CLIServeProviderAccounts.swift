@@ -38,7 +38,8 @@ extension CodexBarCLI {
         _ request: CLILocalHTTPRequest,
         runtime: ServeRuntime,
         fetch: ProviderAccountUsageFetch? = nil,
-        claudeSwap: ClaudeSwapServeSource? = nil) async -> CLILocalHTTPResponse
+        claudeSwap: ClaudeSwapServeSource? = nil,
+        switchGeneration: ClaudeSwapSwitchGeneration = .shared) async -> CLILocalHTTPResponse
     {
         guard !runtime.dataRoutesRequireAuth || runtime.dashboardAuth.authorize(request) else {
             return self.serveUnauthorizedResponse()
@@ -62,9 +63,14 @@ extension CodexBarCLI {
         } catch {
             return self.addingNoStore(self.forkServeError(status: .badRequest, message: error.localizedDescription))
         }
+        // With Claude selected, each claude-swap switch gives the request new cache, merge and operation keys
+        // (CLIServeClaudeSwapSwitch.swift), so nothing fetched before a switch answers a request made after it.
+        let fingerprint = switchGeneration.fingerprint(
+            snapshot.cacheToken,
+            providers: self.serveProviderAccountSelection(rawProvider: normalizedProvider, config: snapshot.config))
         let context = ServeUsageContext(
             config: snapshot.config,
-            configFingerprint: snapshot.cacheToken,
+            configFingerprint: fingerprint,
             refreshInterval: runtime.refreshInterval,
             providerTimeout: self.serveProviderTimeout(requestTimeout: runtime.requestTimeout),
             providerDeadline: self.serveProviderDeadline(startedAt: startedAt, requestTimeout: runtime.requestTimeout),
@@ -74,7 +80,7 @@ extension CodexBarCLI {
             cache: runtime.cache,
             refreshInterval: runtime.refreshInterval,
             requestTimeout: runtime.requestTimeout,
-            configFingerprint: snapshot.cacheToken,
+            configFingerprint: fingerprint,
             staleWhileRevalidate: true)
         {
             await self.serveProviderAccountUsage(
@@ -357,6 +363,10 @@ struct ProviderAccountRowFields: Equatable, Sendable {
     /// The Quota on this account's row is an older one served in place of a current one (claude-swap's last good
     /// rows after a failed read, or a slot's source-declared last-known usage); sent as `stale: true`.
     var stale = false
+    /// An explicit switch can make this account the active one (`POST /accounts/switch`,
+    /// CLIServeClaudeSwapSwitch.swift):
+    /// an inactive claude-swap slot whose credential claude-swap can activate. Sent as `canSwitch: true`.
+    var canSwitch = false
 
     /// `<source>:<opaque id>`, stable across refreshes, renames and reorders. Serve also makes it the row's cache
     /// key, so the per-account last-good merge restores each account on its own.
@@ -393,6 +403,7 @@ struct ProviderAccountRowPayload: Encodable {
         case updatedAt
         case stale
         case disabled
+        case canSwitch
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -412,6 +423,9 @@ struct ProviderAccountRowPayload: Encodable {
         try container.encodeIfPresent(self.updatedAt, forKey: .updatedAt)
         if self.stale {
             try container.encode(true, forKey: .stale)
+        }
+        if account.canSwitch {
+            try container.encode(true, forKey: .canSwitch)
         }
     }
 }

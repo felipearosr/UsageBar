@@ -24,6 +24,9 @@ export const FEATURES = {
     // serve's /accounts/claude-swap/detect and `codexbar claude add-account`
     // (claudeswapadd.js).
     providerAccountAddClaudeSwap: {label: 'Adding Claude accounts', minVersion: null},
+    // serve's POST /accounts/switch (accountswitch.js): Switch on inactive
+    // claude-swap rows. A CLI without it shows no Switch.
+    providerAccountSwitch: {label: 'Switching Claude accounts', minVersion: null},
 };
 
 // ---------- versions ----------

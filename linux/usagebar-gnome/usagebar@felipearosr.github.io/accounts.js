@@ -237,8 +237,10 @@ export function mergeStale(previous, fresh) {
         if (row.error && !hasAccountId(row) && !freshTagged.has(row.provider)) {
             const accounts = prior.filter(p => p.provider === row.provider && hasAccountId(p));
             if (accounts.length) {
+                // Which account is active is unknown now: no stale copy
+                // keeps the old active marker.
                 for (const prev of accounts)
-                    merged.push({...prev, error: row.error, stale: true});
+                    merged.push({...prev, error: row.error, stale: true, active: false});
                 continue;
             }
         }
