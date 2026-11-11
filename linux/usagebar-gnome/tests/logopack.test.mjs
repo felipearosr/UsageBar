@@ -28,6 +28,13 @@ test('releaseVersion turns the metadata version-name back into the release versi
     assert.equal(releaseVersion(undefined), null); // development checkout
     assert.equal(releaseVersion('dev'), null);
     assert.equal(releaseVersion('1.1.0 rc.2/../x'), null);
+    assert.equal(releaseVersion('2.0.0 alpha.10'), '2.0.0-alpha.10');
+    assert.equal(releaseVersion('2.0.0 beta'), '2.0.0-beta');
+    // A local zip of a branch: no release to download the logos from.
+    assert.equal(releaseVersion('1.1.0 main'), null);
+    assert.equal(releaseVersion('1.1.0 dev.3'), null);
+    // The test hook (USAGEBAR_LOGO_PACK_VERSION) can name any label.
+    assert.equal(releaseVersion('0.0.0 smoke', {anyLabel: true}), '0.0.0-smoke');
 });
 
 test('the pack is the release asset of the extension’s own release', () => {

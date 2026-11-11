@@ -121,6 +121,11 @@ fi
 
 prerelease=false
 [[ "$version" == *-* ]] && prerelease=true
+# The extension treats any other pre-release label as a development build with
+# no logo pack to download (logopack.js releaseVersion), so keep them in step.
+if $prerelease && ! [[ "${version#*-}" =~ ^(alpha|beta|rc)([.-][0-9]+)*$ ]]; then
+    fail "version $version: a pre-release must be alpha, beta or rc (e.g. 1.2.0-rc.1)"
+fi
 distro_packages=true
 $prerelease && distro_packages=false
 arches=(x86_64 aarch64)

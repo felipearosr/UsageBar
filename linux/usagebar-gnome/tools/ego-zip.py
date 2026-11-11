@@ -66,6 +66,12 @@ DONATION_KEYS = {
 SESSION_MODES = {'user', 'unlock-dialog'}
 # https://gjs.guide/extensions/overview/anatomy.html#version-name
 VERSION_NAME_RE = re.compile(r'^(?!^[. ]+$)[a-zA-Z0-9 .]{1,16}$')
+# The zip leaves the provider logos out, so the extension offers to download
+# them from the release its version-name names (logopack.js releaseVersion):
+# x.y.z or x.y.z alpha/beta/rc. Anything else ("1.1.0 main") names no release.
+RELEASE_VERSION_NAME_RE = re.compile(r'^\d+\.\d+\.\d+( (alpha|beta|rc)([ .]\d+)*)?$')
+NOT_A_RELEASE = ('is not a release version (x.y.z or x.y.z alpha/beta/rc.N); a zip of a branch '
+                 'has no logo pack to download. To run a local build, symlink the checkout (linux/run-dev.sh)')
 UUID_RE = re.compile(r'^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$')
 SCHEMA_ID_BASE = 'org.gnome.shell.extensions.'
 SCHEMA_PATH_BASE = '/org/gnome/shell/extensions/'
@@ -112,6 +118,8 @@ def build(out_dir, version_name=None, src=SRC, license_path=LICENSE):
     with open(os.path.join(src, 'metadata.json'), encoding='utf-8') as f:
         metadata = json.load(f)
     if version_name:
+        if not RELEASE_VERSION_NAME_RE.match(version_name):
+            raise SystemExit(f'ego-zip: version-name "{version_name}" {NOT_A_RELEASE}')
         metadata['version-name'] = version_name
 
     entries = [(m, os.path.join(src, m)) for m in reachable_modules(src)]
@@ -352,6 +360,8 @@ def lint_metadata(files, report):
                                      or not VERSION_NAME_RE.match(version_name)):
         report.error('metadata.json', f'version-name "{version_name}" must be 1-16 letters, digits, '
                      'spaces or periods, with at least one letter or digit')
+    elif version_name is not None and not RELEASE_VERSION_NAME_RE.match(version_name):
+        report.error('metadata.json', f'version-name "{version_name}" {NOT_A_RELEASE}')
     uuid = meta.get('uuid', '')
     if not isinstance(uuid, str) or not UUID_RE.match(uuid):
         report.error('metadata.json', f'uuid "{uuid}" must look like extension-id@namespace')
