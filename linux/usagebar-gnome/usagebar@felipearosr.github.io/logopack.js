@@ -26,12 +26,18 @@ export const LOGO_PROMPT = {
 
 // metadata.json "version-name" is the release version with "-" written as a
 // space (resolve-version.sh: 1.1.0-rc.2 → "1.1.0 rc.2"). Returns the release
-// version, or null for a development checkout, which has no version-name.
-export function releaseVersion(versionName) {
+// version, or null for a development build: a checkout has no version-name,
+// and a local zip of a branch ("1.1.0 main") names no published release.
+// Releases are x.y.z or x.y.z-alpha/beta/rc, which resolve-version.sh enforces.
+export function releaseVersion(versionName, {anyLabel = false} = {}) {
     const name = typeof versionName === 'string' ? versionName.trim() : '';
     if (!/^\d+\.\d+\.\d+( [0-9A-Za-z.]+)*$/.test(name))
         return null;
-    return name.replaceAll(' ', '-');
+    const version = name.replaceAll(' ', '-');
+    const label = version.split('-').slice(1).join('-');
+    if (label && !anyLabel && !/^(alpha|beta|rc)([.-]\d+)*$/.test(label))
+        return null;
+    return version;
 }
 
 // The release asset name; resolve-version.sh's logos_asset.

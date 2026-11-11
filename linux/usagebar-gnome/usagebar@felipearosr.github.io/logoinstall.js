@@ -23,7 +23,7 @@ export function logoPackVersion(metadata) {
     const own = releaseVersion(metadata?.['version-name']);
     if (own || !GLib.getenv('USAGEBAR_LOGO_PACK_BASE_URL'))
         return own;
-    return releaseVersion(GLib.getenv('USAGEBAR_LOGO_PACK_VERSION')?.replaceAll('-', ' '));
+    return releaseVersion(GLib.getenv('USAGEBAR_LOGO_PACK_VERSION')?.replaceAll('-', ' '), {anyLabel: true});
 }
 
 // Outside the extension directory, which an extension update replaces.

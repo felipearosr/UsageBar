@@ -105,6 +105,15 @@ class EgoZipTests(unittest.TestCase):
         report = self.fixture('vname-rc', self.metadata_with(**{'version-name': '1.2.0 rc.1'}))
         self.assertEqual(report.errors, [])
 
+    def test_branch_version_name_fails(self):
+        self.assert_error(self.fixture('vname-main', self.metadata_with(**{'version-name': '1.1.0 main'})),
+                          'not a release version')
+
+    def test_build_refuses_branch_version_name(self):
+        with tempfile.TemporaryDirectory() as out, self.assertRaises(SystemExit) as raised:
+            ego.build(out, version_name='1.1.0 main')
+        self.assertIn('not a release version', str(raised.exception.code))
+
     def test_unknown_metadata_key_fails(self):
         self.assert_error(self.fixture('key', self.metadata_with(homepage='x')), 'unknown key "homepage"')
 

@@ -13,6 +13,10 @@ applies; keep it identical to upstream and put fork notes here. Commands below r
 - Never use `pkill -f 'gnome-shell --devkit'` verbatim — the pattern matches and kills the invoking shell; use the
   bracketed form.
 
+- To try a branch build, use the dev kit or a symlinked checkout. Never install a zip from
+  `linux/release/package-extension.sh` or `ego-zip.py build`: those are release builds without provider logos, and
+  they only accept release version names.
+
 ## Fork plumbing (keep upstream files untouched)
 - Changelog: fork entries go in `linux/CHANGELOG.md`, not the root `CHANGELOG.md`.
 - Make targets: add fork targets to `linux/fork.mk` (the root `Makefile` includes it with one hook line), e.g.

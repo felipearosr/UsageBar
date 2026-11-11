@@ -113,6 +113,8 @@ for bad in 1.1 1.1.0.0 01.1.0 1.01.0 v1.1.0 1.1.0- 1.1.0-rc..1 1.1.0-rc.01 1.1.0
     '1.1.0-rc 1' ''; do
     expect_failure "bad semver '$bad'" "is not a semver" --metadata "$release" "usagebar-v$bad"
 done
+expect_failure "pre-release label the extension can't download logos for" "must be alpha, beta or rc" \
+    --metadata "$(metadata 1.1.0-main 0.72.0)"
 expect_failure "version too long for the extension's version-name" "too long for the extension's version-name" \
     --metadata "$(metadata 10.20.30-alpha.10 0.72.0)"
 expect_failure "bad semver in metadata" "USAGEBAR_VERSION=1.1 " --metadata "$(metadata 1.1 0.69.0)"
