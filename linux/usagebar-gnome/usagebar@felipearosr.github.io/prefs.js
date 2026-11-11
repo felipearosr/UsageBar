@@ -20,6 +20,16 @@ import {
     providerModels,
 } from './modelprefs.js';
 import {ICON_SOURCES} from './accounts.js';
+import {
+    MAX_LETTERS,
+    TAG_COLORS,
+    encodeMetrics,
+    metricTitle,
+    pickFor,
+    readCatalog,
+    readMetrics,
+    updateMetrics,
+} from './panelmetrics.js';
 import {PROVIDER_META} from './providermeta.js';
 import {moveProviderOrder, resolveProviderOrder} from './renderstate.js';
 import {scopeOf, setScope} from './statusscopes.js';
@@ -185,6 +195,156 @@ function windowToggleRows(settings, provider) {
     }
     return known.map(e => strvMemberRow(settings, 'hidden-windows', `${e.p}:${e.k}`,
         {title: `Show ${e.l} bar`}));
+}
+
+// ----- Extra percentages on panel chips (panelmetrics.js) -----
+
+let tagCssInstalled = false;
+
+// Swatch and tag-preview colors, one class per tag color.
+function installTagCss() {
+    if (tagCssInstalled)
+        return;
+    tagCssInstalled = true;
+    const css = [
+        '.usagebar-swatch { min-width: 18px; min-height: 18px; padding: 0; border-radius: 5px; ' +
+            'border: 2px solid transparent; box-shadow: none; }',
+        '.usagebar-swatch:checked { border-color: @window_fg_color; }',
+        '.usagebar-tag-preview { color: #ffffff; font-weight: bold; border-radius: 4px; ' +
+            'padding: 1px 4px; font-size: 9pt; }',
+        ...TAG_COLORS.map(color => `.usagebar-color-${color.id} { background: ${color.hex}; }`),
+    ].join('\n');
+    const provider = new Gtk.CssProvider();
+    if (typeof provider.load_from_string === 'function')
+        provider.load_from_string(css);
+    else
+        provider.load_from_data(css, -1);
+    Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+// One bar of one account: a switch that adds it to the chip, the tag's
+// letters and color, and a preview of the tag.
+function panelMetricRow(settings, catalog, entry, multi, onChange) {
+    const read = () => readMetrics(settings.get_strv('panel-metrics'));
+    const write = patch => {
+        settings.set_strv('panel-metrics', encodeMetrics(updateMetrics(read(), catalog, entry, patch)));
+        onChange();
+    };
+    const pick = pickFor(read(), entry);
+    const row = new Adw.ActionRow({title: metricTitle(entry, {multi}), use_markup: false});
+
+    const preview = new Gtk.Label({valign: Gtk.Align.CENTER, tooltip_text: 'How the tag looks'});
+    let previewColor = null;
+    const showPreview = (letter, color) => {
+        preview.label = letter;
+        preview.visible = letter !== '';
+        if (previewColor)
+            preview.remove_css_class(`usagebar-color-${previewColor}`);
+        previewColor = color;
+        preview.add_css_class('usagebar-tag-preview');
+        preview.add_css_class(`usagebar-color-${color}`);
+    };
+    showPreview(pick.letter, pick.color);
+    row.add_suffix(preview);
+
+    const letters = new Gtk.Entry({
+        text: pick.letter,
+        max_length: MAX_LETTERS,
+        width_chars: 2,
+        max_width_chars: 2,
+        xalign: 0.5,
+        valign: Gtk.Align.CENTER,
+        tooltip_text: 'Tag letters; leave empty for no tag',
+    });
+    letters.connect('changed', () => {
+        write({letter: letters.text});
+        const current = pickFor(read(), entry);
+        showPreview(current.letter, current.color);
+    });
+    row.add_suffix(letters);
+
+    const swatches = new Gtk.Box({spacing: 4, valign: Gtk.Align.CENTER});
+    let first = null;
+    for (const color of TAG_COLORS) {
+        const swatch = new Gtk.ToggleButton({
+            active: color.id === pick.color,
+            tooltip_text: color.name,
+            css_classes: ['usagebar-swatch', `usagebar-color-${color.id}`],
+            valign: Gtk.Align.CENTER,
+        });
+        if (first)
+            swatch.set_group(first);
+        first ??= swatch;
+        swatch.connect('toggled', () => {
+            if (!swatch.active)
+                return;
+            write({color: color.id});
+            showPreview(pickFor(read(), entry).letter, color.id);
+        });
+        swatches.append(swatch);
+    }
+    row.add_suffix(swatches);
+
+    const toggle = new Gtk.Switch({
+        active: pick.on,
+        valign: Gtk.Align.CENTER,
+        tooltip_text: 'Show on the chip',
+    });
+    toggle.connect('notify::active', () => write({on: toggle.active}));
+    row.add_suffix(toggle);
+    row.activatable_widget = toggle;
+    return row;
+}
+
+// "Extra percentages": per provider, every account × bar the extension has
+// seen (its `known-panel-metrics` catalog), rebuilt when that changes.
+function panelMetricsGroup(settings) {
+    installTagCss();
+    const group = new Adw.PreferencesGroup({
+        title: 'Extra percentages',
+        description: 'Add more usage bars next to a provider’s chip percent, from any of its ' +
+            'accounts. Give each a 1–2 letter tag and a color to tell them apart; an empty tag ' +
+            'shows the number alone. Accounts are numbered as the popover numbers them with Hide ' +
+            'personal information on.',
+    });
+    const children = [];
+    const build = () => {
+        for (const child of children.splice(0))
+            group.remove(child);
+        const catalog = readCatalog(settings.get_strv('known-panel-metrics'));
+        if (!catalog.length) {
+            const hint = new Adw.ActionRow({
+                title: 'No usage bars yet',
+                subtitle: 'They appear here once UsageBar has fetched usage',
+            });
+            group.add(hint);
+            children.push(hint);
+            return;
+        }
+        for (const provider of [...new Set(catalog.map(entry => entry.p))]) {
+            const entries = catalog.filter(entry => entry.p === provider);
+            const multi = entries.some(entry => entry.a !== '');
+            const expander = new Adw.ExpanderRow({
+                title: PROVIDER_META[provider]?.name ?? provider,
+                use_markup: false,
+            });
+            const updateSubtitle = () => {
+                const metrics = readMetrics(settings.get_strv('panel-metrics'));
+                const shown = entries.filter(entry => pickFor(metrics, entry).on).length;
+                expander.subtitle = shown ? `${shown} on the chip` : 'Chip percent only';
+            };
+            for (const entry of entries)
+                expander.add_row(panelMetricRow(settings, catalog, entry, multi, updateSubtitle));
+            updateSubtitle();
+            group.add(expander);
+            children.push(expander);
+        }
+    };
+    build();
+    const changedId = settings.connect('changed::known-panel-metrics', build);
+    group.connect('destroy', () => settings.disconnect(changedId));
+    return group;
 }
 
 // Models: one row per model the extension has seen for this provider, with
@@ -631,6 +791,7 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             'Show reset time when exhausted',
             'An exhausted chip counts down to the reset instead of showing 100%'));
         general.add(panel);
+        general.add(panelMetricsGroup(settings));
 
         const popover = new Adw.PreferencesGroup({
             title: 'Popover',
