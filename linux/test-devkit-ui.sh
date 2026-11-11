@@ -3,7 +3,7 @@
 # USAGEBAR_UI_SMOKE_NO_CLI=1 forces the missing-CLI onboarding state even when
 # a codexbar CLI is installed (honoured only during a smoke run).
 # CODEXBAR_BIN=linux/usagebar-gnome/tests/stub-codexbar runs against an offline
-# stub CLI; add STUB_CODEXBAR_SYNC=0 for one without Machine Sync (upstream's).
+# stub CLI (a relative path is resolved against the current directory); add STUB_CODEXBAR_SYNC=0 for one without Machine Sync (upstream's).
 # USAGEBAR_UI_SMOKE_EXPECT_SYNC=0|1 asserts which of the two the run sees.
 # USAGEBAR_UI_SMOKE_ACCOUNTS=1 with STUB_CODEXBAR_ACCOUNTS=1 checks a provider
 # card with two Provider Accounts; add USAGEBAR_UI_SMOKE_CLAUDE_SWAP=1 and
@@ -27,6 +27,18 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# gnome-shell runs from another directory, and the extension falls through to
+# the installed CLI when CODEXBAR_BIN isn't executable from there. A relative
+# stub path would then run the real CLI against the real config, so resolve
+# it here and refuse anything that isn't an executable file.
+if [[ -n ${CODEXBAR_BIN:-} ]]; then
+  [[ $CODEXBAR_BIN == /* ]] || CODEXBAR_BIN="$PWD/$CODEXBAR_BIN"
+  if [[ ! -f $CODEXBAR_BIN || ! -x $CODEXBAR_BIN ]]; then
+    echo "CODEXBAR_BIN is not an executable file: $CODEXBAR_BIN" >&2
+    exit 2
+  fi
+  export CODEXBAR_BIN
+fi
 extension_dir="$repo_dir/linux/usagebar-gnome/usagebar@felipearosr.github.io"
 artifact_dir="${1:-$(mktemp -d /tmp/codexbar-ui-smoke.XXXXXX)}"
 result_path="$artifact_dir/result.json"
