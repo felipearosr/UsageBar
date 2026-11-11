@@ -26,6 +26,11 @@ extension CodexBarCLI {
                             signature: CommandSignature()),
                     ],
                     defaultSubcommandName: "capture"),
+                CommandDescriptor(
+                    name: "add-account",
+                    abstract: "Add another Claude account through claude-swap (opened in a terminal)",
+                    discussion: nil,
+                    signature: CommandSignature()),
             ],
             defaultSubcommandName: "statusline")
     }

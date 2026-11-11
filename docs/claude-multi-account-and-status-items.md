@@ -138,6 +138,30 @@ last refresh, adapter errors, and a link to the upstream project; CodexBar shoul
 - Keep expired, missing, unknown, and Keychain-inaccessible credential slots non-actionable. Never auto-switch, launch
   sessions, add/import/export/purge accounts, or mutate credentials directly.
 
+## UsageBar divergence: adding accounts with `cswap add`
+
+The Linux fork (UsageBar) deliberately runs `cswap add`, which the Phase 1 contract above excludes on macOS and the
+accepted decisions keep out of scope. Upstream's macOS app is unchanged.
+
+- **Add account…** on Claude opens a terminal running `codexbar claude add-account`. It runs exactly three fixed argument
+  arrays, in order, with no shell: `cswap add` (saves the current Claude Code login), `claude auth login` (the user
+  signs in to the other account in the browser), and `cswap add` again. It stops at the first failing step and names it.
+- It never runs a logout. claude-swap's README documents exactly this sequence ("log in with another account, then
+  `cswap add`") and warns not to log out first, because Claude Code may revoke the refresh token of the account being
+  left; it names logout, not a new login, as the revoking action.
+- One managed-machine exception: when an administrator sets `forceLoginMethod: "console"`, Claude Code's sign-in is
+  the Console one, and Anthropic documents that a keyless Console sign-in signs the machine out of any claude.ai
+  login. The add flow can't add a claude.ai subscription there; the account `cswap add` saved in step 1 keeps its
+  stored credential, but the live claude.ai login is replaced.
+- The steps run in the terminal's foreground process group (`posix_spawn` without a new group), so `claude auth
+  login` can use the terminal; Ctrl-C stops the running step and the helper reports it. When the run succeeds but
+  claude-swap lists no more accounts than before, the helper says nothing new was added instead of "done".
+- When claude-swap is missing, the extension offers a terminal running `uv tool install claude-swap` (or
+  `pipx install claude-swap` without uv). UsageBar never installs it without that explicit step. A detect step then
+  saves the absolute `cswap` path and `claudeSwapEnabled`; it reads only file metadata and runs nothing.
+- CodexBar still never reads claude-swap's or Claude Code's credential storage; the credential transaction stays
+  inside `cswap` and `claude`.
+
 ## Provider-neutral account model
 
 Introduce one projection used by menus and status items rather than teaching status item code about Claude OAuth:

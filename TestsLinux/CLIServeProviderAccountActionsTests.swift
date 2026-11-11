@@ -146,9 +146,13 @@ struct CLIServeProviderAccountActionsTests {
         // Providers whose accounts come from a login flow: no kind to add, but their token rows stay editable,
         // except that Antigravity's can't be removed here.
         for provider in ["claude", "antigravity"] {
-            #expect(providers[provider]?["kind"] == nil, "\(provider)")
             #expect(providers[provider]?["rename"] as? Bool == true, "\(provider)")
         }
+        #expect(providers["antigravity"]?["kind"] == nil)
+        // Claude adds claude-swap slots (#172), never a pasted key.
+        #expect(providers["claude"]?["kind"] as? String == "claude-swap")
+        #expect(providers["claude"]?["placeholder"] == nil)
+        #expect(providers["claude"]?["replacesCurrent"] as? Bool == false)
         #expect(providers["claude"]?["remove"] as? Bool == true)
         #expect(providers["antigravity"]?["remove"] as? Bool == false)
         // No token accounts at all: nothing, except Codex, whose managed accounts its own login adds (#169).

@@ -25,6 +25,7 @@ export const REMOVE_CAPABILITY = 'providerAccountRemove';
 export const ADD_CAPABILITIES = {
     key: 'providerAccountAddKey',
     'cli-login': 'providerAccountAddCliLogin',
+    'claude-swap': 'providerAccountAddClaudeSwap',
 };
 
 // cli-login (#169): per provider, the `codexbar` arguments of the helper that
