@@ -16,6 +16,9 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     case providerAccountKinds
     /// serve's `POST /accounts/add`: store a labelled key or cookie as a new Provider Account.
     case providerAccountAddKey
+    /// `/accounts/kinds` may report `cli-login` (Codex), which clients add by running `codexbar codex-accounts add`
+    /// in a terminal (CLICodexAccountsAdd.swift, #169).
+    case providerAccountAddCliLogin
     /// serve's `POST /accounts/rename`: relabel one Provider Account by its `accountId`.
     case providerAccountRename
     /// serve's `POST /accounts/remove`: delete one Provider Account by its `accountId`.
@@ -26,6 +29,7 @@ enum CLICapability: String, CaseIterable, Encodable, Sendable {
     static let accountActions: Set<CLICapability> = [
         .providerAccountKinds,
         .providerAccountAddKey,
+        .providerAccountAddCliLogin,
         .providerAccountRename,
         .providerAccountRemove,
     ]

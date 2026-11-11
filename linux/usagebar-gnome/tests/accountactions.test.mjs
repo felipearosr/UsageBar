@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    CLI_LOGIN_HELPERS,
     actionErrorText,
     addAction,
     addKeyRequest,
+    cliLoginArgv,
     keyFormError,
     readKinds,
     removeRequest,
@@ -16,15 +18,16 @@ import {
 import {readReport} from '../usagebar@felipearosr.github.io/clicompat.js';
 
 const ALL = readReport({capabilities: [
-    'providerAccountRows', 'providerAccountKinds', 'providerAccountAddKey',
+    'providerAccountRows', 'providerAccountKinds', 'providerAccountAddKey', 'providerAccountAddCliLogin',
     'providerAccountRename', 'providerAccountRemove',
 ]}).capabilities;
 
 const KINDS = readKinds({providers: {
     openrouter: {kind: 'key', placeholder: 'Paste API key…', rename: true, remove: true, replacesCurrent: false},
     copilot: {kind: 'key', rename: true, remove: true, replacesCurrent: true},
-    codex: {kind: 'cli-login', rename: true, remove: true},
-    claude: {rename: true, remove: true},
+    codex: {kind: 'cli-login', rename: false, remove: false},
+    gemini: {kind: 'cli-login'},
+    claude: {kind: 'some-later-kind', rename: true, remove: true},
     antigravity: {rename: true, remove: false},
     broken: 'x',
 }});
@@ -32,13 +35,15 @@ const KINDS = readKinds({providers: {
 const FAKE_TOKEN = 'fake-token-for-tests';
 
 test('readKinds keeps each provider\'s kind and actions', () => {
-    assert.deepEqual([...KINDS.keys()], ['openrouter', 'copilot', 'codex', 'claude', 'antigravity']);
+    assert.deepEqual([...KINDS.keys()], ['openrouter', 'copilot', 'codex', 'gemini', 'claude', 'antigravity']);
     assert.deepEqual(KINDS.get('openrouter'),
         {kind: 'key', placeholder: 'Paste API key…', rename: true, remove: true, replacesCurrent: false});
     assert.deepEqual(KINDS.get('copilot'),
         {kind: 'key', placeholder: null, rename: true, remove: true, replacesCurrent: true});
+    assert.deepEqual(KINDS.get('codex'),
+        {kind: 'cli-login', placeholder: null, rename: false, remove: false, replacesCurrent: false});
     // A kind without a handler here, and no kind at all, both read as null.
-    assert.equal(KINDS.get('codex').kind, null);
+    assert.equal(KINDS.get('claude').kind, null);
     assert.deepEqual(KINDS.get('antigravity'),
         {kind: null, placeholder: null, rename: true, remove: false, replacesCurrent: false});
     // Missing fields never turn an action on.
@@ -55,8 +60,7 @@ test('Add account… shows only where the kind and its action are advertised', (
     assert.equal(addAction('claude', {kinds: KINDS, capabilities: ALL}), null);
     // No kind for the provider (no multi-account support, or a kind this
     // extension has no handler for).
-    assert.equal(addAction('gemini', {kinds: KINDS, capabilities: ALL}), null);
-    assert.equal(addAction('codex', {kinds: KINDS, capabilities: ALL}), null);
+    assert.equal(addAction('cursor', {kinds: KINDS, capabilities: ALL}), null);
     // Capability missing: an older CLI, or one without the add-key action.
     assert.equal(addAction('openrouter', {kinds: KINDS, capabilities: new Set()}), null);
     assert.equal(addAction('openrouter', {kinds: KINDS, capabilities: null}), null);
@@ -121,4 +125,31 @@ test('error text uses serve\'s message and never shows the token', () => {
     assert.equal(actionErrorText(new Error('serve not running')), 'UsageBar’s backend isn’t running.');
     const text = actionErrorText({status: 400, detail: `bad ${FAKE_TOKEN}`}, FAKE_TOKEN);
     assert.ok(!text.includes(FAKE_TOKEN));
+});
+
+test('Codex offers cli-login only with its capability and a helper', () => {
+    assert.deepEqual(addAction('codex', {kinds: KINDS, capabilities: ALL}),
+        {provider: 'codex', kind: 'cli-login', placeholder: null, replacesCurrent: false});
+    const noCliLogin = new Set([...ALL].filter(name => name !== 'providerAccountAddCliLogin'));
+    assert.equal(addAction('codex', {kinds: KINDS, capabilities: noCliLogin}), null);
+    // Each kind needs its own capability: the key action still shows.
+    assert.notEqual(addAction('openrouter', {kinds: KINDS, capabilities: noCliLogin}), null);
+    // cli-login for a provider this extension has no helper for.
+    assert.equal(addAction('gemini', {kinds: KINDS, capabilities: ALL}), null);
+    // Codex's managed rows are never renamed or removed here.
+    assert.deepEqual(rowActions({id: 'codex-managed:abc'}, {provider: 'codex', kinds: KINDS, capabilities: ALL}),
+        {rename: false, remove: false});
+});
+
+test('the cli-login helper runs the extension\'s own codexbar with fixed arguments', () => {
+    assert.deepEqual(cliLoginArgv('codex', '/usr/libexec/usagebar/codexbar'),
+        ['/usr/libexec/usagebar/codexbar', 'codex-accounts', 'add']);
+    // Never a relative or missing binary (a PATH lookup could run another CLI).
+    assert.equal(cliLoginArgv('codex', 'codexbar'), null);
+    assert.equal(cliLoginArgv('codex', null), null);
+    assert.equal(cliLoginArgv('gemini', '/usr/bin/codexbar'), null);
+    assert.equal(cliLoginArgv('__proto__', '/usr/bin/codexbar'), null);
+    // The argv is a fresh array each time; callers can't change the table.
+    cliLoginArgv('codex', '/usr/bin/codexbar').push('--evil');
+    assert.deepEqual(CLI_LOGIN_HELPERS.codex, ['codex-accounts', 'add']);
 });
