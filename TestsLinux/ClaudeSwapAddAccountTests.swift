@@ -154,7 +154,8 @@ struct ClaudeSwapAddAccountTests {
         let claude = try home.installFake(
             "claude",
             at: ".local/bin/claude",
-            extra: "cut -d' ' -f5 /proc/$$/stat > '\(pgidFile.path)'")
+            // `ps` works on macOS and most Linux; /proc covers minimal Linux images without it.
+            extra: "{ ps -o pgid= -p $$ 2>/dev/null || cut -d' ' -f5 /proc/$$/stat; } > '\(pgidFile.path)'")
         let status = try CLIForegroundProcess.run(claude, ["auth", "login"])
         #expect(status == 0)
         let pgid = try String(contentsOf: pgidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
