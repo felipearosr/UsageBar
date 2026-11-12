@@ -2783,7 +2783,11 @@ export default class UsageBarExtension extends Extension {
     // Personal Info on, every row they hold is a scrubbed copy (accounts.js);
     // _usageRows keeps the raw rows so turning it off restores the labels.
     _buildAccountCards() {
-        const cards = buildCards(this._usageRows ?? [], {
+        // Claude Code's plan label goes on the account row it belongs to
+        // (matched by email) before the cards split rows into accounts, so
+        // each account panel names its own plan.
+        const usageRows = applyClaudeAccountPlan(this._usageRows ?? [], this._claudeAccountPlan);
+        const cards = buildCards(usageRows, {
             accountRows: !!this._usageAccountRows,
             hidePersonalInfo: DISPLAY.hidePersonalInfo,
         });
@@ -2808,7 +2812,7 @@ export default class UsageBarExtension extends Extension {
             if (prev?.name === next?.name && prev?.family === next?.family && prev?.email === next?.email)
                 return;
             this._claudeAccountPlan = next;
-            this._rows = applyClaudeAccountPlan(this._rows, next);
+            this._buildAccountCards();
             this._requestRender();
         };
         // Missing or unreadable config: drop any label from an earlier read.
@@ -4020,8 +4024,8 @@ export default class UsageBarExtension extends Extension {
                             .filter(actor => actor instanceof St.Label).map(actor => actor.text));
                         assertions.push(assertion('one block per account', heads.length === 2, {labels}));
                         assertions.push(assertion('Work is marked active, Personal is not',
-                            labels[1]?.includes('Work') && labels[1]?.includes('active') &&
-                            labels[0]?.includes('Personal') && !labels[0]?.includes('active'), {labels}));
+                            labels[1]?.includes('Work') && labels[1]?.includes('Active') &&
+                            labels[0]?.includes('Personal') && !labels[0]?.includes('Active'), {labels}));
                         // Personal's key failed: no Quota, so no "updated" time for it.
                         assertions.push(assertion('only the account with Quota shows its freshness',
                             labels[1]?.some(text => /^updated /.test(text)) &&
@@ -4076,8 +4080,8 @@ export default class UsageBarExtension extends Extension {
                             .map(head => descendants(head).filter(actor => actor instanceof St.Label)
                                 .map(actor => actor.text));
                         assertions.push(assertion('Hide Personal Info shows ordinal labels in row order',
-                            labels[0]?.includes('Account 2') && !labels[0]?.includes('active') &&
-                            labels[1]?.includes('Account 1') && labels[1]?.includes('active'), {labels}));
+                            labels[0]?.includes('Account 2') && !labels[0]?.includes('Active') &&
+                            labels[1]?.includes('Account 1') && labels[1]?.includes('Active'), {labels}));
                         assertions.push(assertion('no raw account label is rendered',
                             !texts.some(text => /\b(Work|Personal)\b/.test(text)), {texts}));
                         const headLabel = descendants(box)
@@ -4225,9 +4229,9 @@ export default class UsageBarExtension extends Extension {
                         const block = email => labels.find(texts => texts.includes(email)) ?? [];
                         assertions.push(assertion('one block per Codex account', heads.length === 3, {labels}));
                         assertions.push(assertion('the everyday login is the active account',
-                            block('me@example.com').includes('active') &&
-                            !block('work@example.com').includes('active') &&
-                            !block('old@example.com').includes('active'), {labels}));
+                            block('me@example.com').includes('Active') &&
+                            !block('work@example.com').includes('Active') &&
+                            !block('old@example.com').includes('Active'), {labels}));
                         assertions.push(assertion('the failing managed account shows no freshness',
                             block('work@example.com').some(text => /^updated /.test(text)) &&
                             !block('old@example.com').some(text => /^updated /.test(text)), {labels}));
@@ -4402,8 +4406,8 @@ export default class UsageBarExtension extends Extension {
                     const slots = GLib.getenv('USAGEBAR_UI_SMOKE_CLAUDE_SWITCH') === '1' ? 3 : 2;
                     assertions.push(assertion('one block per claude-swap slot', heads.length === slots, {labels}));
                     assertions.push(assertion('the active slot is marked active, the other stale',
-                        labels[0]?.includes('active') && !labels[0]?.includes('stale') &&
-                        labels[1]?.includes('stale') && !labels[1]?.includes('active'), {labels}));
+                        labels[0]?.includes('Active') && !labels[0]?.includes('Stale') &&
+                        labels[1]?.includes('Stale') && !labels[1]?.includes('Active'), {labels}));
                     assertions.push(assertion('one overview row for Claude',
                         this._rows.filter(row => row.provider === 'claude').length === 1,
                         {actual: this._rows.map(row => row.provider)}));
@@ -5500,33 +5504,33 @@ export default class UsageBarExtension extends Extension {
             icon.set_style(`color: ${d.color};`);
         }
         head.add_child(badge);
-        head.add_child(new St.Label({
-            text: d.title,
-            style_class: 'usagebar-card-title',
+        // Name over one muted line of details: status, this Machine, share.
+        const titleBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
-        }));
-        if (d.thisMachine) {
-            head.add_child(new St.Label({
-                text: 'this Machine',
-                style_class: 'usagebar-badge',
+            style_class: 'usagebar-machine-title',
+        });
+        titleBox.add_child(new St.Label({text: d.title, style_class: 'usagebar-card-title'}));
+        const details = [];
+        if (d.state)
+            details.push(d.state[0].toUpperCase() + d.state.slice(1));
+        if (d.thisMachine)
+            details.push('This machine');
+        if (d.share !== null)
+            details.push(`${Math.round(d.share * 100)}% of spend`);
+        if (details.length) {
+            const sub = new St.BoxLayout({style_class: 'usagebar-machine-subtitle'});
+            if (d.state)
+                sub.add_child(this._statusDot(d.state));
+            sub.add_child(new St.Label({
+                text: details.join(' · '),
+                style_class: 'usagebar-dim',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
+            titleBox.add_child(sub);
         }
-        if (d.state && d.state !== 'idle') {
-            head.add_child(new St.Label({
-                text: d.state,
-                style_class: `usagebar-badge${d.state === 'retired' ? ' usagebar-badge-stale' : ''}`,
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
-        head.add_child(new St.Widget({x_expand: true}));
-        if (d.share !== null) {
-            head.add_child(new St.Label({
-                text: `${Math.round(d.share * 100)}%`,
-                style_class: 'usagebar-worst',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
+        head.add_child(titleBox);
         card.add_child(head);
 
         for (let i = 0; i < d.kpis.length; i += 2) {
@@ -5779,15 +5783,26 @@ export default class UsageBarExtension extends Extension {
             const spendBody = new St.BoxLayout({vertical: true, x_expand: true});
             spendBody.add_child(view.scopeHost);
             spendBody.add_child(view.summaryHost);
-            const spendStack = new St.Widget({
+            view.spendCard.add_child(spendBody);
+            view.spendSeparator = new St.Widget({
+                style_class: 'usagebar-separator usagebar-row-sep',
+                height: 1,
+                x_expand: true,
+            });
+            // The machine list floats over the spend summary and the
+            // provider rows alike: it hangs past the spend card, and the
+            // rows would paint over it if it lived inside the card.
+            const body = new St.BoxLayout({vertical: true, x_expand: true});
+            body.add_child(view.spendCard);
+            body.add_child(view.spendSeparator);
+            body.add_child(view.rowsBox);
+            const bodyStack = new St.Widget({
                 layout_manager: new OverlayLayout(),
                 x_expand: true,
             });
-            spendStack.add_child(spendBody);
-            spendStack.add_child(view.scopeListHost);
-            view.spendCard.add_child(spendStack);
-            container.add_child(view.spendCard);
-            container.add_child(view.rowsBox);
+            bodyStack.add_child(body);
+            bodyStack.add_child(view.scopeListHost);
+            container.add_child(bodyStack);
             this._overviewView = view;
         }
         this._renderLogoPrompt(view);
@@ -5806,6 +5821,7 @@ export default class UsageBarExtension extends Extension {
         this._renderScopePicker(view);
         const overview = this._costOverview();
         view.spendCard.visible = !!overview || spendScopeOptions(this._syncPayload()).length > 0;
+        view.spendSeparator.visible = view.spendCard.visible;
         const summaryKey = this._overviewSummaryKey(overview);
         if (view.summaryKey !== summaryKey) {
             view.summaryHost.destroy_all_children();
@@ -6106,18 +6122,7 @@ export default class UsageBarExtension extends Extension {
             text: `Last ${ov.dates.length} days${scopeLabel ? ` · ${scopeLabel}` : ''}`,
             style_class: 'usagebar-dim usagebar-spend-period',
         }));
-        // A chevron that shows on hover/focus, hinting the dashboard.
-        const top = new St.BoxLayout({x_expand: true});
-        const hint = new St.Icon({
-            icon_name: 'go-next-symbolic',
-            icon_size: 14,
-            opacity: 0,
-            y_align: Clutter.ActorAlign.CENTER,
-            style_class: 'usagebar-spend-hint',
-        });
-        top.add_child(head);
-        top.add_child(hint);
-        row.add_child(top);
+        row.add_child(head);
 
         const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
         const visibleProviders = ov.providers.filter(provider => provider.cost > 0);
@@ -6151,14 +6156,6 @@ export default class UsageBarExtension extends Extension {
             can_focus: true,
             style_class: 'usagebar-spend-summary-button',
         });
-        const syncHint = () => hint.ease({
-            opacity: button.hover || button.has_key_focus() ? 255 : 0,
-            duration: 120,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-        });
-        button.connect('notify::hover', syncHint);
-        button.connect('key-focus-in', syncHint);
-        button.connect('key-focus-out', syncHint);
         // Opens only: while the panel is open its grab turns a click here
         // into an outside press that closes it.
         button.connect('clicked', () => this._showCostPanel(button, ov));
@@ -7586,7 +7583,9 @@ export default class UsageBarExtension extends Extension {
             style_class: 'usagebar-card-title',
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        const plan = this._planLabel(row);
+        // With several Provider Accounts each account panel names its own
+        // plan; one up here would read as the provider's, so leave it out.
+        const plan = this._accountCards?.get(row.provider)?.multi ? null : this._planLabel(row);
         if (plan) {
             head.add_child(new St.Label({
                 text: plan,
@@ -7595,11 +7594,14 @@ export default class UsageBarExtension extends Extension {
             }));
         }
         if (row.stale) {
-            head.add_child(new St.Label({
-                text: 'stale',
-                style_class: 'usagebar-badge usagebar-badge-stale',
+            const stale = new St.BoxLayout({style_class: 'usagebar-status', y_align: Clutter.ActorAlign.CENTER});
+            stale.add_child(this._statusDot('stale'));
+            stale.add_child(new St.Label({
+                text: 'Stale',
+                style_class: 'usagebar-dim',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
+            head.add_child(stale);
         }
         // The opt-in feed is labelled as coming from the user's own statusLine.
         if (isStatusLineSource(row)) {
@@ -7815,28 +7817,35 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
-        if (account.active) {
-            head.add_child(new St.Label({
-                text: 'active',
-                style_class: 'usagebar-badge usagebar-account-active',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
-        if (account.stale) {
-            head.add_child(new St.Label({
-                text: 'stale',
-                style_class: 'usagebar-badge usagebar-badge-stale',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
         head.add_child(new St.Widget({x_expand: true}));
+        // Status as a dot and muted text, then how fresh the Quota is:
+        // "● Active · updated 1m ago".
+        const status = [account.active && 'Active', account.stale && 'Stale'].filter(Boolean);
+        const statusBox = new St.BoxLayout({style_class: 'usagebar-status', y_align: Clutter.ActorAlign.CENTER});
+        if (status.length) {
+            statusBox.add_child(this._statusDot(account.stale ? 'stale' : 'active'));
+            statusBox.add_child(new St.Label({
+                text: status.join(' · '),
+                style_class: 'usagebar-dim',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
         if (account.updatedAt !== null) {
-            head.add_child(new St.Label({
+            if (status.length) {
+                statusBox.add_child(new St.Label({
+                    text: '·',
+                    style_class: 'usagebar-dim',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            }
+            statusBox.add_child(new St.Label({
                 text: `updated ${agoText(Math.max(0, Date.now() - account.updatedAt) / 1000)}`,
                 style_class: 'usagebar-dim usagebar-account-updated',
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
+        if (statusBox.get_n_children())
+            head.add_child(statusBox);
         const allowed = actions && provider
             ? rowActions(account, {provider, kinds: this._accountKinds, capabilities: this._accountCapabilities()})
             : {};
@@ -8640,7 +8649,16 @@ export default class UsageBarExtension extends Extension {
 
     // Plan tag text for a row's name ('' for none), shared by the compact
     // list and the provider detail header.
-    _planLabel(row) {
+    // Small status dot: green for active, amber for stale or retired,
+    // grey for anything else (idle).
+    _statusDot(state) {
+        return new St.Widget({
+            style_class: `usagebar-status-dot usagebar-status-${state}`,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+    }
+
+        _planLabel(row) {
         return planLabel(row, this._displayName(row.provider), PROVIDER_META[row.provider]?.planLabels);
     }
 

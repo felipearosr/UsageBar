@@ -87,12 +87,12 @@
 
 .usagebar-btn:hover,
 .usagebar-btn:focus {
-  background-color: rgba(160, 160, 166, 0.2);
+  background-color: rgba(160, 160, 166, 0.12);
   color: #ffffff;
 }
 
 .usagebar-btn:active {
-  background-color: rgba(160, 160, 166, 0.35);
+  background-color: rgba(160, 160, 166, 0.2);
   color: #ffffff;
 }
 
@@ -198,10 +198,21 @@
   margin: 2px 12px;
 }
 
-/* Match the popup-menu-item hover the footer items use. */
+/* Row hover: one faint tint shared by every list row (Providers rows,
+   Machines rows, the spend summary, the footer items). */
 .usagebar-compact-row:hover,
 .usagebar-compact-row:focus {
-  background-color: rgba(128, 128, 128, 0.55);
+  background-color: rgba(150, 170, 190, 0.08);
+}
+
+.usagebar-menu .usagebar-footer-item:hover,
+.usagebar-menu .usagebar-footer-item:focus,
+.usagebar-menu .usagebar-footer-item.selected {
+  background-color: rgba(150, 170, 190, 0.08);
+}
+
+.usagebar-menu .usagebar-footer-item:active {
+  background-color: rgba(150, 170, 190, 0.12);
 }
 
 .usagebar-compact-inner {
@@ -273,20 +284,41 @@
   color: #ffffff;
 }
 
+/* Tags name a plan or a source ("Ultra", "statusLine"): the same quiet
+   outline as the Providers list's .usagebar-plan-tag. Status (active,
+   stale, idle) is a .usagebar-status dot and text instead. */
 .usagebar-badge {
-  background-color: rgba(53, 132, 228, 0.25);
-  color: #78b3f0;
-  border-radius: 10px;
-  padding: 1px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 4px;
+  padding: 0 6px;
   margin-left: 8px;
-  font-size: 8.5pt;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 8pt;
   font-weight: bold;
 }
 
-.usagebar-badge-stale {
-  background-color: rgba(128, 128, 128, 0.25);
-  color: #9a9996;
+.usagebar-theme-system .usagebar-badge {
+  border-color: -st-border-color;
+  color: -st-foreground-color;
+  opacity: 0.7;
 }
+
+.usagebar-status {
+  spacing: 5px;
+  margin-left: 8px;
+  font-size: 9pt;
+}
+
+.usagebar-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: #6e7681;
+}
+
+.usagebar-status-active { background-color: #3fb950; }
+.usagebar-status-stale,
+.usagebar-status-retired { background-color: #d29922; }
 
 .usagebar-worst {
   font-weight: bold;
@@ -344,11 +376,6 @@
 
 .usagebar-account-headlabel {
   margin-right: 6px;
-}
-
-.usagebar-account-active {
-  background-color: rgba(46, 194, 126, 0.22);
-  color: #8ff0a4;
 }
 
 .usagebar-window-label {
@@ -646,7 +673,7 @@
 .usagebar-ov-switch-button:hover,
 .usagebar-ov-switch-button:focus {
   color: #ffffff;
-  background-color: rgba(88, 104, 122, 0.32);
+  background-color: rgba(88, 104, 122, 0.2);
 }
 
 .usagebar-ov-switch-button.selected {
@@ -665,7 +692,7 @@
 
 /* Machine dropdown on the Providers tab (Machine Sync with 2+ Machines). */
 .usagebar-scope-header {
-  margin: 0 8px 2px 8px;
+  margin: 0 0 2px 8px;
   spacing: 12px;
 }
 
@@ -690,9 +717,12 @@
   border: 1px solid rgba(160, 160, 166, 0.6);
 }
 
-/* Drops just below the toggle, over the spend summary. */
+/* Drops just below the toggle, over the spend summary and the provider
+   rows. It floats over the whole Providers list, so the offsets include the
+   spend card's 8px top padding and 12px side margin; its right edge lines
+   up with the toggle and the summary button. */
 .usagebar-scope-overlay {
-  margin: 30px 8px 0 0;
+  margin: 38px 12px 0 0;
 }
 
 .usagebar-scope-list {
@@ -712,7 +742,7 @@
 
 .usagebar-scope-item:hover,
 .usagebar-scope-item:focus {
-  background-color: rgba(88, 104, 122, 0.32);
+  background-color: rgba(88, 104, 122, 0.22);
 }
 
 .usagebar-scope-item.selected {
@@ -815,7 +845,7 @@
 
 .usagebar-link:hover,
 .usagebar-link:focus {
-  background-color: rgba(53, 132, 228, 0.25);
+  background-color: rgba(53, 132, 228, 0.15);
   color: #9cc6f5;
 }
 
@@ -907,6 +937,16 @@
   height: 28px;
   border-radius: 14px;
   background-color: rgba(160, 160, 166, 0.18);
+}
+
+/* Machine detail header: name over status · this machine · share. */
+.usagebar-machine-title {
+  spacing: 1px;
+}
+
+.usagebar-machine-subtitle {
+  spacing: 6px;
+  font-size: 8.5pt;
 }
 
 .usagebar-machine-badge-icon {
@@ -1029,7 +1069,7 @@
 
 .usagebar-content-tab:hover,
 .usagebar-content-tab:focus {
-  background-color: rgba(110, 130, 154, 0.2);
+  background-color: rgba(110, 130, 154, 0.12);
   color: #ffffff;
 }
 
@@ -1043,12 +1083,15 @@
   font-size: 8pt;
 }
 
+/* Flat: no box; a row separator follows it, like the provider rows. */
 .usagebar-spend-card {
-  margin: 2px 12px 10px 12px;
-  padding: 12px 5px 5px 5px;
-  border-radius: 9px;
-  border: 1px solid rgba(145, 165, 190, 0.18);
-  background-color: rgba(100, 120, 145, 0.1);
+  margin: 0 12px;
+  padding: 8px 0 0 0;
+}
+
+/* Lines up with the summary button's inner padding. */
+.usagebar-spend-label {
+  margin: 0 8px;
 }
 
 .usagebar-spend-label,
@@ -1067,16 +1110,12 @@
 
 .usagebar-spend-summary-button:hover,
 .usagebar-spend-summary-button:focus {
-  background-color: rgba(150, 170, 190, 0.1);
-  border-color: rgba(160, 180, 205, 0.22);
+  background-color: rgba(150, 170, 190, 0.08);
+  border-color: rgba(160, 180, 205, 0.14);
 }
 
 .usagebar-spend-summary-button:active {
-  background-color: rgba(150, 170, 190, 0.16);
-}
-
-.usagebar-spend-hint {
-  color: #a6b1bf;
+  background-color: rgba(150, 170, 190, 0.12);
 }
 
 .usagebar-spend-card .usagebar-ov-summary {
@@ -1125,7 +1164,7 @@
 
 .usagebar-mtable-row:hover,
 .usagebar-mtable-row:focus {
-  background-color: rgba(150, 170, 190, 0.1);
+  background-color: rgba(150, 170, 190, 0.08);
 }
 
 .usagebar-mtable-sep {
@@ -1185,7 +1224,7 @@
 
 .usagebar-mtable-total:hover,
 .usagebar-mtable-total:focus {
-  background-color: rgba(110, 130, 155, 0.24);
+  background-color: rgba(110, 130, 155, 0.14);
 }
 
 .usagebar-mtable-total-name {
@@ -1243,7 +1282,7 @@
 
 .usagebar-issue-btn:hover,
 .usagebar-issue-btn:focus {
-  background-color: rgba(255, 255, 255, 0.12);
+  background-color: rgba(255, 255, 255, 0.08);
 }
 
 .usagebar-issue-btn-primary {

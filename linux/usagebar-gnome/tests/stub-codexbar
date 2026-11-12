@@ -49,6 +49,11 @@ $XDG_DATA_HOME/CodexBar/managed-codex-homes, then records the email the fake
 wrote to that home's auth.json in $XDG_DATA_HOME/CodexBar/managed-codex-accounts.json,
 which serve then lists as one more managed row. It refuses to run without an
 XDG_DATA_HOME of its own, so it never writes the real data directory.
+STUB_CODEXBAR_SHOWCASE=1 is for looking around in a devkit rather than for a
+smoke: it turns on PAIRED, ACCOUNTS=3, CLAUDE_SWAP, CLAUDE_SWITCH and
+CODEX_ACCOUNTS together, and /usage answers with all of their rows plus the
+ISSUES providers that none of those cover (failing Gemini, Copilot and Cursor,
+healthy OpenCode Go), so every case shows in one popover.
 STUB_CODEXBAR_HEALTH_FAIL_SECS=N answers /health with 503 for the first N
 seconds after serve starts, like a serve that isn't ready yet.
 """
@@ -76,6 +81,10 @@ CLAUDE_SWITCH = CLAUDE_SWAP and os.environ.get("STUB_CODEXBAR_CLAUDE_SWITCH") ==
 SWITCH_DELAY = float(os.environ.get("STUB_CODEXBAR_SWITCH_DELAY") or 1.5)
 CODEX_ACCOUNTS = os.environ.get("STUB_CODEXBAR_CODEX_ACCOUNTS") == "1"
 CLAUDE_SWAP_ADD = ACCOUNTS and os.environ.get("STUB_CODEXBAR_CLAUDE_SWAP_ADD") == "1"
+SHOWCASE = os.environ.get("STUB_CODEXBAR_SHOWCASE") == "1"
+if SHOWCASE:
+    PAIRED = SYNC
+    ACCOUNTS = SPARE = CLAUDE_SWAP = CLAUDE_SWITCH = CODEX_ACCOUNTS = True
 HEALTH_FAIL_SECS = float(os.environ.get("STUB_CODEXBAR_HEALTH_FAIL_SECS") or 0)
 STARTED = time.monotonic()
 VERSION = "0.69.0"
@@ -445,11 +454,22 @@ class Handler(BaseHTTPRequestHandler):
             body = {"status": "ok", "version": VERSION}
             if REPORT or ACCOUNTS or CODEX_ACCOUNTS:
                 body["capabilities"] = (["machineSync"] if SYNC else []) + \
-                    (ACCOUNT_CAPABILITIES if ACCOUNTS else
+                    (ACCOUNT_CAPABILITIES + [c for c in CODEX_ACCOUNT_CAPABILITIES
+                                             if c not in ACCOUNT_CAPABILITIES] if SHOWCASE else
+                     ACCOUNT_CAPABILITIES if ACCOUNTS else
                      CODEX_ACCOUNT_CAPABILITIES if CODEX_ACCOUNTS else [])
                 body["usagebarVersion"] = VERSION
                 body["upstreamVersion"] = VERSION
             self.send_json(200, body)
+        elif path == "/usage" and SHOWCASE:
+            all_accounts = "accounts=all" in parts.query.split("&")
+            with LOCK:
+                slow, CLAUDE["slow_usage"] = CLAUDE["slow_usage"], False
+            if slow:
+                time.sleep(SWITCH_DELAY)
+            covered = {"claude", "codex", "openrouter"}
+            self.send_json(200, account_rows(all_accounts) + codex_account_rows(all_accounts) +
+                           [row for row in issue_rows() if row["provider"] not in covered])
         elif path == "/usage" and ISSUES:
             self.send_json(200, issue_rows())
         elif path == "/accounts/kinds" and CODEX_ACCOUNTS and not ACCOUNTS:
@@ -460,7 +480,9 @@ class Handler(BaseHTTPRequestHandler):
                 "openrouter": {"kind": "key", "placeholder": "sk-or-…", "rename": True, "remove": True,
                                "replacesCurrent": False},
                 "claude": dict({"rename": True, "remove": True, "replacesCurrent": False},
-                               **({"kind": "claude-swap"} if CLAUDE_SWAP_ADD else {}))}})
+                               **({"kind": "claude-swap"} if CLAUDE_SWAP_ADD else {})),
+                **({"codex": {"kind": "cli-login", "rename": False, "remove": False,
+                              "replacesCurrent": False}} if SHOWCASE else {})}})
         elif path == "/usage" and CODEX_ACCOUNTS:
             self.send_json(200, codex_account_rows("accounts=all" in parts.query.split("&")))
         elif path == "/usage" and ACCOUNTS:
