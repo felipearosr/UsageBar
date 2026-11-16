@@ -157,6 +157,22 @@ function statusScopeRow(settings, provider) {
 // Membership switch against a strv set key (hidden-chips, hidden-windows,
 // notify-muted-providers): being in the list means hidden/muted, so the
 // switch shows ON when the member is absent.
+// Add account… for a provider whose serve can add one. The add flow runs in
+// the shell (the extension holds serve's action token and watches the
+// terminal), so this only asks it to start (account-add-request).
+function addAccountRow(settings, provider, name) {
+    const row = new Adw.ActionRow({
+        title: 'Accounts',
+        subtitle: `Add another ${name} account; it shows up in the popover`,
+    });
+    const button = new Gtk.Button({label: 'Add account…', valign: Gtk.Align.CENTER});
+    button.connect('clicked', () =>
+        settings.set_string('account-add-request', `${provider}:${GLib.get_monotonic_time()}`));
+    row.add_suffix(button);
+    row.activatable_widget = button;
+    return row;
+}
+
 function strvMemberRow(settings, key, member, {title, subtitle = ''}) {
     const row = plainSwitchRow(title, subtitle, {  // titles embed CLI labels
         active: !new Set(settings.get_strv(key)).has(member),
@@ -931,8 +947,11 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         page.add(costChart);
 
         // Per-provider display settings, enabled providers only.
+        const adders = new Set(settings.get_strv('account-add-providers'));
         for (const {id, name} of enabled) {
             const group = new Adw.PreferencesGroup({title: name});
+            if (adders.has(id))
+                group.add(addAccountRow(settings, id, name));
             group.add(strvMemberRow(settings, 'hidden-chips', id, {
                 title: 'Show panel chip',
                 subtitle: 'The popover card stays either way',
@@ -959,7 +978,12 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         window.add(page);
 
         // --- Machine Sync ---
-        window.add(new MachineSyncPage(window, binary, settings).page);
+        const syncPage = new MachineSyncPage(window, binary, settings).page;
+        window.add(syncPage);
+        // The popover's "Sync settings…" opens this window on Machine Sync.
+        if (settings.get_string('prefs-page') === 'sync')
+            window.set_visible_page(syncPage);
+        settings.set_string('prefs-page', '');
     }
 
     // Paste-a-cookie section for web-backed providers, with step-by-step

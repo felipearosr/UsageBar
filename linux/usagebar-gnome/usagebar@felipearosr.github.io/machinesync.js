@@ -366,6 +366,66 @@ export function spendScopeOptions(payload, {colors = {}} = {}) {
     ];
 }
 
+// A Machine whose last push is older than this reads as out of date in the
+// Spend dropdown. Not `active` (Last Seen under 5 minutes): a Machine that
+// is asleep or off for a while is normal, not a warning.
+export const SYNC_OLD_SECS = 24 * 3600;
+
+// What the Spend dropdown shows, from the synced status: each Machine's
+// 30-day spend and share (keyed by spendScopeOptions' ids), the total with
+// a stacked bar of the shares, when each Machine last synced, and the
+// stale-data banner the Machines tab used to show. Amounts carry no "+":
+// `unpriced` says some usage had no price, for a footnote instead.
+//   details   Map id -> {amount, share, shareText, seen, old, color}
+//   total     {amount, count} or null
+//   segments  [{color, share}] for the stacked bar, this Machine first
+//   warn      the toggle's amber dot: banner, or a Machine gone quiet
+export function spendScopeDetails(payload, {now = Date.now(), fetchError = null, colors = {}} = {}) {
+    const view = machinesView(payload, {now, fetchError, colors});
+    const details = new Map();
+    const empty = {details, total: null, segments: [], banner: view.banner ?? null,
+        warn: !!view.banner, unpriced: false};
+    if (view.hidden || !view.total)
+        return empty;
+    const status = payload.status;
+    const amount = spend => formatSummaryUSD(spend?.costUSD ?? 0);
+    let unpriced = !!status.total?.last30Days?.costIncomplete;
+    (status.machines ?? []).forEach((raw, index) => {
+        const machine = view.machines[index];
+        const lastSeen = raw.lastSeen ? Date.parse(raw.lastSeen) : NaN;
+        const age = Number.isFinite(lastSeen) ? Math.max(0, (now - lastSeen) / 1000) : null;
+        unpriced ||= !!raw.last30Days?.costIncomplete;
+        details.set(machine.thisMachine ? 'this' : machine.id, {
+            amount: amount(raw.last30Days),
+            share: machine.share ?? 0,
+            shareText: machine.shareText,
+            seen: age === null ? 'never synced' : `synced ${syncAgoText(age)}`,
+            old: !machine.retired && (age === null || age >= SYNC_OLD_SECS),
+            color: machine.color,
+        });
+    });
+    const count = view.machines.length;
+    details.set('all', {
+        amount: amount(status.total?.last30Days),
+        share: 1,
+        shareText: '',
+        seen: `${count} machines`,
+        old: false,
+        color: null,
+    });
+    const segments = [...details].filter(([id]) => id !== 'all')
+        .map(([, detail]) => ({color: detail.color, share: detail.share}))
+        .filter(segment => segment.share > 0);
+    return {
+        details,
+        total: {amount: details.get('all').amount, count},
+        segments,
+        banner: view.banner,
+        warn: !!view.banner || [...details.values()].some(detail => detail.old),
+        unpriced,
+    };
+}
+
 // Spend on the Providers tab when it follows another Machine or 'all',
 // from that Machine's synced Spend. Null for this Machine (scope null) and
 // when the Machine left the Sync Group. Machine Sync carries, per Machine,
@@ -582,6 +642,29 @@ function scopedCostReportsFor(localReports, payload, scope) {
 function shiftDate(date, days) {
     const [y, m, d] = date.split('-').map(Number);
     return new Date(Date.UTC(y, m - 1, d + days, 12)).toISOString().slice(0, 10);
+}
+
+// A provider card's cost report in the picked Machine scope: `report` (one
+// of scopedCostReports' reports) as it is when it's the local report itself,
+// otherwise windowed to the local report's history (`historyDays`, default
+// 90) ending `today`, so the card's "Last N days" figures and its daily
+// chart cover the same days as they do for this Machine alone. Synced days
+// can reach further back than the local scan.
+export function cardCostReport(report, local, {historyDays = 90, today = null} = {}) {
+    if (!report || report === local)
+        return report ?? null;
+    const days = local?.historyDays ?? historyDays;
+    const end = today ?? new Date().toISOString().slice(0, 10);
+    const start = shiftDate(end, -(Math.max(1, days) - 1));
+    const daily = (report.daily ?? []).filter(day => day.date >= start && day.date <= end);
+    const priced = typeof report.totals?.totalCost === 'number';
+    return {
+        ...report,
+        historyDays: days,
+        daily,
+        last30DaysCostUSD: priced ? daily.reduce((sum, day) => sum + (day.totalCost ?? 0), 0) : null,
+        last30DaysTokens: daily.reduce((sum, day) => sum + (day.totalTokens ?? 0), 0),
+    };
 }
 
 // The Machines of scopedCostReports' `coverage` whose synced history starts

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Headless GNOME Shell UI smoke for the UsageBar extension.
+# USAGEBAR_UI_SMOKE_APP_THEME=codexbar|system (default system) and
+# USAGEBAR_UI_SMOKE_COLOR_SCHEME=prefer-light|prefer-dark pick the look.
 # USAGEBAR_UI_SMOKE_NO_CLI=1 forces the missing-CLI onboarding state even when
 # a codexbar CLI is installed (honoured only during a smoke run).
 # CODEXBAR_BIN=linux/usagebar-gnome/tests/stub-codexbar runs against an offline
@@ -71,7 +73,11 @@ GSETTINGS_SCHEMA_DIR="$extension_dir/schemas" dbus-run-session -- bash -c '
 
     export DCONF_PROFILE=$dconf_profile
     export USAGEBAR_UI_SMOKE_RESULT=$result_path
-    gsettings set org.gnome.shell.extensions.usagebar app-theme system
+    gsettings set org.gnome.shell.extensions.usagebar app-theme "${USAGEBAR_UI_SMOKE_APP_THEME:-system}"
+    # The shell style the system theme inherits: prefer-light or prefer-dark.
+    if [[ -n ${USAGEBAR_UI_SMOKE_COLOR_SCHEME:-} ]]; then
+        gsettings set org.gnome.desktop.interface color-scheme "$USAGEBAR_UI_SMOKE_COLOR_SCHEME"
+    fi
     gsettings set org.gnome.shell enabled-extensions \
         "[\"usagebar@felipearosr.github.io\"]"
 
@@ -133,6 +139,17 @@ printf 'Session log: %s\n' "$session_log_path"
 if [[ -z ${USAGEBAR_HIDE_PROVIDER_ICONS:-} ]]; then
     printf '\nRe-running the UI smoke with provider logos hidden\n'
     USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 "$0" "$artifact_dir/no-logos"
+fi
+
+# The system app theme on a light shell: the generated light palette, and the
+# codexbar theme on a light shell, which must stay dark navy.
+if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
+    for app_theme in system codexbar; do
+        printf '\nRe-running the UI smoke with the %s theme on a light shell\n' "$app_theme"
+        USAGEBAR_UI_SMOKE_APP_THEME=$app_theme USAGEBAR_UI_SMOKE_COLOR_SCHEME=prefer-light \
+            USAGEBAR_UI_SMOKE_NESTED=1 \
+            "$0" "$artifact_dir/light-$app_theme"
+    done
 fi
 
 # Upstream's CLI has no Machine Sync: run once more against the offline stub
