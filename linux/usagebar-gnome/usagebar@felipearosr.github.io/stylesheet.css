@@ -68,6 +68,32 @@
   /* Same navy as the cost dashboard panel (.usagebar-ov-panel); the
      theme's .popup-menu-content radius and shadow still apply. */
   background-color: rgba(22, 27, 34, 0.98);
+  color: #ffffff;
+}
+
+/* The shell's own popup-menu colors, pinned to its dark style: in a light
+   shell they turn dark (text #222226, grey hovers), which is unreadable on
+   the navy above. These are the dark shell's values, so the dark look is
+   unchanged; the light system theme maps them like everything else. */
+.usagebar-menu .popup-menu-item {
+  color: #ffffff;
+}
+
+.usagebar-menu .popup-menu-item:insensitive {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.usagebar-menu .popup-menu-item:hover,
+.usagebar-menu .popup-menu-item:focus,
+.usagebar-menu .popup-menu-item:selected,
+.usagebar-menu .popup-menu-item:checked,
+.usagebar-menu .popup-menu-item:active {
+  color: #ffffff;
+  background-color: rgba(150, 170, 190, 0.08);
+}
+
+.usagebar-menu .popup-separator-menu-item .popup-separator-menu-item-separator {
+  background-color: rgba(255, 255, 255, 0.1);
 }
 
 /* The popover rows are reactive:false menu items, which GNOME dims with
@@ -298,8 +324,6 @@
 }
 
 .usagebar-theme-system .usagebar-badge {
-  border-color: -st-border-color;
-  color: -st-foreground-color;
   opacity: 0.7;
 }
 
@@ -365,7 +389,6 @@
 }
 
 .usagebar-theme-system .usagebar-account-block {
-  border-color: -st-border-color;
   background-color: rgba(128, 128, 128, 0.08);
 }
 
@@ -658,36 +681,44 @@
   margin-bottom: 8px;
 }
 
+/* Segmented switches: one rounded track, the selected option a raised pill
+   inside it, so no per-button borders meet at the seams. A lone
+   .usagebar-ov-switch-button (a dropdown toggle) keeps its own outline. */
 .usagebar-ov-switch {
-  spacing: 0;
+  spacing: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid rgba(160, 160, 166, 0.22);
+  background-color: rgba(255, 255, 255, 0.04);
 }
 
 .usagebar-ov-switch-button {
   color: rgba(200, 200, 206, 0.85);
-  font-size: 7.5pt;
-  padding: 4px 10px;
-  border: 1px solid rgba(160, 160, 166, 0.35);
-  background-color: rgba(60, 70, 82, 0.18);
+  font-size: 8pt;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(160, 160, 166, 0.3);
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.usagebar-ov-switch .usagebar-ov-switch-button {
+  border-width: 0;
+  background-color: transparent;
 }
 
 .usagebar-ov-switch-button:hover,
-.usagebar-ov-switch-button:focus {
+.usagebar-ov-switch-button:focus,
+.usagebar-ov-switch .usagebar-ov-switch-button:hover,
+.usagebar-ov-switch .usagebar-ov-switch-button:focus {
   color: #ffffff;
-  background-color: rgba(88, 104, 122, 0.2);
+  background-color: rgba(255, 255, 255, 0.07);
 }
 
-.usagebar-ov-switch-button.selected {
+.usagebar-ov-switch-button.selected,
+.usagebar-ov-switch .usagebar-ov-switch-button.selected {
   color: #ffffff;
-  background-color: rgba(88, 104, 122, 0.55);
-}
-
-.usagebar-ov-switch-left {
-  border-radius: 6px 0 0 6px;
-}
-
-.usagebar-ov-switch-right {
-  border-radius: 0 6px 6px 0;
-  border-left-width: 0;
+  background-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 /* Machine dropdown on the Providers tab (Machine Sync with 2+ Machines). */
@@ -710,19 +741,16 @@
   spacing: 6px;
 }
 
+/* Drawn with cairo (scopeDot) so small circles stay round; this only
+   sizes it. */
 .usagebar-scope-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 3px;
-  border: 1px solid rgba(160, 160, 166, 0.6);
+  width: 8px;
+  height: 8px;
 }
 
-/* Drops just below the toggle, over the spend summary and the provider
-   rows. It floats over the whole Providers list, so the offsets include the
-   spend card's 8px top padding and 12px side margin; its right edge lines
-   up with the toggle and the summary button. */
-.usagebar-scope-overlay {
-  margin: 38px 12px 0 0;
+/* The open machine list floats under the header (FloatOverLayout). */
+.usagebar-scope-layer {
+  color: #ffffff;
 }
 
 .usagebar-scope-list {
@@ -752,6 +780,51 @@
 
 .usagebar-scope-meta {
   font-size: 8pt;
+}
+
+.usagebar-scope-share {
+  min-width: 34px;
+  padding-left: 8px;
+  text-align: right;
+}
+
+.usagebar-scope-amount {
+  font-feature-settings: "tnum";
+  min-width: 52px;
+  text-align: right;
+}
+
+.usagebar-scope-this {
+  margin-left: 4px;
+}
+
+.usagebar-scope-old {
+  color: #e5a50a;
+  padding-left: 8px;
+}
+
+.usagebar-scope-summary {
+  padding: 8px 10px 10px 10px;
+  spacing: 7px;
+}
+
+.usagebar-scope-total {
+  font-size: 10pt;
+  font-weight: bold;
+  font-feature-settings: "tnum";
+}
+
+.usagebar-scope-note {
+  padding: 2px 10px 6px 10px;
+}
+
+.usagebar-scope-banner {
+  margin: 4px 6px 6px 6px;
+  max-width: 260px;
+}
+
+.usagebar-scope-footer {
+  color: rgba(220, 220, 225, 0.7);
 }
 
 .usagebar-scope-divider {
@@ -963,55 +1036,18 @@
   margin: 4px 4px 0 4px;
 }
 
-/* System appearance keeps the CodexBar structure and provider colors, but
-   lets GNOME Shell supply the surface and text colors. On the stock dark
-   shell theme this produces the quieter neutral-grey popover. */
-.usagebar-theme-system.usagebar-menu {
-  background-color: -st-background-color;
-  color: -st-foreground-color;
-}
-
-.usagebar-theme-system.usagebar-ov-panel,
-.usagebar-theme-system.usagebar-tooltip {
-  background-color: -st-background-color;
-  border-color: -st-border-color;
-  color: -st-foreground-color;
-}
-
-.usagebar-theme-system .usagebar-title,
-.usagebar-theme-system .usagebar-compact-title,
-.usagebar-theme-system .usagebar-card-title,
-.usagebar-theme-system .usagebar-window-label,
-.usagebar-theme-system .usagebar-account-label,
-.usagebar-theme-system .usagebar-credits-count,
-.usagebar-theme-system .usagebar-kpi-value,
-.usagebar-theme-system .usagebar-ov-total,
-.usagebar-theme-system .usagebar-ov-text,
-.usagebar-theme-system .usagebar-ov-heading,
-.usagebar-theme-system .usagebar-ov-kpi-value,
-.usagebar-theme-system.usagebar-tooltip {
-  color: -st-foreground-color;
-}
-
+/* System appearance: CodexBar's structure and provider colors on the shell's
+   style. St has no -st-background-color / -st-foreground-color, so a dark
+   shell keeps the navy surface above (dim text a little quieter), and a
+   light shell gets the generated .usagebar-light palette at the end of this
+   file. */
 .usagebar-theme-system .usagebar-dim,
 .usagebar-theme-system .usagebar-accel,
 .usagebar-theme-system .usagebar-ov-caption,
 .usagebar-theme-system .usagebar-ov-small,
 .usagebar-theme-system .usagebar-ov-dimtext,
 .usagebar-theme-system .usagebar-ov-tick {
-  color: -st-foreground-color;
   opacity: 0.7;
-}
-
-.usagebar-theme-system .usagebar-btn,
-.usagebar-theme-system .usagebar-ov-switch-button,
-.usagebar-theme-system .usagebar-btn:hover,
-.usagebar-theme-system .usagebar-btn:focus,
-.usagebar-theme-system .usagebar-btn:active,
-.usagebar-theme-system .usagebar-ov-switch-button:hover,
-.usagebar-theme-system .usagebar-ov-switch-button:focus,
-.usagebar-theme-system .usagebar-ov-switch-button.selected {
-  color: -st-foreground-color;
 }
 
 /* No codexbar CLI: install empty state */
@@ -1439,8 +1475,6 @@
 }
 
 .usagebar-theme-system .usagebar-plan-tag {
-  border-color: -st-border-color;
-  color: -st-foreground-color;
   opacity: 0.7;
 }
 
@@ -1493,3 +1527,705 @@
   font-size: 9pt;
   margin-top: 2px;
 }
+
+/* Dots drawn by roundDot(): the widget paints no background or border
+   (St rounds tiny corners jaggedly); the fill is the CSS `color` below,
+   or a hex color passed in code. */
+.usagebar-round-dot,
+.usagebar-round-dot.usagebar-dot,
+.usagebar-round-dot.usagebar-status-dot,
+.usagebar-round-dot.usagebar-issue-dot,
+.usagebar-round-dot.usagebar-compact-account-dot {
+  background-color: transparent;
+  border-width: 0;
+  border-radius: 0;
+}
+
+.usagebar-round-dot.usagebar-bg-ok { color: #2ec27e; background-color: transparent; }
+.usagebar-round-dot.usagebar-bg-warn { color: #f5c211; background-color: transparent; }
+.usagebar-round-dot.usagebar-bg-crit,
+.usagebar-round-dot.usagebar-bg-critical { color: #ed333b; background-color: transparent; }
+.usagebar-round-dot.usagebar-bg-stale,
+.usagebar-round-dot.usagebar-bg-grey { color: #9a9996; background-color: transparent; }
+.usagebar-round-dot.usagebar-status-dot { color: #6e7681; }
+.usagebar-round-dot.usagebar-status-active { color: #3fb950; background-color: transparent; }
+.usagebar-round-dot.usagebar-status-stale,
+.usagebar-round-dot.usagebar-status-retired { color: #d29922; background-color: transparent; }
+.usagebar-round-dot.usagebar-issue-error { color: #ed333b; background-color: transparent; }
+.usagebar-round-dot.usagebar-issue-warn { color: #f5c211; background-color: transparent; }
+.usagebar-round-dot.usagebar-issue-info { color: #62a0ea; background-color: transparent; }
+.usagebar-round-dot.usagebar-issue-muted { color: #9a9996; background-color: transparent; }
+
+/* BEGIN generated light palette (tools/gen-light-theme.py) */
+.usagebar-light.usagebar-menu {
+  background-color: rgba(238, 241, 244, 0.98);
+  color: #1f1f1f;
+}
+
+.usagebar-light.usagebar-menu .popup-menu-item {
+  color: #1f1f1f;
+}
+
+.usagebar-light.usagebar-menu .popup-menu-item:insensitive {
+  color: rgba(10, 10, 10, 0.6);
+}
+
+.usagebar-light.usagebar-menu .popup-menu-item:hover,
+.usagebar-light.usagebar-menu .popup-menu-item:focus,
+.usagebar-light.usagebar-menu .popup-menu-item:selected,
+.usagebar-light.usagebar-menu .popup-menu-item:checked,
+.usagebar-light.usagebar-menu .popup-menu-item:active {
+  color: #1f1f1f;
+  background-color: rgba(65, 85, 105, 0.08);
+}
+
+.usagebar-light.usagebar-menu .popup-separator-menu-item .popup-separator-menu-item-separator {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+.usagebar-light .usagebar-title {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-btn {
+  background-color: transparent;
+  color: #484851;
+}
+
+.usagebar-light .usagebar-btn:hover,
+.usagebar-light .usagebar-btn:focus {
+  background-color: rgba(89, 89, 95, 0.12);
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-btn:active {
+  background-color: rgba(89, 89, 95, 0.2);
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-dim {
+  color: #484851;
+}
+
+.usagebar-light .usagebar-accel {
+  color: rgba(21, 21, 24, 0.6);
+}
+
+.usagebar-light .usagebar-banner {
+  color: #866906;
+}
+
+.usagebar-light .usagebar-compact-content-btn {
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-card {
+  background-color: rgba(115, 115, 115, 0.12);
+}
+
+.usagebar-light .usagebar-separator {
+  background-color: rgba(89, 89, 95, 0.25);
+}
+
+.usagebar-light .usagebar-compact-row {
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-compact-row:hover,
+.usagebar-light .usagebar-compact-row:focus {
+  background-color: rgba(65, 85, 105, 0.08);
+}
+
+.usagebar-light.usagebar-menu .usagebar-footer-item:hover,
+.usagebar-light.usagebar-menu .usagebar-footer-item:focus,
+.usagebar-light.usagebar-menu .usagebar-footer-item.selected {
+  background-color: rgba(65, 85, 105, 0.08);
+}
+
+.usagebar-light.usagebar-menu .usagebar-footer-item:active {
+  background-color: rgba(65, 85, 105, 0.12);
+}
+
+.usagebar-light .usagebar-compact-title {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-card-title {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-badge {
+  border-color: rgba(0, 0, 0, 0.28);
+  color: rgba(31, 31, 31, 0.72);
+}
+
+.usagebar-light .usagebar-status-dot {
+  background-color: #6e7681;
+}
+
+.usagebar-light .usagebar-status-active {
+  background-color: #3fb950;
+}
+
+.usagebar-light .usagebar-status-stale,
+.usagebar-light .usagebar-status-retired {
+  background-color: #d29922;
+}
+
+.usagebar-light .usagebar-account-block {
+  border-color: rgba(0, 0, 0, 0.07);
+  background-color: rgba(0, 0, 0, 0.035);
+}
+
+.usagebar-light .usagebar-account-block-active {
+  border-color: rgba(46, 194, 126, 0.45);
+  background-color: rgba(46, 194, 126, 0.06);
+}
+
+.usagebar-light .usagebar-account-head {
+  border-bottom-color: rgba(0, 0, 0, 0.07);
+}
+
+.usagebar-light .usagebar-account-label {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-account-block .usagebar-window-label {
+  color: rgba(49, 49, 44, 0.85);
+}
+
+.usagebar-light .usagebar-account-block {
+  background-color: rgba(115, 115, 115, 0.08);
+}
+
+.usagebar-light .usagebar-account-block-active {
+  border-color: rgba(46, 194, 126, 0.55);
+  background-color: rgba(46, 194, 126, 0.08);
+}
+
+.usagebar-light .usagebar-window-label {
+  color: #31312c;
+}
+
+.usagebar-light .usagebar-track {
+  background-color: rgba(89, 89, 95, 0.3);
+}
+
+.usagebar-light .usagebar-bg-ok {
+  background-color: #2ec27e;
+}
+
+.usagebar-light .usagebar-bg-warn {
+  background-color: #f5c211;
+}
+
+.usagebar-light .usagebar-bg-crit,
+.usagebar-light .usagebar-bg-critical {
+  background-color: #ed333b;
+}
+
+.usagebar-light .usagebar-bg-stale,
+.usagebar-light .usagebar-bg-grey {
+  background-color: #9a9996;
+}
+
+.usagebar-light .usagebar-fg-ok {
+  color: #1d7c50;
+}
+
+.usagebar-light .usagebar-fg-warn {
+  color: #866906;
+}
+
+.usagebar-light .usagebar-fg-crit,
+.usagebar-light .usagebar-fg-critical {
+  color: #da131c;
+}
+
+.usagebar-light .usagebar-fg-stale,
+.usagebar-light .usagebar-fg-grey {
+  color: #6f6e6a;
+}
+
+.usagebar-light .usagebar-credits-count {
+  color: #31312c;
+}
+
+.usagebar-light .usagebar-kpi-value {
+  color: #1f1f1f;
+}
+
+.usagebar-light.usagebar-model-table {
+  background-color: rgba(239, 239, 241, 0.97);
+  border-color: rgba(89, 89, 95, 0.3);
+  color: #31312c;
+}
+
+.usagebar-light.usagebar-model-table-value {
+  color: rgba(72, 72, 81, 0.9);
+}
+
+.usagebar-light.usagebar-model-table-pct {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-chart-bar {
+  background-color: #4d9aa8;
+}
+
+.usagebar-light .usagebar-chart-baseline {
+  background-color: rgba(89, 89, 95, 0.22);
+}
+
+.usagebar-light.usagebar-tooltip {
+  background-color: rgba(239, 239, 241, 0.96);
+  color: #31312c;
+  border-color: rgba(89, 89, 95, 0.3);
+}
+
+.usagebar-light .usagebar-ov-split {
+  background-color: rgba(89, 89, 95, 0.2);
+}
+
+.usagebar-light .usagebar-ov-panel {
+  background-color: rgba(238, 241, 244, 0.98);
+  border-color: rgba(89, 89, 95, 0.25);
+  color: #1e303f;
+}
+
+.usagebar-light .usagebar-ov-caption {
+  color: #484851;
+}
+
+.usagebar-light .usagebar-ov-total {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-ov-small {
+  color: #484851;
+}
+
+.usagebar-light .usagebar-ov-text {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-ov-dimtext {
+  color: #484851;
+}
+
+.usagebar-light .usagebar-ov-track {
+  background-color: rgba(89, 89, 95, 0.2);
+}
+
+.usagebar-light .usagebar-ov-heading {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-ov-tick {
+  color: rgba(72, 72, 81, 0.8);
+}
+
+.usagebar-light .usagebar-ov-kpis {
+  border-top-color: rgba(89, 89, 95, 0.25);
+  border-bottom-color: rgba(89, 89, 95, 0.25);
+}
+
+.usagebar-light .usagebar-ov-kpi-sep {
+  border-left-color: rgba(89, 89, 95, 0.25);
+}
+
+.usagebar-light .usagebar-ov-kpi-value {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-ov-switch {
+  border-color: rgba(89, 89, 95, 0.22);
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.usagebar-light .usagebar-ov-switch-button {
+  color: rgba(72, 72, 81, 0.85);
+  border-color: rgba(89, 89, 95, 0.3);
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.usagebar-light .usagebar-ov-switch .usagebar-ov-switch-button {
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-ov-switch-button:hover,
+.usagebar-light .usagebar-ov-switch-button:focus,
+.usagebar-light .usagebar-ov-switch .usagebar-ov-switch-button:hover,
+.usagebar-light .usagebar-ov-switch .usagebar-ov-switch-button:focus {
+  color: #1f1f1f;
+  background-color: rgba(0, 0, 0, 0.07);
+}
+
+.usagebar-light .usagebar-ov-switch-button.selected,
+.usagebar-light .usagebar-ov-switch .usagebar-ov-switch-button.selected {
+  color: #1f1f1f;
+  background-color: rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.usagebar-light.usagebar-scope-layer {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-scope-list {
+  border-color: rgba(89, 89, 95, 0.35);
+  background-color: #e4e8ec;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.225);
+}
+
+.usagebar-light .usagebar-scope-item:hover,
+.usagebar-light .usagebar-scope-item:focus {
+  background-color: rgba(96, 114, 133, 0.22);
+}
+
+.usagebar-light .usagebar-scope-item.selected {
+  background-color: rgba(83, 131, 191, 0.28);
+  color: #00255c;
+}
+
+.usagebar-light .usagebar-scope-old {
+  color: #8d6606;
+}
+
+.usagebar-light .usagebar-scope-footer {
+  color: rgba(52, 52, 61, 0.7);
+}
+
+.usagebar-light .usagebar-scope-divider {
+  background-color: rgba(89, 89, 95, 0.25);
+}
+
+.usagebar-light .usagebar-ov-scope-list {
+  border-color: rgba(89, 89, 95, 0.35);
+  background-color: rgba(97, 113, 133, 0.25);
+}
+
+.usagebar-light .usagebar-machine-row-scoped {
+  background-color: rgba(96, 114, 133, 0.22);
+}
+
+.usagebar-light .usagebar-ov-table-head {
+  border-bottom-color: rgba(89, 89, 95, 0.35);
+}
+
+.usagebar-light .usagebar-ov-table-row {
+  border-bottom-color: rgba(89, 89, 95, 0.15);
+}
+
+.usagebar-light .usagebar-link {
+  color: #166ec8;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-link:hover,
+.usagebar-light .usagebar-link:focus {
+  background-color: rgba(53, 132, 228, 0.15);
+  color: #156dcf;
+}
+
+.usagebar-light .usagebar-machine-dot-active {
+  background-color: #2ec27e;
+}
+
+.usagebar-light .usagebar-machine-dot-idle {
+  background-color: rgba(89, 89, 95, 0.6);
+}
+
+.usagebar-light .usagebar-machine-dot-retired {
+  background-color: transparent;
+  border-color: rgba(89, 89, 95, 0.6);
+}
+
+.usagebar-light .usagebar-machine-badge {
+  background-color: rgba(89, 89, 95, 0.18);
+}
+
+.usagebar-light .usagebar-machine-badge-icon {
+  color: rgba(39, 39, 53, 0.9);
+}
+
+.usagebar-light .usagebar-onboarding-btn {
+  border-color: rgba(89, 89, 95, 0.35);
+  background-color: rgba(96, 114, 133, 0.32);
+}
+
+.usagebar-light .usagebar-content-header {
+  border-bottom-color: rgba(89, 89, 95, 0.2);
+}
+
+.usagebar-light .usagebar-content-tab {
+  color: #526072;
+  border-color: transparent;
+}
+
+.usagebar-light .usagebar-content-tab:hover,
+.usagebar-light .usagebar-content-tab:focus {
+  background-color: rgba(94, 113, 135, 0.12);
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-content-tab.selected {
+  background-color: rgba(88, 112, 142, 0.4);
+  border-color: rgba(60, 83, 110, 0.35);
+  color: #0b2244;
+}
+
+.usagebar-light .usagebar-spend-summary-button {
+  border-color: transparent;
+}
+
+.usagebar-light .usagebar-spend-summary-button:hover,
+.usagebar-light .usagebar-spend-summary-button:focus {
+  background-color: rgba(65, 85, 105, 0.08);
+  border-color: rgba(160, 180, 205, 0.14);
+}
+
+.usagebar-light .usagebar-spend-summary-button:active {
+  background-color: rgba(65, 85, 105, 0.12);
+}
+
+.usagebar-light .usagebar-spend-total {
+  color: #0b2244;
+}
+
+.usagebar-light .usagebar-mtable-head {
+  color: rgba(58, 67, 78, 0.75);
+}
+
+.usagebar-light .usagebar-mtable-row {
+  color: #475361;
+}
+
+.usagebar-light .usagebar-mtable-row:hover,
+.usagebar-light .usagebar-mtable-row:focus {
+  background-color: rgba(65, 85, 105, 0.08);
+}
+
+.usagebar-light .usagebar-mtable-sep {
+  background-color: rgba(89, 89, 95, 0.12);
+}
+
+.usagebar-light .usagebar-mtable-name {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-mtable-value {
+  color: #0b2244;
+}
+
+.usagebar-light .usagebar-mtable-total {
+  color: #1f1f1f;
+  background-color: rgba(94, 112, 136, 0.14);
+}
+
+.usagebar-light .usagebar-mtable-total:hover,
+.usagebar-light .usagebar-mtable-total:focus {
+  background-color: rgba(94, 112, 136, 0.14);
+}
+
+.usagebar-light .usagebar-mtable-total-name {
+  color: #475361;
+}
+
+.usagebar-light .usagebar-mtable-total .usagebar-mtable-share {
+  color: rgba(75, 87, 101, 0.85);
+}
+
+.usagebar-light .usagebar-issues-banner {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.usagebar-light .usagebar-issues-banner-urgent {
+  background-color: rgba(237, 51, 59, 0.16);
+}
+
+.usagebar-light .usagebar-issue-error {
+  background-color: #ed333b;
+}
+
+.usagebar-light .usagebar-issue-warn {
+  background-color: #f5c211;
+}
+
+.usagebar-light .usagebar-issue-info {
+  background-color: #62a0ea;
+}
+
+.usagebar-light .usagebar-issue-muted {
+  background-color: #9a9996;
+}
+
+.usagebar-light .usagebar-issue-text-error {
+  color: #d32000;
+}
+
+.usagebar-light .usagebar-issue-text-warn {
+  color: #866906;
+}
+
+.usagebar-light .usagebar-issue-text-info {
+  color: #1c6bcb;
+}
+
+.usagebar-light .usagebar-issue-text-muted {
+  color: #6f6e6a;
+}
+
+.usagebar-light .usagebar-issue-btn {
+  border-color: rgba(89, 89, 95, 0.35);
+  background-color: rgba(0, 0, 0, 0.06);
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-issue-btn:hover,
+.usagebar-light .usagebar-issue-btn:focus {
+  background-color: rgba(0, 0, 0, 0.08);
+}
+
+.usagebar-light .usagebar-issue-btn-primary {
+  border-color: transparent;
+  background-color: #3584e4;
+}
+
+.usagebar-light .usagebar-issue-btn-primary:hover,
+.usagebar-light .usagebar-issue-btn-primary:focus {
+  background-color: #4a90e8;
+}
+
+.usagebar-light .usagebar-issues-group-title {
+  color: rgba(72, 72, 81, 0.8);
+}
+
+.usagebar-light .usagebar-issue-card {
+  border-color: rgba(0, 0, 0, 0.08);
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.usagebar-light .usagebar-issue-pill-error {
+  color: #d32000;
+  background-color: rgba(237, 51, 59, 0.18);
+}
+
+.usagebar-light .usagebar-issue-pill-warn {
+  color: #866906;
+  background-color: rgba(245, 194, 17, 0.15);
+}
+
+.usagebar-light .usagebar-issue-pill-info {
+  color: #1c6bcb;
+  background-color: rgba(98, 160, 234, 0.18);
+}
+
+.usagebar-light .usagebar-issue-pill-muted {
+  color: #5b5955;
+  background-color: rgba(0, 0, 0, 0.08);
+}
+
+.usagebar-light .usagebar-issue-toggle {
+  color: rgba(72, 72, 81, 0.85);
+}
+
+.usagebar-light .usagebar-issue-toggle:hover {
+  color: #1f1f1f;
+}
+
+.usagebar-light .usagebar-issue-raw {
+  color: rgba(72, 72, 81, 0.9);
+  background-color: rgba(115, 115, 115, 0.3);
+}
+
+.usagebar-light .usagebar-provider-issue-summary {
+  color: rgba(51, 51, 63, 0.9);
+}
+
+.usagebar-light .usagebar-issue-btn:insensitive {
+  color: rgba(21, 21, 24, 0.6);
+}
+
+.usagebar-light .usagebar-plan-tag {
+  border-color: rgba(0, 0, 0, 0.28);
+  color: rgba(31, 31, 31, 0.72);
+}
+
+.usagebar-light .usagebar-account-error {
+  color: #d32000;
+}
+
+.usagebar-light .usagebar-account-destructive {
+  color: #d32000;
+}
+
+.usagebar-light .usagebar-account-switch-error {
+  color: #d32000;
+}
+
+.usagebar-light .usagebar-round-dot,
+.usagebar-light .usagebar-round-dot.usagebar-dot,
+.usagebar-light .usagebar-round-dot.usagebar-status-dot,
+.usagebar-light .usagebar-round-dot.usagebar-issue-dot,
+.usagebar-light .usagebar-round-dot.usagebar-compact-account-dot {
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-bg-ok {
+  color: #2ec27e;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-bg-warn {
+  color: #f5c211;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-bg-crit,
+.usagebar-light .usagebar-round-dot.usagebar-bg-critical {
+  color: #ed333b;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-bg-stale,
+.usagebar-light .usagebar-round-dot.usagebar-bg-grey {
+  color: #9a9996;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-status-dot {
+  color: #6e7681;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-status-active {
+  color: #3fb950;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-status-stale,
+.usagebar-light .usagebar-round-dot.usagebar-status-retired {
+  color: #d29922;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-issue-error {
+  color: #ed333b;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-issue-warn {
+  color: #f5c211;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-issue-info {
+  color: #62a0ea;
+  background-color: transparent;
+}
+
+.usagebar-light .usagebar-round-dot.usagebar-issue-muted {
+  color: #9a9996;
+  background-color: transparent;
+}
+/* END generated light palette */

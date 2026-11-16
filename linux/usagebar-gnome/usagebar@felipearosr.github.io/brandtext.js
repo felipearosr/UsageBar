@@ -90,3 +90,14 @@ export function surfaceColor(background, foreground) {
     }
     return '#000000';
 }
+
+// Whether an SVG paints only in white (or nothing): its colors, from fill,
+// stroke and stop-color attributes and styles, ignoring none, currentColor
+// and gradient references.
+export function logoSvgIsWhite(svg) {
+    const colors = [...svg.matchAll(/(?:fill|stroke|stop-color)\s*[=:]\s*["']?([^"';\s>]+)/gi)]
+        .map(match => match[1].toLowerCase())
+        .filter(color => !['none', 'currentcolor', 'transparent'].includes(color) && !color.startsWith('url('));
+    return colors.length > 0 &&
+        colors.every(color => ['white', '#fff', '#ffffff', 'rgb(255,255,255)'].includes(color.replace(/\s/g, '')));
+}

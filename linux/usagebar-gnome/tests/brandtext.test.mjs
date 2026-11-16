@@ -73,3 +73,18 @@ test('a surface is its opaque background, else the opposite of its text color', 
         {red: 20, green: 20, blue: 20, alpha: 255}), '#ffffff');
     assert.equal(surfaceColor(null, null), '#000000');
 });
+
+test('logoSvgIsWhite tells white-only logos from colored ones', async () => {
+    const {logoSvgIsWhite} = await import('../usagebar@felipearosr.github.io/brandtext.js');
+    assert.equal(logoSvgIsWhite('<svg fill="none"><path fill="white" d=""/></svg>'), true);
+    assert.equal(logoSvgIsWhite('<svg><path style="fill:#FFFFFF;stroke:none" d=""/></svg>'), true);
+    assert.equal(logoSvgIsWhite('<svg><path fill="#4285F4" d=""/><path fill="white"/></svg>'), false);
+    assert.equal(logoSvgIsWhite('<svg><path d=""/></svg>'), false);
+    // The bundled logos: all but a handful are drawn white.
+    const {readdirSync, readFileSync} = await import('node:fs');
+    const dir = new URL('../usagebar@felipearosr.github.io/icons/', import.meta.url);
+    const files = readdirSync(dir).filter(name => name.endsWith('.svg'));
+    const white = files.filter(name => logoSvgIsWhite(readFileSync(new URL(name, dir), 'utf8')));
+    assert.ok(white.includes('ProviderIcon-claude.svg') && white.includes('ProviderIcon-codex.svg'));
+    assert.ok(white.length >= files.length - 8, `${white.length} of ${files.length} white`);
+});

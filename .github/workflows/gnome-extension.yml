@@ -50,6 +50,9 @@ jobs:
       - name: Provider metadata is current
         run: python3 linux/usagebar-gnome/tools/gen-provider-meta.py --check
 
+      - name: Light palette is current
+        run: python3 linux/usagebar-gnome/tools/gen-light-theme.py --check
+
       - name: EGO ZIP lint tests
         run: python3 -m unittest discover -s linux/usagebar-gnome/tests -p 'test_*.py' -v
 

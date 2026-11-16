@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    cardCostReport,
     costScopeLabel,
     costScopeOptions,
     countText,
@@ -18,6 +19,7 @@ import {
     scopedProviderKpis,
     scopeControlMode,
     scopedSpend,
+    spendScopeDetails,
     shortCoverageText,
     spendScopeOptions,
     spendText,
@@ -658,4 +660,88 @@ test('the Machines table status line and share', () => {
     delete p.status.machines[1].lastSeen;
     assert.equal(machinesView(p, {now: NOW}).machines[1].status, 'Never seen');
     assert.deepEqual([null, 0, 0.004, 0.005, 0.995, 1].map(shareText), ['', '0%', '<1%', '1%', '100%', '100%']);
+});
+
+test('cardCostReport keeps the local report as it is', () => {
+    const local = {provider: 'claude', historyDays: 90, daily: [{date: '2026-11-12', totalCost: 1}]};
+    assert.equal(cardCostReport(local, local), local);
+    assert.equal(cardCostReport(undefined, local), null);
+});
+
+test('cardCostReport windows a merged report to the local history', () => {
+    const local = {provider: 'claude', historyDays: 3, daily: []};
+    const merged = {
+        provider: 'claude',
+        totals: {totalCost: 10, totalTokens: 100},
+        daily: [
+            {date: '2026-11-01', totalCost: 4, totalTokens: 40},
+            {date: '2026-11-10', totalCost: 1, totalTokens: 10},
+            {date: '2026-11-12', totalCost: 5, totalTokens: 50},
+        ],
+    };
+    const card = cardCostReport(merged, local, {today: '2026-11-12'});
+    assert.equal(card.historyDays, 3);
+    assert.deepEqual(card.daily.map(day => day.date), ['2026-11-10', '2026-11-12']);
+    assert.equal(card.last30DaysCostUSD, 6);
+    assert.equal(card.last30DaysTokens, 60);
+});
+
+test('cardCostReport keeps an unpriced merged report token-only', () => {
+    const merged = {provider: 'codex', totals: {totalCost: null}, daily: [{date: '2026-11-12', totalTokens: 7}]};
+    const card = cardCostReport(merged, null, {historyDays: 90, today: '2026-11-12'});
+    assert.equal(card.historyDays, 90);
+    assert.equal(card.last30DaysCostUSD, null);
+    assert.equal(card.last30DaysTokens, 7);
+});
+
+test('spendScopeDetails gives each Spend dropdown entry its spend, share and sync age', () => {
+    const now = Date.parse('2026-11-12T12:00:00Z');
+    const payload = {
+        paired: true,
+        refreshedAt: '2026-11-12T11:59:30Z',
+        status: {
+            total: {today: {costUSD: 5}, last30Days: {costUSD: 100, costIncomplete: true}},
+            machines: [
+                {machineId: 'a', displayName: 'notebook', isThisMachine: true, active: false,
+                    lastSeen: '2026-11-12T11:50:00Z', last30Days: {costUSD: 1}},
+                {machineId: 'b', displayName: 'fedora', active: false,
+                    lastSeen: '2026-11-10T09:00:00Z', last30Days: {costUSD: 99, costIncomplete: true}},
+            ],
+        },
+    };
+    const {details, total, segments, banner, warn, unpriced} = spendScopeDetails(payload, {now});
+    assert.equal(banner, null);
+    assert.equal(unpriced, true);
+    // Inactive (over 5 minutes) is not a warning; two days without a sync is.
+    assert.equal(details.get('this').old, false);
+    assert.equal(details.get('this').amount, '$1.00');
+    assert.equal(details.get('this').shareText, '1%');
+    assert.equal(details.get('this').seen, 'synced 10 min ago');
+    assert.equal(details.get('b').amount, '$99');
+    assert.equal(details.get('b').old, true);
+    assert.equal(warn, true);
+    assert.deepEqual(total, {amount: '$100', count: 2});
+    assert.deepEqual(segments.map(segment => segment.share), [0.01, 0.99]);
+});
+
+test('spendScopeDetails does not warn about Machines that synced today', () => {
+    const now = Date.parse('2026-11-12T12:00:00Z');
+    const {warn} = spendScopeDetails({
+        paired: true,
+        refreshedAt: '2026-11-12T11:59:30Z',
+        status: {
+            total: {last30Days: {costUSD: 2}},
+            machines: [
+                {machineId: 'a', isThisMachine: true, lastSeen: '2026-11-12T11:00:00Z', last30Days: {costUSD: 1}},
+                {machineId: 'b', lastSeen: '2026-11-12T02:00:00Z', last30Days: {costUSD: 1}},
+            ],
+        },
+    }, {now});
+    assert.equal(warn, false);
+});
+
+test('spendScopeDetails is empty while unpaired', () => {
+    const {details, warn} = spendScopeDetails({paired: false});
+    assert.equal(details.size, 0);
+    assert.equal(warn, false);
 });
