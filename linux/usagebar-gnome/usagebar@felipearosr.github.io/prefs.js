@@ -38,6 +38,13 @@ import {MachineSyncPage, runSync} from './syncpage.js';
 import {CLI_WITHOUT_SYNC, settingsArgs} from './syncprefs.js';
 import {featureState, supportSummary} from './clicompat.js';
 import {findCodexbar, parseCliVersion} from './cli.js';
+import {FRESH_MS, forwardSnippet} from './statuslinefeed.js';
+import {
+    readFeedStatus,
+    setFeedEnabled,
+    unwireCaptureStatusLine,
+    wireCaptureStatusLine,
+} from './statuslinefeedfs.js';
 import {logoPackState} from './logopack.js';
 import {
     downloadLogoPack,
@@ -947,6 +954,7 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         page.add(costChart);
 
         // Per-provider display settings, enabled providers only.
+        let claudeFeedRow = null;
         const adders = new Set(settings.get_strv('account-add-providers'));
         for (const {id, name} of enabled) {
             const group = new Adw.PreferencesGroup({title: name});
@@ -962,6 +970,10 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             }));
             if (COOKIE_PROVIDERS[id])
                 group.add(this._cookieRow(binary, id));
+            if (id === 'claude') {
+                claudeFeedRow = this._claudeFeedRow(window);
+                group.add(claudeFeedRow);
+            }
             if (id === 'antigravity') {
                 group.add(switchRow(settings, 'antigravity-overview-gemini',
                     'Overview: Gemini models',
@@ -983,7 +995,192 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         // The popover's "Sync settings…" opens this window on Machine Sync.
         if (settings.get_string('prefs-page') === 'sync')
             window.set_visible_page(syncPage);
+        // A rate-limited Claude card's "Set up…" opens Providers on the feed.
+        if (settings.get_string('prefs-page') === 'claude-feed') {
+            window.set_visible_page(page);
+            if (claudeFeedRow)
+                claudeFeedRow.expanded = true;
+        }
         settings.set_string('prefs-page', '');
+    }
+
+    // Claude Code statusLine feed (statuslinefeed.js): a switch that turns it
+    // on, wires Claude Code's statusLine when the user has none (after asking),
+    // shows the line to add when they have their own, and says whether
+    // captures are arriving. Off by default; labelled as the user's own
+    // statusLine data.
+    _claudeFeedRow(window) {
+        const expander = new Adw.ExpanderRow({
+            title: 'Read quota from Claude Code',
+            use_markup: false,
+        });
+        const toggle = plainSwitchRow('Use the statusLine feed',
+            'Anthropic throttles the usage endpoint UsageBar polls. Claude Code already ' +
+            'gets your 5-hour and weekly quota on every reply and passes it to its ' +
+            'statusLine command; with this on, UsageBar reads it from there.');
+        expander.add_row(toggle);
+
+        // Shown when the user has a statusLine of their own that doesn't
+        // forward yet: what to add, and a copy button.
+        const snippetRow = new Adw.ActionRow({title: 'Forward your statusLine', use_markup: false});
+        const copy = new Gtk.Button({
+            icon_name: 'edit-copy-symbolic',
+            tooltip_text: 'Copy the line',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        });
+        snippetRow.add_suffix(copy);
+        expander.add_row(snippetRow);
+        const snippet = new Gtk.Label({
+            selectable: true,
+            wrap: true,
+            xalign: 0,
+            css_classes: ['monospace'],
+            margin_top: 10,
+            margin_bottom: 10,
+            margin_start: 12,
+            margin_end: 12,
+        });
+        const codeRow = new Adw.PreferencesRow({activatable: false, child: snippet});
+        expander.add_row(codeRow);
+        copy.connect('clicked', () => {
+            copy.get_clipboard().set_content(Gdk.ContentProvider.new_for_value(snippet.label));
+            window.add_toast(new Adw.Toast({title: 'Copied', timeout: 2}));
+        });
+
+        const statusRow = new Adw.ActionRow({title: 'Status', use_markup: false});
+        const recheck = new Gtk.Button({
+            icon_name: 'view-refresh-symbolic',
+            tooltip_text: 'Check again',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+        });
+        statusRow.add_suffix(recheck);
+        expander.add_row(statusRow);
+
+        const ago = ms => {
+            const min = Math.max(0, Math.round((Date.now() - ms) / 60000));
+            if (min < 1)
+                return 'just now';
+            if (min < 60)
+                return `${min} min ago`;
+            const h = Math.round(min / 60);
+            return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+        };
+
+        let status = null;
+        let syncing = false;
+        const refresh = () => {
+            status = readFeedStatus();
+            syncing = true;
+            toggle.active = status.enabled;
+            syncing = false;
+            toggle.sensitive = status.hasClaude;
+
+            const sl = status.statusLine;
+            const needsSnippet = status.enabled && sl.kind === 'other' && !sl.forwards;
+            snippetRow.visible = needsSnippet;
+            codeRow.visible = needsSnippet;
+            if (needsSnippet) {
+                snippetRow.title = 'Forward your statusLine';
+                snippetRow.subtitle = `Your statusLine (${status.userScript ?? sl.command}) is your own, ` +
+                    'so UsageBar won’t change it. Add this line right after it reads stdin ' +
+                    'into $input (add input=$(cat) first if it doesn’t). It prints nothing.';
+                snippet.label = forwardSnippet(status.scriptPath);
+            }
+
+            const last = Number.isFinite(status.lastCaptureMs) ? ago(status.lastCaptureMs) : null;
+            const texts = {
+                off: 'Off. Claude quota comes from the usage endpoint, which is often rate limited.',
+                unwired: last
+                    ? `Last capture ${last}. Your statusLine no longer forwards to UsageBar.`
+                    : 'No captures yet: your statusLine doesn’t forward to UsageBar.',
+                waiting: 'Waiting for the first capture. Send a message in Claude Code.',
+                fresh: `Working. Last capture ${last}.`,
+                stale: `Last capture ${last}. Used when the endpoint is rate limited; ` +
+                    `refreshes when you use Claude Code (fresh for ${FRESH_MS / 60000} min).`,
+                old: `Last capture ${last}, too old to use. Send a message in Claude Code.`,
+            };
+            statusRow.subtitle = status.settingsInvalid
+                ? 'Claude Code’s settings.json is not valid JSON.'
+                : texts[status.health];
+            expander.subtitle = status.enabled
+                ? (status.health === 'fresh' || status.health === 'stale'
+                    ? 'On · from your Claude Code statusLine' : 'On · needs attention')
+                : 'Off';
+        };
+
+        const fail = (heading, error) => {
+            const dialog = new Adw.AlertDialog({heading, body: String(error?.message ?? error)});
+            dialog.add_response('close', 'Close');
+            dialog.present(window);
+        };
+
+        const turnOn = () => {
+            try {
+                setFeedEnabled(true);
+            } catch (e) {
+                fail('Couldn’t turn on the feed', e);
+                refresh();
+                return;
+            }
+            const current = readFeedStatus();
+            if (current.statusLine.kind !== 'none') {
+                refresh();
+                return;
+            }
+            // No statusLine yet: offer to set one that only forwards.
+            const dialog = new Adw.AlertDialog({
+                heading: 'Set Claude Code’s statusLine?',
+                body: 'Claude Code has no statusLine command. UsageBar can set one in ' +
+                    '~/.claude/settings.json that forwards the quota to UsageBar and prints ' +
+                    'nothing, so your Claude Code screen doesn’t change. A backup of ' +
+                    'settings.json is kept next to it.',
+            });
+            dialog.add_response('cancel', 'Not now');
+            dialog.add_response('set', 'Set statusLine');
+            dialog.set_response_appearance('set', Adw.ResponseAppearance.SUGGESTED);
+            dialog.set_default_response('set');
+            dialog.connect('response', (_d, response) => {
+                if (response === 'set') {
+                    try {
+                        wireCaptureStatusLine();
+                    } catch (e) {
+                        fail('Couldn’t change settings.json', e);
+                    }
+                }
+                refresh();
+            });
+            dialog.present(window);
+        };
+
+        const turnOff = () => {
+            try {
+                setFeedEnabled(false);
+                unwireCaptureStatusLine();
+            } catch (e) {
+                fail('Couldn’t turn off the feed', e);
+            }
+            refresh();
+        };
+
+        toggle.connect('notify::active', () => {
+            if (syncing || !status || toggle.active === status.enabled)
+                return;
+            if (toggle.active)
+                turnOn();
+            else
+                turnOff();
+        });
+        recheck.connect('clicked', refresh);
+        // Captures arrive while the window is open; recheck now and then.
+        const timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 20, () => {
+            refresh();
+            return GLib.SOURCE_CONTINUE;
+        });
+        expander.connect('destroy', () => GLib.source_remove(timer));
+        refresh();
+        return expander;
     }
 
     // Paste-a-cookie section for web-backed providers, with step-by-step

@@ -280,9 +280,19 @@ permissions; the request lock releases when the owning process exits.
 ### Claude Code statusLine feed (opt-in)
 
 Anthropic throttles `/api/oauth/usage` hard: one machine polling every five
-minutes still sees 429s. Claude Code already receives your 5-hour and 7-day
-windows on every response and passes them to your `statusLine` command. With the
-feed on, UsageBar reads them from there instead of asking the endpoint.
+minutes still sees 429s, so the Claude card often says "Rate limited". Claude
+Code already receives your 5-hour and 7-day windows on every response and
+passes them to your `statusLine` command. With the feed on, UsageBar reads them
+from there instead of asking the endpoint.
+
+**From the GNOME extension:** Settings → Providers → Claude → *Read quota from
+Claude Code*, or **Set up…** on a rate-limited Claude card. Turning it on sets
+the flag below. If Claude Code has no statusLine, it offers to set one that
+forwards the quota and prints nothing (your `settings.json` is backed up to
+`settings.json.usagebar-backup` first). If you already have a statusLine, it is
+never changed; Settings shows the one line to add and whether captures arrive.
+
+**By hand:**
 
 1. Turn it on for the `claude` provider in `~/.config/codexbar/config.json`:
 
@@ -291,12 +301,19 @@ feed on, UsageBar reads them from there instead of asking the endpoint.
    ```
 
 2. Have your statusLine command forward its stdin. If you already have one, add
-   this near the top of it (it prints nothing and runs in the background):
+   this right after it reads stdin into `$input` (it prints nothing and runs in
+   the background):
 
    ```sh
-   input=$(cat)
-   (printf '%s' "$input" | /usr/libexec/usagebar/codexbar claude statusline capture >/dev/null 2>&1 &)
+   input=$(cat)   # skip if your script already has this
+   (printf '%s' "$input" | "$CLI" claude statusline capture >/dev/null 2>&1 &)
    ```
+
+   `$CLI` is the UsageBar CLI: `/usr/libexec/usagebar/codexbar` from the
+   .deb/.rpm, `~/.local/bin/usagebar` from the per-user install. Older
+   `codexbar` builds without the command ignore it silently, so check that
+   `~/.local/share/CodexBar/claude-statusline/` gets a file after your next
+   Claude Code reply.
 
    Without a statusLine of your own, point `statusLine.command` in
    `~/.claude/settings.json` at a script that does only that.

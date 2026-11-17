@@ -163,6 +163,8 @@ import {
     readMarker,
     watchState,
 } from './terminalwatch.js';
+import {feedHint, suggestFeed} from './statuslinefeed.js';
+import {readFeedStatus} from './statuslinefeedfs.js';
 
 const REQUEST_TIMEOUT_SECS = 120;
 // A claude-swap switch is a credential transaction serve never cancels: its
@@ -7668,6 +7670,23 @@ export default class UsageBarExtension extends Extension {
         summaryLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         body.add_child(summaryLabel);
 
+        const feedHintText = this._claudeFeedSuggestion(
+            this._rows?.find(r => r.provider === issue.provider), issue.state);
+        if (feedHintText) {
+            const hintRow = new St.BoxLayout({style_class: 'usagebar-feed-hint', x_expand: true});
+            const hintLabel = new St.Label({
+                text: feedHintText,
+                style_class: 'usagebar-issue-summary',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            hintLabel.clutter_text.line_wrap = true;
+            hintLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            hintRow.add_child(hintLabel);
+            hintRow.add_child(this._buildFeedSetupButton(() => dialog.close()));
+            body.add_child(hintRow);
+        }
+
         const meta = [];
         const since = this._issueSince?.get(issue.provider);
         if (since)
@@ -7713,6 +7732,49 @@ export default class UsageBarExtension extends Extension {
         return card;
     }
 
+    // The statusLine feed's health (statuslinefeed.js), read from local files
+    // at most every 30 s; null in UI smoke runs, which must not read the
+    // user's config.
+    _claudeFeedHealth() {
+        if (GLib.getenv('USAGEBAR_UI_SMOKE_RESULT'))
+            return null;
+        const now = Date.now();
+        if (!this._feedHealthCache || now - this._feedHealthCache.at > 30000) {
+            let health = null;
+            try {
+                health = readFeedStatus().health;
+            } catch {
+                // unreadable files: no hint
+            }
+            this._feedHealthCache = {at: now, health};
+        }
+        return this._feedHealthCache.health;
+    }
+
+    // The hint under a rate-limited Claude card that points to the feed, or
+    // null when the feed is already delivering.
+    _claudeFeedSuggestion(row, state) {
+        if (row?.provider !== 'claude' || state !== 'rate_limited')
+            return null;
+        const health = this._claudeFeedHealth();
+        return suggestFeed(row, state, health) ? feedHint(health) : null;
+    }
+
+    _buildFeedSetupButton(onBeforeOpen = null) {
+        const button = new St.Button({
+            label: 'Set up…',
+            style_class: 'usagebar-issue-btn usagebar-issue-btn-primary',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        button.connect('clicked', () => {
+            onBeforeOpen?.();
+            this._feedHealthCache = null;
+            this._openPrefsPage('claude-feed');
+        });
+        return button;
+    }
+
     // Provider error banner: the warning text, then a row of small action
     // buttons (Retry today; more actions slot into the same actions box).
     _addErrorBanner(card, row) {
@@ -7752,6 +7814,22 @@ export default class UsageBarExtension extends Extension {
         summary.clutter_text.line_wrap = true;
         summary.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         box.add_child(summary);
+
+        const hint = this._claudeFeedSuggestion(row, issue.state);
+        if (hint) {
+            const hintRow = new St.BoxLayout({style_class: 'usagebar-feed-hint', x_expand: true});
+            const hintLabel = new St.Label({
+                text: hint,
+                style_class: 'usagebar-dim usagebar-feed-hint-text',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            hintLabel.clutter_text.line_wrap = true;
+            hintLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            hintRow.add_child(hintLabel);
+            hintRow.add_child(this._buildFeedSetupButton());
+            box.add_child(hintRow);
+        }
         card.add_child(box);
     }
 
