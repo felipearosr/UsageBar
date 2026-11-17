@@ -1453,6 +1453,17 @@
   color: rgba(222, 222, 228, 0.9);
 }
 
+/* Rate-limited Claude: points to the statusLine feed setup. */
+.usagebar-feed-hint {
+  padding-left: 15px;
+  padding-top: 6px;
+  spacing: 10px;
+}
+
+.usagebar-feed-hint-text {
+  font-size: 9pt;
+}
+
 .usagebar-issue-btn:insensitive {
   color: rgba(200, 200, 206, 0.6);
 }

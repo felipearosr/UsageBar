@@ -163,6 +163,8 @@ import {
     readMarker,
     watchState,
 } from './terminalwatch.js';
+import {feedHint, suggestFeed} from './statuslinefeed.js';
+import {readFeedStatus} from './statuslinefeedfs.js';
 
 const REQUEST_TIMEOUT_SECS = 120;
 // A claude-swap switch is a credential transaction serve never cancels: its
@@ -6573,16 +6575,35 @@ export default class UsageBarExtension extends Extension {
         holder._usagebarAnchor = anchor;
         Main.uiGroup.set_child_above_sibling(holder, null);
         this._indicator._openCostPanel();
+        // Round the dashboard like the popover beside it: the popover's
+        // radius comes from the shell theme and differs between GNOME
+        // versions (20px on 50), so read it rather than pin one here.
+        try {
+            const radius = this._indicator.menu.box.get_theme_node()
+                .get_border_radius(St.Corner.TOPLEFT);
+            if (radius > 0)
+                holder.child.set_style(`border-radius: ${radius}px;`);
+        } catch {
+            // popover not styled yet: keep the stylesheet's radius
+        }
         holder.child._usagebarFitScope?.();
         const [, pw] = holder.get_preferred_width(-1);
         const [, ph] = holder.get_preferred_height(pw);
-        const [ax, ay] = anchor.get_transformed_position();
+        // Beside the popover's frame (menu.box carries its background), a
+        // fixed gap away and with matching tops; the anchor row itself sits
+        // inside the frame's padding, so measuring from it overlapped the
+        // two. Without an open popover, beside the anchor.
+        const GAP = 12;
+        const frame = this._indicator?.menu?.isOpen && this._indicator.menu.box?.mapped
+            ? this._indicator.menu.box : anchor;
+        const [fx, fy] = frame.get_transformed_position();
+        const [fw] = frame.get_transformed_size();
         const monitor = Main.layoutManager.currentMonitor;
-        // Left of the menu when it fits, else to its right.
-        let x = ax - pw - 16;
+        // Left of the popover when it fits, else to its right.
+        let x = fx - pw - GAP;
         if (x < monitor.x + 8)
-            x = Math.min(ax + anchor.get_width() + 16, monitor.x + monitor.width - pw - 8);
-        const y = Math.max(monitor.y + 8, Math.min(ay - 12, monitor.y + monitor.height - ph - 8));
+            x = Math.min(fx + fw + GAP, monitor.x + monitor.width - pw - 8);
+        const y = Math.max(monitor.y + 8, Math.min(fy, monitor.y + monitor.height - ph - 8));
         holder.set_position(Math.round(x), Math.round(y));
     }
 
@@ -7649,6 +7670,23 @@ export default class UsageBarExtension extends Extension {
         summaryLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         body.add_child(summaryLabel);
 
+        const feedHintText = this._claudeFeedSuggestion(
+            this._rows?.find(r => r.provider === issue.provider), issue.state);
+        if (feedHintText) {
+            const hintRow = new St.BoxLayout({style_class: 'usagebar-feed-hint', x_expand: true});
+            const hintLabel = new St.Label({
+                text: feedHintText,
+                style_class: 'usagebar-issue-summary',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            hintLabel.clutter_text.line_wrap = true;
+            hintLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            hintRow.add_child(hintLabel);
+            hintRow.add_child(this._buildFeedSetupButton(() => dialog.close()));
+            body.add_child(hintRow);
+        }
+
         const meta = [];
         const since = this._issueSince?.get(issue.provider);
         if (since)
@@ -7694,6 +7732,49 @@ export default class UsageBarExtension extends Extension {
         return card;
     }
 
+    // The statusLine feed's health (statuslinefeed.js), read from local files
+    // at most every 30 s; null in UI smoke runs, which must not read the
+    // user's config.
+    _claudeFeedHealth() {
+        if (GLib.getenv('USAGEBAR_UI_SMOKE_RESULT'))
+            return null;
+        const now = Date.now();
+        if (!this._feedHealthCache || now - this._feedHealthCache.at > 30000) {
+            let health = null;
+            try {
+                health = readFeedStatus().health;
+            } catch {
+                // unreadable files: no hint
+            }
+            this._feedHealthCache = {at: now, health};
+        }
+        return this._feedHealthCache.health;
+    }
+
+    // The hint under a rate-limited Claude card that points to the feed, or
+    // null when the feed is already delivering.
+    _claudeFeedSuggestion(row, state) {
+        if (row?.provider !== 'claude' || state !== 'rate_limited')
+            return null;
+        const health = this._claudeFeedHealth();
+        return suggestFeed(row, state, health) ? feedHint(health) : null;
+    }
+
+    _buildFeedSetupButton(onBeforeOpen = null) {
+        const button = new St.Button({
+            label: 'Set up…',
+            style_class: 'usagebar-issue-btn usagebar-issue-btn-primary',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        button.connect('clicked', () => {
+            onBeforeOpen?.();
+            this._feedHealthCache = null;
+            this._openPrefsPage('claude-feed');
+        });
+        return button;
+    }
+
     // Provider error banner: the warning text, then a row of small action
     // buttons (Retry today; more actions slot into the same actions box).
     _addErrorBanner(card, row) {
@@ -7733,6 +7814,22 @@ export default class UsageBarExtension extends Extension {
         summary.clutter_text.line_wrap = true;
         summary.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
         box.add_child(summary);
+
+        const hint = this._claudeFeedSuggestion(row, issue.state);
+        if (hint) {
+            const hintRow = new St.BoxLayout({style_class: 'usagebar-feed-hint', x_expand: true});
+            const hintLabel = new St.Label({
+                text: hint,
+                style_class: 'usagebar-dim usagebar-feed-hint-text',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            hintLabel.clutter_text.line_wrap = true;
+            hintLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+            hintRow.add_child(hintLabel);
+            hintRow.add_child(this._buildFeedSetupButton());
+            box.add_child(hintRow);
+        }
         card.add_child(box);
     }
 
