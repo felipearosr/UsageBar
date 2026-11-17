@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UsageBar: AI coding limits in your GNOME top bar</title>
+  <meta name="description" content="UsageBar shows how much Claude, Codex, Gemini and Copilot quota you have left, when it resets, and what you've spent, in the GNOME top bar. Free and open source, with end-to-end encrypted Machine Sync.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0a0d18" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)">
+  <link rel="canonical" href="https://usagebar.dev/">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://usagebar.dev/">
+  <meta property="og:title" content="UsageBar: AI coding limits in your GNOME top bar">
+  <meta property="og:description" content="Quota, reset times and spend for Claude, Codex, Gemini, Copilot and around 60 providers, one glance away. Free and open source.">
+  <meta property="og:image" content="https://usagebar.dev/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preload" as="image" href="assets/screenshots/desktop-dark.webp" media="(min-width: 641px) and (prefers-color-scheme: dark)">
+  <link rel="preload" as="image" href="assets/screenshots/desktop-light.webp" media="(min-width: 641px) and (prefers-color-scheme: light)">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top" aria-label="UsageBar home">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="16" cy="16" r="11" fill="none" stroke="currentColor" stroke-opacity=".22" stroke-width="5"/>
+          <path d="M16 5a11 11 0 1 1-10.46 7.6" fill="none" stroke="var(--ok)" stroke-width="5" stroke-linecap="round"/>
+        </svg>
+        <span>UsageBar</span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#features">Features</a>
+        <a href="#sync">Machine Sync</a>
+        <a href="#install">Install</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <a class="btn btn-ghost btn-small" href="https://github.com/felipearosr/UsageBar">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="wrap">
+        <h1>Every AI coding limit, <br>in your top bar.</h1>
+        <p class="lede">UsageBar shows how much Claude, Codex, Gemini and Copilot quota you have left, when each window resets, and what you've spent. It sits in the GNOME panel, one glance away.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#install">Install UsageBar</a>
+          <a class="btn btn-ghost" href="https://github.com/felipearosr/UsageBar">View on GitHub</a>
+        </div>
+        <p class="hero-meta">GNOME 46, 49 and 50 · Wayland and X11 · MIT licensed</p>
+      </div>
+      <div class="wrap wrap-wide">
+        <figure class="shot shot-hero">
+          <picture>
+            <source srcset="assets/screenshots/popover-light.webp" media="(max-width: 640px) and (prefers-color-scheme: light)" width="972" height="1356">
+            <source srcset="assets/screenshots/popover-dark.webp" media="(max-width: 640px)" width="972" height="1356">
+            <source srcset="assets/screenshots/desktop-light.webp" media="(prefers-color-scheme: light)">
+            <img src="assets/screenshots/desktop-dark.webp" width="2880" height="1464" alt="A GNOME desktop with UsageBar open: provider chips in the top bar, a popover listing Claude, Codex, Gemini, Copilot and OpenRouter with their remaining quota, and the spend dashboard beside it." fetchpriority="high">
+          </picture>
+        </figure>
+      </div>
+    </section>
+
+    <!-- PROVIDERS-START -->
+    <section class="providers" aria-labelledby="providers-title">
+<div class="wrap providers-head">
+<h2 id="providers-title">60+ providers, one bar.</h2>
+<p class="providers-sub">Subscriptions, API keys and credit balances, side by side. Turn on the ones you use.</p>
+</div>
+<div class="marquees">
+<div class="marquee"><ul class="track"><li class="prov p-claude is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-claude.svg" alt="" width="26" height="26"></span>Claude</li><li class="prov p-codex is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-codex.png" alt="" width="26" height="26"></span>Codex</li><li class="prov p-gemini is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Gemini</li><li class="prov p-copilot is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Copilot</li><li class="prov p-cursor is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Cursor</li><li class="prov p-openrouter is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>OpenRouter</li><li class="prov p-opencode is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>OpenCode</li><li class="prov p-zai is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>z.ai / GLM</li><li class="prov p-kiro is-tile"><span class="prov-icon"><span class="prov-mark"></span></span>Kiro</li><li class="prov p-mistral is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-mistral.svg" alt="" width="26" height="26"></span>Mistral</li><li class="prov p-deepseek is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>DeepSeek</li><li class="prov p-grok is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Grok</li><li class="prov p-windsurf is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Windsurf</li><li class="prov p-warp is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Warp</li></ul><ul class="track" aria-hidden="true"><li class="prov p-claude is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-claude.svg" alt="" width="26" height="26"></span>Claude</li><li class="prov p-codex is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-codex.png" alt="" width="26" height="26"></span>Codex</li><li class="prov p-gemini is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Gemini</li><li class="prov p-copilot is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Copilot</li><li class="prov p-cursor is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Cursor</li><li class="prov p-openrouter is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>OpenRouter</li><li class="prov p-opencode is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>OpenCode</li><li class="prov p-zai is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>z.ai / GLM</li><li class="prov p-kiro is-tile"><span class="prov-icon"><span class="prov-mark"></span></span>Kiro</li><li class="prov p-mistral is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-mistral.svg" alt="" width="26" height="26"></span>Mistral</li><li class="prov p-deepseek is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>DeepSeek</li><li class="prov p-grok is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Grok</li><li class="prov p-windsurf is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Windsurf</li><li class="prov p-warp is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Warp</li></ul></div>
+<div class="marquee marquee-reverse"><ul class="track"><li class="prov p-ollama is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Ollama</li><li class="prov p-jetbrains is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>JetBrains AI</li><li class="prov p-amp is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Amp</li><li class="prov p-augment is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Augment</li><li class="prov p-factory is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Droid</li><li class="prov p-kimi is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Kimi Code</li><li class="prov p-minimax is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>MiniMax</li><li class="prov p-perplexity is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Perplexity</li><li class="prov p-groq is-tile"><span class="prov-icon"><span class="prov-mark"></span></span>Groq</li><li class="prov p-vertexai is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-vertexai.svg" alt="" width="26" height="26"></span>Vertex AI</li><li class="prov p-bedrock is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-bedrock.svg" alt="" width="26" height="26"></span>AWS Bedrock</li><li class="prov p-elevenlabs is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>ElevenLabs</li><li class="prov p-venice is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Venice</li><li class="prov p-zed is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Zed</li></ul><ul class="track" aria-hidden="true"><li class="prov p-ollama is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Ollama</li><li class="prov p-jetbrains is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>JetBrains AI</li><li class="prov p-amp is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Amp</li><li class="prov p-augment is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Augment</li><li class="prov p-factory is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Droid</li><li class="prov p-kimi is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Kimi Code</li><li class="prov p-minimax is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>MiniMax</li><li class="prov p-perplexity is-ink"><span class="prov-icon"><span class="prov-mark"></span></span>Perplexity</li><li class="prov p-groq is-tile"><span class="prov-icon"><span class="prov-mark"></span></span>Groq</li><li class="prov p-vertexai is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-vertexai.svg" alt="" width="26" height="26"></span>Vertex AI</li><li class="prov p-bedrock is-art"><span class="prov-icon"><img src="assets/providers/Brand-ProviderIcon-bedrock.svg" alt="" width="26" height="26"></span>AWS Bedrock</li><li class="prov p-elevenlabs is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>ElevenLabs</li><li class="prov p-venice is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Venice</li><li class="prov p-zed is-mono"><span class="prov-icon"><span class="prov-mark"></span></span>Zed</li></ul></div>
+</div>
+<p class="providers-all"><a class="btn btn-ghost" href="https://github.com/felipearosr/UsageBar/blob/main/docs/providers.md">See every provider</a></p>
+</section>
+    <!-- PROVIDERS-END -->
+
+    <section class="features" id="features">
+      <div class="wrap">
+        <div class="feature">
+          <div class="feature-text">
+            <h2>The warning before the rate limit.</h2>
+            <p>Each provider gets a chip in the top bar: a ring that fills as you use up a window and turns from green to yellow to red. Click it to see every provider at once, with what's left in each window and when it resets.</p>
+            <ul class="ticks">
+              <li>Session, weekly and monthly windows side by side</li>
+              <li>Plan badges such as Max 20x, Plus and Pro</li>
+              <li>One chip per provider, or a single chip for whichever is closest to its limit</li>
+            </ul>
+          </div>
+          <figure class="shot shot-popover shot-tall">
+            <picture>
+              <source srcset="assets/screenshots/popover-light.webp" media="(prefers-color-scheme: light)">
+              <img src="assets/screenshots/popover-dark.webp" width="972" height="1356" loading="lazy" decoding="async" alt="The UsageBar popover: total spend for the last 30 days, then one row per provider with its plan, remaining quota per window and reset countdown.">
+            </picture>
+          </figure>
+        </div>
+
+        <div class="feature feature-flip">
+          <div class="feature-text">
+            <h2>Will this window last until it resets?</h2>
+            <p>Open a provider for every rate window it reports, including per-model limits like Claude's Sonnet-only week. Pace compares how fast you're going with how much time is left, and says when you'd run out.</p>
+            <ul class="ticks">
+              <li>Reset countdowns, relative or as clock times</li>
+              <li>Today and 90-day spend, with a daily chart and top models</li>
+              <li>A 45-day strip of the provider's own incidents</li>
+            </ul>
+          </div>
+          <figure class="shot shot-popover shot-tall">
+            <picture>
+              <source srcset="assets/screenshots/provider-claude-light.webp" media="(prefers-color-scheme: light)">
+              <img src="assets/screenshots/provider-claude-dark.webp" width="972" height="1844" loading="lazy" decoding="async" alt="The Claude detail view: session, weekly and Sonnet-only bars with pace, spend and token totals, a daily cost chart, and a status history strip.">
+            </picture>
+          </figure>
+        </div>
+
+        <div class="feature feature-stack">
+          <div class="feature-text">
+            <h2>What your tokens would have cost.</h2>
+            <p>UsageBar reads the agent session logs on your machine and prices them at API rates: cost and tokens per day, per provider and per model, for today or the last 7, 30 or 90 days. It's an estimate from local logs, so it can differ from your bill.</p>
+          </div>
+          <figure class="shot shot-cutout">
+            <picture>
+              <source srcset="assets/screenshots/dashboard-light.webp" media="(prefers-color-scheme: light)">
+              <img src="assets/screenshots/dashboard-dark.webp" width="1660" height="1276" loading="lazy" decoding="async" alt="The spend dashboard: raw token cost for 30 days split between Claude and Codex, a daily cost chart, token totals, and a per-model breakdown.">
+            </picture>
+          </figure>
+        </div>
+
+        <div class="feature">
+          <div class="feature-text">
+            <h2>Set up like the rest of GNOME.</h2>
+            <p>A native Settings window, no config files. Turn providers on and off, pick what the chips show, set the warning thresholds and the refresh interval, and choose which windows deserve a notification.</p>
+            <ul class="ticks">
+              <li>Follows the GNOME Shell style, light or dark, or keeps its own dark theme</li>
+              <li>Hide personal information before you share your screen</li>
+            </ul>
+          </div>
+          <figure class="shot shot-cutout">
+            <picture>
+              <source srcset="assets/screenshots/settings-light.webp" media="(prefers-color-scheme: light)">
+              <img src="assets/screenshots/settings-dark.webp" width="1560" height="1320" loading="lazy" decoding="async" alt="UsageBar's Settings window on the General page, with theme and panel chip options.">
+            </picture>
+          </figure>
+        </div>
+
+        <ul class="grid">
+          <li>
+            <h3>Quota notifications</h3>
+            <p>A desktop notification at the thresholds you choose, separately for session and weekly windows. Once per threshold, then nothing until the window resets.</p>
+          </li>
+          <li>
+            <h3>Several accounts per provider</h3>
+            <p>Two Claude subscriptions or three OpenRouter keys each get their own row and their own quota. Switch the Claude account that Claude Code uses from the card.</p>
+          </li>
+          <li>
+            <h3>Useful when a provider isn't</h3>
+            <p>When a fetch is rate limited or fails, UsageBar keeps the last good numbers on screen, greyed and marked, and says in plain words what needs fixing.</p>
+          </li>
+          <li>
+            <h3>Local by default</h3>
+            <p>The extension runs its own helper on 127.0.0.1 and talks to the providers you turn on. No telemetry, no UsageBar account.</p>
+          </li>
+          <li>
+            <h3>Your existing sign-ins</h3>
+            <p>It reuses the logins you already have: Claude Code, the Codex CLI, API keys. Claude and Codex are switched on for you if you're signed in.</p>
+          </li>
+          <li>
+            <h3>Not on GNOME?</h3>
+            <p>A tray app covers KDE, XFCE and other desktops. On macOS, use <a href="https://github.com/steipete/CodexBar">CodexBar</a>, the project UsageBar is built on.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="sync" id="sync">
+      <div class="wrap">
+        <div class="sync-head">
+          <h2>One total for all your machines.</h2>
+          <p class="lede">Spend is counted from the logs of the machine that did the work. Machine Sync shares it between your desktop, your laptop and that build box, so each one shows the total and which machine spent what. It updates about every 2½ minutes.</p>
+        </div>
+
+        <div class="sync-shots">
+          <figure class="shot shot-popover">
+            <picture>
+              <source srcset="assets/screenshots/machines-light.webp" media="(prefers-color-scheme: light)">
+              <img src="assets/screenshots/machines-dark.webp" width="972" height="932" loading="lazy" decoding="async" alt="The Machines view: Desktop, Laptop and Build box with today's spend, 30-day spend and share of the total.">
+            </picture>
+          </figure>
+          <figure class="shot shot-cutout">
+            <picture>
+              <source srcset="assets/screenshots/settings-sync-light.webp" media="(prefers-color-scheme: light)">
+              <img src="assets/screenshots/settings-sync-dark.webp" width="1560" height="1320" loading="lazy" decoding="async" alt="The Machine Sync page in Settings: the Sync Server, the Pairing Link, Sync now, and this machine's name.">
+            </picture>
+          </figure>
+        </div>
+
+        <ol class="steps">
+          <li>
+            <h3>Create a Sync Group</h3>
+            <p>In Settings → Machine Sync, enter your Sync Server's address. UsageBar makes the group's key on your machine.</p>
+          </li>
+          <li>
+            <h3>Pair your other machines</h3>
+            <p>Paste the Pairing Link on each one. There's no account and no password; the link is the key.</p>
+          </li>
+          <li>
+            <h3>See all of them</h3>
+            <p>Every machine shows up with today's spend, its 30 days and its share, in the popover and the dashboard.</p>
+          </li>
+        </ol>
+
+        <div class="privacy">
+          <div class="privacy-text">
+            <h3>End-to-end encrypted</h3>
+            <p>Your machines encrypt every record with a key that never leaves them (ChaCha20-Poly1305, derived from the Pairing Link) before uploading it. The server stores what it can't read, whoever runs it.</p>
+            <p>Only spend is synced. Quota, credentials, project names, file paths and log content stay where they are.</p>
+            <a class="more" href="https://github.com/felipearosr/UsageBar/blob/main/docs/machine-sync-protocol.md">Read the protocol</a>
+          </div>
+          <div class="privacy-cols">
+            <div>
+              <h4>A Sync Server can see</h4>
+              <ul class="plain">
+                <li>Group and machine IDs</li>
+                <li>Which days a machine had spend</li>
+                <li>Record sizes, write times and IP addresses</li>
+              </ul>
+            </div>
+            <div>
+              <h4>It can't see</h4>
+              <ul class="plain cant">
+                <li>Amounts or token counts</li>
+                <li>Providers or models</li>
+                <li>Machine names</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="plans">
+          <article class="plan">
+            <h3>Run your own</h3>
+            <p class="price">Free</p>
+            <p>UsageBar works with any server that speaks the Machine Sync protocol. The app doesn't name or prefer one.</p>
+            <ul class="ticks">
+              <li>Open protocol, with test vectors</li>
+              <li>Fine on a tailnet or behind your own TLS proxy</li>
+              <li>The data stays on your hardware</li>
+            </ul>
+            <a class="btn btn-ghost" href="https://github.com/felipearosr/UsageBar/blob/main/docs/machine-sync-protocol.md">Protocol spec</a>
+          </article>
+          <article class="plan plan-hosted">
+            <h3>Hosted Sync</h3>
+            <p class="price">$2 <span>/ month</span></p>
+            <p>A Sync Server run for you. Nothing to install or keep online.</p>
+            <ul class="ticks">
+              <li>One Sync Group, up to 10 machines</li>
+              <li>400 days of history</li>
+              <li>14-day free trial, no card needed</li>
+              <li>After you cancel, your machines can still read their data for 30 days</li>
+            </ul>
+            <a class="btn btn-primary" href="https://sync.usagebar.dev/">Start the free trial</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="install" id="install">
+      <div class="wrap">
+        <h2>Two minutes, one logout.</h2>
+        <p class="lede">UsageBar needs GNOME 46, 49 or 50: Ubuntu 24.04, 25.10 or 26.04, or Fedora 43 or 44. The package holds the extension and its command-line helper.</p>
+
+        <div class="install-grid">
+          <article class="card">
+            <h3>Ubuntu and Debian</h3>
+            <p>Download the <code>.deb</code> from the latest release, then:</p>
+            <div class="code"><pre><code>sudo apt install ./usagebar_*.deb</code></pre><button type="button" class="copy" data-copy="sudo apt install ./usagebar_*.deb">Copy</button></div>
+          </article>
+          <article class="card">
+            <h3>Fedora</h3>
+            <p>Download the <code>.rpm</code> from the latest release, then:</p>
+            <div class="code"><pre><code>sudo dnf install ./usagebar-*.rpm</code></pre><button type="button" class="copy" data-copy="sudo dnf install ./usagebar-*.rpm">Copy</button></div>
+          </article>
+          <article class="card card-wide">
+            <h3>Just the CLI, any distro</h3>
+            <p>The <code>usagebar</code> command on its own, with Machine Sync, for servers and other desktops. It installs into <code>~/.local</code> and checks the download's checksum.</p>
+            <div class="code"><pre><code>curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh</code></pre><button type="button" class="copy" data-copy="curl -fsSL https://raw.githubusercontent.com/felipearosr/UsageBar/main/linux/packaging/install-cli.sh | sh">Copy</button></div>
+          </article>
+        </div>
+
+        <p class="install-note">Log out and back in once after installing the package. UsageBar then turns itself on. It isn't on extensions.gnome.org yet.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/felipearosr/UsageBar/releases/latest">Download the latest release</a>
+          <a class="btn btn-ghost" href="https://github.com/felipearosr/UsageBar/blob/main/linux/INSTALL.md">Full install guide</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="faq" id="faq">
+      <div class="wrap wrap-narrow">
+        <h2>Questions people ask first.</h2>
+
+        <details>
+          <summary>Where do the numbers come from?</summary>
+          <p>Quota comes from each provider's own API, using the sign-in you already have on this machine. Spend is estimated from the agent session logs on your disk, priced at API rates.</p>
+        </details>
+        <details>
+          <summary>Does UsageBar send my data anywhere?</summary>
+          <p>No telemetry and no analytics. It talks to the providers you turn on and to their public status pages. If you pair it, it also sends encrypted spend to the Sync Server you chose, and nothing else.</p>
+        </details>
+        <details>
+          <summary>Do all providers work on Linux?</summary>
+          <p>Any provider that signs in with a token, an API key or its own CLI works. A few whose only data source is a macOS browser cookie or the macOS Keychain show an error row in place of numbers.</p>
+        </details>
+        <details>
+          <summary>How is UsageBar related to CodexBar?</summary>
+          <p>UsageBar is a fork of <a href="https://github.com/steipete/CodexBar">CodexBar</a> by Peter Steinberger, the macOS menu bar app whose provider integrations it uses. The fork adds the GNOME extension, a tray app and Machine Sync, and merges each upstream release. On macOS, use CodexBar.</p>
+        </details>
+        <details>
+          <summary>Is it affiliated with Anthropic, OpenAI or another provider?</summary>
+          <p>No. UsageBar is an independent open-source project. Provider names and logos belong to their owners.</p>
+        </details>
+        <details>
+          <summary>Can I use Machine Sync without paying?</summary>
+          <p>Yes. The protocol is public, and UsageBar pairs with any server that implements it. Hosted Sync is there if you'd rather not run one.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div>
+        <a class="brand" href="#top">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <circle cx="16" cy="16" r="11" fill="none" stroke="currentColor" stroke-opacity=".22" stroke-width="5"/>
+            <path d="M16 5a11 11 0 1 1-10.46 7.6" fill="none" stroke="var(--ok)" stroke-width="5" stroke-linecap="round"/>
+          </svg>
+          <span>UsageBar</span>
+        </a>
+        <p>A fork of <a href="https://github.com/steipete/CodexBar">CodexBar</a> by Peter Steinberger. MIT licensed.</p>
+        <p class="fine">Provider names and logos are trademarks of their owners. UsageBar isn't affiliated with or endorsed by them. Screenshots show demo data.</p>
+      </div>
+      <nav aria-label="Links">
+        <a href="https://github.com/felipearosr/UsageBar">GitHub</a>
+        <a href="https://github.com/felipearosr/UsageBar/releases">Releases</a>
+        <a href="https://github.com/felipearosr/UsageBar/blob/main/linux/INSTALL.md">Install guide</a>
+        <a href="https://github.com/felipearosr/UsageBar/issues">Report an issue</a>
+        <a href="https://sync.usagebar.dev/">Hosted Sync</a>
+        <a href="https://sync.usagebar.dev/privacy">Sync privacy</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script src="script.js" defer></script>
+</body>
+</html>
