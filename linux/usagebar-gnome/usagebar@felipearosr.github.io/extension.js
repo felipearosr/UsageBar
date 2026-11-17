@@ -6573,16 +6573,35 @@ export default class UsageBarExtension extends Extension {
         holder._usagebarAnchor = anchor;
         Main.uiGroup.set_child_above_sibling(holder, null);
         this._indicator._openCostPanel();
+        // Round the dashboard like the popover beside it: the popover's
+        // radius comes from the shell theme and differs between GNOME
+        // versions (20px on 50), so read it rather than pin one here.
+        try {
+            const radius = this._indicator.menu.box.get_theme_node()
+                .get_border_radius(St.Corner.TOPLEFT);
+            if (radius > 0)
+                holder.child.set_style(`border-radius: ${radius}px;`);
+        } catch {
+            // popover not styled yet: keep the stylesheet's radius
+        }
         holder.child._usagebarFitScope?.();
         const [, pw] = holder.get_preferred_width(-1);
         const [, ph] = holder.get_preferred_height(pw);
-        const [ax, ay] = anchor.get_transformed_position();
+        // Beside the popover's frame (menu.box carries its background), a
+        // fixed gap away and with matching tops; the anchor row itself sits
+        // inside the frame's padding, so measuring from it overlapped the
+        // two. Without an open popover, beside the anchor.
+        const GAP = 12;
+        const frame = this._indicator?.menu?.isOpen && this._indicator.menu.box?.mapped
+            ? this._indicator.menu.box : anchor;
+        const [fx, fy] = frame.get_transformed_position();
+        const [fw] = frame.get_transformed_size();
         const monitor = Main.layoutManager.currentMonitor;
-        // Left of the menu when it fits, else to its right.
-        let x = ax - pw - 16;
+        // Left of the popover when it fits, else to its right.
+        let x = fx - pw - GAP;
         if (x < monitor.x + 8)
-            x = Math.min(ax + anchor.get_width() + 16, monitor.x + monitor.width - pw - 8);
-        const y = Math.max(monitor.y + 8, Math.min(ay - 12, monitor.y + monitor.height - ph - 8));
+            x = Math.min(fx + fw + GAP, monitor.x + monitor.width - pw - 8);
+        const y = Math.max(monitor.y + 8, Math.min(fy, monitor.y + monitor.height - ph - 8));
         holder.set_position(Math.round(x), Math.round(y));
     }
 
