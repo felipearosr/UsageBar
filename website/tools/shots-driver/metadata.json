@@ -1,0 +1,6 @@
+{
+  "uuid": "usagebar-shots@usagebar.dev",
+  "name": "UsageBar screenshot driver",
+  "description": "Drives UsageBar through the states the website shows and saves a screenshot of each. Only loaded by website/tools/capture-screenshots.sh, in its own headless session.",
+  "shell-version": ["46", "49", "50"]
+}

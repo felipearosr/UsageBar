@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Offline codexbar CLI with made-up demo data, for the website screenshots.
+
+website/tools/capture-screenshots.sh points the extension at it with
+CODEXBAR_BIN. It never reads accounts, credentials or the network: every
+number below is invented, and the Machines are fictional.
+"""
+
+import datetime
+import hashlib
+import json
+import os
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+UPSTREAM = "0.73.0"
+USAGEBAR = "1.1.0"
+VERSION = f"{UPSTREAM}+usagebar.{USAGEBAR}"
+
+# provider, enabled
+PROVIDERS = [
+    ("claude", True), ("codex", True), ("gemini", True), ("copilot", True),
+    ("openrouter", True), ("cursor", False), ("opencode", False), ("zai", False),
+    ("kiro", False), ("mistral", False), ("deepseek", False), ("grok", False),
+    ("windsurf", False), ("warp", False), ("ollama", False), ("jetbrains", False),
+]
+
+# Per-provider models with their share of that provider's Spend.
+MODELS = {
+    "claude": [("claude-opus-4-6", 0.62), ("claude-sonnet-4-6", 0.33), ("claude-haiku-4-5", 0.05)],
+    "codex": [("gpt-5.3-codex", 0.74), ("gpt-5.4", 0.26)],
+}
+# Average weekday Spend in USD, per provider and Machine.
+MACHINES = [
+    {"id": "desktop", "name": "Desktop", "this": True, "spend": {"claude": 9.4, "codex": 3.1}},
+    {"id": "laptop", "name": "Laptop", "this": False, "spend": {"claude": 4.2, "codex": 1.6}},
+    {"id": "build-box", "name": "Build box", "this": False, "spend": {"codex": 2.3}},
+]
+# USD per million tokens, blended, to turn Spend into a believable token count.
+BLENDED_RATE = {"claude": 2.1, "codex": 1.4}
+
+
+def iso(offset_secs=0):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + offset_secs))
+
+
+def jitter(*key):
+    """A stable pseudo-random number in [0, 1) for the given key."""
+    digest = hashlib.sha256("|".join(str(part) for part in key).encode()).digest()
+    return int.from_bytes(digest[:4], "big") / 2 ** 32
+
+
+def window(percent, minutes, reset_secs):
+    return {"usedPercent": percent, "windowMinutes": minutes, "resetsAt": iso(reset_secs)}
+
+
+def usage_rows():
+    return [
+        {"provider": "claude", "source": "oauth",
+         "usage": {"primary": window(64, 300, 2 * 3600 + 47 * 60),
+                   "secondary": window(38, 10080, 3 * 86400 + 5 * 3600),
+                   "extraRateWindows": [
+                       {"id": "claude-weekly-scoped-sonnet", "title": "Sonnet only",
+                        "window": window(21, 10080, 3 * 86400 + 5 * 3600)}],
+                   "loginMethod": "Claude Max 20x", "updatedAt": iso(-40)},
+         "pace": {"primary": {"willLastToReset": True, "summary": "Pace: 8% in reserve | Lasts until reset"},
+                  "secondary": {"willLastToReset": True, "summary": "Pace: 14% in reserve | Lasts until reset"}}},
+        {"provider": "codex", "source": "oauth",
+         "usage": {"primary": window(88, 300, 52 * 60),
+                   "secondary": window(71, 10080, 2 * 86400 + 9 * 3600),
+                   "identity": {"providerID": "codex", "loginMethod": "plus"}, "updatedAt": iso(-55)},
+         "pace": {"primary": {"willLastToReset": False, "summary": "Pace: 19% in deficit | Runs out in 31m"},
+                  "secondary": {"willLastToReset": True, "summary": "Pace: 3% in reserve | Lasts until reset"}}},
+        {"provider": "gemini", "source": "oauth",
+         "usage": {"primary": window(27, 1440, 9 * 3600 + 12 * 60), "loginMethod": "Pro",
+                   "updatedAt": iso(-70)}},
+        {"provider": "copilot", "source": "api",
+         "usage": {"primary": window(46, 43200, 14 * 86400), "loginMethod": "Pro+", "updatedAt": iso(-90)}},
+        {"provider": "openrouter", "source": "api",
+         "usage": {"primary": window(12, 43200, 14 * 86400), "updatedAt": iso(-120)}},
+    ]
+
+
+def day_spend(provider, machine, date):
+    """One Machine's Spend for one provider on one local day."""
+    base = machine["spend"].get(provider)
+    if not base:
+        return 0.0
+    weekday = date.weekday()
+    shape = 0.22 if weekday >= 5 else 1.0
+    # A slow ramp over the period, a quiet week in the middle, daily noise.
+    age = (datetime.date.today() - date).days
+    ramp = 1.25 - min(age, 90) / 150
+    lull = 0.45 if 38 <= age <= 44 else 1.0
+    noise = 0.55 + 0.95 * jitter(provider, machine["id"], date.isoformat())
+    if date == datetime.date.today():
+        noise *= 0.7  # the day isn't over
+    return round(base * shape * ramp * lull * noise, 2)
+
+
+def model_breakdowns(provider, cost, date):
+    out = []
+    for name, share in MODELS[provider]:
+        wobble = 0.8 + 0.4 * jitter(provider, name, date.isoformat())
+        model_cost = round(cost * share * wobble, 2)
+        if model_cost > 0:
+            out.append({"modelName": name, "cost": model_cost,
+                        "totalTokens": int(model_cost / BLENDED_RATE[provider] * 1_000_000)})
+    return out
+
+
+def provider_day(provider, date, machines):
+    cost = sum(day_spend(provider, machine, date) for machine in machines)
+    breakdowns = model_breakdowns(provider, cost, date) if cost else []
+    cost = round(sum(model["cost"] for model in breakdowns), 2)
+    tokens = sum(model["totalTokens"] for model in breakdowns)
+    return {"date": date.isoformat(), "totalCost": cost, "costIncomplete": False,
+            "totalTokens": tokens, "inputTokens": int(tokens * 0.07), "outputTokens": int(tokens * 0.03),
+            "cacheReadTokens": int(tokens * 0.84), "cacheCreationTokens": int(tokens * 0.06),
+            "requests": int(tokens / 21000), "modelBreakdowns": breakdowns,
+            "modelsUsed": [model["modelName"] for model in breakdowns]}
+
+
+def dates(days):
+    today = datetime.date.today()
+    return [today - datetime.timedelta(days=offset) for offset in range(days - 1, -1, -1)]
+
+
+def cost_report(provider, days):
+    """This Machine's local report, as `serve` answers /cost."""
+    if provider not in MODELS:
+        return []
+    this = [machine for machine in MACHINES if machine["this"]]
+    daily = [day for day in (provider_day(provider, date, this) for date in dates(days)) if day["totalCost"]]
+    last30 = daily[-30:] if days >= 30 else daily
+    keys = ("totalCost", "totalTokens", "inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens")
+    totals = {key: round(sum(day[key] for day in daily), 2) for key in keys}
+    today = datetime.date.today().isoformat()
+    return [{"provider": provider, "source": "local", "historyDays": days, "daily": daily, "totals": totals,
+             "last30DaysCostUSD": round(sum(day["totalCost"] for day in last30), 2),
+             "last30DaysTokens": sum(day["totalTokens"] for day in last30),
+             "sessionCostUSD": next((day["totalCost"] for day in daily if day["date"] == today), 0.0),
+             "updatedAt": iso()}]
+
+
+def spend(days):
+    return {"costUSD": round(sum(day["totalCost"] for day in days), 2), "costIncomplete": False,
+            "totalTokens": sum(day["totalTokens"] for day in days),
+            "requests": sum(day["requests"] for day in days)}
+
+
+def machine_status(machine, days=90):
+    per_day = []
+    for date in dates(days):
+        providers = [dict(provider_day(provider, date, [machine]), provider=provider)
+                     for provider in machine["spend"]]
+        providers = [entry for entry in providers if entry["totalCost"]]
+        if providers:
+            per_day.append({"date": date.isoformat(), "providers": providers})
+    flat = lambda entries: [provider for day in entries for provider in day["providers"]]  # noqa: E731
+    today = datetime.date.today().isoformat()
+    last30 = per_day[-30:]
+    models = {}
+    for entry in flat(last30):
+        for model in entry["modelBreakdowns"]:
+            slot = models.setdefault((entry["provider"], model["modelName"]), [0.0, 0])
+            slot[0] += model["cost"]
+            slot[1] += model["totalTokens"]
+    return {"machineId": machine["id"], "displayName": machine["name"], "isThisMachine": machine["this"],
+            "active": True, "retired": False, "lastSeen": iso(-45 if machine["this"] else -140),
+            "today": spend(flat([day for day in per_day if day["date"] == today])),
+            "last30Days": spend(flat(last30)),
+            "models": [{"provider": provider, "model": model,
+                        "spend": {"costUSD": round(cost, 2), "costIncomplete": False,
+                                  "totalTokens": tokens, "requests": 0}}
+                       for (provider, model), (cost, tokens) in
+                       sorted(models.items(), key=lambda item: -item[1][0])],
+            "days": [{"date": day["date"], "spend": spend(day["providers"])} for day in per_day],
+            "coverage": {"from": per_day[0]["date"], "to": per_day[-1]["date"]},
+            "daily": per_day}
+
+
+def sync_status():
+    machines = [machine_status(machine) for machine in MACHINES]
+    total = lambda key: {  # noqa: E731
+        "costUSD": round(sum(machine[key]["costUSD"] for machine in machines), 2), "costIncomplete": False,
+        "totalTokens": sum(machine[key]["totalTokens"] for machine in machines),
+        "requests": sum(machine[key]["requests"] for machine in machines)}
+    return {"paired": True, "refreshedAt": iso(),
+            "status": {"today": datetime.date.today().isoformat(),
+                       "total": {"today": total("today"), "last30Days": total("last30Days")},
+                       "errors": [], "machines": machines}}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def send_json(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        parts = urlsplit(self.path)
+        query = parse_qs(parts.query)
+        if parts.path == "/health":
+            self.send_json(200, {"status": "ok", "version": UPSTREAM, "capabilities": ["machineSync"],
+                                 "usagebarVersion": USAGEBAR, "upstreamVersion": UPSTREAM})
+        elif parts.path == "/usage":
+            self.send_json(200, usage_rows())
+        elif parts.path == "/cost":
+            days = int((query.get("days") or ["30"])[0])
+            self.send_json(200, cost_report((query.get("provider") or [""])[0], days))
+        elif parts.path == "/sync/status":
+            self.send_json(200, sync_status())
+        else:
+            self.send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if urlsplit(self.path).path == "/sync/push":
+            self.send_json(200, {"status": "pushed", "uploaded": []})
+        else:
+            self.send_json(405, {"error": "method not allowed"})
+
+
+def exit_with_parent():
+    parent = os.getppid()
+    while os.getppid() == parent:
+        time.sleep(1)
+    os._exit(0)
+
+
+def main():
+    argv = sys.argv[1:]
+    if "--version" in argv or "-V" in argv:
+        print(f"CodexBar {VERSION}")
+        return
+    command = argv[0] if argv else ""
+    if command == "serve":
+        port = int(argv[argv.index("--port") + 1])
+        threading.Thread(target=exit_with_parent, daemon=True).start()
+        ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    elif command == "config" and argv[1:2] == ["providers"]:
+        print(json.dumps([{"provider": provider, "enabled": enabled} for provider, enabled in PROVIDERS]))
+    elif command == "config":
+        pass
+    elif command == "sync" and argv[1:2] == ["settings"]:
+        print(json.dumps({"paired": True, "machineId": "desktop", "displayName": "Desktop",
+                          "server": "https://sync.usagebar.dev",
+                          "reportingDay": {"timeZone": None, "startHour": 0, "effectiveTimeZone": "UTC"}}))
+    elif command == "sync" and argv[1:2] == ["status"]:
+        print(json.dumps(sync_status()["status"]))
+    else:
+        print(json.dumps([{"provider": "cli", "source": "cli", "error": {
+            "code": 1, "kind": "runtime", "message": "demo: not supported", "reason": "network"}}]))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
