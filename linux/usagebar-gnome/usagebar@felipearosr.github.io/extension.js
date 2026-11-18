@@ -584,6 +584,40 @@ function resetText(w) {
     return w.resetDescription ? T.resetsDesc(w.resetDescription) : '';
 }
 
+// The first reset a row's windows report, as resetText words it ('' for none).
+function firstResetText(row) {
+    for (const {w} of windowsOf(row)) {
+        const rt = resetText(w);
+        if (rt)
+            return rt;
+    }
+    return '';
+}
+
+// resetText without the "Resets" words, for the end of a multi-account card's
+// account line: "5d 2h", "Thu 14:00".
+function shortResetText(row) {
+    for (const {w} of windowsOf(row)) {
+        const secs = resetSecs(w);
+        if (secs === null) {
+            if (w.resetDescription)
+                return w.resetDescription;
+            continue;
+        }
+        if (secs <= 0)
+            return T.resetsNow;
+        if (DISPLAY.absoluteResets) {
+            const when = new Date(Date.parse(w.resetsAt));
+            const opts = {hour: '2-digit', minute: '2-digit'};
+            if (secs >= 86400)
+                opts.weekday = 'short';
+            return when.toLocaleString([], opts);
+        }
+        return humanizeSecs(secs);
+    }
+    return '';
+}
+
 function fmtTokens(n) {
     if (n === null || n === undefined)
         return null;
@@ -8908,12 +8942,13 @@ export default class UsageBarExtension extends Extension {
         return JSON.stringify({
             provider: row.provider,
             error: !!row.error,
-            subtitle: !!(row.error || windowsOf(row).some(({w}) => resetText(w))),
+            subtitle: !!(row.error || (!this._accountCards?.get(row.provider)?.multi && firstResetText(row))),
             lines: this._compactLines(row).map(line => {
                 const items = this._compactDisplayItems(line.row);
                 const empty = items.length || items.extraCount ? null
                     : describeIssue(line.row, line.row.provider)?.label ?? '';
-                return [line.dot, items.map(item => item.label), items.extraCount, empty];
+                const reset = !!(line.dot && (items.length || items.extraCount) && shortResetText(line.row));
+                return [line.dot, items.map(item => item.label), items.extraCount, empty, reset];
             }),
         });
     }
@@ -8940,9 +8975,10 @@ export default class UsageBarExtension extends Extension {
 
     // One metrics line: [dot] label, mini bar, percent per window, then "+N".
     // A line without bars is left out (the subtitle says what's wrong), except
-    // an account's line, which says it has no usage.
+    // an account's line, which says it has no usage. An account's line ends
+    // with that account's own reset, since accounts reset at different times.
     _buildCompactMetricsLine(line) {
-        const built = {box: null, refs: [], extraLabel: null};
+        const built = {box: null, refs: [], extraLabel: null, resetLabel: null};
         const items = this._compactDisplayItems(line.row);
         if (!items.length && !items.extraCount && !line.dot)
             return built;
@@ -8993,6 +9029,15 @@ export default class UsageBarExtension extends Extension {
             });
             box.add_child(built.extraLabel);
         }
+        if (line.dot && shortResetText(line.row)) {
+            built.resetLabel = new St.Label({
+                style_class: 'usagebar-dim usagebar-compact-metric-label usagebar-compact-line-reset',
+                x_expand: true,
+                x_align: Clutter.ActorAlign.END,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            box.add_child(built.resetLabel);
+        }
         this._updateCompactMetricsLine(built, line);
         return built;
     }
@@ -9017,6 +9062,8 @@ export default class UsageBarExtension extends Extension {
         });
         if (built.extraLabel)
             built.extraLabel.text = `+${items.extraCount}`;
+        if (built.resetLabel)
+            built.resetLabel.text = shortResetText(line.row);
     }
 
     // Plan tag text for a row's name ('' for none), shared by the compact
@@ -9120,17 +9167,13 @@ export default class UsageBarExtension extends Extension {
         const issue = describeIssue(row, row.provider);
         // Rows waiting on the user fade back so the banner leads.
         rowBox.opacity = issue?.group === 'action' ? 150 : 255;
-        if (issue) {
+        // A multi-account card's accounts reset at different times, so each
+        // account line carries its own reset instead of the header.
+        const multi = !!this._accountCards?.get(row.provider)?.multi;
+        if (issue)
             subtitle = issue.label;
-        } else {
-            for (const {w} of windowsOf(row)) {
-                const rt = resetText(w);
-                if (rt) {
-                    subtitle = rt;
-                    break;
-                }
-            }
-        }
+        else if (!multi)
+            subtitle = firstResetText(row);
         if (subtitle) {
             state.subtitleLabel = new St.Label({
                 text: subtitle,
@@ -9165,17 +9208,10 @@ export default class UsageBarExtension extends Extension {
                 const nextIssue = describeIssue(next, next.provider);
                 rowBox.opacity = nextIssue?.group === 'action' ? 150 : 255;
                 state.subtitleLabel.style_class = this._compactSubtitleClass(nextIssue);
-                if (nextIssue) {
+                if (nextIssue)
                     nextSubtitle = nextIssue.label;
-                } else {
-                    for (const {w} of windowsOf(next)) {
-                        const rt = resetText(w);
-                        if (rt) {
-                            nextSubtitle = rt;
-                            break;
-                        }
-                    }
-                }
+                else if (!this._accountCards?.get(next.provider)?.multi)
+                    nextSubtitle = firstResetText(next);
                 state.subtitleLabel.text = nextSubtitle;
             }
             this._compactLines(next).forEach((line, index) =>
