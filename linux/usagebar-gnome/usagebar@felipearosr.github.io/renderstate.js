@@ -179,25 +179,26 @@ export function buildSummaryBarSegments(providers, totalCost, width) {
 // Geometry of a usage window bar `width` px wide. Without a pace split it is
 // one track; with one (paceSplitOf) the track breaks into two pieces with a
 // BAR_GAP gap centred on the expected-usage point. The usage fill runs through
-// the first piece; usage past the split fills the second piece as `deficit`.
-// The first fill keeps a 3px minimum, as the single bar always has.
+// the first piece; the second piece (`pastPace`) fills only with usage past the
+// split, and only in deficit. The first fill keeps a 3px minimum, as the single
+// bar always has.
 export function windowBarLayout(width, usedPercent, split) {
     const used = Math.min(100, Math.max(0, usedPercent ?? 0));
     const usedX = Math.round(width * used / 100);
     if (!split)
-        return [{x: 0, width, fill: Math.min(width, Math.max(3, usedX)), deficit: false}];
+        return [{x: 0, width, fill: Math.min(width, Math.max(3, usedX)), pastPace: false}];
 
     const at = Math.round(width * split.at / 100);
     const firstEnd = Math.max(0, at - Math.floor(BAR_GAP / 2));
     const secondStart = Math.min(width, firstEnd + BAR_GAP);
     const over = Math.max(0, usedX - secondStart);
     return [
-        {x: 0, width: firstEnd, fill: Math.min(firstEnd, Math.max(3, usedX)), deficit: false},
+        {x: 0, width: firstEnd, fill: Math.min(firstEnd, Math.max(3, usedX)), pastPace: false},
         {
             x: secondStart,
             width: width - secondStart,
             fill: split.deficit ? Math.min(width - secondStart, Math.max(2, over)) : 0,
-            deficit: true,
+            pastPace: true,
         },
     ];
 }

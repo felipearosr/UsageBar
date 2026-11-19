@@ -428,8 +428,8 @@
 }
 
 .usagebar-bar-piece {
-  background-color: rgba(160, 160, 166, 0.3);
   border-radius: 2px;
+  margin-top: 0;
 }
 
 .usagebar-bar-piece .usagebar-fill {
@@ -457,10 +457,6 @@
 
 .usagebar-window-foot {
   margin-top: 4px;
-}
-
-.usagebar-pace {
-  margin-top: 2px;
 }
 
 .usagebar-credits {
@@ -583,12 +579,6 @@
   spacing: 6px;
   padding-left: 12px;
   padding-right: 12px;
-}
-
-/* Rounded provider pieces with see-through gaps, like a split window bar
-   (spacing matches BAR_GAP in renderstate.js). */
-.usagebar-ov-split {
-  spacing: 3px;
 }
 
 .usagebar-ov-summary-legend {
@@ -1754,16 +1744,12 @@
   background-color: rgba(89, 89, 95, 0.3);
 }
 
-.usagebar-light .usagebar-bar-piece {
-  background-color: rgba(89, 89, 95, 0.3);
-}
-
 .usagebar-light .usagebar-pace-deficit {
   background-color: #c01c28;
 }
 
 .usagebar-light .usagebar-pace-deficit-text {
-  color: #d61f0b;
+  color: #c01c28;
 }
 
 .usagebar-light .usagebar-bg-ok {

@@ -81,6 +81,7 @@ import {
     RenderScheduler,
     selectCostChartProviders,
     summarizeCostRange,
+    BAR_GAP,
     windowBarLayout,
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
@@ -183,8 +184,8 @@ const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
 const STATUS_DAYS = 45;        // history strip length, like statuspage.io
 const STATUS_BAR_HEIGHT = 18;
 const BAR_WIDTH = 320;
-// Height of a usage window bar and of the spend summary bar.
-const WINDOW_BAR_HEIGHT = 8;
+// Height of the usage window bars and the spend summary bar.
+const BAR_HEIGHT = 8;
 const KPI_COL_WIDTH = 180; // left column of the 2x2 cost grid
 const CHART_HEIGHT = 44; // daily cost/token trend bars
 const TREND_CHART_DAYS = 30; // mini chart window, matching the macOS inline dashboard
@@ -6369,21 +6370,23 @@ export default class UsageBarExtension extends Extension {
         row.add_child(head);
 
         const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
+        split.set_style(`spacing: ${BAR_GAP}px;`);
         const visibleProviders = ov.providers.filter(provider => provider.cost > 0);
         const segs = visibleProviders.map(provider => {
-            const seg = new St.Widget({height: WINDOW_BAR_HEIGHT});
+            const seg = new St.Widget({height: BAR_HEIGHT});
             split.add_child(seg);
             return [seg, provider];
         });
         split.connect('notify::allocation', () => {
             const w = split.allocation.get_width();
             const layout = buildSummaryBarSegments(visibleProviders, ov.cost, w);
-            // The brand color, darkened on a light popover the same way the
-            // legend's names are, so the bar reads on either surface.
+            // On a light popover, the same darker shade of each brand color
+            // the legend's names get; on dark, the brand color itself.
+            const light = this._indicator?.menu.box.has_style_class_name('usagebar-light');
             const surface = this._popoverSurface();
             segs.forEach(([seg, provider], index) => {
                 const {width, radius} = layout[index];
-                const color = readableBrandColor(provider.color, surface);
+                const color = light ? readableBrandColor(provider.color, surface) : provider.color;
                 seg.set_style(`background-color: ${color}; border-radius: ${radius};`);
                 if (seg.width !== width)
                     seg.set_width(width);
@@ -7386,11 +7389,13 @@ export default class UsageBarExtension extends Extension {
         // One track, or two with a gap at the pace point. Each piece holds its
         // own fill; positions come from windowBarLayout against the real
         // allocation, since the box layout stretches the bar past BAR_WIDTH.
-        const bar = new St.Widget({width: BAR_WIDTH, height: WINDOW_BAR_HEIGHT, style_class: 'usagebar-bar'});
-        const pieces = windowBarLayout(BAR_WIDTH, percent, split).map(({deficit}) => {
-            const track = new St.Widget({style_class: 'usagebar-bar-piece'});
+        const bar = new St.Widget({width: BAR_WIDTH, height: BAR_HEIGHT, style_class: 'usagebar-bar'});
+        // Usage past the pace point is red, or the stale grey on a stale row.
+        const pastPaceClass = stale ? `usagebar-bg-${sev}` : 'usagebar-pace-deficit';
+        const pieces = windowBarLayout(BAR_WIDTH, percent, split).map(({pastPace}) => {
+            const track = new St.Widget({style_class: 'usagebar-track usagebar-bar-piece'});
             const fill = new St.Widget({
-                style_class: deficit ? 'usagebar-fill usagebar-pace-deficit' : `usagebar-fill usagebar-bg-${sev}`,
+                style_class: `usagebar-fill ${pastPace ? pastPaceClass : `usagebar-bg-${sev}`}`,
             });
             track.add_child(fill);
             bar.add_child(track);
@@ -7400,9 +7405,9 @@ export default class UsageBarExtension extends Extension {
             windowBarLayout(width, percent, split).forEach((piece, index) => {
                 const {track, fill} = pieces[index];
                 track.set_position(piece.x, 0);
-                track.set_size(piece.width, WINDOW_BAR_HEIGHT);
+                track.set_size(piece.width, BAR_HEIGHT);
                 fill.visible = piece.fill > 0;
-                fill.set_size(piece.fill, WINDOW_BAR_HEIGHT);
+                fill.set_size(piece.fill, BAR_HEIGHT);
             });
         };
         place(BAR_WIDTH);
@@ -7432,7 +7437,7 @@ export default class UsageBarExtension extends Extension {
         const foot = new St.BoxLayout({x_expand: true, style_class: 'usagebar-window-foot'});
         foot.add_child(new St.Label({
             text: paceText,
-            style_class: split?.deficit ? 'usagebar-dim usagebar-pace-deficit-text' : 'usagebar-dim',
+            style_class: split?.deficit && !stale ? 'usagebar-dim usagebar-pace-deficit-text' : 'usagebar-dim',
         }));
         foot.add_child(new St.Widget({x_expand: true}));
         if (reset) {

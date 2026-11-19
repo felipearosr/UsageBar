@@ -35,11 +35,13 @@ PANEL = re.compile(r'usagebar-(chip|panel)')
 # Dots draw their CSS `color` as a fill, not as text.
 FILL_COLOR = re.compile(r'round-dot')
 COLOR = re.compile(r'#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\([^)]*\)|\btransparent\b')
-# Saturated fills normally keep their color. These few would wash out on the
-# light surface, so they take a darker shade of the same hue instead:
-# (selector, property) -> light value.
+# Saturated fills normally keep their color, and text is darkened until it
+# reads. The pace deficit red is pinned instead, so its fill and its text are
+# the same darker red on the light surface: (selector, property) -> value.
+# A rule takes an override only when every one of its selectors names it.
 LIGHT_OVERRIDES = {
     ('.usagebar-pace-deficit', 'background-color'): '#c01c28',
+    ('.usagebar-pace-deficit-text', 'color'): '#c01c28',
 }
 
 

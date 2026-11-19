@@ -147,17 +147,17 @@ test('spend summary bar keeps a tiny provider share visible', () => {
 });
 
 test('window bar is one track without a pace split', () => {
-    assert.deepEqual(windowBarLayout(400, 22, null), [{x: 0, width: 400, fill: 88, deficit: false}]);
+    assert.deepEqual(windowBarLayout(400, 22, null), [{x: 0, width: 400, fill: 88, pastPace: false}]);
     // An empty window still shows a sliver of fill, as before.
-    assert.deepEqual(windowBarLayout(400, 0, null), [{x: 0, width: 400, fill: 3, deficit: false}]);
-    assert.deepEqual(windowBarLayout(400, null, null), [{x: 0, width: 400, fill: 3, deficit: false}]);
+    assert.deepEqual(windowBarLayout(400, 0, null), [{x: 0, width: 400, fill: 3, pastPace: false}]);
+    assert.deepEqual(windowBarLayout(400, null, null), [{x: 0, width: 400, fill: 3, pastPace: false}]);
 });
 
 test('window bar splits at the pace point with a gap', () => {
     // Under pace: usage 10%, expected 35% — the fill stays in the first piece.
-    assert.deepEqual(windowBarLayout(400, 10, {at: 35, deficit: false}), [
-        {x: 0, width: 139, fill: 40, deficit: false},
-        {x: 142, width: 258, fill: 0, deficit: true},
+    assert.deepEqual(windowBarLayout(400, 10, {at: 35, pastPace: false}), [
+        {x: 0, width: 139, fill: 40, pastPace: false},
+        {x: 142, width: 258, fill: 0, pastPace: true},
     ]);
     const [first, second] = windowBarLayout(400, 22, {at: 15, deficit: true});
     // Over pace: the first piece is full and the overshoot fills the second.
