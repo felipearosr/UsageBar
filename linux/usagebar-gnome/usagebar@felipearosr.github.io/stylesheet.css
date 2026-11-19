@@ -421,6 +421,30 @@
   border-radius: 3px;
 }
 
+/* A usage window bar: one track, or two pieces split at the pace point. The
+   gap between them is see-through, so it matches any surface. */
+.usagebar-bar {
+  margin-top: 3px;
+}
+
+.usagebar-bar-piece {
+  border-radius: 2px;
+  margin-top: 0;
+}
+
+.usagebar-bar-piece .usagebar-fill {
+  border-radius: 2px;
+}
+
+/* Usage past the pace point, and the pace verdict while in deficit. */
+.usagebar-pace-deficit {
+  background-color: #ed333b;
+}
+
+.usagebar-pace-deficit-text {
+  color: #f66151;
+}
+
 .usagebar-bg-ok { background-color: #2ec27e; }
 .usagebar-bg-warn { background-color: #f5c211; }
 .usagebar-bg-crit, .usagebar-bg-critical { background-color: #ed333b; }
@@ -433,10 +457,6 @@
 
 .usagebar-window-foot {
   margin-top: 4px;
-}
-
-.usagebar-pace {
-  margin-top: 2px;
 }
 
 .usagebar-credits {
@@ -561,14 +581,12 @@
   padding-right: 12px;
 }
 
-.usagebar-ov-split {
-  spacing: 1px;
-  border-radius: 2px;
-  background-color: rgba(160, 160, 166, 0.2);
+.usagebar-ov-summary-legend {
+  spacing: 10px;
 }
 
-.usagebar-ov-summary-legend {
-  spacing: 14px;
+.usagebar-spend-legend-label {
+  font-weight: bold;
 }
 
 .usagebar-ov-panel {
@@ -1726,6 +1744,14 @@
   background-color: rgba(89, 89, 95, 0.3);
 }
 
+.usagebar-light .usagebar-pace-deficit {
+  background-color: #c01c28;
+}
+
+.usagebar-light .usagebar-pace-deficit-text {
+  color: #c01c28;
+}
+
 .usagebar-light .usagebar-bg-ok {
   background-color: #2ec27e;
 }
@@ -1796,10 +1822,6 @@
   background-color: rgba(239, 239, 241, 0.96);
   color: #31312c;
   border-color: rgba(89, 89, 95, 0.3);
-}
-
-.usagebar-light .usagebar-ov-split {
-  background-color: rgba(89, 89, 95, 0.2);
 }
 
 .usagebar-light .usagebar-ov-panel {

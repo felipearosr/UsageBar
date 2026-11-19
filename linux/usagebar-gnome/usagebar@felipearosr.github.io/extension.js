@@ -45,7 +45,8 @@ import {
 import {ordinalLabel} from './accountlabels.js';
 import {chipExtras, colorHex, defaultColor, metricCards, metricCatalog, readMetrics} from './panelmetrics.js';
 import {
-    extraWindowsOf, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf, worstPercent, worstWindow,
+    extraWindowsOf, isStatusLineSource, paceOf, paceSplitOf, resetSecs, windowLabel, windowsOf, worstPercent,
+    worstWindow,
 } from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {ReportGate} from './reportgate.js';
@@ -80,6 +81,8 @@ import {
     RenderScheduler,
     selectCostChartProviders,
     summarizeCostRange,
+    BAR_GAP,
+    windowBarLayout,
 } from './renderstate.js';
 import {defaultScope, scopeMap} from './statusscopes.js';
 import {
@@ -181,6 +184,8 @@ const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
 const STATUS_DAYS = 45;        // history strip length, like statuspage.io
 const STATUS_BAR_HEIGHT = 18;
 const BAR_WIDTH = 320;
+// Height of the usage window bars and the spend summary bar.
+const BAR_HEIGHT = 8;
 const KPI_COL_WIDTH = 180; // left column of the 2x2 cost grid
 const CHART_HEIGHT = 44; // daily cost/token trend bars
 const TREND_CHART_DAYS = 30; // mini chart window, matching the macOS inline dashboard
@@ -4004,6 +4009,20 @@ export default class UsageBarExtension extends Extension {
                             const head = descendants(box)
                                 .find(actor => actor.has_style_class_name?.('usagebar-detail-head'));
                             assertions.push(painted('provider detail header is painted', head));
+                            // The fixture's Claude pace splits each window bar
+                            // in two; only the session is over pace.
+                            const bars = descendants(box)
+                                .filter(actor => actor.has_style_class_name?.('usagebar-bar'));
+                            const pieces = bars.map(bar => bar.get_children());
+                            assertions.push(assertion('pace splits each window bar in two',
+                                pieces.length === 2 && pieces.every(p => p.length === 2),
+                                {pieces: pieces.map(p => p.length)}));
+                            const deficit = descendants(bars[0])
+                                .find(actor => actor.has_style_class_name?.('usagebar-pace-deficit'));
+                            assertions.push(painted('usage past the pace point is painted', deficit));
+                            assertions.push(assertion('a window under pace has no deficit fill',
+                                !descendants(bars[1]).some(actor =>
+                                    actor.has_style_class_name?.('usagebar-pace-deficit') && actor.visible)));
                             if (logosHidden) {
                                 assertions.push(assertion('provider detail header leaves out the icon slot',
                                     !descendants(head).some(actor =>
@@ -4024,8 +4043,15 @@ export default class UsageBarExtension extends Extension {
             // Opening refetches from the CLI; install the fixtures after that.
             later(500, () => {
                 this._rows = [
+                    // Pace splits both bars: the session over pace, the week under.
                     {provider: 'claude', usage: {primary: {usedPercent: 42}, secondary: {usedPercent: 18},
-                        loginMethod: 'Claude Max 20x'}},
+                        loginMethod: 'Claude Max 20x'},
+                    pace: {
+                        primary: {stage: 'behind', deltaPercent: 8, expectedUsedPercent: 34,
+                            summary: '8% in deficit | Expected 34% used | Runs out in 1h 40m'},
+                        secondary: {stage: 'ahead', deltaPercent: -12, expectedUsedPercent: 30,
+                            summary: '12% in reserve | Expected 30% used | Lasts until reset'},
+                    }},
                     {provider: 'codex', usage: {primary: {usedPercent: 73}, identity: {loginMethod: 'plus'}}},
                     {provider: 'opencodego', usage: {primary: {usedPercent: 12}, loginMethod: 'API key'}},
                     {provider: 'alibabatokenplan', usage: {primary: {usedPercent: 95}}},
@@ -6344,18 +6370,24 @@ export default class UsageBarExtension extends Extension {
         row.add_child(head);
 
         const split = new St.BoxLayout({x_expand: true, style_class: 'usagebar-ov-split'});
+        split.set_style(`spacing: ${BAR_GAP}px;`);
         const visibleProviders = ov.providers.filter(provider => provider.cost > 0);
         const segs = visibleProviders.map(provider => {
-            const seg = new St.Widget({height: 4});
+            const seg = new St.Widget({height: BAR_HEIGHT});
             split.add_child(seg);
             return [seg, provider];
         });
         split.connect('notify::allocation', () => {
             const w = split.allocation.get_width();
             const layout = buildSummaryBarSegments(visibleProviders, ov.cost, w);
+            // On a light popover, the same darker shade of each brand color
+            // the legend's names get; on dark, the brand color itself.
+            const light = this._indicator?.menu.box.has_style_class_name('usagebar-light');
+            const surface = this._popoverSurface();
             segs.forEach(([seg, provider], index) => {
                 const {width, radius} = layout[index];
-                seg.set_style(`background-color: ${provider.color}; border-radius: ${radius};`);
+                const color = light ? readableBrandColor(provider.color, surface) : provider.color;
+                seg.set_style(`background-color: ${color}; border-radius: ${radius};`);
                 if (seg.width !== width)
                     seg.set_width(width);
             });
@@ -6365,7 +6397,8 @@ export default class UsageBarExtension extends Extension {
         const legend = new St.BoxLayout({style_class: 'usagebar-ov-summary-legend'});
         for (const p of ov.providers) {
             legend.add_child(this._legendEntry(p.provider,
-                `${this._displayName(p.provider)} ${formatSummaryUSD(p.cost)}`, 'usagebar-dim'));
+                `${this._displayName(p.provider)} ${formatSummaryUSD(p.cost)}`,
+                'usagebar-dim usagebar-spend-legend-label'));
         }
         row.add_child(legend);
 
@@ -7326,92 +7359,94 @@ export default class UsageBarExtension extends Extension {
         return wrap;
     }
 
-    // One usage metric: window label, severity bar, then a two-line foot —
-    // left column is "% used" over the pace verdict, right column is the reset
-    // countdown over the pace ETA (when it runs out). Values are unchanged from
-    // before; they're just relaid out. Handles unknown percent ("unavailable").
-    _addWindowRow(card, label, w, stale, paceSummary) {
+    // One usage metric in three lines: the window label with "% used/remaining"
+    // on the right; the severity bar, split at the pace point (paceSplitOf)
+    // with usage past it in red; then the pace verdict (plus the run-out time
+    // when it runs out before reset, in red when in deficit) on the left and the
+    // reset countdown on the right. Handles unknown percent ("unavailable").
+    _addWindowRow(card, label, w, stale, pace) {
         const known = w.usedPercent !== null && w.usedPercent !== undefined;
         const percent = known ? Math.min(100, Math.max(0, w.usedPercent)) : 0;
         const sev = severity(percent, stale || !known);
+        const split = known ? paceSplitOf(pace, percent) : null;
 
+        const used = Math.max(0, Math.min(100, Math.round(w.usedPercent)));
+        const percentText = !known ? T.unavailable
+            : DISPLAY.barsShowUsed ? T.used(used) : T.remaining(100 - used);
         const labels = new St.BoxLayout({x_expand: true, style_class: 'usagebar-window-row'});
         labels.add_child(new St.Label({
             text: label,
             style_class: 'usagebar-window-label',
         }));
         labels.add_child(new St.Widget({x_expand: true}));
+        labels.add_child(new St.Label({
+            text: percentText,
+            style_class: 'usagebar-dim',
+            y_align: Clutter.ActorAlign.END,
+        }));
         card.add_child(labels);
 
-        const track = new St.Widget({
-            style_class: 'usagebar-track',
-            width: BAR_WIDTH,
-            height: 6,
+        // One track, or two with a gap at the pace point. Each piece holds its
+        // own fill; positions come from windowBarLayout against the real
+        // allocation, since the box layout stretches the bar past BAR_WIDTH.
+        const bar = new St.Widget({width: BAR_WIDTH, height: BAR_HEIGHT, style_class: 'usagebar-bar'});
+        // Usage past the pace point is red, or the stale grey on a stale row.
+        const pastPaceClass = stale ? `usagebar-bg-${sev}` : 'usagebar-pace-deficit';
+        const pieces = windowBarLayout(BAR_WIDTH, percent, split).map(({pastPace}) => {
+            const track = new St.Widget({style_class: 'usagebar-track usagebar-bar-piece'});
+            const fill = new St.Widget({
+                style_class: `usagebar-fill ${pastPace ? pastPaceClass : `usagebar-bg-${sev}`}`,
+            });
+            track.add_child(fill);
+            bar.add_child(track);
+            return {track, fill};
         });
-        const fill = new St.Widget({style_class: `usagebar-fill usagebar-bg-${sev}`});
-        fill.set_size(Math.max(3, Math.round(BAR_WIDTH * percent / 100)), 6);
-        track.add_child(fill);
-        // The box layout stretches the track past BAR_WIDTH; size the fill
-        // against the real allocation or the percentage reads short.
-        track.connect('notify::allocation', () => {
-            const w = track.allocation.get_width();
-            if (w > 0)
-                fill.set_size(Math.max(3, Math.round(w * percent / 100)), 6);
+        const place = width => {
+            windowBarLayout(width, percent, split).forEach((piece, index) => {
+                const {track, fill} = pieces[index];
+                track.set_position(piece.x, 0);
+                track.set_size(piece.width, BAR_HEIGHT);
+                fill.visible = piece.fill > 0;
+                fill.set_size(piece.fill, BAR_HEIGHT);
+            });
+        };
+        place(BAR_WIDTH);
+        bar.connect('notify::allocation', () => {
+            const width = bar.allocation.get_width();
+            if (width > 0)
+                place(width);
         });
-        card.add_child(track);
+        card.add_child(bar);
 
         // The backend summary is "<verdict> | Expected N% used | <eta>"
-        // (older builds use " · " and omit the middle). Keep the verdict for
-        // the left column and the ETA for the right; the "expected" middle is
-        // dropped, matching the macOS layout.
-        let paceLeft = '';
-        let paceRight = '';
-        if (paceSummary) {
-            const parts = paceSummary.replace(/^Pace:\s*/, '').split(/\s+[|·]\s+/);
-            paceLeft = parts[0];
-            if (parts.length > 1) {
-                const eta = parts[parts.length - 1];
-                paceRight = eta.charAt(0).toUpperCase() + eta.slice(1);
-            }
+        // (older builds use " · " and omit the middle). The verdict goes on the
+        // left; the ETA joins it only when it runs out before reset ("Lasts
+        // until reset" is the normal case and is left out).
+        let paceText = '';
+        if (pace?.summary) {
+            const parts = pace.summary.replace(/^Pace:\s*/, '').split(/\s+[|·]\s+/);
+            paceText = parts[0];
+            const eta = parts.length > 1 ? parts[parts.length - 1] : '';
+            if (/^runs out/i.test(eta))
+                paceText += ` · ${eta.charAt(0).toLowerCase()}${eta.slice(1)}`;
         }
 
         const reset = resetText(w);
-        const used = Math.max(0, Math.min(100, Math.round(w.usedPercent)));
-        const percentText = !known ? T.unavailable
-            : DISPLAY.barsShowUsed ? T.used(used) : T.remaining(100 - used);
-
+        if (!paceText && !reset)
+            return;
         const foot = new St.BoxLayout({x_expand: true, style_class: 'usagebar-window-foot'});
-        const leftCol = new St.BoxLayout({vertical: true});
-        leftCol.add_child(new St.Label({
-            text: percentText,
-            style_class: 'usagebar-dim',
+        foot.add_child(new St.Label({
+            text: paceText,
+            style_class: split?.deficit && !stale ? 'usagebar-dim usagebar-pace-deficit-text' : 'usagebar-dim',
         }));
-        if (paceLeft) {
-            leftCol.add_child(new St.Label({
-                text: paceLeft,
-                style_class: 'usagebar-dim usagebar-pace',
-            }));
-        }
-        foot.add_child(leftCol);
         foot.add_child(new St.Widget({x_expand: true}));
-        const rightCol = new St.BoxLayout({vertical: true});
         if (reset) {
-            rightCol.add_child(new St.Label({
+            foot.add_child(new St.Label({
                 text: reset,
                 style_class: 'usagebar-dim',
-                x_expand: true,
                 x_align: Clutter.ActorAlign.END,
             }));
         }
-        if (paceRight) {
-            rightCol.add_child(new St.Label({
-                text: paceRight,
-                style_class: 'usagebar-dim usagebar-pace',
-                x_expand: true,
-                x_align: Clutter.ActorAlign.END,
-            }));
-        }
-        foot.add_child(rightCol);
         card.add_child(foot);
     }
 
@@ -8155,7 +8190,7 @@ export default class UsageBarExtension extends Extension {
             if (DISPLAY.hiddenWindows.has(barKey(row.provider, {slot})))
                 continue;
             this._addWindowRow(card, windowLabel(w.windowMinutes, slot), w,
-                row.stale, paceOf(row, slot)?.summary);
+                row.stale, paceOf(row, slot));
         }
 
         // Extra named limits (per-model bars like Fable, Daily Routines, Codex Spark, Antigravity models) —

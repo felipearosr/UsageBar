@@ -146,29 +146,61 @@ export function formatSummaryUSD(value) {
     return `$${Math.trunc(value).toLocaleString('en-US')}`;
 }
 
-// Keep provider colors visually distinct while preserving a continuous bar:
-// the BoxLayout supplies a one-pixel gap and these radii round only the two
-// outer ends. Zero-cost providers do not consume space in the bar.
+// The gap between two pieces of a split bar: between providers in the spend
+// bar, and at the pace point in a usage window bar.
+export const BAR_GAP = 3;
+// The narrowest a provider's piece of the spend bar gets, so a provider with a
+// tiny share (a few dollars of thousands) still shows.
+export const SUMMARY_BAR_MIN_SEGMENT = 8;
+
+// One rounded piece per provider, separated by BAR_GAP (the BoxLayout's
+// spacing). Every piece is at least SUMMARY_BAR_MIN_SEGMENT wide when the bar
+// has room for that. Zero-cost providers do not consume space in the bar.
 export function buildSummaryBarSegments(providers, totalCost, width) {
     const visible = providers.filter(provider => provider.cost > 0);
     if (visible.length === 0)
         return [];
 
-    const available = Math.max(0, width - Math.max(0, visible.length - 1));
+    const available = Math.max(0, width - BAR_GAP * (visible.length - 1));
+    const floor = Math.min(SUMMARY_BAR_MIN_SEGMENT, Math.floor(available / visible.length));
     let used = 0;
     return visible.map((provider, index) => {
         const remaining = visible.length - index - 1;
         const segmentWidth = index === visible.length - 1
             ? available - used
-            : Math.max(2, Math.min(
+            : Math.max(floor, Math.min(
                 Math.round(provider.cost / totalCost * available),
-                available - used - remaining * 2));
+                available - used - remaining * floor));
         used += segmentWidth;
-        const radius = visible.length === 1 ? '2px'
-            : index === 0 ? '2px 0 0 2px'
-                : index === visible.length - 1 ? '0 2px 2px 0' : '0';
-        return {width: Math.max(0, segmentWidth), radius};
+        return {width: Math.max(0, segmentWidth), radius: '2px'};
     });
+}
+
+// Geometry of a usage window bar `width` px wide. Without a pace split it is
+// one track; with one (paceSplitOf) the track breaks into two pieces with a
+// BAR_GAP gap centred on the expected-usage point. The usage fill runs through
+// the first piece; the second piece (`pastPace`) fills only with usage past the
+// split, and only in deficit. The first fill keeps a 3px minimum, as the single
+// bar always has.
+export function windowBarLayout(width, usedPercent, split) {
+    const used = Math.min(100, Math.max(0, usedPercent ?? 0));
+    const usedX = Math.round(width * used / 100);
+    if (!split)
+        return [{x: 0, width, fill: Math.min(width, Math.max(3, usedX)), pastPace: false}];
+
+    const at = Math.round(width * split.at / 100);
+    const firstEnd = Math.max(0, at - Math.floor(BAR_GAP / 2));
+    const secondStart = Math.min(width, firstEnd + BAR_GAP);
+    const over = Math.max(0, usedX - secondStart);
+    return [
+        {x: 0, width: firstEnd, fill: Math.min(firstEnd, Math.max(3, usedX)), pastPace: false},
+        {
+            x: secondStart,
+            width: width - secondStart,
+            fill: split.deficit ? Math.min(width - secondStart, Math.max(2, over)) : 0,
+            pastPace: true,
+        },
+    ];
 }
 
 // Cost aggregation is cheap compared with the provider scan, but it is still
