@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     buildCostDateRange,
     buildDailyCostRows,
+    BAR_GAP,
     buildSummaryBarSegments,
     CostOverviewCache,
     costChartMetricOptions,
@@ -15,7 +16,9 @@ import {
     moveProviderOrder,
     resolveProviderOrder,
     selectCostChartProviders,
+    SUMMARY_BAR_MIN_SEGMENT,
     summarizeCostRange,
+    windowBarLayout,
 } from '../usagebar@felipearosr.github.io/renderstate.js';
 
 test('provider display order preserves configured entries and appends new providers', () => {
@@ -116,18 +119,53 @@ test('spend summary omits cents from values of at least ten dollars', () => {
     assert.equal(formatSummaryUSD(8936.45), '$8,936');
 });
 
-test('spend summary bar reserves one-pixel separators and rounds outer ends', () => {
+test('spend summary bar reserves gaps between rounded provider pieces', () => {
     assert.deepEqual(buildSummaryBarSegments([
         {cost: 30},
         {cost: 20},
         {cost: 0},
-    ], 50, 101), [
-        {width: 60, radius: '2px 0 0 2px'},
-        {width: 40, radius: '0 2px 2px 0'},
+    ], 50, 103), [
+        {width: 60, radius: '2px'},
+        {width: 40, radius: '2px'},
     ]);
     assert.deepEqual(buildSummaryBarSegments([{cost: 10}], 10, 101), [
         {width: 101, radius: '2px'},
     ]);
+});
+
+test('spend summary bar keeps a tiny provider share visible', () => {
+    // $17 of $9,854 is under 0.2% of the bar; it still gets the minimum piece.
+    const [claude, codex] = buildSummaryBarSegments([{cost: 9837}, {cost: 17}], 9854, 403);
+    assert.equal(codex.width, SUMMARY_BAR_MIN_SEGMENT);
+    assert.equal(claude.width + codex.width, 403 - BAR_GAP);
+    // The tiny share can sit first too.
+    const [small, big] = buildSummaryBarSegments([{cost: 1}, {cost: 999}], 1000, 403);
+    assert.equal(small.width, SUMMARY_BAR_MIN_SEGMENT);
+    assert.equal(big.width, 400 - SUMMARY_BAR_MIN_SEGMENT);
+    // A bar too narrow for the minimum shares what it has.
+    assert.deepEqual(buildSummaryBarSegments([{cost: 1}, {cost: 1}], 2, 9).map(s => s.width), [3, 3]);
+});
+
+test('window bar is one track without a pace split', () => {
+    assert.deepEqual(windowBarLayout(400, 22, null), [{x: 0, width: 400, fill: 88, deficit: false}]);
+    // An empty window still shows a sliver of fill, as before.
+    assert.deepEqual(windowBarLayout(400, 0, null), [{x: 0, width: 400, fill: 3, deficit: false}]);
+    assert.deepEqual(windowBarLayout(400, null, null), [{x: 0, width: 400, fill: 3, deficit: false}]);
+});
+
+test('window bar splits at the pace point with a gap', () => {
+    // Under pace: usage 10%, expected 35% — the fill stays in the first piece.
+    assert.deepEqual(windowBarLayout(400, 10, {at: 35, deficit: false}), [
+        {x: 0, width: 139, fill: 40, deficit: false},
+        {x: 142, width: 258, fill: 0, deficit: true},
+    ]);
+    const [first, second] = windowBarLayout(400, 22, {at: 15, deficit: true});
+    // Over pace: the first piece is full and the overshoot fills the second.
+    assert.equal(first.fill, first.width);
+    assert.equal(second.x - first.width, BAR_GAP);
+    assert.equal(second.fill, 88 - second.x);
+    // A deficit of a single point still shows.
+    assert.ok(windowBarLayout(400, 16, {at: 15, deficit: true})[1].fill >= 2);
 });
 
 test('daily cost rows combine providers, omit idle dates, and sort newest first', () => {

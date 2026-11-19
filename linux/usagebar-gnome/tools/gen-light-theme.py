@@ -35,6 +35,12 @@ PANEL = re.compile(r'usagebar-(chip|panel)')
 # Dots draw their CSS `color` as a fill, not as text.
 FILL_COLOR = re.compile(r'round-dot')
 COLOR = re.compile(r'#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\([^)]*\)|\btransparent\b')
+# Saturated fills normally keep their color. These few would wash out on the
+# light surface, so they take a darker shade of the same hue instead:
+# (selector, property) -> light value.
+LIGHT_OVERRIDES = {
+    ('.usagebar-pace-deficit', 'background-color'): '#c01c28',
+}
 
 
 def parse(token):
@@ -149,7 +155,10 @@ def generate(css):
             prop, value = (part.strip() for part in decl.split(':', 1))
             if not COLOR.search(value):
                 continue
-            if prop == 'color':
+            overrides = {LIGHT_OVERRIDES.get((sel, prop)) for sel in selectors}
+            if len(overrides) == 1 and None not in overrides:
+                mapped = overrides.pop()
+            elif prop == 'color':
                 mapped = COLOR.sub(lambda m: fmt(*parse(m.group(0))) if fill else map_text(parse(m.group(0))), value)
             elif prop == 'box-shadow':
                 mapped = map_shadow(value)

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {extraWindowsOf, isLongWindow, isStaleSource, isStatusLineSource, paceOf, resetSecs, windowLabel, windowsOf}
+import {extraWindowsOf, isLongWindow, isStaleSource, isStatusLineSource, paceOf, paceSplitOf, resetSecs, windowLabel,
+    windowsOf}
     from '../usagebar@felipearosr.github.io/payload.js';
 
 const NOW = Date.parse('2026-10-12T12:00:00Z');
@@ -66,4 +67,18 @@ test('both statusLine sources are labelled, other sources are not', () => {
     assert.equal(isStatusLineSource({source: 'statusline-stale'}), true);
     assert.equal(isStatusLineSource({source: 'oauth'}), false);
     assert.equal(isStatusLineSource(null), false);
+});
+
+test('pace splits the bar at the expected usage unless on track', () => {
+    assert.deepEqual(paceSplitOf({stage: 'behind', expectedUsedPercent: 15, deltaPercent: 7}, 22),
+        {at: 15, deficit: true});
+    assert.deepEqual(paceSplitOf({stage: 'ahead', expectedUsedPercent: 35, deltaPercent: -25}, 10),
+        {at: 35, deficit: false});
+    // Older payloads without a delta fall back to comparing usage.
+    assert.deepEqual(paceSplitOf({expectedUsedPercent: 15}, 22), {at: 15, deficit: true});
+    assert.equal(paceSplitOf({stage: 'onTrack', expectedUsedPercent: 40, deltaPercent: 0}, 40), null);
+    assert.equal(paceSplitOf({summary: '7% in deficit'}, 22), null);
+    assert.equal(paceSplitOf({expectedUsedPercent: 0}, 5), null);
+    assert.equal(paceSplitOf({expectedUsedPercent: 100}, 5), null);
+    assert.equal(paceSplitOf(null, 5), null);
 });

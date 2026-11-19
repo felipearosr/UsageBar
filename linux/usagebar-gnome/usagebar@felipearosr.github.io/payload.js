@@ -103,3 +103,18 @@ export function primaryRow(rows) {
     const ordered = byAccountId(rows);
     return ordered.find(row => row.active === true) ?? ordered.find(row => !row.error) ?? ordered[0];
 }
+
+// Where a usage window bar splits for pace: at the pace's expected usage, and
+// whether usage is past it (in deficit). Null when there is no numeric pace or
+// usage is on track, matching the macOS bar, which hides its pace marker then.
+export function paceSplitOf(pace, usedPercent) {
+    const expected = pace?.expectedUsedPercent;
+    if (typeof expected !== 'number' || !Number.isFinite(expected) || expected <= 0 || expected >= 100)
+        return null;
+    if (pace.stage === 'onTrack')
+        return null;
+    const deficit = typeof pace.deltaPercent === 'number'
+        ? pace.deltaPercent > 0
+        : typeof usedPercent === 'number' && usedPercent > expected;
+    return {at: expected, deficit};
+}
