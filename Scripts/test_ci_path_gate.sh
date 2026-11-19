@@ -44,7 +44,9 @@ assert_gate() {
     exit 1
   fi
 
-  if [[ "$expected" == false && "$reason" != "docs/site-only changes covered by portable checks" ]]; then
+  local skip_reason="docs/site-only changes covered by portable checks"
+  [[ "$name" == linux-* ]] && skip_reason="linux/ and docs/site changes covered by portable checks"
+  if [[ "$expected" == false && "$reason" != "$skip_reason" ]]; then
     printf '%s: expected docs/site skip reason, got %s\n' "$name" "$reason" >&2
     exit 1
   fi
@@ -71,6 +73,14 @@ assert_gate true empty
 assert_gate true source-to-docs $'R100\tSources/CodexBar/App.swift\tdocs/App.md'
 assert_gate true docs-to-source $'R100\tdocs/App.md\tSources/CodexBar/App.swift'
 assert_gate false docs-to-site $'R100\tdocs/old.md\tdocs/site.css'
+# UsageBar (fork): the Linux port has no Swift; linux/ alone skips the macOS jobs.
+assert_gate false linux-only $'M\tlinux/release/usagebar-release.txt' \
+  $'M\tlinux/usagebar-gnome/usagebar@felipearosr.github.io/extension.js'
+assert_gate false linux-with-docs $'M\tlinux/CHANGELOG.md' $'M\tdocs/providers.md' \
+  $'A\tlinux/usagebar-gnome/tests/new.test.mjs'
+assert_gate true linux-with-source $'M\tlinux/usagebar-gnome/usagebar@felipearosr.github.io/payload.js' \
+  $'M\tSources/CodexBarCLI/CLIEntry.swift'
+assert_gate true linux-to-source $'R100\tlinux/packaging/tool.swift\tSources/CodexBarCore/Tool.swift'
 
 assert_linux_musl_gate() {
   local expected="$1"
