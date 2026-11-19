@@ -50,6 +50,9 @@ classify_path() {
       ;;
     docs/*.png|docs/*.jpg|docs/*.jpeg|docs/*.webp|docs/*.ico|docs/*.svg)
       ;;
+    linux/*)
+      # UsageBar (fork): the Linux port has no Swift; its own workflows check it.
+      ;;
     *)
       require_macos_tests "$path" "not covered by portable docs/site checks"
       ;;
@@ -103,7 +106,7 @@ if [[ "$macos_tests" == true && "$draft_pull_request" == true ]]; then
 elif [[ "$macos_tests" == true ]]; then
   summary_reason="$macos_tests_reason"
 else
-  summary_reason="docs/site-only changes covered by portable checks"
+  summary_reason="docs/site or linux/ changes covered by portable checks"
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then

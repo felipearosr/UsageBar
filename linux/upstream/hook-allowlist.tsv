@@ -69,3 +69,6 @@ Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift	Claude stat
 
 # claude-swap rows in serve (#170)
 docs/claude-multi-account-and-status-items.md	claude-swap rows in serve	UsageBar notes: serve reads Claude Code's .claude.json oauthAccount to find the signed-in slot (#170); the fork runs `cswap add` in its Claude add helper, which upstream's Phase 1 excluded (#172)
+
+# CI: Linux-only pull requests skip the macOS Swift jobs
+Scripts/ci_macos_test_gate.sh	CI: macOS test gate	A linux/* case that requires no macOS tests (the Linux port has no Swift and has its own workflows), and the skip reason names linux/
