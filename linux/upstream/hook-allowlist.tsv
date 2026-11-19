@@ -72,3 +72,5 @@ docs/claude-multi-account-and-status-items.md	claude-swap rows in serve	UsageBar
 
 # CI: Linux-only pull requests skip the macOS Swift jobs
 Scripts/ci_macos_test_gate.sh	CI: macOS test gate	A linux/* case that requires no macOS tests (the Linux port has no Swift and has its own workflows), and the skip reason names linux/
+
+Scripts/test_ci_path_gate.sh	CI: macOS test gate	linux/* cases for the gate, and the linux/ skip reason those cases expect

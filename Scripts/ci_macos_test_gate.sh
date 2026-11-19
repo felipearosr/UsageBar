@@ -13,6 +13,7 @@ macos_tests=false
 macos_tests_deferred=false
 macos_tests_reason=""
 path_count=0
+linux_paths=false
 draft_pull_request="${CI_PULL_REQUEST_DRAFT:-false}"
 
 case "$draft_pull_request" in
@@ -52,6 +53,7 @@ classify_path() {
       ;;
     linux/*)
       # UsageBar (fork): the Linux port has no Swift; its own workflows check it.
+      linux_paths=true
       ;;
     *)
       require_macos_tests "$path" "not covered by portable docs/site checks"
@@ -106,7 +108,8 @@ if [[ "$macos_tests" == true && "$draft_pull_request" == true ]]; then
 elif [[ "$macos_tests" == true ]]; then
   summary_reason="$macos_tests_reason"
 else
-  summary_reason="docs/site or linux/ changes covered by portable checks"
+  summary_reason="docs/site-only changes covered by portable checks"
+  [[ "$linux_paths" == true ]] && summary_reason="linux/ and docs/site changes covered by portable checks"
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
