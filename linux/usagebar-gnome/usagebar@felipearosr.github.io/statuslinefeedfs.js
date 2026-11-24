@@ -63,9 +63,12 @@ function readJson(path) {
 }
 
 // Newest capture's modification time in ms, or null.
-export function lastCaptureMs() {
+// The newest capture: its time (the file's mtime, which serve sets to the
+// reading's time) and its origin ('statusline', 't3code', 'orca', 'orca-dev').
+export function lastCapture() {
     const dir = captureDir();
     let newest = null;
+    let newestPath = null;
     let handle = null;
     try {
         handle = GLib.Dir.open(dir, 0);
@@ -75,15 +78,22 @@ export function lastCaptureMs() {
                 continue;
             const path = GLib.build_filenamev([dir, name]);
             const ms = mtimeMs(path);
-            if (ms !== null && (newest === null || ms > newest))
+            if (ms !== null && (newest === null || ms > newest)) {
                 newest = ms;
+                newestPath = path;
+            }
         }
     } catch {
-        return null;
+        return {ms: null, origin: null};
     } finally {
         handle?.close();
     }
-    return newest;
+    const origin = newestPath ? readJson(newestPath).value?.observation?.origin : null;
+    return {ms: newest, origin: typeof origin === 'string' ? origin : null};
+}
+
+export function lastCaptureMs() {
+    return lastCapture().ms;
 }
 
 function mtimeMs(path) {
@@ -107,7 +117,7 @@ export function readFeedStatus() {
     const state = statusLineState(settingsRead.value, scriptPath,
         userScript ? readText(userScript) : null);
     const enabled = feedEnabled(config);
-    const last = lastCaptureMs();
+    const {ms: last, origin: lastCaptureOrigin} = lastCapture();
     return {
         enabled,
         hasClaude: !!config?.providers?.some?.(p => p?.id === 'claude'),
@@ -116,6 +126,7 @@ export function readFeedStatus() {
         userScript,
         scriptPath,
         lastCaptureMs: last,
+        lastCaptureOrigin,
         health: feedHealth({enabled, wired: state.forwards, lastCaptureMs: last}),
     };
 }

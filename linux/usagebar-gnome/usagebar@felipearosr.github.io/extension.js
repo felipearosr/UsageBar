@@ -45,7 +45,7 @@ import {
 import {ordinalLabel} from './accountlabels.js';
 import {chipExtras, colorHex, defaultColor, metricCards, metricCatalog, readMetrics} from './panelmetrics.js';
 import {
-    extraWindowsOf, isStatusLineSource, paceOf, paceSplitOf, resetSecs, windowLabel, windowsOf, worstPercent,
+    extraWindowsOf, feedBadge, isStatusLineSource, paceOf, paceSplitOf, resetSecs, windowLabel, windowsOf, worstPercent,
     worstWindow,
 } from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
@@ -8036,10 +8036,10 @@ export default class UsageBarExtension extends Extension {
             }));
             head.add_child(stale);
         }
-        // The opt-in feed is labelled as coming from the user's own statusLine.
+        // The opt-in feed is labelled with the record it read (statusLine, T3 Code, Orca).
         if (isStatusLineSource(row)) {
             head.add_child(new St.Label({
-                text: 'statusLine',
+                text: feedBadge(row),
                 style_class: 'usagebar-badge',
                 y_align: Clutter.ActorAlign.CENTER,
             }));

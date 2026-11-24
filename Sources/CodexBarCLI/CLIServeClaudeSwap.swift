@@ -255,14 +255,13 @@ struct ClaudeSwapServeRow: Sendable {
         fields.stale = true
         // A failed read can't vouch for the slot; the switch route reads the list again anyway.
         fields.canSwitch = false
-        let isStatusLine = [ClaudeStatusLineFeed.sourceLabel, ClaudeStatusLineFeed.staleSourceLabel]
-            .contains(self.payload.source)
+        let feedStale = ClaudeStatusLineFeed.staleFeedSourceLabel(for: self.payload.source)
         return Self(
             account: ProviderAccount(fields: fields, selector: self.account.selector),
             payload: self.payload.claudeSwapCopy(
                 account: self.payload.account,
                 cacheAccountKey: self.payload.cacheAccountKey,
-                source: isStatusLine ? ClaudeStatusLineFeed.staleSourceLabel : ClaudeSwapServeSource.staleSource,
+                source: feedStale ?? ClaudeSwapServeSource.staleSource,
                 error: ProviderErrorPayload(code: 1, message: message, kind: .provider)))
     }
 

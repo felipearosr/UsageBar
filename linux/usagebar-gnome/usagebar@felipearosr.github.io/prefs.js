@@ -38,7 +38,7 @@ import {MachineSyncPage, runSync} from './syncpage.js';
 import {CLI_WITHOUT_SYNC, settingsArgs} from './syncprefs.js';
 import {featureState, supportSummary} from './clicompat.js';
 import {findCodexbar, parseCliVersion} from './cli.js';
-import {FRESH_MS, forwardSnippet} from './statuslinefeed.js';
+import {FRESH_MS, feedOriginLabel, forwardSnippet} from './statuslinefeed.js';
 import {
     readFeedStatus,
     setFeedEnabled,
@@ -746,6 +746,38 @@ function logoRow(settings, extensionDir, metadata) {
     return row;
 }
 
+// Scrolls `row`'s page so the row sits at the top (or as close as the page
+// allows). Waits for the window to be laid out and for an expander's opening
+// animation, so the row's position and the page's height are final. It does
+// not focus the row: focusing an expander makes the page scroll again, past it.
+function revealRow(row) {
+    const tickMs = 50;
+    const settleTicks = 6; // after the row is on screen: the expander's animation
+    let waited = 0;
+    let settled = 0;
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, tickMs, () => {
+        if (!row.get_mapped()) {
+            waited += 1;
+            return waited < 40 ? GLib.SOURCE_CONTINUE : GLib.SOURCE_REMOVE;
+        }
+        if (settled < settleTicks) {
+            settled += 1;
+            return GLib.SOURCE_CONTINUE;
+        }
+        const scroller = row.get_ancestor(Gtk.ScrolledWindow.$gtype);
+        const content = scroller?.get_child();
+        if (content) {
+            const [ok, , top] = row.translate_coordinates(content, 0, 0);
+            if (ok) {
+                const adjustment = scroller.get_vadjustment();
+                const max = adjustment.get_upper() - adjustment.get_page_size();
+                adjustment.set_value(Math.max(0, Math.min(top - 12, max)));
+            }
+        }
+        return GLib.SOURCE_REMOVE;
+    });
+}
+
 export default class UsageBarPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const settings = this.getSettings();
@@ -992,16 +1024,32 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         // --- Machine Sync ---
         const syncPage = new MachineSyncPage(window, binary, settings).page;
         window.add(syncPage);
-        // The popover's "Sync settings…" opens this window on Machine Sync.
-        if (settings.get_string('prefs-page') === 'sync')
-            window.set_visible_page(syncPage);
-        // A rate-limited Claude card's "Set up…" opens Providers on the feed.
-        if (settings.get_string('prefs-page') === 'claude-feed') {
-            window.set_visible_page(page);
-            if (claudeFeedRow)
-                claudeFeedRow.expanded = true;
-        }
-        settings.set_string('prefs-page', '');
+        // The popover asks for a page by setting `prefs-page`: "Sync settings…"
+        // opens Machine Sync, a rate-limited Claude card's "Set up…" opens
+        // Providers scrolled to the open feed row. The window may already be
+        // open (openPreferences then only raises it), so a later request is
+        // honoured too.
+        const showRequestedPage = () => {
+            const requested = settings.get_string('prefs-page');
+            if (!requested)
+                return;
+            settings.set_string('prefs-page', '');
+            if (requested === 'sync') {
+                window.set_visible_page(syncPage);
+            } else if (requested === 'claude-feed') {
+                window.set_visible_page(page);
+                if (claudeFeedRow) {
+                    claudeFeedRow.expanded = true;
+                    revealRow(claudeFeedRow);
+                }
+            }
+        };
+        const pageRequestId = settings.connect('changed::prefs-page', showRequestedPage);
+        window.connect('close-request', () => {
+            settings.disconnect(pageRequestId);
+            return false;
+        });
+        showRequestedPage();
     }
 
     // Claude Code statusLine feed (statuslinefeed.js): a switch that turns it
@@ -1017,7 +1065,8 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         const toggle = plainSwitchRow('Use the statusLine feed',
             'Anthropic throttles the usage endpoint UsageBar polls. Claude Code already ' +
             'gets your 5-hour and weekly quota on every reply and passes it to its ' +
-            'statusLine command; with this on, UsageBar reads it from there.');
+            'statusLine command; with this on, UsageBar reads it from there, and from ' +
+            'T3 Code’s logs and Orca, which run Claude Code without a statusLine.');
         expander.add_row(toggle);
 
         // Shown when the user has a statusLine of their own that doesn't
@@ -1090,23 +1139,25 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             }
 
             const last = Number.isFinite(status.lastCaptureMs) ? ago(status.lastCaptureMs) : null;
+            const origin = feedOriginLabel(status.lastCaptureOrigin);
+            const use = 'Send a message in Claude Code or T3 Code, or keep Orca open.';
             const texts = {
                 off: 'Off. Claude quota comes from the usage endpoint, which is often rate limited.',
                 unwired: last
                     ? `Last capture ${last}. Your statusLine no longer forwards to UsageBar.`
                     : 'No captures yet: your statusLine doesn’t forward to UsageBar.',
-                waiting: 'Waiting for the first capture. Send a message in Claude Code.',
-                fresh: `Working. Last capture ${last}.`,
-                stale: `Last capture ${last}. Used when the endpoint is rate limited; ` +
-                    `refreshes when you use Claude Code (fresh for ${FRESH_MS / 60000} min).`,
-                old: `Last capture ${last}, too old to use. Send a message in Claude Code.`,
+                waiting: `Waiting for the first capture. ${use}`,
+                fresh: `Working. Last capture ${last}, from ${origin}.`,
+                stale: `Last capture ${last}, from ${origin}. Used when the endpoint is rate limited; ` +
+                    `refreshes when you use Claude Code, T3 Code or Orca (fresh for ${FRESH_MS / 60000} min).`,
+                old: `Last capture ${last}, too old to use. ${use}`,
             };
             statusRow.subtitle = status.settingsInvalid
                 ? 'Claude Code’s settings.json is not valid JSON.'
                 : texts[status.health];
             expander.subtitle = status.enabled
                 ? (status.health === 'fresh' || status.health === 'stale'
-                    ? 'On · from your Claude Code statusLine' : 'On · needs attention')
+                    ? `On · from ${feedOriginLabel(status.lastCaptureOrigin)}` : 'On · needs attention')
                 : 'Off';
         };
 

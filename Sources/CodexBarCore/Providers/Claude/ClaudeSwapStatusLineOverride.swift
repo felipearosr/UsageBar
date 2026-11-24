@@ -143,11 +143,12 @@ public enum ClaudeSwapStatusLineOverride {
             identity: identity ?? snapshot?.identity)
     }
 
-    /// `statusline` for a capture young enough to replace OAuth, `statusline-stale` otherwise.
+    /// The origin's label (`statusline`, `t3code`, ...) for a capture young enough to replace OAuth, its `-stale`
+    /// label otherwise.
     public static func sourceLabel(for limits: ClaudeStatusLineRateLimits, now: Date) -> String {
         ClaudeStatusLineDropStore.isWithinAge(limits, maximumAge: ClaudeStatusLineDropStore.freshnessWindow, now: now)
-            ? ClaudeStatusLineFeed.sourceLabel
-            : ClaudeStatusLineFeed.staleSourceLabel
+            ? limits.resolvedOrigin.sourceLabel
+            : limits.resolvedOrigin.staleSourceLabel
     }
 
     private static func normalized(_ text: String) -> String {

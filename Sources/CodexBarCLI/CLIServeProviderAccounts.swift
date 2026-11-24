@@ -391,7 +391,7 @@ struct ProviderAccountRowPayload: Encodable {
     /// failed read, a slot's source-declared last-known usage, or an old statusLine capture.
     var stale: Bool {
         guard let account else { return false }
-        return account.stale || self.row.source == ClaudeStatusLineFeed.staleSourceLabel
+        return account.stale || ClaudeStatusLineFeed.isStaleFeedSourceLabel(self.row.source)
     }
 
     private enum CodingKeys: String, CodingKey {

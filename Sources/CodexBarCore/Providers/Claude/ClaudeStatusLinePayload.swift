@@ -14,6 +14,44 @@ public enum ClaudeStatusLineFeed {
     public static let validResetEpochSecondsRange: ClosedRange<Double> = 946_684_800...4_102_444_800
     /// `config.json` key on the Claude provider entry that opts in to the feed.
     public static let configKey = "statusLineFeed"
+
+    /// Whether `label` is a source label any feed origin answers with, fresh or stale.
+    public static func isFeedSourceLabel(_ label: String?) -> Bool {
+        ClaudeUsageFeedOrigin.allCases.contains { $0.sourceLabel == label || $0.staleSourceLabel == label }
+    }
+
+    /// Whether `label` is a feed origin's stale label (`statusline-stale`, `t3code-stale`, ...).
+    public static func isStaleFeedSourceLabel(_ label: String?) -> Bool {
+        ClaudeUsageFeedOrigin.allCases.contains { $0.staleSourceLabel == label }
+    }
+
+    /// The stale label for a feed source label; nil when `label` is not one.
+    public static func staleFeedSourceLabel(for label: String?) -> String? {
+        ClaudeUsageFeedOrigin.allCases
+            .first { $0.sourceLabel == label || $0.staleSourceLabel == label }?
+            .staleSourceLabel
+    }
+}
+
+/// Where an observation's windows came from. Every origin reports the same 5-hour and weekly windows Claude Code
+/// gets on each Messages API response; they differ only in which local record UsageBar read them from.
+public enum ClaudeUsageFeedOrigin: String, Codable, Sendable, CaseIterable {
+    /// The user's own Claude Code statusLine, piped to `codexbar claude statusline capture`.
+    case statusLine = "statusline"
+    /// T3 Code's provider event logs (`rate_limit_event` from the Claude Agent SDK).
+    case t3Code = "t3code"
+    /// The Orca app's last Claude usage reading (`orca-ide account list --json`).
+    case orca
+    /// The same reading from an Orca development build (`~/.config/orca-dev`).
+    case orcaDev = "orca-dev"
+
+    public var sourceLabel: String {
+        self.rawValue
+    }
+
+    public var staleSourceLabel: String {
+        "\(self.rawValue)-stale"
+    }
 }
 
 public struct ClaudeStatusLineWindow: Codable, Equatable, Sendable {
@@ -33,19 +71,27 @@ public struct ClaudeStatusLineRateLimits: Codable, Equatable, Sendable {
     public let capturedAt: Date
     public let fiveHour: ClaudeStatusLineWindow?
     public let sevenDay: ClaudeStatusLineWindow?
+    /// Nil in observations written before origins existed; those all came from the statusLine.
+    public let origin: ClaudeUsageFeedOrigin?
 
     public init(
         profileID: String,
         accountID: String,
         capturedAt: Date,
         fiveHour: ClaudeStatusLineWindow?,
-        sevenDay: ClaudeStatusLineWindow?)
+        sevenDay: ClaudeStatusLineWindow?,
+        origin: ClaudeUsageFeedOrigin? = nil)
     {
         self.profileID = profileID
         self.accountID = accountID
         self.capturedAt = capturedAt
         self.fiveHour = fiveHour
         self.sevenDay = sevenDay
+        self.origin = origin
+    }
+
+    public var resolvedOrigin: ClaudeUsageFeedOrigin {
+        self.origin ?? .statusLine
     }
 }
 
@@ -94,7 +140,8 @@ public enum ClaudeStatusLinePayloadParser {
             accountID: accountID,
             capturedAt: capturedAt,
             fiveHour: fiveHour,
-            sevenDay: sevenDay)
+            sevenDay: sevenDay,
+            origin: .statusLine)
     }
 
     private static func window(_ raw: Any?) -> ClaudeStatusLineWindow? {

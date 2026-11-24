@@ -21,16 +21,40 @@ export function windowsOf(row) {
                 w.usedPercent !== undefined);
 }
 
-// Rows serve answered from the user's own Claude Code statusLine (opt-in feed),
-// which the card labels as such.
-export function isStatusLineSource(row) {
-    return row?.source === 'statusline' || row?.source === 'statusline-stale';
+// The opt-in Claude Code quota feed (docs/claude-statusline-feed.md) answers
+// with the label of the record it read: the user's own statusLine, T3 Code's
+// provider logs, or Orca (release or dev build). The card names that record.
+const FEED_BADGES = {
+    'statusline': 'statusLine',
+    't3code': 'T3 Code',
+    'orca': 'Orca',
+    'orca-dev': 'Orca dev',
+};
+
+function feedOrigin(source) {
+    if (typeof source !== 'string')
+        return null;
+    const origin = source.endsWith('-stale') ? source.slice(0, -'-stale'.length) : source;
+    return Object.hasOwn(FEED_BADGES, origin) ? origin : null;
 }
 
-// Rows serve answered from an old Claude statusLine capture while OAuth was rate limited, or from claude-swap's
+// Rows serve answered from the Claude Code quota feed, fresh or stale.
+export function isStatusLineSource(row) {
+    return feedOrigin(row?.source) !== null;
+}
+
+// The card's badge for a feed row ('statusLine', 'T3 Code', ...); null otherwise.
+export function feedBadge(row) {
+    const origin = feedOrigin(row?.source);
+    return origin === null ? null : FEED_BADGES[origin];
+}
+
+// Rows serve answered from an old feed reading while OAuth was rate limited, or from claude-swap's
 // last good list (or a slot's last-known usage) while its live numbers were unavailable.
 export function isStaleSource(row) {
-    return row?.source === 'statusline-stale' || row?.source === 'claude-swap-stale';
+    const source = row?.source;
+    return source === 'claude-swap-stale' ||
+        (typeof source === 'string' && source.endsWith('-stale') && feedOrigin(source) !== null);
 }
 
 export function extraWindowsOf(row) {
