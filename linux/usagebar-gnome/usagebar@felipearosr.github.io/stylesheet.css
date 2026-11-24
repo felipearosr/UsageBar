@@ -526,22 +526,34 @@
   background-color: rgba(160, 160, 166, 0.22);
 }
 
-.usagebar-status-wrap {
+/* Status page state: a dot after the card title (tooltip on hover), and a
+   banner under the head only while an incident is ongoing. */
+.usagebar-status-head-dot {
+  margin-left: 8px;
+}
+
+.usagebar-incident-banner {
   margin-top: 10px;
-}
-
-.usagebar-status-strip {
-  spacing: 2px;
-  margin-top: 4px;
-}
-
-.usagebar-status-day {
-  border-radius: 2px;
-}
-
-.usagebar-status-now {
+  padding: 6px 10px;
+  border-radius: 8px;
   font-size: 9.5pt;
+}
+
+.usagebar-incident-row {
+  spacing: 8px;
+}
+
+.usagebar-incident-warn { background-color: rgba(245, 194, 17, 0.12); }
+.usagebar-incident-warn:hover { background-color: rgba(245, 194, 17, 0.2); }
+.usagebar-incident-crit { background-color: rgba(237, 51, 59, 0.14); }
+.usagebar-incident-crit:hover { background-color: rgba(237, 51, 59, 0.22); }
+
+.usagebar-incident-text {
   font-weight: bold;
+}
+
+.usagebar-incident-link {
+  color: rgba(255, 255, 255, 0.65);
 }
 
 .usagebar-tooltip {
@@ -1807,6 +1819,26 @@
 
 .usagebar-light .usagebar-chart-baseline {
   background-color: rgba(89, 89, 95, 0.22);
+}
+
+.usagebar-light .usagebar-incident-warn {
+  background-color: rgba(245, 194, 17, 0.2);
+}
+
+.usagebar-light .usagebar-incident-warn:hover {
+  background-color: rgba(245, 194, 17, 0.3);
+}
+
+.usagebar-light .usagebar-incident-crit {
+  background-color: rgba(237, 51, 59, 0.14);
+}
+
+.usagebar-light .usagebar-incident-crit:hover {
+  background-color: rgba(237, 51, 59, 0.22);
+}
+
+.usagebar-light .usagebar-incident-link {
+  color: rgba(31, 31, 31, 0.65);
 }
 
 .usagebar-light.usagebar-tooltip {
