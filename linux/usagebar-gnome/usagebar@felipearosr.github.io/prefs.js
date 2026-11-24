@@ -798,6 +798,18 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             settings.set_string('chip-display-mode', MODES[modeRow.selected]);
         });
         panel.add(modeRow);
+        const severityRow = new Adw.ComboRow({
+            title: 'Highlight near limits',
+            subtitle: 'How a chip\'s percent flags the warning and critical thresholds',
+            model: Gtk.StringList.new(['Color the number', 'Dot before the number', 'Off']),
+        });
+        const SEVERITY_STYLES = ['color', 'dot', 'off'];
+        severityRow.selected = Math.max(0,
+            SEVERITY_STYLES.indexOf(settings.get_string('chip-severity-style')));
+        severityRow.connect('notify::selected', () => {
+            settings.set_string('chip-severity-style', SEVERITY_STYLES[severityRow.selected]);
+        });
+        panel.add(severityRow);
         const sourceRow = new Adw.ComboRow({
             title: 'With several accounts, show',
             subtitle: 'What a provider\'s chip reflects when it has more than one account',
