@@ -767,11 +767,13 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         });
         const themeRow = new Adw.ComboRow({
             title: 'Theme',
-            subtitle: 'System follows the GNOME Shell colors',
-            model: Gtk.StringList.new(['CodexBar dark', 'System']),
+            subtitle: 'Automatic follows GNOME\'s light or dark style',
+            model: Gtk.StringList.new(['Automatic', 'Always dark', 'Always light']),
         });
-        const THEMES = ['codexbar', 'system'];
-        themeRow.selected = Math.max(0, THEMES.indexOf(settings.get_string('app-theme')));
+        const THEMES = ['auto', 'codexbar', 'light'];
+        // The older 'system' value also follows GNOME: show it as Automatic.
+        const storedTheme = settings.get_string('app-theme');
+        themeRow.selected = Math.max(0, THEMES.indexOf(storedTheme === 'system' ? 'auto' : storedTheme));
         themeRow.connect('notify::selected', () => {
             settings.set_string('app-theme', THEMES[themeRow.selected]);
         });

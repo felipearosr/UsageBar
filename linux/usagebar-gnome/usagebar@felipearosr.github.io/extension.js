@@ -18,7 +18,6 @@ import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Soup from 'gi://Soup';
 import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
 import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
 
@@ -58,7 +57,7 @@ import {
     planOf,
     applyClaudeAccountPlan,
 } from './planlabel.js';
-import {capName, logoSvgIsWhite, readableBrandColor, surfaceColor} from './brandtext.js';
+import {capName, logoSvgIsWhite, readableBrandColor, recolorWhiteLogoSvg, surfaceColor} from './brandtext.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
     describeIssue,
@@ -426,6 +425,16 @@ function enrichAntigravityModels(rows) {
 // Mutable so enable() can overwrite from GSettings (prefs.js edits them).
 const THRESHOLDS = {warn: 60, crit: 85};
 
+// Whether an app theme takes the light palette, given the shell's style
+// variant ('light' or 'dark'; undefined on GNOME 46).
+function appThemeIsLight(theme, shellVariant) {
+    if (theme === 'light')
+        return true;
+    if (theme === 'codexbar')
+        return false;
+    return shellVariant === 'light';
+}
+
 function severity(percent, grey) {
     if (grey)
         return 'stale';
@@ -564,7 +573,7 @@ function humanizeSecs(secs) {
 // Mutable display preferences, refreshed from GSettings on every settings
 // change (same pattern as THRESHOLDS) so render paths never hit GSettings.
 const DISPLAY = {
-    appTheme: 'codexbar',
+    appTheme: 'auto',
     absoluteResets: false,
     barsShowUsed: false,
     sortAlphabetical: false,
@@ -820,10 +829,8 @@ function inkRGB(actor) {
 }
 
 // The light palette's logo tint: its near-black text color.
-function lightLogoTint() {
-    const ColorType = Clutter.Color ?? Cogl.Color;
-    return ColorType.from_string('#1f1f1f')[1];
-}
+// White-only logos on the light palette are drawn in this text color.
+const LIGHT_LOGO_COLOR = '#1f1f1f';
 
 // A small antialiased circle. CSS border-radius on a 5-8px widget renders
 // jagged in St, so every dot in the extension draws itself. The fill is
@@ -1622,12 +1629,14 @@ class UsageBarIndicator extends PanelMenu.Button {
         });
     }
 
-    // `codexbar` stays dark navy in either shell style; `system` follows the
-    // shell, and a light shell adds usagebar-light (the generated light
-    // palette at the end of stylesheet.css). GNOME 46 has no light shell.
+    // `auto` (default) and `system` follow the shell's light or dark style,
+    // `codexbar` stays dark navy and `light` always takes the light palette
+    // (usagebar-light, generated at the end of stylesheet.css). `system` also
+    // adds usagebar-theme-system for its quieter secondary text. GNOME 46
+    // has no light shell, so there `auto` and `system` stay dark.
     setAppTheme(theme) {
         const system = theme === 'system';
-        const light = system && Main.getStyleVariant?.() === 'light';
+        const light = appThemeIsLight(theme, Main.getStyleVariant?.());
         for (const actor of [this.menu.box, this._scopeListHost, this._tooltip, this._costPanel, this._modelTable]) {
             if (!actor)
                 continue;
@@ -3318,9 +3327,10 @@ export default class UsageBarExtension extends Extension {
         const noGenericIcons = (name, root) => assertion(name, !descendants(root).some(actor =>
             actor instanceof St.Icon && actor.icon_name === 'application-x-executable-symbolic'));
         // A logo is any icons/ file other than our own usagebar-* glyphs.
+        // A provider logo: from an icons folder, or its light-palette copy.
         const isLogo = actor => actor instanceof St.Icon &&
             actor.gicon instanceof Gio.FileIcon &&
-            actor.gicon.get_file().get_parent()?.get_basename() === 'icons' &&
+            ['icons', 'light-logos'].includes(actor.gicon.get_file().get_parent()?.get_basename()) &&
             !(actor.gicon.get_file().get_basename() ?? '').startsWith('usagebar-');
         const nameMarks = root => descendants(root)
             .filter(actor => actor.has_style_class_name?.('usagebar-provider-name'))
@@ -5094,8 +5104,10 @@ export default class UsageBarExtension extends Extension {
                             this._indicator.menu.box.has_style_class_name('usagebar-theme-system') === system));
                         assertions.push(assertion('app theme is applied to the cost panel',
                             this._indicator._costPanel.has_style_class_name('usagebar-theme-system') === system));
-                        // The light palette only for the system theme on a light shell.
-                        const light = system && Main.getStyleVariant?.() === 'light';
+                        // The light palette for `light`, and for `auto` or
+                        // `system` on a light shell.
+                        const light = appThemeIsLight(this._settings.get_string('app-theme'),
+                            Main.getStyleVariant?.());
                         assertions.push(assertion('light palette follows the shell style',
                             [this._indicator.menu.box, this._indicator._scopeListHost, this._indicator._costPanel]
                                 .every(actor => actor.has_style_class_name('usagebar-light') === light),
@@ -5484,6 +5496,8 @@ export default class UsageBarExtension extends Extension {
             return;
         this._logos.installed = installedLogoPack();
         this._providerIconCache?.clear();
+        this._logoWhiteCache?.clear();
+        this._lightLogoCache?.clear();
         this._indicator?.resetLogos();
         this._destroyOverviewView();
         this._popupView = null;
@@ -6313,9 +6327,16 @@ export default class UsageBarExtension extends Extension {
     // it, so they leave the slot out entirely when there is no logo.
     _providerIcon(provider, size) {
         this._providerIconCache ??= new LifetimeLookupCache(provider => providerLogo(this.dir, provider));
-        const gicon = this._providerIconCache.get(provider);
+        let gicon = this._providerIconCache.get(provider);
         if (!gicon)
             return null;
+        // Most logos are drawn white for the dark popover, and aren't
+        // symbolic, so CSS can't recolor them: on the light palette, white-
+        // only logos load from a copy redrawn in the text color. (A Clutter
+        // ColorizeEffect did this before, but it didn't paint inside the All
+        // view's rows on a dark shell.) Logos with colors of their own stay.
+        if (this._indicator?.menu.box.has_style_class_name('usagebar-light') && this._logoIsWhite(provider))
+            gicon = this._lightLogoIcon(provider) ?? gicon;
         const icon = new St.Icon({
             icon_size: size,
             y_align: Clutter.ActorAlign.CENTER,
@@ -6324,12 +6345,35 @@ export default class UsageBarExtension extends Extension {
         const color = PROVIDER_META[provider]?.color;
         if (color)
             icon.set_style(`color: ${color};`);
-        // Most logos are drawn white for the dark popover, and aren't
-        // symbolic, so CSS can't recolor them: on the light palette, tint
-        // those the text color. Logos with colors of their own stay as is.
-        if (this._indicator?.menu.box.has_style_class_name('usagebar-light') && this._logoIsWhite(provider))
-            icon.add_effect(new Clutter.ColorizeEffect({tint: lightLogoTint()}));
         return icon;
+    }
+
+    // A white-only logo redrawn in LIGHT_LOGO_COLOR, written once to the user
+    // cache (named by the content's checksum, so a new logo pack gets new
+    // files). Null when it can't be written: the white logo is used then.
+    _lightLogoIcon(provider) {
+        this._lightLogoCache ??= new Map();
+        if (!this._lightLogoCache.has(provider)) {
+            let icon = null;
+            try {
+                const path = this._providerIconCache?.get(provider)?.get_file?.()?.get_path();
+                if (path) {
+                    const [, bytes] = GLib.file_get_contents(path);
+                    const svg = recolorWhiteLogoSvg(new TextDecoder().decode(bytes), LIGHT_LOGO_COLOR);
+                    const sum = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA1, svg, -1);
+                    const dir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'usagebar', 'light-logos']);
+                    GLib.mkdir_with_parents(dir, 0o755);
+                    const file = GLib.build_filenamev([dir, `${provider}-${sum.slice(0, 12)}.svg`]);
+                    if (!GLib.file_test(file, GLib.FileTest.EXISTS))
+                        GLib.file_set_contents(file, svg);
+                    icon = new Gio.FileIcon({file: Gio.File.new_for_path(file)});
+                }
+            } catch (e) {
+                console.warn(`usagebar: light logo for ${provider}: ${e.message}`);
+            }
+            this._lightLogoCache.set(provider, icon);
+        }
+        return this._lightLogoCache.get(provider);
     }
 
     // Whether a provider's logo is white only (every fill and stroke white
