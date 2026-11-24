@@ -94,6 +94,13 @@ export function surfaceColor(background, foreground) {
 // Whether an SVG paints only in white (or nothing): its colors, from fill,
 // stroke and stop-color attributes and styles, ignoring none, currentColor
 // and gradient references.
+// A white-only logo (logoSvgIsWhite) redrawn in `color`: every white fill,
+// stroke and stop-color, in attributes and styles, becomes `color`.
+export function recolorWhiteLogoSvg(svg, color) {
+    return svg.replace(/((?:fill|stroke|stop-color)\s*[=:]\s*["']?)(white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))(?=["';\s>]|$)/gi,
+        (_match, lead) => `${lead}${color}`);
+}
+
 export function logoSvgIsWhite(svg) {
     const colors = [...svg.matchAll(/(?:fill|stroke|stop-color)\s*[=:]\s*["']?([^"';\s>]+)/gi)]
         .map(match => match[1].toLowerCase())

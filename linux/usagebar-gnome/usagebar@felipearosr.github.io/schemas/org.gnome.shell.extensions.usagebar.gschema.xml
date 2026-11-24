@@ -6,12 +6,14 @@
     <!-- Severity / display -->
     <key name="app-theme" type="s">
       <choices>
+        <choice value="auto"/>
         <choice value="codexbar"/>
+        <choice value="light"/>
         <choice value="system"/>
       </choices>
-      <default>'codexbar'</default>
+      <default>'auto'</default>
       <summary>Popover theme</summary>
-      <description>Use CodexBar's dark navy appearance or inherit the GNOME Shell system theme.</description>
+      <description>auto follows GNOME's light or dark style (CodexBar's dark navy when dark, its light palette when light); codexbar is always dark navy; light is always the light palette. system (kept for existing settings) also follows the shell, with slightly quieter secondary text.</description>
     </key>
     <key name="warn-threshold" type="i">
       <default>60</default>

@@ -74,6 +74,27 @@ test('a surface is its opaque background, else the opposite of its text color', 
     assert.equal(surfaceColor(null, null), '#000000');
 });
 
+test('recolorWhiteLogoSvg redraws a white-only logo in one color', async () => {
+    const {logoSvgIsWhite, recolorWhiteLogoSvg} = await import('../usagebar@felipearosr.github.io/brandtext.js');
+    assert.equal(recolorWhiteLogoSvg('<svg fill="none"><path fill="white" d=""/></svg>', '#1f1f1f'),
+        '<svg fill="none"><path fill="#1f1f1f" d=""/></svg>');
+    assert.equal(recolorWhiteLogoSvg('<svg><path style="fill:#FFFFFF;stroke:#fff" d=""/></svg>', '#1f1f1f'),
+        '<svg><path style="fill:#1f1f1f;stroke:#1f1f1f" d=""/></svg>');
+    assert.equal(recolorWhiteLogoSvg('<svg><stop stop-color="rgb(255, 255, 255)"/></svg>', '#000'),
+        '<svg><stop stop-color="#000"/></svg>');
+    // Every bundled white logo comes out with no white left.
+    const {readdirSync, readFileSync} = await import('node:fs');
+    const dir = new URL('../usagebar@felipearosr.github.io/icons/', import.meta.url);
+    for (const name of readdirSync(dir).filter(file => file.endsWith('.svg'))) {
+        const svg = readFileSync(new URL(name, dir), 'utf8');
+        if (!logoSvgIsWhite(svg))
+            continue;
+        const dark = recolorWhiteLogoSvg(svg, '#1f1f1f');
+        assert.ok(!/(?:fill|stroke|stop-color)\s*[=:]\s*["']?(?:white|#fff\b|#ffffff)/i.test(dark), name);
+        assert.ok(dark.includes('#1f1f1f'), name);
+    }
+});
+
 test('logoSvgIsWhite tells white-only logos from colored ones', async () => {
     const {logoSvgIsWhite} = await import('../usagebar@felipearosr.github.io/brandtext.js');
     assert.equal(logoSvgIsWhite('<svg fill="none"><path fill="white" d=""/></svg>'), true);
