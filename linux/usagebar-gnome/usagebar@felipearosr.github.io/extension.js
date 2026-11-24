@@ -451,10 +451,25 @@ function extraValueClass(sev) {
         : `usagebar-chip-label usagebar-chip-extra-value usagebar-fg-${sev}`;
 }
 
-// One extra percent: its number, and a tag pill tucked under the number's
-// bottom-right corner.
+// The panel's own text color at this alpha (0–255): dim tag letters.
+const CHIP_TAG_OPACITY = 140;
+// Chips at 0% (main and every extra) recede to this opacity.
+const CHIP_IDLE_OPACITY = 115;
+
+// One extra percent: a dim tag letter, then its number ("S 9%").
 function newChipExtra(extra) {
     const box = new St.BoxLayout({style_class: 'usagebar-chip-extra', y_align: Clutter.ActorAlign.CENTER});
+    let tag = null;
+    if (extra.letter) {
+        tag = new St.Label({
+            text: extra.letter,
+            style_class: 'usagebar-chip-tag',
+            y_align: Clutter.ActorAlign.CENTER,
+            opacity: CHIP_TAG_OPACITY,
+        });
+        tag.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        box.add_child(tag);
+    }
     const value = new St.Label({
         text: extra.text,
         style_class: extraValueClass(extra.sev),
@@ -464,22 +479,25 @@ function newChipExtra(extra) {
     // number must never collapse to "…".
     value.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
     box.add_child(value);
-    let tag = null;
-    if (extra.letter) {
-        tag = new St.Label({
-            text: extra.letter,
-            style_class: 'usagebar-chip-tag',
-            style: `background-color: ${extra.color};`,
-            y_align: Clutter.ActorAlign.END,
-        });
-        // Overlap the % a little and sit below the baseline, without
-        // changing the chip's layout.
-        tag.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-        tag.translation_x = -2;
-        tag.translation_y = 3;
-        box.add_child(tag);
-    }
     return {box, value, tag};
+}
+
+// The chip's own percent: colored by severity when the user's near-limit
+// highlight is 'color' (ok keeps the panel's text color).
+function chipLabelClass(chip) {
+    return chip.sevStyle === 'color' && chip.sev !== 'ok'
+        ? `usagebar-chip-label usagebar-fg-${chip.sev}` : 'usagebar-chip-label';
+}
+
+// A chip whose numbers are all 0% has nothing to say: it recedes.
+function chipIsIdle(chip) {
+    return chip.hasUsage && Math.round(chip.percent) === 0 &&
+        (chip.extras ?? []).every(extra => extra.text === '0%');
+}
+
+// The near-limit dot ('dot' highlight) only shows at warn or crit.
+function chipDotVisible(chip) {
+    return chip.sevStyle === 'dot' && (chip.sev === 'warn' || chip.sev === 'crit');
 }
 
 function updateChipExtra(parts, extra) {
@@ -1700,6 +1718,8 @@ class UsageBarIndicator extends PanelMenu.Button {
             ring: null,
             label: null,
             extrasKey: extrasKeyOf(chip),
+            sevStyle: chip.sevStyle,
+            sevDot: null,
             extras: [],
             state: {percent: chip.percent, sev: chip.sev},
         };
@@ -1711,7 +1731,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             if (gicon) {
                 entry.box.add_child(new St.Icon({
                     gicon,
-                    icon_size: 14,
+                    icon_size: 16,
                     style_class: 'usagebar-chip-icon',
                     y_align: Clutter.ActorAlign.CENTER,
                 }));
@@ -1775,9 +1795,14 @@ class UsageBarIndicator extends PanelMenu.Button {
         }
 
         if (chip.text) {
+            if (chip.sevStyle === 'dot') {
+                entry.sevDot = roundDot({size: 6, styleClass: `usagebar-dot usagebar-bg-${chip.sev}`});
+                entry.sevDot.visible = chipDotVisible(chip);
+                entry.box.add_child(entry.sevDot);
+            }
             entry.label = new St.Label({
                 text: chip.text,
-                style_class: 'usagebar-chip-label',
+                style_class: chipLabelClass(chip),
                 y_align: Clutter.ActorAlign.CENTER,
             });
             entry.box.add_child(entry.label);
@@ -1787,6 +1812,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             entry.extras.push(parts);
             entry.box.add_child(parts.box);
         }
+        entry.box.opacity = chipIsIdle(chip) ? CHIP_IDLE_OPACITY : 255;
         return entry;
     }
 
@@ -1823,7 +1849,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             let entry = this._panelEntries.get(chip.provider);
             const hasText = !!chip.text;
             if (entry && (entry.mode !== chip.mode || entry.hasText !== hasText ||
-                entry.extrasKey !== extrasKeyOf(chip))) {
+                entry.sevStyle !== chip.sevStyle || entry.extrasKey !== extrasKeyOf(chip))) {
                 entry.box.destroy();
                 this._panelEntries.delete(chip.provider);
                 entry = null;
@@ -1836,9 +1862,17 @@ class UsageBarIndicator extends PanelMenu.Button {
                 entry.state.sev = chip.sev;
                 if (entry.dot)
                     entry.dot.style_class = `usagebar-round-dot usagebar-dot usagebar-bg-${chip.sev}`;
-                if (entry.label)
+                if (entry.label) {
                     entry.label.text = chip.text;
+                    entry.label.style_class = chipLabelClass(chip);
+                }
+                if (entry.sevDot) {
+                    entry.sevDot.style_class = `usagebar-round-dot usagebar-dot usagebar-bg-${chip.sev}`;
+                    entry.sevDot.visible = chipDotVisible(chip);
+                    entry.sevDot.queue_repaint();
+                }
                 (chip.extras ?? []).forEach((extra, index) => updateChipExtra(entry.extras[index], extra));
+                entry.box.opacity = chipIsIdle(chip) ? CHIP_IDLE_OPACITY : 255;
                 if (entry.name) {
                     entry.name.text = capName(chipName(chip));
                     entry.name.accessible_name = chipName(chip);
@@ -2005,6 +2039,7 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.mergeChips = this._settings.get_boolean('merge-chips');
             DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
             DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
+            DISPLAY.chipSeverity = this._settings.get_string('chip-severity-style');
             DISPLAY.panelIconSource = this._settings.get_string('panel-icon-source');
             DISPLAY.panelMetrics = readMetrics(this._settings.get_strv('panel-metrics'));
             DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
@@ -2027,7 +2062,8 @@ export default class UsageBarExtension extends Extension {
         const DISPLAY_KEYS = new Set([
             'warn-threshold', 'crit-threshold', 'absolute-reset-times',
             'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
-            'show-reset-when-exhausted', 'chip-display-mode', 'panel-icon-source', 'panel-metrics',
+            'show-reset-when-exhausted', 'chip-display-mode', 'chip-severity-style',
+            'panel-icon-source', 'panel-metrics',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
             'machine-colors', 'hide-personal-info',
@@ -5246,6 +5282,7 @@ export default class UsageBarExtension extends Extension {
             hasUsage: worst !== null,
             text,
             sev: severity(worst ?? 0, grey),
+            sevStyle: DISPLAY.chipSeverity,
             mode,
             extras,
         };
@@ -6146,7 +6183,9 @@ export default class UsageBarExtension extends Extension {
         const slots = points.map(point => {
             const ratio = max > 0 && point.value > 0 ? Math.min(point.value / max, 1) : 0;
             const barH = ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1;
-            const stack = new St.BoxLayout({vertical: true});
+            // Right-aligned in its slot: the slot's extra width is the gap
+            // before the bar, so the last bar (today) ends flush right.
+            const stack = new St.BoxLayout({vertical: true, x_align: Clutter.ActorAlign.END});
             const segs = [];
             // Zero slices are dropped entirely.
             const slices = point.models.filter(([, v]) => v > 0).reverse();
@@ -6200,11 +6239,18 @@ export default class UsageBarExtension extends Extension {
                 return;
             const n = slots.length;
             const bw = Math.min(12, Math.max(2, Math.floor((w - 2 * (n - 1)) / n)));
-            for (const slot of slots) {
-                slot.set_width(bw);
+            // Spread the leftover width (rounding + the 12px cap) across the
+            // gaps so the bars span the full width: first bar flush left,
+            // today flush right.
+            const extra = Math.max(0, w - n * bw);
+            slots.forEach((slot, i) => {
+                const gap = n === 1 ? extra
+                    : i === 0 ? 0
+                        : Math.floor(i * extra / (n - 1)) - Math.floor((i - 1) * extra / (n - 1));
+                slot.set_width(bw + gap);
                 for (const s of slot._segs)
                     s.widget.set_size(bw, s.h);
-            }
+            });
         });
         wrap.add_child(chart);
         wrap.add_child(new St.Widget({style_class: 'usagebar-chart-baseline', height: 1, x_expand: true}));

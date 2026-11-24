@@ -37,6 +37,16 @@
       <summary>Panel chip display mode</summary>
       <description>What each panel chip shows: icon and progress ring, icon with ring and percent, icon with percent, name with ring and percent, or severity dot only.</description>
     </key>
+    <key name="chip-severity-style" type="s">
+      <choices>
+        <choice value="color"/>
+        <choice value="dot"/>
+        <choice value="off"/>
+      </choices>
+      <default>'color'</default>
+      <summary>Panel near-limit highlight</summary>
+      <description>How a panel chip's percent flags a limit at the warning or critical threshold: color the number, a dot before it, or nothing.</description>
+    </key>
     <key name="panel-icon-source" type="s">
       <choices>
         <choice value="active"/>
