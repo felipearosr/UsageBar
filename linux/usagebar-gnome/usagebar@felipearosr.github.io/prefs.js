@@ -20,6 +20,7 @@ import {
     providerModels,
 } from './modelprefs.js';
 import {ICON_SOURCES} from './accounts.js';
+import {PANEL_POSITIONS} from './panelposition.js';
 import {
     MAX_LETTERS,
     TAG_COLORS,
@@ -784,6 +785,16 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             title: 'Panel',
             description: 'How usage chips appear in the top bar.',
         });
+        const positionRow = new Adw.ComboRow({
+            title: 'Position in top bar',
+            model: Gtk.StringList.new(PANEL_POSITIONS.map(p => p.label)),
+        });
+        const positionValues = PANEL_POSITIONS.map(p => p.value);
+        positionRow.selected = Math.max(0, positionValues.indexOf(settings.get_string('panel-position')));
+        positionRow.connect('notify::selected', () => {
+            settings.set_string('panel-position', positionValues[positionRow.selected]);
+        });
+        panel.add(positionRow);
         const modeRow = new Adw.ComboRow({
             title: 'Chip shows',
             model: Gtk.StringList.new([
