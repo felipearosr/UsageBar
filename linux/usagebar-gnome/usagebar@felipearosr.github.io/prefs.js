@@ -20,6 +20,7 @@ import {
     providerModels,
 } from './modelprefs.js';
 import {ICON_SOURCES} from './accounts.js';
+import {PANEL_POSITIONS} from './panelposition.js';
 import {
     MAX_LETTERS,
     TAG_COLORS,
@@ -799,11 +800,13 @@ export default class UsageBarPreferences extends ExtensionPreferences {
         });
         const themeRow = new Adw.ComboRow({
             title: 'Theme',
-            subtitle: 'System follows the GNOME Shell colors',
-            model: Gtk.StringList.new(['CodexBar dark', 'System']),
+            subtitle: 'Automatic follows GNOME\'s light or dark style',
+            model: Gtk.StringList.new(['Automatic', 'Always dark', 'Always light']),
         });
-        const THEMES = ['codexbar', 'system'];
-        themeRow.selected = Math.max(0, THEMES.indexOf(settings.get_string('app-theme')));
+        const THEMES = ['auto', 'codexbar', 'light'];
+        // The older 'system' value also follows GNOME: show it as Automatic.
+        const storedTheme = settings.get_string('app-theme');
+        themeRow.selected = Math.max(0, THEMES.indexOf(storedTheme === 'system' ? 'auto' : storedTheme));
         themeRow.connect('notify::selected', () => {
             settings.set_string('app-theme', THEMES[themeRow.selected]);
         });
@@ -814,6 +817,16 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             title: 'Panel',
             description: 'How usage chips appear in the top bar.',
         });
+        const positionRow = new Adw.ComboRow({
+            title: 'Position in top bar',
+            model: Gtk.StringList.new(PANEL_POSITIONS.map(p => p.label)),
+        });
+        const positionValues = PANEL_POSITIONS.map(p => p.value);
+        positionRow.selected = Math.max(0, positionValues.indexOf(settings.get_string('panel-position')));
+        positionRow.connect('notify::selected', () => {
+            settings.set_string('panel-position', positionValues[positionRow.selected]);
+        });
+        panel.add(positionRow);
         const modeRow = new Adw.ComboRow({
             title: 'Chip shows',
             model: Gtk.StringList.new([
@@ -830,6 +843,18 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             settings.set_string('chip-display-mode', MODES[modeRow.selected]);
         });
         panel.add(modeRow);
+        const severityRow = new Adw.ComboRow({
+            title: 'Highlight near limits',
+            subtitle: 'How a chip\'s percent flags the warning and critical thresholds',
+            model: Gtk.StringList.new(['Color the number', 'Dot before the number', 'Off']),
+        });
+        const SEVERITY_STYLES = ['color', 'dot', 'off'];
+        severityRow.selected = Math.max(0,
+            SEVERITY_STYLES.indexOf(settings.get_string('chip-severity-style')));
+        severityRow.connect('notify::selected', () => {
+            settings.set_string('chip-severity-style', SEVERITY_STYLES[severityRow.selected]);
+        });
+        panel.add(severityRow);
         const sourceRow = new Adw.ComboRow({
             title: 'With several accounts, show',
             subtitle: 'What a provider\'s chip reflects when it has more than one account',

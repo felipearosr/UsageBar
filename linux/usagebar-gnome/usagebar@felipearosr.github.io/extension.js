@@ -18,7 +18,6 @@ import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Soup from 'gi://Soup';
 import Clutter from 'gi://Clutter';
-import Cogl from 'gi://Cogl';
 import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
 
@@ -50,6 +49,7 @@ import {
 } from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {ReportGate} from './reportgate.js';
+import {PANEL_POSITIONS, panelPlacement} from './panelposition.js';
 import {PROVIDER_META} from './providermeta.js';
 import {
     claudeAccountConfigPaths,
@@ -58,7 +58,7 @@ import {
     planOf,
     applyClaudeAccountPlan,
 } from './planlabel.js';
-import {capName, logoSvgIsWhite, readableBrandColor, surfaceColor} from './brandtext.js';
+import {capName, logoSvgIsWhite, readableBrandColor, recolorWhiteLogoSvg, surfaceColor} from './brandtext.js';
 import {loginActionFor, terminalArgv} from './authlogin.js';
 import {
     describeIssue,
@@ -181,8 +181,7 @@ const TICK_SECS = 30;              // countdown re-render while the menu is open
 const COST_TTL_SECS = 120;
 const COST_HISTORY_DAYS = 90;
 const STATUS_TTL_SECS = 900;   // provider status pages refresh slowly
-const STATUS_DAYS = 45;        // history strip length, like statuspage.io
-const STATUS_BAR_HEIGHT = 18;
+const STATUS_DAYS = 45;        // incident-count window for the status dot's tooltip
 const BAR_WIDTH = 320;
 // Height of the usage window bars and the spend summary bar.
 const BAR_HEIGHT = 8;
@@ -202,6 +201,15 @@ const COST_HINTS = {
 // The dashboard link prefers the subscription page when the row reports a
 // plan (loginMethod) — e.g. claude.ai usage for Max plans vs the API
 // console for key users, matching the macOS app.
+// Main.panel's box for a panel-position box name (panelposition.js).
+function panelBox(name) {
+    return {
+        left: Main.panel._leftBox,
+        center: Main.panel._centerBox,
+        right: Main.panel._rightBox,
+    }[name];
+}
+
 function providerLinks(row) {
     const meta = PROVIDER_META[row.provider];
     if (!meta)
@@ -427,6 +435,16 @@ function enrichAntigravityModels(rows) {
 // Mutable so enable() can overwrite from GSettings (prefs.js edits them).
 const THRESHOLDS = {warn: 60, crit: 85};
 
+// Whether an app theme takes the light palette, given the shell's style
+// variant ('light' or 'dark'; undefined on GNOME 46).
+function appThemeIsLight(theme, shellVariant) {
+    if (theme === 'light')
+        return true;
+    if (theme === 'codexbar')
+        return false;
+    return shellVariant === 'light';
+}
+
 function severity(percent, grey) {
     if (grey)
         return 'stale';
@@ -451,10 +469,25 @@ function extraValueClass(sev) {
         : `usagebar-chip-label usagebar-chip-extra-value usagebar-fg-${sev}`;
 }
 
-// One extra percent: its number, and a tag pill tucked under the number's
-// bottom-right corner.
+// The panel's own text color at this alpha (0–255): dim tag letters.
+const CHIP_TAG_OPACITY = 140;
+// Chips at 0% (main and every extra) recede to this opacity.
+const CHIP_IDLE_OPACITY = 115;
+
+// One extra percent: a dim tag letter, then its number ("S 9%").
 function newChipExtra(extra) {
     const box = new St.BoxLayout({style_class: 'usagebar-chip-extra', y_align: Clutter.ActorAlign.CENTER});
+    let tag = null;
+    if (extra.letter) {
+        tag = new St.Label({
+            text: extra.letter,
+            style_class: 'usagebar-chip-tag',
+            y_align: Clutter.ActorAlign.CENTER,
+            opacity: CHIP_TAG_OPACITY,
+        });
+        tag.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        box.add_child(tag);
+    }
     const value = new St.Label({
         text: extra.text,
         style_class: extraValueClass(extra.sev),
@@ -464,22 +497,25 @@ function newChipExtra(extra) {
     // number must never collapse to "…".
     value.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
     box.add_child(value);
-    let tag = null;
-    if (extra.letter) {
-        tag = new St.Label({
-            text: extra.letter,
-            style_class: 'usagebar-chip-tag',
-            style: `background-color: ${extra.color};`,
-            y_align: Clutter.ActorAlign.END,
-        });
-        // Overlap the % a little and sit below the baseline, without
-        // changing the chip's layout.
-        tag.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-        tag.translation_x = -2;
-        tag.translation_y = 3;
-        box.add_child(tag);
-    }
     return {box, value, tag};
+}
+
+// The chip's own percent: colored by severity when the user's near-limit
+// highlight is 'color' (ok keeps the panel's text color).
+function chipLabelClass(chip) {
+    return chip.sevStyle === 'color' && chip.sev !== 'ok'
+        ? `usagebar-chip-label usagebar-fg-${chip.sev}` : 'usagebar-chip-label';
+}
+
+// A chip whose numbers are all 0% has nothing to say: it recedes.
+function chipIsIdle(chip) {
+    return chip.hasUsage && Math.round(chip.percent) === 0 &&
+        (chip.extras ?? []).every(extra => extra.text === '0%');
+}
+
+// The near-limit dot ('dot' highlight) only shows at warn or crit.
+function chipDotVisible(chip) {
+    return chip.sevStyle === 'dot' && (chip.sev === 'warn' || chip.sev === 'crit');
 }
 
 function updateChipExtra(parts, extra) {
@@ -547,7 +583,7 @@ function humanizeSecs(secs) {
 // Mutable display preferences, refreshed from GSettings on every settings
 // change (same pattern as THRESHOLDS) so render paths never hit GSettings.
 const DISPLAY = {
-    appTheme: 'codexbar',
+    appTheme: 'auto',
     absoluteResets: false,
     barsShowUsed: false,
     sortAlphabetical: false,
@@ -803,10 +839,8 @@ function inkRGB(actor) {
 }
 
 // The light palette's logo tint: its near-black text color.
-function lightLogoTint() {
-    const ColorType = Clutter.Color ?? Cogl.Color;
-    return ColorType.from_string('#1f1f1f')[1];
-}
+// White-only logos on the light palette are drawn in this text color.
+const LIGHT_LOGO_COLOR = '#1f1f1f';
 
 // A small antialiased circle. CSS border-radius on a 5-8px widget renders
 // jagged in St, so every dot in the extension draws itself. The fill is
@@ -965,7 +999,6 @@ function costOverview(reports, rangeDays = 30) {
 // ongoing}: rank 1 → yellow, 2/3 → red (matching the usage-bar palette),
 // plus `covered` — the feed is a bounded page, so when it looks truncated,
 // days wholly before its oldest entry are unknown, not a clean green.
-const IMPACT_SEV = ['ok', 'warn', 'crit', 'crit'];
 const STATUSPAGE_IMPACT_RANK = {minor: 1, major: 2, critical: 3};
 const INCIDENTIO_STATUS_RANK = {
     degraded_performance: 1,
@@ -1096,44 +1129,22 @@ function incidentIoIntervals(incidents, componentIds) {
     };
 }
 
-// One entry per day, oldest first: worst impact overlapping that day.
-// Days are UTC, not local: the status pages bucket their uptime bars by
-// UTC day, and matching them bar-for-bar is the whole point (a 03:28 UTC
-// outage must land on the same day here as there).
-function statusDays(intervals, numDays, covered) {
-    const now = new Date();
-    const days = [];
-    for (let i = numDays - 1; i >= 0; i--) {
-        const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(),
-            now.getUTCDate() - i);
-        const dayEnd = dayStart + 86400000;
-        const hits = intervals.filter(iv => iv.start < dayEnd && iv.end >= dayStart);
-        const worst = hits.reduce((m, iv) => Math.max(m, iv.rank), 0);
-        days.push({
-            date: new Date(dayStart).toLocaleDateString('en-US',
-                {month: 'short', day: 'numeric', timeZone: 'UTC'}),
-            sev: worst > 0 ? IMPACT_SEV[worst] : (dayEnd <= covered ? 'stale' : 'ok'),
-            names: [...new Set(hits.filter(h => h.rank === worst).map(h => h.name))],
-            count: new Set(hits.map(h => h.name)).size,
-            ongoing: hits.some(h => h.ongoing),
-        });
-    }
-    return days;
+// What a provider card says about its status page: the current state
+// (from still-open impact intervals), the worst ongoing incident's name, and
+// how many distinct incidents touched the last `days` days.
+function statusSummary(intervals, days = STATUS_DAYS) {
+    const since = Date.now() - days * 86400000;
+    const recent = (intervals ?? []).filter(iv => iv.end >= since);
+    const ongoing = (intervals ?? []).filter(iv => iv.ongoing)
+        .sort((a, b) => b.rank - a.rank);
+    return {
+        now: currentStatus(intervals),
+        incident: ongoing[0]?.name ?? null,
+        count: new Set(recent.map(iv => iv.name)).size,
+    };
 }
 
-function statusTooltipText(day) {
-    if (day.sev === 'stale')
-        return `${day.date} · no incident data`;
-    if (!day.count)
-        return `${day.date} · operational`;
-    let name = day.names[0] ?? 'incident';
-    if (name.length > 48)
-        name = `${name.slice(0, 47)}…`;
-    const more = day.count > 1 ? ` (+${day.count - 1} more)` : '';
-    return `${day.date} · ${name}${more}${day.ongoing ? ' · ongoing' : ''}`;
-}
-
-// Right-hand summary over the strip, from still-open impact intervals.
+// The current state, from still-open impact intervals.
 function currentStatus(intervals) {
     let worst = 0;
     for (const iv of intervals ?? []) {
@@ -1628,12 +1639,14 @@ class UsageBarIndicator extends PanelMenu.Button {
         });
     }
 
-    // `codexbar` stays dark navy in either shell style; `system` follows the
-    // shell, and a light shell adds usagebar-light (the generated light
-    // palette at the end of stylesheet.css). GNOME 46 has no light shell.
+    // `auto` (default) and `system` follow the shell's light or dark style,
+    // `codexbar` stays dark navy and `light` always takes the light palette
+    // (usagebar-light, generated at the end of stylesheet.css). `system` also
+    // adds usagebar-theme-system for its quieter secondary text. GNOME 46
+    // has no light shell, so there `auto` and `system` stay dark.
     setAppTheme(theme) {
         const system = theme === 'system';
-        const light = system && Main.getStyleVariant?.() === 'light';
+        const light = appThemeIsLight(theme, Main.getStyleVariant?.());
         for (const actor of [this.menu.box, this._scopeListHost, this._tooltip, this._costPanel, this._modelTable]) {
             if (!actor)
                 continue;
@@ -1700,6 +1713,8 @@ class UsageBarIndicator extends PanelMenu.Button {
             ring: null,
             label: null,
             extrasKey: extrasKeyOf(chip),
+            sevStyle: chip.sevStyle,
+            sevDot: null,
             extras: [],
             state: {percent: chip.percent, sev: chip.sev},
         };
@@ -1711,7 +1726,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             if (gicon) {
                 entry.box.add_child(new St.Icon({
                     gicon,
-                    icon_size: 14,
+                    icon_size: 16,
                     style_class: 'usagebar-chip-icon',
                     y_align: Clutter.ActorAlign.CENTER,
                 }));
@@ -1775,9 +1790,14 @@ class UsageBarIndicator extends PanelMenu.Button {
         }
 
         if (chip.text) {
+            if (chip.sevStyle === 'dot') {
+                entry.sevDot = roundDot({size: 6, styleClass: `usagebar-dot usagebar-bg-${chip.sev}`});
+                entry.sevDot.visible = chipDotVisible(chip);
+                entry.box.add_child(entry.sevDot);
+            }
             entry.label = new St.Label({
                 text: chip.text,
-                style_class: 'usagebar-chip-label',
+                style_class: chipLabelClass(chip),
                 y_align: Clutter.ActorAlign.CENTER,
             });
             entry.box.add_child(entry.label);
@@ -1787,6 +1807,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             entry.extras.push(parts);
             entry.box.add_child(parts.box);
         }
+        entry.box.opacity = chipIsIdle(chip) ? CHIP_IDLE_OPACITY : 255;
         return entry;
     }
 
@@ -1823,7 +1844,7 @@ class UsageBarIndicator extends PanelMenu.Button {
             let entry = this._panelEntries.get(chip.provider);
             const hasText = !!chip.text;
             if (entry && (entry.mode !== chip.mode || entry.hasText !== hasText ||
-                entry.extrasKey !== extrasKeyOf(chip))) {
+                entry.sevStyle !== chip.sevStyle || entry.extrasKey !== extrasKeyOf(chip))) {
                 entry.box.destroy();
                 this._panelEntries.delete(chip.provider);
                 entry = null;
@@ -1836,9 +1857,17 @@ class UsageBarIndicator extends PanelMenu.Button {
                 entry.state.sev = chip.sev;
                 if (entry.dot)
                     entry.dot.style_class = `usagebar-round-dot usagebar-dot usagebar-bg-${chip.sev}`;
-                if (entry.label)
+                if (entry.label) {
                     entry.label.text = chip.text;
+                    entry.label.style_class = chipLabelClass(chip);
+                }
+                if (entry.sevDot) {
+                    entry.sevDot.style_class = `usagebar-round-dot usagebar-dot usagebar-bg-${chip.sev}`;
+                    entry.sevDot.visible = chipDotVisible(chip);
+                    entry.sevDot.queue_repaint();
+                }
                 (chip.extras ?? []).forEach((extra, index) => updateChipExtra(entry.extras[index], extra));
+                entry.box.opacity = chipIsIdle(chip) ? CHIP_IDLE_OPACITY : 255;
                 if (entry.name) {
                     entry.name.text = capName(chipName(chip));
                     entry.name.accessible_name = chipName(chip);
@@ -2005,6 +2034,7 @@ export default class UsageBarExtension extends Extension {
             DISPLAY.mergeChips = this._settings.get_boolean('merge-chips');
             DISPLAY.resetWhenExhausted = this._settings.get_boolean('show-reset-when-exhausted');
             DISPLAY.chipMode = this._settings.get_string('chip-display-mode');
+            DISPLAY.chipSeverity = this._settings.get_string('chip-severity-style');
             DISPLAY.panelIconSource = this._settings.get_string('panel-icon-source');
             DISPLAY.panelMetrics = readMetrics(this._settings.get_strv('panel-metrics'));
             DISPLAY.showExtras = this._settings.get_boolean('show-credits-extras');
@@ -2027,7 +2057,8 @@ export default class UsageBarExtension extends Extension {
         const DISPLAY_KEYS = new Set([
             'warn-threshold', 'crit-threshold', 'absolute-reset-times',
             'bars-show-used', 'sort-alphabetical', 'provider-order', 'merge-chips',
-            'show-reset-when-exhausted', 'chip-display-mode', 'panel-icon-source', 'panel-metrics',
+            'show-reset-when-exhausted', 'chip-display-mode', 'chip-severity-style',
+            'panel-icon-source', 'panel-metrics',
             'show-credits-extras', 'antigravity-overview-gemini', 'hidden-chips', 'hidden-windows',
             'hidden-cost-chart-providers', 'hidden-models', 'model-colors', 'known-models',
             'machine-colors', 'hide-personal-info',
@@ -2072,6 +2103,8 @@ export default class UsageBarExtension extends Extension {
             }
             if (key === 'app-theme')
                 this._themeChanged();
+            if (key === 'panel-position' && this._indicator)
+                this._moveIndicator();
             // Labels live in the cards: rebuild them from the last rows.
             if (key === 'hide-personal-info' && this._usageRows)
                 this._buildAccountCards();
@@ -2143,7 +2176,8 @@ export default class UsageBarExtension extends Extension {
                 this._render();
             }
         });
-        Main.panel.addToStatusArea(this.uuid, this._indicator);
+        const {box, index} = panelPlacement(this._settings.get_string('panel-position'));
+        Main.panel.addToStatusArea(this.uuid, this._indicator, index, box);
 
         const uiSmokeResult = GLib.getenv('USAGEBAR_UI_SMOKE_RESULT');
         if (uiSmokeResult)
@@ -2314,6 +2348,21 @@ export default class UsageBarExtension extends Extension {
                 now: () => GLib.get_monotonic_time() / 1000,
             }, REQUEST_TIMEOUT_SECS);
         this._supervisor.start();
+    }
+
+    // Moves the indicator to the panel-position setting's box and slot. Only
+    // the container moves: statusArea, the menu manager and the panel's
+    // destroy and menu-set handlers stay as addToStatusArea registered them,
+    // so disable() cleans up the same way wherever the indicator sits.
+    _moveIndicator() {
+        const {box, index} = panelPlacement(this._settings.get_string('panel-position'));
+        const container = this._indicator.container;
+        // The popover is anchored to the old spot; close it rather than leave
+        // it pointing at nothing.
+        this._indicator.menu.close();
+        container.get_parent()?.remove_child(container);
+        // -1 (or past the end) appends, as in Panel's own _addToPanelBox.
+        panelBox(box).insert_child_at_index(container, index);
     }
 
     disable() {
@@ -3306,9 +3355,10 @@ export default class UsageBarExtension extends Extension {
         const noGenericIcons = (name, root) => assertion(name, !descendants(root).some(actor =>
             actor instanceof St.Icon && actor.icon_name === 'application-x-executable-symbolic'));
         // A logo is any icons/ file other than our own usagebar-* glyphs.
+        // A provider logo: from an icons folder, or its light-palette copy.
         const isLogo = actor => actor instanceof St.Icon &&
             actor.gicon instanceof Gio.FileIcon &&
-            actor.gicon.get_file().get_parent()?.get_basename() === 'icons' &&
+            ['icons', 'light-logos'].includes(actor.gicon.get_file().get_parent()?.get_basename()) &&
             !(actor.gicon.get_file().get_basename() ?? '').startsWith('usagebar-');
         const nameMarks = root => descendants(root)
             .filter(actor => actor.has_style_class_name?.('usagebar-provider-name'))
@@ -3906,6 +3956,62 @@ export default class UsageBarExtension extends Extension {
         // Chips in batches small enough for the 1024px headless panel, so
         // nothing is squeezed in the screenshots.
         const markBatches = [['claude', 'codex'], ['alibabatokenplan'], ['opencodego', 'gemini']];
+        // Every panel-position value moves the indicator to its box and slot
+        // live, keeping its statusArea entry, and its popover opens inside the
+        // monitor there. Then the value the smoke started with comes back.
+        const panelPositionSmoke = (assertions, done, queue = null,
+            initial = this._settings.get_string('panel-position')) => {
+            const values = queue ?? [...PANEL_POSITIONS.map(p => p.value), initial];
+            const value = values.shift();
+            const finishStep = (error = null) => {
+                this._indicator.menu.close();
+                if (error)
+                    this._settings.set_string('panel-position', initial);
+                done(error);
+            };
+            this._settings.set_string('panel-position', value);
+            later(150, () => {
+                try {
+                    const {box, index} = panelPlacement(value);
+                    const container = this._indicator.container;
+                    const parent = container.get_parent();
+                    const target = panelBox(box);
+                    const at = index < 0
+                        ? target.get_last_child() : target.get_child_at_index(index);
+                    assertions.push(assertion(`panel position ${value} places the indicator`,
+                        parent === target && at === container &&
+                        Main.panel.statusArea[this.uuid] === this._indicator && container.visible,
+                        {box: ['left', 'center', 'right'].find(name => panelBox(name) === parent) ?? null,
+                            index: parent?.get_children().indexOf(container) ?? null}));
+                    if (!values.length) {
+                        finishStep();
+                        return;
+                    }
+                    this._indicator.menu.open();
+                } catch (error) {
+                    finishStep(error);
+                    return;
+                }
+                later(300, () => {
+                    try {
+                        const popover = this._indicator.menu.actor;
+                        const monitor = Main.layoutManager.findMonitorForActor(this._indicator.container);
+                        const [x, y] = popover.get_transformed_position();
+                        const [width, height] = popover.get_transformed_size();
+                        assertions.push(assertion(`popover at panel position ${value} stays on the monitor`,
+                            popover.visible && width > 0 && x >= monitor.x && y >= monitor.y &&
+                            x + width <= monitor.x + monitor.width &&
+                            y + height <= monitor.y + monitor.height,
+                            {x, y, width, height, monitor: [monitor.x, monitor.y, monitor.width, monitor.height]}));
+                        this._indicator.menu.close();
+                    } catch (error) {
+                        finishStep(error);
+                        return;
+                    }
+                    panelPositionSmoke(assertions, done, values, initial);
+                });
+            });
+        };
         const markSmoke = (assertions, done, batch = 0) => {
             const providers = markBatches[batch];
             let marks;
@@ -5006,7 +5112,7 @@ export default class UsageBarExtension extends Extension {
                 iconSourceSmoke(assertions);
                 return;
             }
-            steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
+            steps.push(panelPositionSmoke, markSmoke, syncSupportSmoke, machinesSmoke);
             const next = error => {
                 if (error)
                     finish(assertions, error);
@@ -5082,8 +5188,10 @@ export default class UsageBarExtension extends Extension {
                             this._indicator.menu.box.has_style_class_name('usagebar-theme-system') === system));
                         assertions.push(assertion('app theme is applied to the cost panel',
                             this._indicator._costPanel.has_style_class_name('usagebar-theme-system') === system));
-                        // The light palette only for the system theme on a light shell.
-                        const light = system && Main.getStyleVariant?.() === 'light';
+                        // The light palette for `light`, and for `auto` or
+                        // `system` on a light shell.
+                        const light = appThemeIsLight(this._settings.get_string('app-theme'),
+                            Main.getStyleVariant?.());
                         assertions.push(assertion('light palette follows the shell style',
                             [this._indicator.menu.box, this._indicator._scopeListHost, this._indicator._costPanel]
                                 .every(actor => actor.has_style_class_name('usagebar-light') === light),
@@ -5246,6 +5354,7 @@ export default class UsageBarExtension extends Extension {
             hasUsage: worst !== null,
             text,
             sev: severity(worst ?? 0, grey),
+            sevStyle: DISPLAY.chipSeverity,
             mode,
             extras,
         };
@@ -5471,6 +5580,8 @@ export default class UsageBarExtension extends Extension {
             return;
         this._logos.installed = installedLogoPack();
         this._providerIconCache?.clear();
+        this._logoWhiteCache?.clear();
+        this._lightLogoCache?.clear();
         this._indicator?.resetLogos();
         this._destroyOverviewView();
         this._popupView = null;
@@ -6146,7 +6257,9 @@ export default class UsageBarExtension extends Extension {
         const slots = points.map(point => {
             const ratio = max > 0 && point.value > 0 ? Math.min(point.value / max, 1) : 0;
             const barH = ratio > 0 ? Math.max(3, Math.round(ratio * CHART_HEIGHT)) : 1;
-            const stack = new St.BoxLayout({vertical: true});
+            // Right-aligned in its slot: the slot's extra width is the gap
+            // before the bar, so the last bar (today) ends flush right.
+            const stack = new St.BoxLayout({vertical: true, x_align: Clutter.ActorAlign.END});
             const segs = [];
             // Zero slices are dropped entirely.
             const slices = point.models.filter(([, v]) => v > 0).reverse();
@@ -6200,11 +6313,18 @@ export default class UsageBarExtension extends Extension {
                 return;
             const n = slots.length;
             const bw = Math.min(12, Math.max(2, Math.floor((w - 2 * (n - 1)) / n)));
-            for (const slot of slots) {
-                slot.set_width(bw);
+            // Spread the leftover width (rounding + the 12px cap) across the
+            // gaps so the bars span the full width: first bar flush left,
+            // today flush right.
+            const extra = Math.max(0, w - n * bw);
+            slots.forEach((slot, i) => {
+                const gap = n === 1 ? extra
+                    : i === 0 ? 0
+                        : Math.floor(i * extra / (n - 1)) - Math.floor((i - 1) * extra / (n - 1));
+                slot.set_width(bw + gap);
                 for (const s of slot._segs)
                     s.widget.set_size(bw, s.h);
-            }
+            });
         });
         wrap.add_child(chart);
         wrap.add_child(new St.Widget({style_class: 'usagebar-chart-baseline', height: 1, x_expand: true}));
@@ -6291,9 +6411,16 @@ export default class UsageBarExtension extends Extension {
     // it, so they leave the slot out entirely when there is no logo.
     _providerIcon(provider, size) {
         this._providerIconCache ??= new LifetimeLookupCache(provider => providerLogo(this.dir, provider));
-        const gicon = this._providerIconCache.get(provider);
+        let gicon = this._providerIconCache.get(provider);
         if (!gicon)
             return null;
+        // Most logos are drawn white for the dark popover, and aren't
+        // symbolic, so CSS can't recolor them: on the light palette, white-
+        // only logos load from a copy redrawn in the text color. (A Clutter
+        // ColorizeEffect did this before, but it didn't paint inside the All
+        // view's rows on a dark shell.) Logos with colors of their own stay.
+        if (this._indicator?.menu.box.has_style_class_name('usagebar-light') && this._logoIsWhite(provider))
+            gicon = this._lightLogoIcon(provider) ?? gicon;
         const icon = new St.Icon({
             icon_size: size,
             y_align: Clutter.ActorAlign.CENTER,
@@ -6302,12 +6429,35 @@ export default class UsageBarExtension extends Extension {
         const color = PROVIDER_META[provider]?.color;
         if (color)
             icon.set_style(`color: ${color};`);
-        // Most logos are drawn white for the dark popover, and aren't
-        // symbolic, so CSS can't recolor them: on the light palette, tint
-        // those the text color. Logos with colors of their own stay as is.
-        if (this._indicator?.menu.box.has_style_class_name('usagebar-light') && this._logoIsWhite(provider))
-            icon.add_effect(new Clutter.ColorizeEffect({tint: lightLogoTint()}));
         return icon;
+    }
+
+    // A white-only logo redrawn in LIGHT_LOGO_COLOR, written once to the user
+    // cache (named by the content's checksum, so a new logo pack gets new
+    // files). Null when it can't be written: the white logo is used then.
+    _lightLogoIcon(provider) {
+        this._lightLogoCache ??= new Map();
+        if (!this._lightLogoCache.has(provider)) {
+            let icon = null;
+            try {
+                const path = this._providerIconCache?.get(provider)?.get_file?.()?.get_path();
+                if (path) {
+                    const [, bytes] = GLib.file_get_contents(path);
+                    const svg = recolorWhiteLogoSvg(new TextDecoder().decode(bytes), LIGHT_LOGO_COLOR);
+                    const sum = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA1, svg, -1);
+                    const dir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'usagebar', 'light-logos']);
+                    GLib.mkdir_with_parents(dir, 0o755);
+                    const file = GLib.build_filenamev([dir, `${provider}-${sum.slice(0, 12)}.svg`]);
+                    if (!GLib.file_test(file, GLib.FileTest.EXISTS))
+                        GLib.file_set_contents(file, svg);
+                    icon = new Gio.FileIcon({file: Gio.File.new_for_path(file)});
+                }
+            } catch (e) {
+                console.warn(`usagebar: light logo for ${provider}: ${e.message}`);
+            }
+            this._lightLogoCache.set(provider, icon);
+        }
+        return this._lightLogoCache.get(provider);
     }
 
     // Whether a provider's logo is white only (every fill and stroke white
@@ -7294,69 +7444,78 @@ export default class UsageBarExtension extends Extension {
         return box;
     }
 
-    // Statuspage-style history strip: one same-height bar per day, colored
-    // by that day's worst incident impact (green clean, yellow minor, red
-    // major/critical, grey before the feed's coverage), hover tooltip with
-    // the incident name. Null until the feed has been fetched.
-    _buildStatusStrip(provider) {
-        // No settings gate here: disabling status checks empties the cache.
+    // Status in the card head: a dot in the current state's color, with the
+    // state and the recent incident count on hover. Null until the feed has
+    // been fetched (disabling status checks empties the cache).
+    _buildStatusDot(provider) {
         const cached = this._status?.[provider];
         if (!cached)
             return null;
-        const wrap = new St.BoxLayout({
-            vertical: true,
-            x_expand: true,
-            style_class: 'usagebar-status-wrap',
+        const {now, count} = statusSummary(cached.intervals);
+        const scope = cached.scope && cached.scope !== 'Everything'
+            ? cached.scope : this._displayName(provider);
+        const incidents = count === 1 ? '1 incident' : `${count} incidents`;
+        const text = `${scope} · ${now.text} · ${incidents} in ${STATUS_DAYS} days`;
+        const dot = roundDot({size: 7, styleClass: `usagebar-dot usagebar-bg-${now.sev}`});
+        const bin = new St.Bin({
+            style_class: 'usagebar-status-head-dot',
+            reactive: true,
+            track_hover: true,
+            accessible_name: text,
+            y_align: Clutter.ActorAlign.CENTER,
+            child: dot,
         });
-        const head = new St.BoxLayout({x_expand: true});
-        const scoped = cached.scope && cached.scope !== 'Everything';
-        head.add_child(new St.Label({
-            text: `${scoped ? `${cached.scope} status` : 'Status'} — last ${STATUS_DAYS} days`,
-            style_class: 'usagebar-window-label',
-        }));
-        head.add_child(new St.Widget({x_expand: true}));
-        const now = currentStatus(cached.intervals);
-        head.add_child(new St.Label({
-            text: now.text,
-            style_class: `usagebar-status-now usagebar-fg-${now.sev}`,
-        }));
-        wrap.add_child(head);
+        bin.connect('notify::hover', () => {
+            if (bin.hover)
+                this._showTooltip(bin, text);
+            else
+                this._indicator?._tooltip?.hide();
+        });
+        return bin;
+    }
 
-        const strip = new St.BoxLayout({x_expand: true, style_class: 'usagebar-status-strip'});
-        const bars = statusDays(cached.intervals, STATUS_DAYS, cached.covered).map(day => {
-            // Small natural width: the request must fit the popover even
-            // before the allocation-follow below grows bars to fill it.
-            const bar = new St.Widget({
-                style_class: `usagebar-status-day usagebar-bg-${day.sev}`,
-                width: 2,
-                height: STATUS_BAR_HEIGHT,
-                reactive: true,
-                track_hover: true,
-            });
-            bar.connect('notify::hover', () => {
-                if (bar.hover)
-                    this._showTooltip(bar, statusTooltipText(day));
-                else
-                    this._indicator?._tooltip?.hide();
-            });
-            strip.add_child(bar);
-            return bar;
+    // During an ongoing incident: one banner under the card head with the
+    // incident's name, opening the status page. Null when all is well.
+    _buildIncidentBanner(row) {
+        const cached = this._status?.[row.provider];
+        if (!cached)
+            return null;
+        const {now, incident} = statusSummary(cached.intervals);
+        if (now.sev === 'ok')
+            return null;
+        const url = providerLinks(row)?.status ?? null;
+        const box = new St.BoxLayout({x_expand: true, style_class: 'usagebar-incident-row'});
+        box.add_child(roundDot({size: 7, styleClass: `usagebar-dot usagebar-bg-${now.sev}`}));
+        const label = new St.Label({
+            text: incident ? `${now.text} · ${incident}` : now.text,
+            style_class: 'usagebar-incident-text',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
         });
-        // Fill the card width: same allocation-follow as the trend chart
-        // (the 2px gaps come from the strip's CSS spacing). Flooring the
-        // width would leave a gap on the right, so spread the remainder
-        // over the leading bars (+1px each — imperceptible).
-        strip.connect('notify::allocation', () => {
-            const w = strip.allocation.get_width();
-            if (w <= 0)
-                return;
-            const avail = w - 2 * (bars.length - 1);
-            const bw = Math.max(2, Math.floor(avail / bars.length));
-            const rem = Math.max(0, avail - bw * bars.length);
-            bars.forEach((bar, i) => bar.set_width(bw + (i < rem ? 1 : 0)));
+        label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        box.add_child(label);
+        if (url) {
+            box.add_child(new St.Label({
+                text: 'Status page ›',
+                style_class: 'usagebar-incident-link',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+        const banner = new St.Button({
+            style_class: `usagebar-incident-banner usagebar-incident-${now.sev}`,
+            x_expand: true,
+            can_focus: !!url,
+            reactive: !!url,
+            accessible_name: label.text,
+            child: box,
         });
-        wrap.add_child(strip);
-        return wrap;
+        if (url) {
+            banner.connect('clicked', () => {
+                this._indicator?.menu.close();
+                Gio.AppInfo.launch_default_for_uri(url, null);
+            });
+        }
+        return banner;
     }
 
     // One usage metric in three lines: the window label with "% used/remaining"
@@ -8026,6 +8185,10 @@ export default class UsageBarExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
+        // Status page state only on the detail tabs: All stays compact.
+        const statusDot = showCost ? this._buildStatusDot(row.provider) : null;
+        if (statusDot)
+            head.add_child(statusDot);
         if (row.stale) {
             const stale = new St.BoxLayout({style_class: 'usagebar-status', y_align: Clutter.ActorAlign.CENTER});
             stale.add_child(this._statusDot('stale'));
@@ -8066,6 +8229,9 @@ export default class UsageBarExtension extends Extension {
             }));
         }
         card.add_child(head);
+        const incident = showCost ? this._buildIncidentBanner(row) : null;
+        if (incident)
+            card.add_child(incident);
 
         // One block per Provider Account, with its own windows, resets,
         // freshness and error. Otherwise the provider's one row.
@@ -8170,14 +8336,7 @@ export default class UsageBarExtension extends Extension {
             card.add_child(hintLabel);
         }
 
-        // Status strip only on the detail tabs — All stays compact. The
-        // dashboard and status links are menu rows (Indicator.setLinks).
-        const statusStrip = showCost ? this._buildStatusStrip(row.provider) : null;
-        if (flat && statusStrip)
-            addSeparator();
-        if (statusStrip)
-            card.add_child(statusStrip);
-
+        // The dashboard and status links are menu rows (Indicator.setLinks).
         return card;
     }
 

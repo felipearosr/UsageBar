@@ -42,6 +42,9 @@ COLOR = re.compile(r'#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\([^)]*\)|\btransp
 LIGHT_OVERRIDES = {
     ('.usagebar-pace-deficit', 'background-color'): '#c01c28',
     ('.usagebar-pace-deficit-text', 'color'): '#c01c28',
+    # The incident banner's yellow wash needs more body on a light popover.
+    ('.usagebar-incident-warn', 'background-color'): 'rgba(245, 194, 17, 0.2)',
+    ('.usagebar-incident-warn:hover', 'background-color'): 'rgba(245, 194, 17, 0.3)',
 }
 
 

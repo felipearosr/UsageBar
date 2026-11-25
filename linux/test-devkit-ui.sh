@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Headless GNOME Shell UI smoke for the UsageBar extension.
-# USAGEBAR_UI_SMOKE_APP_THEME=codexbar|system (default system) and
+# USAGEBAR_UI_SMOKE_APP_THEME=auto|codexbar|light|system (default system) and
 # USAGEBAR_UI_SMOKE_COLOR_SCHEME=prefer-light|prefer-dark pick the look.
 # USAGEBAR_UI_SMOKE_NO_CLI=1 forces the missing-CLI onboarding state even when
 # a codexbar CLI is installed (honoured only during a smoke run).
@@ -141,14 +141,21 @@ if [[ -z ${USAGEBAR_HIDE_PROVIDER_ICONS:-} ]]; then
     USAGEBAR_HIDE_PROVIDER_ICONS=1 USAGEBAR_UI_SMOKE_NESTED=1 "$0" "$artifact_dir/no-logos"
 fi
 
-# The system app theme on a light shell: the generated light palette, and the
-# codexbar theme on a light shell, which must stay dark navy.
+# On a light shell: system and auto take the generated light palette, codexbar
+# must stay dark navy. On a dark shell: auto stays navy, light takes the light
+# palette anyway.
 if [[ -z ${USAGEBAR_UI_SMOKE_NESTED:-} ]]; then
-    for app_theme in system codexbar; do
+    for app_theme in system auto codexbar; do
         printf '\nRe-running the UI smoke with the %s theme on a light shell\n' "$app_theme"
         USAGEBAR_UI_SMOKE_APP_THEME=$app_theme USAGEBAR_UI_SMOKE_COLOR_SCHEME=prefer-light \
             USAGEBAR_UI_SMOKE_NESTED=1 \
             "$0" "$artifact_dir/light-$app_theme"
+    done
+    for app_theme in auto light; do
+        printf '\nRe-running the UI smoke with the %s theme on a dark shell\n' "$app_theme"
+        USAGEBAR_UI_SMOKE_APP_THEME=$app_theme USAGEBAR_UI_SMOKE_COLOR_SCHEME=prefer-dark \
+            USAGEBAR_UI_SMOKE_NESTED=1 \
+            "$0" "$artifact_dir/dark-$app_theme"
     done
 fi
 
