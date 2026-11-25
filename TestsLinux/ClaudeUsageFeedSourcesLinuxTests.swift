@@ -92,70 +92,6 @@ struct ClaudeUsageFeedSourcesLinuxTests {
             notBefore: Self.now.addingTimeInterval(-ClaudeStatusLineDropStore.staleWindow)) == nil)
     }
 
-    // MARK: Orca
-
-    @Test
-    func `Orca's reading counts only with the system sign-in and an ok status`() throws {
-        let reading = try #require(ClaudeOrcaFeedReader.parse(Self.orcaJSON(), origin: .orca))
-        #expect(reading.origin == .orca)
-        #expect(reading.capturedAt == Date(timeIntervalSince1970: 1_799_999_900))
-        #expect(reading.fiveHour == nil)
-        #expect(reading.sevenDay == ClaudeStatusLineWindow(
-            usedPercent: 4, resetsAt: Date(timeIntervalSince1970: 1_800_500_000)))
-
-        let session = try #require(ClaudeOrcaFeedReader.parse(
-            Self.orcaJSON(session: #"{"usedPercent":12,"windowMinutes":300,"resetsAt":1800010000000}"#),
-            origin: .orcaDev))
-        #expect(session.fiveHour?.usedPercent == 12)
-        #expect(session.origin == .orcaDev)
-
-        #expect(ClaudeOrcaFeedReader.parse(Self.orcaJSON(activeAccount: #""acct-1""#), origin: .orca) == nil)
-        #expect(ClaudeOrcaFeedReader.parse(Self.orcaJSON(hostAccount: #""acct-1""#), origin: .orca) == nil)
-        #expect(ClaudeOrcaFeedReader.parse(Self.orcaJSON(status: "error"), origin: .orca) == nil)
-        #expect(ClaudeOrcaFeedReader.parse(Self.orcaJSON(provenance: "managed"), origin: .orca) == nil)
-        #expect(ClaudeOrcaFeedReader.parse(Self.orcaJSON(ok: false), origin: .orca) == nil)
-        #expect(ClaudeOrcaFeedReader.parse(
-            Self.orcaJSON(weekly: #"{"usedPercent":4,"windowMinutes":300,"resetsAt":1800500000000}"#),
-            origin: .orca) == nil)
-    }
-
-    @Test
-    func `Orca is only asked when that instance is running, pointed at its own data`() async throws {
-        let home = try Home(defaultProfile: true)
-        let bin = home.root.appendingPathComponent("bin", isDirectory: true)
-        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        let cli = bin.appendingPathComponent("orca-ide")
-        try Data("#!/bin/sh\n".utf8).write(to: cli)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
-        var env = home.env
-        env["PATH"] = bin.path
-        env["ORCA_USER_DATA_PATH"] = "/somewhere/else"
-        env["ORCA_CLI_COMMAND"] = "/somewhere/else/orca"
-
-        let instances = ClaudeOrcaFeedReader.instances(environment: env)
-        #expect(instances.map(\.origin) == [.orca, .orcaDev])
-        let calls = Calls()
-        let runner: ClaudeOrcaFeedReader.Runner = { binary, arguments, environment in
-            calls.append(binary: binary, arguments: arguments, environment: environment)
-            return Self.orcaJSON()
-        }
-
-        #expect(await ClaudeOrcaFeedReader.latest(instance: instances[1], environment: env, runner: runner) == nil)
-        #expect(calls.all.isEmpty)
-
-        try FileManager.default.createDirectory(at: instances[1].userDataDirectory, withIntermediateDirectories: true)
-        try Data("{}".utf8).write(to: instances[1].userDataDirectory.appendingPathComponent("orca-runtime.json"))
-        let reading = await ClaudeOrcaFeedReader.latest(instance: instances[1], environment: env, runner: runner)
-        #expect(reading?.origin == .orcaDev)
-        let call = try #require(calls.all.first)
-        // No `orca-dev` on PATH: the release CLI reaches the dev build through its data directory.
-        #expect(call.binary == cli.path)
-        #expect(call.arguments == ["account", "list", "--json"])
-        #expect(call.environment["ORCA_USER_DATA_PATH"] == instances[1].userDataDirectory.path)
-        #expect(call.environment["ORCA_DEV_USER_DATA_PATH"] == instances[1].userDataDirectory.path)
-        #expect(call.environment["ORCA_CLI_COMMAND"] == nil)
-    }
-
     // MARK: Harvester
 
     @Test
@@ -163,45 +99,31 @@ struct ClaudeUsageFeedSourcesLinuxTests {
         let home = try Home(defaultProfile: true)
         try home.transcript(session: "aaaa-1", owner: Self.account)
         try home.t3Log("events.one.log", modified: Self.now, lines: [
+            Self.t3Line(at: "2027-01-15T07:58:00.000Z", session: "aaaa-1", five: 0.40, seven: 0.30),
             Self.t3Line(at: "2027-01-15T07:59:00.000Z", session: "aaaa-1", five: 0.47, seven: 0.39),
         ])
-        let orca = try home.orcaInstance()
         let written = try #require(await ClaudeUsageFeedHarvester.harvest(
             environment: home.env,
             applicationSupport: home.support,
             now: Self.now,
-            t3LogsDirectory: home.t3Logs,
-            orcaInstances: [orca],
-            orcaRunner: { _, _, _ in Self.orcaJSON() }))
-        // T3 Code's event (07:59:00) is newer than Orca's reading (07:58:20).
+            t3LogsDirectory: home.t3Logs))
         #expect(written.origin == .t3Code)
         #expect(written.fiveHour?.usedPercent == 47)
-
-        // Orca's next reading (07:59:50) is newer still and replaces it.
-
-        let fromOrca = try #require(await ClaudeUsageFeedHarvester.harvest(
-            environment: home.env,
-            applicationSupport: home.support,
-            now: Self.now,
-            t3LogsDirectory: home.t3Logs,
-            orcaInstances: [orca],
-            orcaRunner: { _, _, _ in Self.orcaJSON(updatedAt: 1_799_999_990_000) }))
-        #expect(fromOrca.origin == .orca)
-        #expect(fromOrca.accountID == ClaudeStatusLineProfile.accountID(accountUuid: Self.account))
+        #expect(written.accountID == ClaudeStatusLineProfile.accountID(accountUuid: Self.account))
 
         let url = ClaudeStatusLineDropStore.observationURL(
             applicationSupport: home.support,
             profileID: ClaudeStatusLineProfile.identifier(environment: home.env))
         let modified = try #require(
             FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date)
-        #expect(abs(modified.timeIntervalSince(fromOrca.capturedAt)) < 1)
+        #expect(abs(modified.timeIntervalSince(written.capturedAt)) < 1)
         let loaded = ClaudeStatusLineDropStore.load(
             applicationSupport: home.support,
-            expectedProfileID: fromOrca.profileID,
-            expectedAccountID: fromOrca.accountID,
+            expectedProfileID: written.profileID,
+            expectedAccountID: written.accountID,
             now: Self.now)
-        #expect(loaded?.resolvedOrigin == .orca)
-        #expect(ClaudeSwapStatusLineOverride.sourceLabel(for: fromOrca, now: Self.now) == "orca")
+        #expect(loaded?.resolvedOrigin == .t3Code)
+        #expect(ClaudeSwapStatusLineOverride.sourceLabel(for: written, now: Self.now) == "t3code")
     }
 
     @Test
@@ -217,36 +139,18 @@ struct ClaudeUsageFeedSourcesLinuxTests {
             sevenDay: ClaudeStatusLineWindow(usedPercent: 50, resetsAt: nil),
             origin: .statusLine)
         try ClaudeStatusLineDropStore.write(statusLine, applicationSupport: home.support)
-        let orca = try home.orcaInstance()
+        try home.transcript(session: "aaaa-1", owner: Self.account)
+        try home.t3Log("events.one.log", modified: Self.now, lines: [
+            Self.t3Line(at: "2027-01-15T07:59:00.000Z", session: "aaaa-1", five: 0.47, seven: 0.39),
+        ])
         let written = await ClaudeUsageFeedHarvester.harvest(
             environment: home.env,
             applicationSupport: home.support,
             now: Self.now,
-            t3LogsDirectory: home.t3Logs,
-            orcaInstances: [orca],
-            orcaRunner: { _, _, _ in Self.orcaJSON() })
+            t3LogsDirectory: home.t3Logs)
         #expect(written == nil)
         #expect(ClaudeStatusLineDropStore.storedObservation(applicationSupport: home.support, profileID: profileID)
             == statusLine)
-    }
-
-    @Test
-    func `Orca is not read for a profile chosen with CLAUDE_CONFIG_DIR`() async throws {
-        let home = try Home(defaultProfile: false)
-        let calls = Calls()
-        let orca = try home.orcaInstance()
-        let written = await ClaudeUsageFeedHarvester.harvest(
-            environment: home.env,
-            applicationSupport: home.support,
-            now: Self.now,
-            t3LogsDirectory: home.t3Logs,
-            orcaInstances: [orca],
-            orcaRunner: { binary, arguments, environment in
-                calls.append(binary: binary, arguments: arguments, environment: environment)
-                return Self.orcaJSON()
-            })
-        #expect(written == nil)
-        #expect(calls.all.isEmpty)
     }
 
     @Test
@@ -295,47 +199,6 @@ struct ClaudeUsageFeedSourcesLinuxTests {
         "status":"allowed"},"seven_day":{"utilization":\(seven),"resetsAt":1800500000,"status":"allowed"}}},\
         "uuid":"u","session_id":"\(session)"}}}
         """
-    }
-
-    private static func orcaJSON(
-        ok: Bool = true,
-        activeAccount: String = "null",
-        hostAccount: String = "null",
-        status: String = "ok",
-        provenance: String = "system",
-        updatedAt: Double = 1_799_999_900_000,
-        session: String = "null",
-        weekly: String = #"{"usedPercent":4,"windowMinutes":10080,"resetsAt":1800500000000}"#) -> Data
-    {
-        Data("""
-        {"id":"x","ok":\(ok),"result":{
-          "claude":{"accounts":[],"activeAccountId":\(activeAccount),
-                    "activeAccountIdsByRuntime":{"host":\(hostAccount),"wsl":{}}},
-          "rateLimits":{"claude":{"provider":"claude","session":\(session),"weekly":\(weekly),
-            "fableWeekly":{"usedPercent":2,"windowMinutes":10080,"resetsAt":1800500000000},
-            "updatedAt":\(updatedAt),"error":null,"status":"\(status)","planType":"max_20x",
-            "usageMetadata":{"credentialSource":"credentials-file","authProvenance":"\(provenance)"}}}}}
-        """.utf8)
-    }
-
-    private final class Calls: @unchecked Sendable {
-        struct Call {
-            let binary: String
-            let arguments: [String]
-            let environment: [String: String]
-        }
-
-        private let lock = NSLock()
-        private var calls: [Call] = []
-
-        var all: [Call] {
-            self.lock.withLock { self.calls }
-        }
-
-        func append(binary: String, arguments: [String], environment: [String: String]) {
-            self.lock
-                .withLock { self.calls.append(Call(binary: binary, arguments: arguments, environment: environment)) }
-        }
     }
 
     private struct Home {
@@ -389,19 +252,6 @@ struct ClaudeUsageFeedSourcesLinuxTests {
             let url = self.t3Logs.appendingPathComponent(name)
             try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: url)
             try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
-        }
-
-        /// A running Orca instance (runtime metadata present) under this home.
-        func orcaInstance() throws -> ClaudeOrcaFeedReader.Instance {
-            let directory = self.root.appendingPathComponent(".config/orca", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try Data("{}".utf8).write(to: directory.appendingPathComponent("orca-runtime.json"))
-            let bin = self.root.appendingPathComponent(".local/bin", isDirectory: true)
-            try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-            let cli = bin.appendingPathComponent("orca-ide")
-            try Data("#!/bin/sh\n".utf8).write(to: cli)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
-            return ClaudeOrcaFeedReader.Instance(origin: .orca, userDataDirectory: directory, commands: ["orca-ide"])
         }
     }
 }

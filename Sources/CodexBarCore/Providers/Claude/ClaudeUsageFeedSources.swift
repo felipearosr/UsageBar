@@ -5,14 +5,15 @@ import Foundation
 // docs/claude-statusline-feed.md.
 //
 // The statusLine command only runs in Claude Code's interactive terminal UI. T3 Code drives Claude through the Agent
-// SDK and Orca's agent view runs it headless, so neither feeds `codexbar claude statusline capture`. Both still see
-// the same 5-hour and weekly windows:
+// SDK, so it never feeds `codexbar claude statusline capture`. It still sees the same 5-hour and weekly windows:
 //
 // - T3 Code writes every SDK `rate_limit_event` to its provider event logs. Each event names the Claude Code session,
 //   and that session's transcript opens with a `session-owner` line holding the account UUID, so a reading is only
 //   used when it provably belongs to the account signed in now.
-// - Orca keeps the last Claude usage it read and prints it from `orca-ide account list --json`. Only a reading made
-//   with the system Claude sign-in (no Orca-managed account selected) counts, and only for the default profile.
+//
+// Orca is not read: its only reader, `orca-ide account list`, makes Orca refresh every provider it knows, and its
+// Antigravity check opens a Google sign-in page each time (Orca runs `agy acp` with file token storage, so it never
+// sees the keyring sign-in). Polling it on every refresh opened that page over and over.
 //
 // `ClaudeUsageFeedHarvester` copies the newest reading into the statusLine store when it is newer than what is there,
 // so routing, freshness and the GNOME extension's health check treat every origin the same way.
@@ -46,9 +47,7 @@ public enum ClaudeUsageFeedHarvester {
         environment: [String: String],
         applicationSupport: URL,
         now: Date = Date(),
-        t3LogsDirectory: URL? = nil,
-        orcaInstances: [ClaudeOrcaFeedReader.Instance]? = nil,
-        orcaRunner: ClaudeOrcaFeedReader.Runner = ClaudeOrcaFeedReader.defaultRunner) async
+        t3LogsDirectory: URL? = nil) async
         -> ClaudeStatusLineRateLimits?
     {
         guard let accountUuid = ClaudeAccountProfile.accountUuid(environment: environment) else { return nil }
@@ -64,17 +63,6 @@ public enum ClaudeUsageFeedHarvester {
             notBefore: notBefore)
         {
             readings.append(reading)
-        }
-        if ClaudeOrcaFeedReader.readsProfile(environment: environment) {
-            for instance in orcaInstances ?? ClaudeOrcaFeedReader.instances(environment: environment) {
-                if let reading = await ClaudeOrcaFeedReader.latest(
-                    instance: instance,
-                    environment: environment,
-                    runner: orcaRunner)
-                {
-                    readings.append(reading)
-                }
-            }
         }
 
         let latestAllowed = now.addingTimeInterval(ClaudeStatusLineDropStore.maximumClockSkew)
@@ -310,172 +298,6 @@ public enum ClaudeT3CodeFeedReader {
             }
             return nil
         }
-    }
-}
-
-// MARK: - Orca
-
-public enum ClaudeOrcaFeedReader {
-    public struct Instance: Equatable, Sendable {
-        public let origin: ClaudeUsageFeedOrigin
-        /// The Orca user-data directory the CLI is pointed at (`ORCA_USER_DATA_PATH`).
-        public let userDataDirectory: URL
-        /// CLI names tried in order on `PATH`.
-        public let commands: [String]
-
-        public init(origin: ClaudeUsageFeedOrigin, userDataDirectory: URL, commands: [String]) {
-            self.origin = origin
-            self.userDataDirectory = userDataDirectory
-            self.commands = commands
-        }
-    }
-
-    public typealias Runner = @Sendable (_ binary: String, _ arguments: [String], _ environment: [String: String])
-        async -> Data?
-
-    static let timeout: TimeInterval = 5
-    static let maximumOutputBytes = 1024 * 1024
-    /// Variables a terminal inside Orca sets that would point the CLI at that session's Orca instead.
-    static let inheritedSessionKeys = [
-        "ORCA_CLI_COMMAND",
-        "ORCA_CLI_HANDOFF",
-        "ORCA_DEV_CLI_INVOCATION",
-        "ORCA_DEV_USER_DATA_PATH",
-        "ORCA_USER_DATA_PATH",
-    ]
-
-    public static let defaultRunner: Runner = { binary, arguments, environment in
-        guard let result = try? await SubprocessRunner.run(
-            binary: binary,
-            arguments: arguments,
-            environment: environment,
-            timeout: ClaudeOrcaFeedReader.timeout,
-            maxOutputBytes: ClaudeOrcaFeedReader.maximumOutputBytes,
-            label: "orca-account-list")
-        else { return nil }
-        return Data(result.stdout.utf8)
-    }
-
-    /// Orca reads Claude with the system sign-in, which lives in the default profile; a profile picked with
-    /// `CLAUDE_CONFIG_DIR` may be another account.
-    public static func readsProfile(environment: [String: String]) -> Bool {
-        environment[ClaudeConfigPaths.configDirectoryEnvironmentKey]?.isEmpty ?? true
-    }
-
-    /// The release build (`~/.config/orca`, `orca-ide`) and the development build (`~/.config/orca-dev`, `orca-dev`).
-    /// The release CLI reaches either instance when `ORCA_USER_DATA_PATH` names its directory.
-    public static func instances(environment: [String: String]) -> [Instance] {
-        let home = ClaudeConfigPaths.homeDirectory(environment: environment)
-        let configHome = environment["XDG_CONFIG_HOME"].flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil }
-            ?? home.appendingPathComponent(".config", isDirectory: true)
-        return [
-            Instance(
-                origin: .orca,
-                userDataDirectory: configHome.appendingPathComponent("orca", isDirectory: true),
-                commands: ["orca-ide"]),
-            Instance(
-                origin: .orcaDev,
-                userDataDirectory: configHome.appendingPathComponent("orca-dev", isDirectory: true),
-                commands: ["orca-dev", "orca-ide"]),
-        ]
-    }
-
-    /// Orca's last Claude reading, when that instance is running and read Claude with the system sign-in.
-    public static func latest(
-        instance: Instance,
-        environment: [String: String],
-        runner: Runner,
-        fileManager: FileManager = .default) async -> ClaudeUsageFeedReading?
-    {
-        // Without runtime metadata the CLI can only report that Orca is not running.
-        let runtime = instance.userDataDirectory.appendingPathComponent("orca-runtime.json", isDirectory: false)
-        guard fileManager.fileExists(atPath: runtime.path),
-              let binary = self.binary(for: instance, environment: environment, fileManager: fileManager)
-        else { return nil }
-        var launchEnvironment = environment
-        for key in self.inheritedSessionKeys {
-            launchEnvironment.removeValue(forKey: key)
-        }
-        launchEnvironment["ORCA_USER_DATA_PATH"] = instance.userDataDirectory.path
-        if instance.origin == .orcaDev {
-            launchEnvironment["ORCA_DEV_USER_DATA_PATH"] = instance.userDataDirectory.path
-        }
-        guard let data = await runner(binary, ["account", "list", "--json"], launchEnvironment) else { return nil }
-        return self.parse(data, origin: instance.origin)
-    }
-
-    /// Reads `result.rateLimits.claude` from `orca-ide account list --json`.
-    static func parse(_ data: Data, origin: ClaudeUsageFeedOrigin) -> ClaudeUsageFeedReading? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              root["ok"] as? Bool == true,
-              let result = root["result"] as? [String: Any],
-              let accounts = result["claude"] as? [String: Any],
-              self.usesSystemSignIn(accounts),
-              let rateLimits = result["rateLimits"] as? [String: Any],
-              let claude = rateLimits["claude"] as? [String: Any],
-              claude["status"] as? String == "ok",
-              self.isAbsent(claude["error"]),
-              let metadata = claude["usageMetadata"] as? [String: Any],
-              metadata["authProvenance"] as? String == "system",
-              let updatedAt = ClaudeUsageFeedNumbers.finite(claude["updatedAt"]),
-              updatedAt > 0
-        else { return nil }
-        let fiveHour = self.window(claude["session"], minutes: 300)
-        let sevenDay = self.window(claude["weekly"], minutes: 10080)
-        guard fiveHour != nil || sevenDay != nil else { return nil }
-        return ClaudeUsageFeedReading(
-            capturedAt: Date(timeIntervalSince1970: updatedAt / 1000),
-            fiveHour: fiveHour,
-            sevenDay: sevenDay,
-            origin: origin)
-    }
-
-    /// No Orca-managed Claude account is selected, so Orca read the same sign-in Claude Code uses.
-    private static func usesSystemSignIn(_ accounts: [String: Any]) -> Bool {
-        guard self.isAbsent(accounts["activeAccountId"]) else { return false }
-        if let byRuntime = accounts["activeAccountIdsByRuntime"] as? [String: Any] {
-            return self.isAbsent(byRuntime["host"])
-        }
-        return true
-    }
-
-    private static func window(_ raw: Any?, minutes: Int) -> ClaudeStatusLineWindow? {
-        guard let object = raw as? [String: Any],
-              let used = ClaudeUsageFeedNumbers.finite(object["usedPercent"]),
-              (0...100).contains(used)
-        else { return nil }
-        if let windowMinutes = ClaudeUsageFeedNumbers.finite(object["windowMinutes"]),
-           Int(windowMinutes) != minutes
-        {
-            return nil
-        }
-        let resetMilliseconds = ClaudeUsageFeedNumbers.finite(object["resetsAt"])
-        return ClaudeStatusLineWindow(
-            usedPercent: used,
-            resetsAt: ClaudeUsageFeedNumbers.resetDate(seconds: resetMilliseconds.map { $0 / 1000 }))
-    }
-
-    private static func isAbsent(_ value: Any?) -> Bool {
-        value == nil || value is NSNull
-    }
-
-    private static func binary(
-        for instance: Instance,
-        environment: [String: String],
-        fileManager: FileManager) -> String?
-    {
-        let home = ClaudeConfigPaths.homeDirectory(environment: environment)
-        var directories = (environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin")
-            .split(separator: ":")
-            .map(String.init)
-        // The Orca AppImage registers its CLI here; a desktop session's PATH may not include it.
-        directories.append(home.appendingPathComponent(".local/bin", isDirectory: true).path)
-        for command in instance.commands {
-            if let found = BinaryLocator.find(command, in: directories, fileManager: fileManager) {
-                return found
-            }
-        }
-        return nil
     }
 }
 

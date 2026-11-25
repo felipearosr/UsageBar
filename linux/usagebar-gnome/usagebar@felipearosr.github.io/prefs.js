@@ -1066,7 +1066,7 @@ export default class UsageBarPreferences extends ExtensionPreferences {
             'Anthropic throttles the usage endpoint UsageBar polls. Claude Code already ' +
             'gets your 5-hour and weekly quota on every reply and passes it to its ' +
             'statusLine command; with this on, UsageBar reads it from there, and from ' +
-            'T3 Code’s logs and Orca, which run Claude Code without a statusLine.');
+            'T3 Code’s logs, which run Claude Code without a statusLine.');
         expander.add_row(toggle);
 
         // Shown when the user has a statusLine of their own that doesn't
@@ -1140,7 +1140,7 @@ export default class UsageBarPreferences extends ExtensionPreferences {
 
             const last = Number.isFinite(status.lastCaptureMs) ? ago(status.lastCaptureMs) : null;
             const origin = feedOriginLabel(status.lastCaptureOrigin);
-            const use = 'Send a message in Claude Code or T3 Code, or keep Orca open.';
+            const use = 'Send a message in Claude Code or T3 Code.';
             const texts = {
                 off: 'Off. Claude quota comes from the usage endpoint, which is often rate limited.',
                 unwired: last
@@ -1149,7 +1149,7 @@ export default class UsageBarPreferences extends ExtensionPreferences {
                 waiting: `Waiting for the first capture. ${use}`,
                 fresh: `Working. Last capture ${last}, from ${origin}.`,
                 stale: `Last capture ${last}, from ${origin}. Used when the endpoint is rate limited; ` +
-                    `refreshes when you use Claude Code, T3 Code or Orca (fresh for ${FRESH_MS / 60000} min).`,
+                    `refreshes when you use Claude Code or T3 Code (fresh for ${FRESH_MS / 60000} min).`,
                 old: `Last capture ${last}, too old to use. ${use}`,
             };
             statusRow.subtitle = status.settingsInvalid
