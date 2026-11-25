@@ -49,6 +49,19 @@
       <summary>Panel near-limit highlight</summary>
       <description>How a panel chip's percent flags a limit at the warning or critical threshold: color the number, a dot before it, or nothing.</description>
     </key>
+    <key name="panel-position" type="s">
+      <choices>
+        <choice value="left-start"/>
+        <choice value="left-end"/>
+        <choice value="center-start"/>
+        <choice value="center-end"/>
+        <choice value="right"/>
+        <choice value="right-end"/>
+      </choices>
+      <default>'right'</default>
+      <summary>Panel position</summary>
+      <description>Where the indicator sits in the top bar: the start or end of the left box (around Activities), the start or end of the center box (around the clock), the start of the right box (the default, before other indicators and the system menu), or the end of the right box (after the system menu).</description>
+    </key>
     <key name="panel-icon-source" type="s">
       <choices>
         <choice value="active"/>

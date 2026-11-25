@@ -49,6 +49,7 @@ import {
 } from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {ReportGate} from './reportgate.js';
+import {DEFAULT_PANEL_POSITION, PANEL_POSITIONS, panelPlacement} from './panelposition.js';
 import {PROVIDER_META} from './providermeta.js';
 import {
     claudeAccountConfigPaths,
@@ -2093,6 +2094,8 @@ export default class UsageBarExtension extends Extension {
             }
             if (key === 'app-theme')
                 this._themeChanged();
+            if (key === 'panel-position' && this._indicator)
+                this._moveIndicator();
             // Labels live in the cards: rebuild them from the last rows.
             if (key === 'hide-personal-info' && this._usageRows)
                 this._buildAccountCards();
@@ -2164,7 +2167,8 @@ export default class UsageBarExtension extends Extension {
                 this._render();
             }
         });
-        Main.panel.addToStatusArea(this.uuid, this._indicator);
+        const {box, index} = panelPlacement(this._settings.get_string('panel-position'));
+        Main.panel.addToStatusArea(this.uuid, this._indicator, index, box);
 
         const uiSmokeResult = GLib.getenv('USAGEBAR_UI_SMOKE_RESULT');
         if (uiSmokeResult)
@@ -2335,6 +2339,26 @@ export default class UsageBarExtension extends Extension {
                 now: () => GLib.get_monotonic_time() / 1000,
             }, REQUEST_TIMEOUT_SECS);
         this._supervisor.start();
+    }
+
+    // Moves the indicator to the panel-position setting's box and slot. Only
+    // the container moves: statusArea, the menu manager and the panel's
+    // destroy and menu-set handlers stay as addToStatusArea registered them,
+    // so disable() cleans up the same way wherever the indicator sits.
+    _moveIndicator() {
+        const {box, index} = panelPlacement(this._settings.get_string('panel-position'));
+        const target = {
+            left: Main.panel._leftBox,
+            center: Main.panel._centerBox,
+            right: Main.panel._rightBox,
+        }[box];
+        const container = this._indicator.container;
+        // The popover is anchored to the old spot; close it rather than leave
+        // it pointing at nothing.
+        this._indicator.menu.close(false);
+        container.get_parent()?.remove_child(container);
+        // -1 (or past the end) appends, as in Panel's own _addToPanelBox.
+        target.insert_child_at_index(container, index);
     }
 
     disable() {
@@ -3928,6 +3952,45 @@ export default class UsageBarExtension extends Extension {
         // Chips in batches small enough for the 1024px headless panel, so
         // nothing is squeezed in the screenshots.
         const markBatches = [['claude', 'codex'], ['alibabatokenplan'], ['opencodego', 'gemini']];
+        // Every panel-position value moves the indicator to its box and slot
+        // live, keeping its statusArea entry, then the default puts it back.
+        const panelPositionSmoke = (assertions, done, queue = null) => {
+            const boxes = {
+                left: Main.panel._leftBox,
+                center: Main.panel._centerBox,
+                right: Main.panel._rightBox,
+            };
+            const values = queue ?? [...PANEL_POSITIONS.map(p => p.value), null];
+            const value = values.shift();
+            try {
+                if (value === null)
+                    this._settings.reset('panel-position');
+                else
+                    this._settings.set_string('panel-position', value);
+            } catch (error) {
+                this._settings.reset('panel-position');
+                done(error);
+                return;
+            }
+            later(150, () => {
+                const expected = value ?? DEFAULT_PANEL_POSITION;
+                const {box, index} = panelPlacement(expected);
+                const container = this._indicator.container;
+                const parent = container.get_parent();
+                const target = boxes[box];
+                const at = index < 0
+                    ? target.get_last_child() : target.get_child_at_index(index);
+                assertions.push(assertion(`panel position ${expected} places the indicator`,
+                    parent === target && at === container &&
+                    Main.panel.statusArea[this.uuid] === this._indicator && container.visible,
+                    {box: Object.keys(boxes).find(name => boxes[name] === parent) ?? null,
+                        index: parent?.get_children().indexOf(container) ?? null}));
+                if (values.length)
+                    panelPositionSmoke(assertions, done, values);
+                else
+                    done();
+            });
+        };
         const markSmoke = (assertions, done, batch = 0) => {
             const providers = markBatches[batch];
             let marks;
@@ -5028,7 +5091,7 @@ export default class UsageBarExtension extends Extension {
                 iconSourceSmoke(assertions);
                 return;
             }
-            steps.push(markSmoke, syncSupportSmoke, machinesSmoke);
+            steps.push(panelPositionSmoke, markSmoke, syncSupportSmoke, machinesSmoke);
             const next = error => {
                 if (error)
                     finish(assertions, error);
