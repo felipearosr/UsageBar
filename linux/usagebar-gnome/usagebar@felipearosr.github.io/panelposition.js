@@ -9,7 +9,7 @@ export const PANEL_POSITIONS = [
     {value: 'left-end', box: 'left', index: -1, label: 'Left, after Activities'},
     {value: 'center-start', box: 'center', index: 0, label: 'Center, left of the clock'},
     {value: 'center-end', box: 'center', index: -1, label: 'Center, right of the clock'},
-    {value: 'right', box: 'right', index: 0, label: 'Right, before the system menu'},
+    {value: 'right', box: 'right', index: 0, label: 'Right, before the other indicators'},
     {value: 'right-end', box: 'right', index: -1, label: 'Far right, after the system menu'},
 ];
 

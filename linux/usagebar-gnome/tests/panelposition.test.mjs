@@ -50,10 +50,3 @@ test('the schema offers exactly these positions, defaulting to right', () => {
     assert.deepEqual(choices, PANEL_POSITIONS.map(p => p.value));
     assert.match(key[1], new RegExp(`<default>'${DEFAULT_PANEL_POSITION}'</default>`));
 });
-
-test('the extension places the indicator from the setting and moves it live', () => {
-    const source = read('extension.js');
-    assert.match(source,
-        /panelPlacement\(this\._settings\.get_string\('panel-position'\)\);\n\s*Main\.panel\.addToStatusArea\(this\.uuid, this\._indicator, index, box\);/);
-    assert.match(source, /key === 'panel-position' && this\._indicator\)\n\s*this\._moveIndicator\(\);/);
-});

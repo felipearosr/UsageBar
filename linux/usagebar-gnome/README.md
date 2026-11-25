@@ -211,6 +211,9 @@ download as its last pass, clicking Not now and then Download.
 - `usagebar@felipearosr.github.io/brandtext.js` — brand-colored provider
   names for builds without logos: contrast-safe tints of each provider's
   color (pure; tested in `tests/brandtext.test.mjs`).
+- `usagebar@felipearosr.github.io/panelposition.js` — the Position in top
+  bar choices: each one's panel box, slot and Settings label (pure; tested
+  in `tests/panelposition.test.mjs`).
 - `usagebar@felipearosr.github.io/planlabel.js` — the plan tag beside each
   provider name: raw plan codes through the generated `planLabels` tables,
   and Claude's own label from Claude Code's account config

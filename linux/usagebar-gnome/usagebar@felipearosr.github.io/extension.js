@@ -49,7 +49,7 @@ import {
 } from './payload.js';
 import {ServeSupervisor} from './servesupervisor.js';
 import {ReportGate} from './reportgate.js';
-import {DEFAULT_PANEL_POSITION, PANEL_POSITIONS, panelPlacement} from './panelposition.js';
+import {PANEL_POSITIONS, panelPlacement} from './panelposition.js';
 import {PROVIDER_META} from './providermeta.js';
 import {
     claudeAccountConfigPaths,
@@ -201,6 +201,15 @@ const COST_HINTS = {
 // The dashboard link prefers the subscription page when the row reports a
 // plan (loginMethod) — e.g. claude.ai usage for Max plans vs the API
 // console for key users, matching the macOS app.
+// Main.panel's box for a panel-position box name (panelposition.js).
+function panelBox(name) {
+    return {
+        left: Main.panel._leftBox,
+        center: Main.panel._centerBox,
+        right: Main.panel._rightBox,
+    }[name];
+}
+
 function providerLinks(row) {
     const meta = PROVIDER_META[row.provider];
     if (!meta)
@@ -2347,18 +2356,13 @@ export default class UsageBarExtension extends Extension {
     // so disable() cleans up the same way wherever the indicator sits.
     _moveIndicator() {
         const {box, index} = panelPlacement(this._settings.get_string('panel-position'));
-        const target = {
-            left: Main.panel._leftBox,
-            center: Main.panel._centerBox,
-            right: Main.panel._rightBox,
-        }[box];
         const container = this._indicator.container;
         // The popover is anchored to the old spot; close it rather than leave
         // it pointing at nothing.
-        this._indicator.menu.close(false);
+        this._indicator.menu.close();
         container.get_parent()?.remove_child(container);
         // -1 (or past the end) appends, as in Panel's own _addToPanelBox.
-        target.insert_child_at_index(container, index);
+        panelBox(box).insert_child_at_index(container, index);
     }
 
     disable() {
@@ -3953,42 +3957,59 @@ export default class UsageBarExtension extends Extension {
         // nothing is squeezed in the screenshots.
         const markBatches = [['claude', 'codex'], ['alibabatokenplan'], ['opencodego', 'gemini']];
         // Every panel-position value moves the indicator to its box and slot
-        // live, keeping its statusArea entry, then the default puts it back.
-        const panelPositionSmoke = (assertions, done, queue = null) => {
-            const boxes = {
-                left: Main.panel._leftBox,
-                center: Main.panel._centerBox,
-                right: Main.panel._rightBox,
-            };
-            const values = queue ?? [...PANEL_POSITIONS.map(p => p.value), null];
+        // live, keeping its statusArea entry, and its popover opens inside the
+        // monitor there. Then the value the smoke started with comes back.
+        const panelPositionSmoke = (assertions, done, queue = null,
+            initial = this._settings.get_string('panel-position')) => {
+            const values = queue ?? [...PANEL_POSITIONS.map(p => p.value), initial];
             const value = values.shift();
-            try {
-                if (value === null)
-                    this._settings.reset('panel-position');
-                else
-                    this._settings.set_string('panel-position', value);
-            } catch (error) {
-                this._settings.reset('panel-position');
+            const finishStep = (error = null) => {
+                this._indicator.menu.close();
+                if (error)
+                    this._settings.set_string('panel-position', initial);
                 done(error);
-                return;
-            }
+            };
+            this._settings.set_string('panel-position', value);
             later(150, () => {
-                const expected = value ?? DEFAULT_PANEL_POSITION;
-                const {box, index} = panelPlacement(expected);
-                const container = this._indicator.container;
-                const parent = container.get_parent();
-                const target = boxes[box];
-                const at = index < 0
-                    ? target.get_last_child() : target.get_child_at_index(index);
-                assertions.push(assertion(`panel position ${expected} places the indicator`,
-                    parent === target && at === container &&
-                    Main.panel.statusArea[this.uuid] === this._indicator && container.visible,
-                    {box: Object.keys(boxes).find(name => boxes[name] === parent) ?? null,
-                        index: parent?.get_children().indexOf(container) ?? null}));
-                if (values.length)
-                    panelPositionSmoke(assertions, done, values);
-                else
-                    done();
+                try {
+                    const {box, index} = panelPlacement(value);
+                    const container = this._indicator.container;
+                    const parent = container.get_parent();
+                    const target = panelBox(box);
+                    const at = index < 0
+                        ? target.get_last_child() : target.get_child_at_index(index);
+                    assertions.push(assertion(`panel position ${value} places the indicator`,
+                        parent === target && at === container &&
+                        Main.panel.statusArea[this.uuid] === this._indicator && container.visible,
+                        {box: ['left', 'center', 'right'].find(name => panelBox(name) === parent) ?? null,
+                            index: parent?.get_children().indexOf(container) ?? null}));
+                    if (!values.length) {
+                        finishStep();
+                        return;
+                    }
+                    this._indicator.menu.open();
+                } catch (error) {
+                    finishStep(error);
+                    return;
+                }
+                later(300, () => {
+                    try {
+                        const popover = this._indicator.menu.actor;
+                        const monitor = Main.layoutManager.findMonitorForActor(this._indicator.container);
+                        const [x, y] = popover.get_transformed_position();
+                        const [width, height] = popover.get_transformed_size();
+                        assertions.push(assertion(`popover at panel position ${value} stays on the monitor`,
+                            popover.visible && width > 0 && x >= monitor.x && y >= monitor.y &&
+                            x + width <= monitor.x + monitor.width &&
+                            y + height <= monitor.y + monitor.height,
+                            {x, y, width, height, monitor: [monitor.x, monitor.y, monitor.width, monitor.height]}));
+                        this._indicator.menu.close();
+                    } catch (error) {
+                        finishStep(error);
+                        return;
+                    }
+                    panelPositionSmoke(assertions, done, values, initial);
+                });
             });
         };
         const markSmoke = (assertions, done, batch = 0) => {
