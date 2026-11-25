@@ -77,6 +77,18 @@ public enum ClaudeStatusLineDropStore {
         return current
     }
 
+    /// The stored observation for `profileID` as written, with no account, age or reset checks. Nil when there is
+    /// none or it cannot be read.
+    public static func storedObservation(applicationSupport: URL, profileID: String) -> ClaudeStatusLineRateLimits? {
+        let url = self.observationURL(applicationSupport: applicationSupport, profileID: profileID)
+        guard !self.isSymbolicLink(url),
+              let data = try? Data(contentsOf: url),
+              let envelope = self.decode(data),
+              envelope.observation.profileID == profileID
+        else { return nil }
+        return envelope.observation
+    }
+
     public static func isWithinAge(_ observation: ClaudeStatusLineRateLimits, maximumAge: TimeInterval, now: Date)
         -> Bool
     {
@@ -108,7 +120,8 @@ public enum ClaudeStatusLineDropStore {
             accountID: limits.accountID,
             capturedAt: limits.capturedAt,
             fiveHour: fiveHour,
-            sevenDay: sevenDay)
+            sevenDay: sevenDay,
+            origin: limits.origin)
     }
 
     private static func decode(_ data: Data) -> ClaudeStatusLineObservationEnvelope? {

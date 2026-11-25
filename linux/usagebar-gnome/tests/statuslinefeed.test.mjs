@@ -13,6 +13,7 @@ import {
     feedEnabled,
     feedHealth,
     feedHint,
+    feedOriginLabel,
     forwardSnippet,
     forwardsCapture,
     statusLineState,
@@ -109,6 +110,15 @@ test('suggestFeed only for a rate-limited Claude row the feed would help', () =>
     assert.equal(suggestFeed({provider: 'codex'}, 'rate_limited', 'off'), false);
     assert.match(feedHint('off'), /Claude Code/);
     assert.match(feedHint('unwired'), /no recent captures/);
+});
+
+test('feedOriginLabel names where the newest capture came from', () => {
+    assert.equal(feedOriginLabel('t3code'), 'T3 Code');
+    assert.equal(feedOriginLabel('orca'), 'Orca');
+    assert.equal(feedOriginLabel('orca-dev'), 'Orca dev');
+    assert.equal(feedOriginLabel('statusline'), 'your Claude Code statusLine');
+    // Captures written before origins existed carry none.
+    assert.equal(feedOriginLabel(null), 'your Claude Code statusLine');
 });
 
 test('the capture script forwards stdin to the CLI and prints nothing', () => {

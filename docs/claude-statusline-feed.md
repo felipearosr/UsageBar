@@ -30,6 +30,25 @@ prints, so it cannot change the status line.
 
 Observations live at `~/.local/share/CodexBar/claude-statusline/<profile-hash>.json` (directory 0700, file 0600).
 
+## Other places Claude Code reports the same windows
+
+The statusLine command only runs in Claude Code's interactive terminal UI. Tools that drive Claude Code through the
+Agent SDK or headless never run it, yet they receive the same windows. With the feed on, `ClaudeUsageFeedHarvester`
+(`ClaudeUsageFeedSources.swift`) runs before the fresh read and copies the newest of these into the store when it is
+newer than the stored capture, tagged with its `origin`:
+
+| Origin | Read from | Used only when |
+| --- | --- | --- |
+| `t3code` | The newest `rate_limit_event` in the 16 most recently written logs in `~/.t3/userdata/logs/provider` (last 2 MiB of each). `unifiedWindows.five_hour`/`seven_day` `utilization` is a fraction. | The event's `session_id` names a transcript in this profile's `projects/` whose `session-owner` line is the signed-in account. |
+
+The file's modification time is set to the reading's time, so the extension's health check ages it correctly.
+Observations written before origins existed have none and count as the statusLine.
+
+Orca is not read. Its only way to print its last Claude reading, `orca-ide account list --json`, also makes Orca
+refresh every provider it knows. Its Antigravity check runs `agy acp` with file token storage, so it never sees the
+keyring sign-in and opens a Google sign-in page in Orca's browser. Polling it before each Claude fetch opened that page
+over and over. The `orca` and `orca-dev` origins still parse, so captures stored by earlier builds keep their labels.
+
 ## How it is used
 
 Opt in with `"statusLineFeed": true` on the `claude` provider entry. It applies to the ambient account in Auto and OAuth
@@ -51,9 +70,10 @@ when an OAuth refresh succeeds.
 ## How stale numbers look
 
 A stale answer is a success with source `statusline-stale`. The GNOME extension greys a row with that source, the
-same way it greys last good numbers it carries forward over a provider error (`mergeStale`). Both feed sources also get a
-`statusLine` badge on the card, so numbers from the user's own statusLine are always labelled; OAuth rows (source
-`oauth`) render as before.
+same way it greys last good numbers it carries forward over a provider error (`mergeStale`). Feed rows answer with
+their origin's source label (`statusline`, `t3code`, `orca`, `orca-dev`, and the same with `-stale`), and the card
+badges them **statusLine**, **T3 Code**, **Orca** or **Orca dev**, so fed numbers are always labelled with the record
+they came from; OAuth rows (source `oauth`) render as before.
 
 ## With claude-swap
 

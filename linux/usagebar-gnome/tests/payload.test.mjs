@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {extraWindowsOf, isLongWindow, isStaleSource, isStatusLineSource, paceOf, paceSplitOf, resetSecs, windowLabel,
+import {extraWindowsOf, feedBadge, isLongWindow, isStaleSource, isStatusLineSource, paceOf, paceSplitOf, resetSecs, windowLabel,
     windowsOf}
     from '../usagebar@felipearosr.github.io/payload.js';
 
@@ -52,8 +52,13 @@ test('window labels preserve the full duration ladder', () => {
         assert.equal(windowLabel(minutes, slot), expected);
 });
 
-test('only the stale statusLine and claude-swap sources count as stale as served', () => {
+test('only the stale feed and claude-swap sources count as stale as served', () => {
     assert.equal(isStaleSource({provider: 'claude', source: 'statusline-stale'}), true);
+    assert.equal(isStaleSource({provider: 'claude', source: 't3code-stale'}), true);
+    assert.equal(isStaleSource({provider: 'claude', source: 'orca-stale'}), true);
+    assert.equal(isStaleSource({provider: 'claude', source: 'orca-dev-stale'}), true);
+    assert.equal(isStaleSource({provider: 'claude', source: 't3code'}), false);
+    assert.equal(isStaleSource({provider: 'claude', source: 'oauth-stale'}), false);
     assert.equal(isStaleSource({provider: 'claude', source: 'claude-swap-stale'}), true);
     assert.equal(isStaleSource({provider: 'claude', source: 'claude-swap'}), false);
     assert.equal(isStaleSource({provider: 'claude', source: 'statusline'}), false);
@@ -62,11 +67,20 @@ test('only the stale statusLine and claude-swap sources count as stale as served
     assert.equal(isStaleSource(null), false);
 });
 
-test('both statusLine sources are labelled, other sources are not', () => {
+test('every feed source is labelled with the record it read, other sources are not', () => {
     assert.equal(isStatusLineSource({source: 'statusline'}), true);
     assert.equal(isStatusLineSource({source: 'statusline-stale'}), true);
+    assert.equal(isStatusLineSource({source: 't3code'}), true);
+    assert.equal(isStatusLineSource({source: 'orca-dev-stale'}), true);
     assert.equal(isStatusLineSource({source: 'oauth'}), false);
+    assert.equal(isStatusLineSource({source: 'claude-swap-stale'}), false);
+    assert.equal(isStatusLineSource({source: 'constructor'}), false);
     assert.equal(isStatusLineSource(null), false);
+    assert.equal(feedBadge({source: 'statusline-stale'}), 'statusLine');
+    assert.equal(feedBadge({source: 't3code'}), 'T3 Code');
+    assert.equal(feedBadge({source: 'orca'}), 'Orca');
+    assert.equal(feedBadge({source: 'orca-dev-stale'}), 'Orca dev');
+    assert.equal(feedBadge({source: 'oauth'}), null);
 });
 
 test('pace splits the bar at the expected usage unless on track', () => {

@@ -12,6 +12,8 @@ import Foundation
 //    unchanged.
 //
 // Observations carry a hash of the account UUID from Claude Code's config and are ignored for any other account.
+// Before the fresh read, `ClaudeUsageFeedHarvester` copies newer readings of the same windows from T3 Code's and
+// Orca's local records into the store, so tools that never draw a statusLine feed it too.
 
 enum ClaudeStatusLineFeedRouting {
     /// The opt-in lives on the provider's config.json entry as `"statusLineFeed": true`.
@@ -51,10 +53,10 @@ struct ClaudeStatusLineFetchStrategy: ProviderFetchStrategy {
             }
         }
 
-        var sourceLabel: String {
+        func sourceLabel(for origin: ClaudeUsageFeedOrigin) -> String {
             switch self {
-            case .fresh: ClaudeStatusLineFeed.sourceLabel
-            case .stale: ClaudeStatusLineFeed.staleSourceLabel
+            case .fresh: origin.sourceLabel
+            case .stale: origin.staleSourceLabel
             }
         }
     }
@@ -76,14 +78,27 @@ struct ClaudeStatusLineFetchStrategy: ProviderFetchStrategy {
     }
 
     func isAvailable(_ context: ProviderFetchContext) async -> Bool {
-        self.loadObservation(context) != nil
+        // The fresh step runs first in the routed chain, so it brings the store up to date for both reads.
+        if self.mode == .fresh {
+            await self.harvest(context)
+        }
+        return self.loadObservation(context) != nil
     }
 
     func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
         guard let limits = self.loadObservation(context),
               let snapshot = ClaudeStatusLineDropStore.makeSnapshot(from: limits)
         else { throw ClaudeStatusLineFetchError.noObservation }
-        return self.makeResult(usage: snapshot, sourceLabel: self.mode.sourceLabel)
+        return self.makeResult(usage: snapshot, sourceLabel: self.mode.sourceLabel(for: limits.resolvedOrigin))
+    }
+
+    private func harvest(_ context: ProviderFetchContext) async {
+        #if DEBUG
+        if Self.observationLoaderOverrideForTesting != nil { return }
+        #endif
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else { return }
+        await ClaudeUsageFeedHarvester.harvest(environment: context.env, applicationSupport: support)
     }
 
     func shouldFallback(on error: Error, context _: ProviderFetchContext) -> Bool {

@@ -7,6 +7,10 @@
 // describes the setup; prefs.js asks before writing anything.
 // Dependency-free so the Node tests can exercise it without GJS.
 
+// serve also copies newer readings of the same windows from T3 Code's provider
+// logs and from Orca (release and dev builds) into the capture store, tagged
+// with an origin, since neither draws Claude Code's statusLine.
+
 // The capture script UsageBar installs, under the user data dir.
 export const CAPTURE_SCRIPT_DIR = 'usagebar';
 export const CAPTURE_SCRIPT_NAME = 'claude-statusline-capture.sh';
@@ -160,5 +164,20 @@ export function suggestFeed(row, state, health) {
 export function feedHint(health) {
     if (health === 'off')
         return 'Claude throttles this endpoint. UsageBar can read your quota from Claude Code instead.';
-    return 'The Claude Code statusLine feed is on but has no recent captures.';
+    return 'The Claude Code quota feed is on but has no recent captures.';
+}
+
+// Where a stored capture came from, as Preferences names it. Captures written
+// before origins existed came from the statusLine.
+export function feedOriginLabel(origin) {
+    switch (origin) {
+    case 't3code':
+        return 'T3 Code';
+    case 'orca':
+        return 'Orca';
+    case 'orca-dev':
+        return 'Orca dev';
+    default:
+        return 'your Claude Code statusLine';
+    }
 }
